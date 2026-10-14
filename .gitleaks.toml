@@ -1,0 +1,42 @@
+# Privacy rules on top of gitleaks' default secret rules.
+#
+# Why this exists: development moved to public-first (operator decision,
+# 2026-10-14), so the pre-publication privacy scrub that used to run before
+# anything left the private repo no longer sits in the path. One local
+# username already reached a public branch that way (fea7378, redacted in
+# c50f17a) and was noticed only by eye, four days later.
+#
+# Rules use generic shapes only. Never put a real personal literal here:
+# this file is public, so listing a name would publish it.
+# CI runs gitleaks with --redact, so a hit names the file and line but never
+# prints what was caught.
+
+title = "ai-fleet-kanban: default secrets + personal identifiers"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "personal-home-path"
+description = "A real username inside a Windows home path (C:/Users/..., /c/Users/..., /mnt/c/Users/...). Placeholders such as <you>, <user> or %USERNAME% do not match."
+regex = '''(?i)(?:[a-z]:|/mnt/[a-z]|/[a-z])[\\/]+users[\\/]+([^\\/\s"'<>%$`{}*|:;,()\[\]]+)'''
+secretGroup = 1
+
+  [[rules.allowlists]]
+  description = "Generic example names, not personal identifiers."
+  regexTarget = "secret"
+  regexes = ['''(?i)^(you|your-?name|user(name)?|name|me|xxx+|example|public|default|all|runner(admin)?|admin(istrator)?)$''']
+
+  [[rules.allowlists]]
+  description = "fea7378: redacted in c50f17a; history kept by operator decision 2026-10-14. Exempt from this rule only - the default secret rules still scan the commit."
+  commits = ["fea7378bfbef422cfdbfee10688fa21e6b04e026"]
+
+[[rules]]
+id = "claude-desktop-session-id"
+description = "A local Claude desktop session id."
+regex = '''local_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+
+[[rules]]
+id = "tailscale-hostname"
+description = "A Tailscale tailnet hostname; it exposes the operator's network names."
+regex = '''(?i)[a-z0-9-]+\.tail[0-9a-z]{4,}\.ts\.net'''
