@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -188,4 +188,68 @@ test("layout pins: home is the landing view, ids fold under 技术信息, hidden
   assert.match(src, /<button type="button" id="fleet-open" hidden>全局视图<\/button>/);
   assert.ok(src.includes('document.getElementById("fleet-open").hidden = !homeMulti() && !homeFleetError;'));
   assert.ok(show.includes("multi=homeMulti()||t.read_only") && show.includes("if(multi||t.project_id)taskActions(t,body,id);"));
+});
+
+test("side panel controls follow the board card rule: no more power, no less", () => {
+  const w = (extra) => ({ id: 9, status: "waiting", ...extra });
+  assert.deepEqual(M.sideControls(w({ waiting_for: "review" }), { mine: true }), { kind: "accept", primary: true }, "a delivery: one 通过");
+  assert.deepEqual(M.sideControls(w({ waiting_for: "decision" }), { mine: true }), { kind: "decide", primary: true }, "a question: 同意 / 否决");
+  assert.equal(M.sideControls(w({ waiting_for: "confirm", decision_package: { options: [{ key: "A" }] } }), { mine: true }).kind, "package",
+    "options open the existing decision modal");
+  assert.equal(M.sideControls(w({ waiting_for: "dep" })).kind, "accept",
+    "the board shows 通过 on every waiting card without options; so does the side panel");
+  assert.equal(M.sideControls(w({ waiting_for: "dep" }), { mine: false }).primary, false, "but folded when the next step is not mine");
+  for (const status of ["not_started", "in_progress", "done"])
+    assert.equal(M.sideControls({ id: 9, status }).kind, "none", status + " has nothing to rule on");
+  assert.equal(M.sideControls(w({ waiting_for: "review" }), { remote: true, mine: true }).kind, "none", "another computer's cache is read-only");
+  assert.equal(M.sideControls(null).kind, "none");
+});
+
+test("new task: a title, a configured working line, and no internal ids", () => {
+  const cfg = { lines: ["engine", "design", "review"], reviewLines: ["review"] };
+  assert.equal(M.newTaskBody({ title: "  ", line: "engine" }, cfg).error, "先写一个标题:要做什么。");
+  assert.equal(M.newTaskBody({ title: "修首页", line: "review" }, cfg).error, "选一条执行线。",
+    "review lines judge other work; they take no new task");
+  assert.equal(M.newTaskBody({ title: "修首页", line: "nope" }, cfg).error, "选一条执行线。");
+  assert.deepEqual(M.newTaskBody({ title: " 修首页 ", description: " 首页加按钮 ", line: "design" }, cfg),
+    { body: { subject: "修首页", description: "首页加按钮", line: "design" } }, "trimmed, and nothing but what the operator typed");
+});
+
+test("side panel pins: the board's own buttons, the note beside the button, drafts kept", () => {
+  // Same ruling buttons and attributes as a board card: the document-level handler gives them the
+  // same two-press, expected_version, operator credential and human gate.
+  const box = src.slice(src.indexOf("function sideControlsBox(t, ctl){"), src.indexOf("function renderSide(){"));
+  assert.ok(box.length > 0 && box.includes('ok.dataset.a = "approve"') && box.includes('no.dataset.a = "reject"') && box.includes("b.dataset.openDecision"));
+  assert.ok(!box.includes("/resolve") && !box.includes("post("), "the side panel never calls resolve itself");
+  // A task's note box can appear twice (board card and side panel): the pressed button reads its own.
+  assert.equal(src.split("document.querySelector(`textarea[data-vin=").length - 1, 1, "one document-wide lookup left: the fallback inside noteBox");
+  assert.ok(src.includes("const hasNote = ((noteBox(id, b) || {}).value") && src.includes("const ta = noteBox(id, b);")
+    && src.includes("const extra = (noteBox(id, decide)?.value"), "approve, reject and decide all read the note beside the button");
+  assert.ok(src.includes('<aside class="side" id="task-side" hidden data-task-scope'), "the side panel is a note scope");
+  // Home and history cards open the side panel: no stacked dialog, no jump to 全部任务.
+  const open = src.slice(src.indexOf("function openHomeItem(item){"), src.indexOf("function sideCard(){"));
+  assert.ok(open.includes("openSide(") && !open.includes("fleetApi.showTask") && !open.includes("locateOnBoard"));
+  // A refresh keeps the open task (#task=) and unsent words (sessionStorage, try-wrapped).
+  assert.ok(src.includes('p.set("task", uid)') && src.includes('window.addEventListener("hashchange", sideFromHash)'));
+  assert.ok(src.includes("verdictDraft.set(Number(id), e.target.value);" + String.fromCharCode(10) + "  persistDrafts();"));
+  assert.ok(src.includes("function loadDrafts(){ try {") && src.includes("sessionStorage.setItem(DRAFTS_KEY"));
+  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #home-new input")'),
+    "an unsent new-task title holds the page against an automatic reload too");
+  // Creating a task is a plain POST /api/tasks through the panel's post(): no release key, no internal id.
+  const at = src.indexOf('getElementById("home-new-form").addEventListener("submit"');
+  const sub = src.slice(at, at + 1400);
+  assert.ok(at > 0 && sub.includes('await post("/api/tasks", r.body)') && !sub.includes("released"));
+});
+
+test("side panel says what any card is doing, not only the two home lanes", () => {
+  const base = { id: 2, line: "engine", released: true };
+  const o = { lineName: (l) => ({ engine: "引擎" })[l] || l, wfLabels: { dep: "依赖完成" } };
+  assert.deepEqual(M.sideFallback({ ...base, status: "not_started" }, o), { state: "排队中", next: "等待「引擎」领取" });
+  assert.deepEqual(M.sideFallback({ ...base, status: "not_started", last_verdict: "approve" }, o),
+    { state: "已打回 · 排队中", next: "等待「引擎」继续" }, "handed back with a note: say so");
+  assert.deepEqual(M.sideFallback({ ...base, status: "not_started", released: false }, o), { state: "未放行", next: "放行后才会被领取" });
+  assert.deepEqual(M.sideFallback({ ...base, status: "done" }, o), { state: "已完成", next: "无需操作" });
+  assert.deepEqual(M.sideFallback({ ...base, status: "waiting", waiting_for: "dep" }, o), { state: "等待中 · 依赖完成", next: "等待依赖完成" });
+  const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
+  assert.ok(side.includes("!step0?.lane") && side.includes("sideFallback(t,"), "used only where homeStep has no words");
 });

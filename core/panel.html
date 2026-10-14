@@ -416,6 +416,31 @@
   @media (max-width:620px){ .views{order:5;flex-basis:100%} }
   .home{display:block;padding:var(--sp-3) var(--sp-4) var(--sp-5);max-width:1280px;margin:0 auto}
   .home[hidden]{display:none}
+  /* 第 3 批: 任务侧栏 + 首页新建任务。无阴影、一个强调色只给「下一步」(style-guide)。 */
+  .side{position:fixed;top:0;right:0;bottom:0;width:min(460px,100vw);z-index:40;background:var(--panel);
+        border-left:1px solid var(--line);display:flex;flex-direction:column}
+  .side[hidden]{display:none}
+  .side-head{display:flex;align-items:flex-start;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--line)}
+  .side-head h2{flex:1;margin:0;font-size:16px;line-height:1.4;word-break:break-word}
+  .side-body{flex:1;overflow:auto;padding:var(--sp-3) var(--sp-4) var(--sp-5)}
+  .side-state{color:var(--dim);font-size:13px;margin:0 0 var(--sp-3);word-break:break-all}
+  .side-next{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--r-md);padding:var(--sp-3);margin-bottom:var(--sp-3)}
+  .side-next[data-tone="quiet"]{border-left-color:var(--line)}
+  .side-next h3{margin:0 0 var(--sp-2);font-size:14px}
+  .side-next p{margin:var(--sp-2) 0 0;color:var(--dim);font-size:13px}
+  .side-next textarea{width:100%;box-sizing:border-box;margin-bottom:var(--sp-2)}
+  .side-acts{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-2)}
+  .side-sec{margin-top:var(--sp-3)}
+  .side-sec h3{font-size:13px;color:var(--dim);margin:0 0 var(--sp-2)}
+  .side-sec summary{cursor:pointer;color:var(--dim);font-size:13px}
+  .side-sec pre{white-space:pre-wrap;word-break:break-word;margin:0;font:inherit;font-size:13px;background:var(--panel2);
+                border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-2) var(--sp-3)}
+  .home-new{margin-bottom:var(--sp-3)}
+  .home-new form{display:grid;gap:var(--sp-2);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3)}
+  .home-new form[hidden],.home-new button[hidden]{display:none}
+  .home-new .row{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center}
+  .home-new input,.home-new textarea{width:100%;box-sizing:border-box}
+  .home-new .err{color:var(--bad);font-size:13px;margin:0}
   .home-status{margin-bottom:var(--sp-3);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md)}
   .hs-line{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);min-width:0}
   .hs-line .dot{flex:none}
@@ -524,8 +549,22 @@
 <div class="upg" id="rev-bar" hidden></div>
 <div class="upg" id="upg" hidden></div>
 
+<aside class="side" id="task-side" hidden data-task-scope aria-labelledby="task-side-title">
+  <div class="side-head"><h2 id="task-side-title"></h2><button type="button" id="task-side-close">关闭</button></div>
+  <div class="side-body" id="task-side-body"></div>
+</aside>
 <main class="home" id="home-view" data-view-panel="home">
   <section class="home-status" id="home-status" aria-live="polite"></section>
+  <section class="home-new" id="home-new">
+    <button type="button" id="home-new-open">＋ 新建任务</button>
+    <form id="home-new-form" hidden autocomplete="off">
+      <input id="home-new-title" placeholder="要做什么(标题)" aria-label="任务标题">
+      <textarea id="home-new-desc" rows="3" placeholder="说明(可选):背景、要求、怎样算做完" aria-label="任务说明"></textarea>
+      <div class="row"><label for="home-new-line">交给</label><select id="home-new-line"></select>
+        <button type="submit" class="pri">创建</button><button type="button" id="home-new-cancel">取消</button></div>
+      <p class="err" id="home-new-err" hidden></p>
+    </form>
+  </section>
   <div class="home-cols">
     <section class="home-sec" data-lane="mine" aria-labelledby="home-mine-h">
       <h2 id="home-mine-h">待我处理 <span class="n" id="home-mine-n"></span></h2>
@@ -697,6 +736,28 @@ const receiptDraft = new Map();
 const outcomeDraft = new Map();
 const draftVersions = new Map();
 let decisionSnapshot = null;
+// 第 3 批: 刷新后保留没提交的输入——审阅留言与新建表单存进本标签页的 sessionStorage。
+// 只是本机便利: 读写都包 try,无痕窗口或禁用存储时照常工作,只是不保留。
+const DRAFTS_KEY = "tb_drafts_v1";
+function loadDrafts(){ try { return JSON.parse(sessionStorage.getItem(DRAFTS_KEY) || "{}") || {}; } catch { return {}; } }
+function persistDrafts(extra){
+  try {
+    const d = loadDrafts();
+    d.vin = Object.fromEntries([...verdictDraft].filter(([, v]) => v && v.trim()));
+    if (extra) Object.assign(d, extra);
+    sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(d));
+  } catch {}
+}
+{ const d = loadDrafts(); for (const [k, v] of Object.entries(d.vin || {})) verdictDraft.set(Number(k), v); }
+// 同一张卡的留言框可能同时出现在两处(看板卡片 + 任务侧栏)。按下的按钮读【它身边】那个,
+// 找不到才退回全文档第一个——否则侧栏里写的打回指示可能被隐藏看板上的空框顶掉,
+// 把「打回」静默变成「结案」。
+function noteBox(id, node){
+  const scope = node?.closest?.("[data-task-scope], .card, [data-decision-scope]");
+  return scope?.querySelector(`textarea[data-vin="${id}"]`) || document.querySelector(`textarea[data-vin="${id}"]`);
+}
+// 侧栏状态(早于渲染声明,refresh 随时可调 renderSide)
+let sideRef = null, sideSig = "", sideBooted = false;
 function taskForView(id,node){
   return decisionSnapshot?.id === Number(id) && decisionModal.contains(node)
     ? decisionSnapshot : byId.get(Number(id));
@@ -718,6 +779,7 @@ document.addEventListener("input", (e) => {
   captureDraftVersion(id,e.target);
   if(!e.target.value && !decisionChoice.has(Number(id))) draftVersions.delete(Number(id));
   verdictDraft.set(Number(id), e.target.value);
+  persistDrafts();
   const scope = e.target.closest(".card") || e.target.closest("[data-decision-scope]");
   if (scope) syncHandoff(scope);
 });
@@ -2595,6 +2657,7 @@ async function refresh(){
     meta = { ...mres, archived_count: r.archived_count, caps: r.caps || {} };
     byId.clear(); for (const t of tasks) byId.set(t.id, t);
     render(); renderRig(); renderCtx(); homeAfterRefresh();
+    sideAfterRefresh();
   }catch(e){ live(false, "取数失败"); }
 }
 
@@ -2759,7 +2822,7 @@ ${r.memo}`);
       return;
     }
     decide.dataset.armed = ""; decide.classList.remove("armed"); decide.style.width = ""; decide.disabled = true;
-    const extra = (document.querySelector(`textarea[data-vin="${id}"]`)?.value || "").trim();
+    const extra = (noteBox(id, decide)?.value || "").trim();
     try{
       await post(`/api/tasks/${id}/resolve`, { verdict:"approve", resolved_by:"human",
         selected_option:opt.key,
@@ -2828,7 +2891,7 @@ ${r.memo}`);
     b.dataset.armed = "1";
     b.dataset.orig = b.textContent;
     b.classList.add("armed");
-    const hasNote = ((document.querySelector(`textarea[data-vin="${id}"]`) || {}).value || "").trim();
+    const hasNote = ((noteBox(id, b) || {}).value || "").trim();
     const q = b.dataset.kind === "decide";
     armSwap(b, a === "archive" ? "再按=确认归档"
               : a === "reject" ? "再按=确认否决"
@@ -2844,7 +2907,7 @@ ${r.memo}`);
   b.disabled = true;
   try{
     if (a === "approve" || a === "reject"){
-      const ta = document.querySelector(`textarea[data-vin="${id}"]`);
+      const ta = noteBox(id, b);
       const note = (ta?.value || "").trim();
       await post(`/api/tasks/${id}/resolve`, { verdict: a, note, resolved_by: "human" });
       verdictDraft.delete(Number(id));
@@ -2912,7 +2975,7 @@ async function postDecompose(url, body){
   }
 }
 // v0.19 (self-audit P2-6): an automatic reload would throw away what the operator is typing.
-const hasUnsavedInput = () => [...document.querySelectorAll("textarea, #line-add input")].some((el) => el.value && el.value.trim());
+const hasUnsavedInput = () => [...document.querySelectorAll("textarea, #line-add input, #home-new input")].some((el) => el.value && el.value.trim());
 function showRevBar(rev, why){
   const el = document.getElementById("rev-bar");
   if (!el) return;
@@ -3310,6 +3373,37 @@ function homeStatus({ localName = "本机", nodes = null, fleetError = null, hea
     : remotes.length ? count + " 台电脑正常：" + names.join("、") : "本机「" + here + "」运行正常";
   return { tone, line, alerts };
 }
+/** 侧栏里给哪些控件。规则照抄看板卡片: 等待中且没有方案包 → 通过(决定类再加否决);
+ *  有方案包 → 打开方案弹窗。侧栏不比看板多一种权力,也不少一种。primary = 这一步是不是「我」的。 */
+function sideControls(t, { remote = false, mine = false } = {}) {
+  if (!t || remote || t.status !== "waiting") return { kind: "none", primary: false };
+  if (t.decision_package?.options?.length) return { kind: "package", primary: mine };
+  return { kind: t.waiting_for === "decision" ? "decide" : "accept", primary: mine };
+}
+/** 侧栏的状态与下一步兜底。homeStep 只为首页两栏(待我处理/正在执行)写字,其余状态返回
+ *  lane:null;侧栏要能说清任何一张卡: 排队、打回后排队、已完成、在等别的什么。 */
+function sideFallback(t, { lineName = (l) => l, wfLabels = {} } = {}) {
+  const who = "「" + lineName(t.line) + "」";
+  if (t.status === "done") return { state: "已完成", next: "无需操作" };
+  if (t.status === "not_started") {
+    if (!t.released) return { state: "未放行", next: "放行后才会被领取" };
+    if (t.last_verdict) return { state: "已打回 · 排队中", next: "等待" + who + "继续" };
+    return { state: "排队中", next: "等待" + who + "领取" };
+  }
+  if (t.status === "waiting") {
+    const what = wfLabels[t.waiting_for] || t.waiting_for || "处理";
+    return { state: "等待中 · " + what, next: "等待" + what };
+  }
+  return { state: t.status, next: "无需操作" };
+}
+/** 首页「新建任务」的请求体: 标题必填;只能交给已配置的非评审线(评审线审别人的活,不接新任务)。
+ *  不带任何内部编号——编号由看板分配。 */
+function newTaskBody({ title = "", description = "", line = "" } = {}, { lines = [], reviewLines = [] } = {}) {
+  const subject = String(title).trim();
+  if (!subject) return { error: "先写一个标题:要做什么。" };
+  if (!lines.filter((l) => !reviewLines.includes(l)).includes(line)) return { error: "选一条执行线。" };
+  return { body: { subject, description: String(description).trim(), line } };
+}
 // ── /home-model ──
 
 let lastSetup = null;            // /api/setup as refresh() last saw it (the guide's data)
@@ -3344,9 +3438,188 @@ function locateOnBoard(id){
 }
 function openHomeItem(item){
   if (item.action === "fleet") { fleetApi?.open(); return; }
-  if (item.uid && fleetApi) { fleetApi.showTask(item.uid); return; }
-  if (item.localId != null) locateOnBoard(item.localId);
+  // 第 3 批: 任务在侧栏里打开——说明、结果、进展、操作在一处,不叠两层弹窗、不跳走。
+  if (item.uid || item.localId != null) openSide({ uid: item.uid || null, id: item.localId ?? null, item });
 }
+// ── 任务侧栏(第 3 批)──────────────────────────────────────────────
+// ⭐控件不自造: 按钮与看板卡片同名同数据属性(data-a / data-open-decision / data-edit),
+//   由 document 上同一个处理器接管——两押、版本锁、operator 凭据、人工闸与看板一字不差。
+function sideCard(){
+  if (!sideRef) return null;
+  if (sideRef.id != null && byId.has(Number(sideRef.id))) return byId.get(Number(sideRef.id));
+  if (sideRef.uid) for (const t of tasks) if (t.task_uid === sideRef.uid) return t;
+  return null;
+}
+function sideHash(uid){
+  try {
+    const p = new URLSearchParams(location.hash.slice(1));
+    if (uid) p.set("task", uid); else p.delete("task");
+    const rest = p.toString();
+    history.replaceState(null, "", location.pathname + location.search + (rest ? "#" + rest : ""));
+  } catch {}
+}
+function openSide(ref){
+  sideRef = ref; sideSig = "";
+  document.getElementById("task-side").hidden = false;
+  sideHash(sideCard()?.task_uid || ref.uid || null);
+  renderSide();
+  document.getElementById("task-side-close").focus({ preventScroll: true });
+}
+function closeSide(){
+  sideRef = null; sideSig = "";
+  document.getElementById("task-side").hidden = true;
+  document.getElementById("task-side-body").replaceChildren();
+  sideHash(null);
+}
+document.getElementById("task-side-close").addEventListener("click", closeSide);
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !document.getElementById("task-side").hidden && !document.querySelector("dialog[open]")) closeSide();
+});
+function sideSection(title, text){
+  if (!text) return null;
+  const sec = homeEl("section", undefined, "side-sec");
+  sec.append(homeEl("h3", title), homeEl("pre", String(text)));
+  return sec;
+}
+function sideControlsBox(t, ctl){
+  const box = homeEl("div");
+  if (ctl.kind === "package") {
+    const b = homeEl("button", "展开方案并选择", "pri"); b.type = "button"; b.dataset.openDecision = String(t.id);
+    box.append(b); return box;
+  }
+  const ta = homeEl("textarea"); ta.className = "vin"; ta.rows = 2; ta.dataset.vin = String(t.id);
+  ta.placeholder = ctl.kind === "decide" ? "可选:附一句话给执行方" : "可选:补充给原执行方的一句指示(写了=打回继续)";
+  const acts = homeEl("div", undefined, "side-acts");
+  const ok = homeEl("button", ctl.kind === "decide" ? "同意" : "通过", "pri"); ok.type = "button";
+  ok.dataset.a = "approve"; ok.dataset.id = String(t.id); ok.dataset.kind = ctl.kind === "decide" ? "decide" : "accept";
+  acts.append(ok);
+  if (ctl.kind === "decide") {
+    const no = homeEl("button", "否决", "danger"); no.type = "button";
+    no.dataset.a = "reject"; no.dataset.id = String(t.id); no.dataset.kind = "decide"; acts.append(no);
+  }
+  box.append(ta, acts);
+  if (ctl.kind === "accept") box.append(homeEl("p", "留空按「通过」= 结案;写了一句再按 = 打回给原执行方继续。按两次才生效。"));
+  return box;
+}
+function renderSide(){
+  if (!sideRef || document.getElementById("task-side").hidden) return;
+  const t = sideCard(), item = sideRef.item || null;
+  const sig = JSON.stringify(t ? [t.id, t.status, t.waiting_for, t.aggregate_version, t.human_gate, t.result,
+                                  t.verdict_note, t.description, t.acceptance, (t.decision_package?.options || []).length]
+                               : ["remote", sideRef.uid, item?.title, item?.state, item?.next]);
+  if (sig === sideSig) return;
+  sideSig = sig;
+  const body = document.getElementById("task-side-body"), out = [];
+  document.getElementById("task-side-title").textContent = t ? t.subject : (item?.title || "任务");
+  const autoReview = workers.some((w) => w.line === "review" && w.running);
+  const step0 = t ? homeStep({ ...t, hb: hbClass(t) }, { autoReview }) : null;
+  const step = t && !step0?.lane ? { ...step0, ...sideFallback(t, { lineName: lineLabel, wfLabels: meta.wf_labels || {} }) } : step0;
+  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
+  out.push(homeEl("p", [where, step?.state || item?.state].filter(Boolean).join(" · "), "side-state"));
+  // 唯一的下一步
+  const ctl = sideControls(t, { remote: !t, mine: step?.lane === "mine" });
+  const next = homeEl("div", undefined, "side-next");
+  if (!ctl.primary) next.dataset.tone = "quiet";
+  const nextText = step?.next || item?.next || (t ? "无需操作" : "在它所属的电脑上处理");
+  next.append(homeEl("h3", "下一步：" + nextText));
+  if (!t) next.append(homeEl("p", item ? "这是其他电脑的任务缓存,这里只能查看。" : "这张卡不在本机看板里:可能已归档,或属于另一台电脑。"));
+  const ctlBox = ctl.kind === "none" ? null : sideControlsBox(t, ctl);
+  if (ctlBox && ctl.primary) next.append(ctlBox);
+  out.push(next);
+  if (t) {
+    for (const [title, text] of [["任务说明", t.description], ["验收条件", t.acceptance], ["执行结果", t.result], ["裁定记录", t.verdict_note]]) {
+      const sec = sideSection(title, text); if (sec) out.push(sec);
+    }
+    // 其余操作: 不是「我」这一步时的手动处理、编辑、归档——收起来,不抢下一步
+    const more = homeEl("details", undefined, "side-sec");
+    more.append(homeEl("summary", ctlBox && !ctl.primary ? "仍要手动处理" : "更多操作"));
+    if (ctlBox && !ctl.primary) more.append(ctlBox);
+    const acts = homeEl("div", undefined, "side-acts");
+    if (t.status === "waiting") { const ed = homeEl("button", "编辑"); ed.type = "button"; ed.dataset.edit = String(t.id); acts.append(ed); }
+    if (t.status === "done" || t.status === "waiting") {
+      const ar = homeEl("button", "归档", "danger"); ar.type = "button"; ar.dataset.a = "archive"; ar.dataset.id = String(t.id); acts.append(ar);
+    }
+    const loc = homeEl("button", "在「全部任务」中定位"); loc.type = "button";
+    loc.addEventListener("click", () => { const id = t.id; closeSide(); locateOnBoard(id); });
+    acts.append(loc);
+    more.append(acts, homeEl("p", "编号 #" + t.id + (t.task_uid ? " · UID " + t.task_uid : ""), "side-state"));
+    out.push(more);
+  } else if (sideRef.uid && fleetApi) {
+    const b = homeEl("button", "查看全局详情"); b.type = "button";
+    b.addEventListener("click", () => fleetApi.showTask(sideRef.uid));
+    out.push(b);
+  }
+  body.replaceChildren(...out);
+  // 草稿后注(同看板: 值不进签名,打字不被重建打断)
+  const vin = body.querySelector("[data-vin]");
+  if (vin && t) vin.value = verdictDraft.get(t.id) || "";
+}
+function sideFromHash(){
+  const uid = new URLSearchParams(location.hash.slice(1)).get("task");
+  if (uid && sideRef?.uid !== uid && sideCard()?.task_uid !== uid) openSide({ uid, id: null, item: null });
+}
+function sideAfterRefresh(){
+  persistDrafts();
+  newLineOptions();
+  if (!sideBooted) { sideBooted = true; newRestore(); sideFromHash(); window.addEventListener("hashchange", sideFromHash); }
+  renderSide();
+}
+// ── 首页「新建任务」(第 3 批)────────────────────────────────────────
+// 写标题和说明,选交给哪条线;不填内部编号。直接建卡(不经拆解、不调模型),建好即在侧栏打开。
+function newLineOptions(){
+  const sel = document.getElementById("home-new-line");
+  const usable = LINES.filter((l) => !REVIEW_LINES.includes(l));
+  const sig = JSON.stringify([usable, LINE_LABELS, LINE_HINTS]);
+  if (sel.dataset.sig === sig) return;
+  const keep = sel.value || loadDrafts().new?.line || "";
+  sel.replaceChildren(...usable.map((l) => { const o = homeEl("option", lineLabel(l) + (LINE_HINTS[l] ? " · " + LINE_HINTS[l] : "")); o.value = l; return o; }));
+  if (usable.includes(keep)) sel.value = keep;
+  sel.dataset.sig = sig;
+}
+function newShow(on){
+  document.getElementById("home-new-form").hidden = !on;
+  document.getElementById("home-new-open").hidden = on;
+  if (on) { newLineOptions(); document.getElementById("home-new-title").focus({ preventScroll: true }); }
+}
+function newSave(){
+  persistDrafts({ new: { title: document.getElementById("home-new-title").value,
+                         desc: document.getElementById("home-new-desc").value,
+                         line: document.getElementById("home-new-line").value } });
+}
+function newRestore(){
+  const d = loadDrafts().new;
+  if (!d || !((d.title || "").trim() || (d.desc || "").trim())) return;
+  document.getElementById("home-new-title").value = d.title || "";
+  document.getElementById("home-new-desc").value = d.desc || "";
+  newShow(true);
+  if (d.line) document.getElementById("home-new-line").value = d.line;
+}
+function newClear(){
+  document.getElementById("home-new-form").reset();
+  document.getElementById("home-new-err").hidden = true;
+  persistDrafts({ new: null });
+  newShow(false);
+}
+document.getElementById("home-new-open").addEventListener("click", () => newShow(true));
+document.getElementById("home-new-cancel").addEventListener("click", newClear);
+document.getElementById("home-new-form").addEventListener("input", newSave);
+document.getElementById("home-new-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = document.getElementById("home-new-err");
+  const r = newTaskBody({ title: document.getElementById("home-new-title").value,
+                          description: document.getElementById("home-new-desc").value,
+                          line: document.getElementById("home-new-line").value },
+                        { lines: LINES, reviewLines: REVIEW_LINES });
+  if (r.error) { err.textContent = r.error; err.hidden = false; return; }
+  const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true;
+  try {
+    const j = await post("/api/tasks", r.body);
+    newClear();
+    await refresh();
+    openSide({ id: j.task.id, uid: j.task.task_uid || null, item: null });
+  } catch (x) { err.textContent = "创建失败:" + x.message; err.hidden = false; }
+  finally { btn.disabled = false; }
+});
 const homeEl = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
 function homeCard(item, lane){
   const b = homeEl("button", undefined, "hcard"); b.type = "button";
