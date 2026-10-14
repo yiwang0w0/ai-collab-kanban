@@ -26,7 +26,7 @@ CLI 是 `lines add <线名> --kind review --read-only --charter docs/roles/astra
 
 - `kind`:`implement`(默认,干活)/ `review`(只读、只核对、只判断,评审文本就是交付物;拆解器**不会**把实现卡派给它)。
 - `tools`:`write`(默认)/ `read-only`(评审线默认只读)。这是身份里**唯一被机器强制**的部分:Claude 座席的 argv 去掉 Edit 并把工作仓放进 Edit deny,codex 座席走 `--sandbox read-only`。
-- `charter`:看板仓相对的 `.md`,逐字进这条线每次提示词并带 sha256。**文件住看板仓、且必须在受闸子树内**(改了章程 = 树哈希变 = 线拒绝启动,直到重新接受代码)。模板在 `examples/roles/`,复制到 `docs/roles/` 再填空。
+- `charter`:看板仓相对的 `.md`,逐字进这条线每次提示词并带 sha256。**文件住看板仓、且必须在受闸子树内**(改了章程 = 树哈希变 = 线拒绝启动,直到重新确认版本)。模板在 `examples/roles/`,复制到 `docs/roles/` 再填空。
 - `seat`:`{runtime, model, effort}`,首次启动时作为 Agent1 的缺省;之后面板设置优先,偏离时面板标「⚠偏离身份座席」。
 
 按证据配家族(`docs/方案-身份分配.md` §1.3):**评审线放另一家族(如 codex),代码阶段的自动审阅座席留 Claude**;反过来配是花钱买退步。操作者没明说身份就不写 `role`——普通线照旧。
