@@ -253,3 +253,38 @@ test("side panel says what any card is doing, not only the two home lanes", () =
   const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
   assert.ok(side.includes("!step0?.lane") && side.includes("sideFallback(t,"), "used only where homeStep has no words");
 });
+
+test("batch 4: the board being down is one bad line with a recovery action, not a stale 正常", () => {
+  // 「电脑在线」≠「看板服务正常」: the page is a cached copy; when the board stops answering,
+  // the home status says so and points at the one command that fixes it.
+  const down = M.homeStatus({ localName: "台式机 A", boardDown: true });
+  assert.equal(down.tone, "bad");
+  assert.ok(down.line.includes("看板服务没有应答") && down.line.includes("电脑开着"), down.line);
+  assert.equal(down.alerts.length, 1);
+  assert.equal(down.alerts[0].go, "retry", "the recovery action is one reconnect button");
+  assert.ok(down.alerts[0].next.includes("node cli/start.mjs --background"), down.alerts[0].next);
+  // The marker is not set while reads are merely starting or flaked once.
+  assert.ok(!src.includes("boardDown: boardDownStreak >= 2") || src.includes("homeReady && boardDownStreak >= 2"),
+    "从未加载成功是「正在读取」,连续两次失败才是停机");
+});
+
+test("batch 4: same-kind health problems fold into one alert with a count", () => {
+  const three = { issues: [
+    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
+    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
+    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
+    { code: "STORAGE_LOW", level: "notice", count: 2, next_action: "inspect_storage_before_new_work" },
+  ] };
+  const s = M.homeStatus({ localName: "台式机 A", nodes: [], health: three });
+  assert.equal(s.alerts.length, 2, "three stale heartbeats are one problem, not three");
+  const hb = s.alerts.find((a) => a.what.includes("调度器心跳超时"));
+  const disk = s.alerts.find((a) => a.what.includes("磁盘空间不足"));
+  assert.ok(hb && hb.what.includes("（3 项）") && hb.tone === "bad", hb && hb.what);
+  assert.ok(disk && disk.what.includes("（2 项）") && disk.tone === "warn", disk && disk.what);
+  // Different codes stay separate; different next_action with the same code stay separate too.
+  const mixed = { issues: [
+    { code: "NODE_SYNC_RETRY", level: "notice", count: 1, next_action: "inspect_node_sync_then_peer" },
+    { code: "NODE_SYNC_RETRY", level: "notice", count: 1, next_action: "check_peer_then_resume_same_action" },
+  ] };
+  assert.equal(M.homeStatus({ localName: "A", nodes: [], health: mixed }).alerts.length, 2);
+});

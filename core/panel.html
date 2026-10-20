@@ -2658,8 +2658,18 @@ async function refresh(){
     byId.clear(); for (const t of tasks) byId.set(t.id, t);
     render(); renderRig(); renderCtx(); homeAfterRefresh();
     sideAfterRefresh();
-  }catch(e){ live(false, "取数失败"); }
+    // 从停机态回来:清零并立刻重绘首页,别等下一条 SSE。
+    if (boardDownStreak >= 2 && homeView !== "board") renderHomeViews();
+    boardDownStreak = 0;
+  }catch(e){
+    live(false, "取数失败");
+    // ⭐ 第 4 批: 首页要分清「电脑在线」与「看板服务正常」。页面是缓存的,取数失败 =
+    //   看板没有应答 —— 连续两次失败后(单次可能是瞬时抖动),首页状态区换成一条
+    //   坏消息和恢复动作,而不是留着上一次的「运行正常」骗人。
+    if (++boardDownStreak >= 2 && homeView !== "board") renderHomeViews();
+  }
 }
+let boardDownStreak = 0;
 
 function live(on, txt){
   document.getElementById("dot").className = "dot" + (on ? "" : " off");
@@ -3341,15 +3351,32 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
   history.sort((a, b) => b.updated.localeCompare(a.updated));
   return { mine, running, history };
 }
-/** One line about the computers, plus the alerts that line folds away when all is well. */
-function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null } = {}) {
+/** One line about the computers, plus the alerts that line folds away when all is well.
+ *  `boardDown` = this very board is not answering (the page is stale by definition, so this
+ *  shape only appears from a reconnect attempt telling the truth about the last state). */
+function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null, boardDown = false } = {}) {
   const here = homeName(localName, "本机"), alerts = [], remotes = (nodes || []).filter((n) => !n.local);
+  // 交接说明 第 4 批: 「电脑在线」与「看板服务正常」是两回事。页面还在渲染只说明浏览器
+  // 有缓存;看板没应答时不要假装读到了状态——一条坏消息,恢复动作就是重新连接。
+  if (boardDown) {
+    return { tone: "bad", line: "看板服务没有应答 —— 这台电脑开着,是看板停了",
+             alerts: [{ tone: "bad", where: here, what: "看板服务没有应答",
+                        next: "本机恢复: node cli/start.mjs --background;或按右边重试连接", go: "retry" }] };
+  }
   for (const n of remotes) {
     const s = HOME_SYNC[n.connection_state] || ["warn", "状态未知", "在全局视图查看"];
     if (s[0] !== "ok") alerts.push({ tone: s[0], where: homeName(n.display_name), what: s[1], next: s[2], go: "fleet" });
   }
   if (fleetError) alerts.push({ tone: "warn", where: "多机视图", what: "暂时读不到", next: "稍后会自动重试", go: null });
-  for (const i of (health && health.issues) || [])
+  // 同类合并: 同 kind(码+下一步)的问题只说一次,数量并进来——三条「磁盘不足」是
+  // 一件事,不是三件事(第 4 批: 同一故障合并成一条提示)。
+  const healthFold = new Map();
+  for (const i of (health && health.issues) || []) {
+    const key = i.code + "|" + i.next_action;
+    const prior = healthFold.get(key);
+    if (prior) prior.count += i.count; else healthFold.set(key, { ...i, count: i.count || 1 });
+  }
+  for (const i of healthFold.values())
     alerts.push({ tone: i.level === "problem" ? "bad" : "warn", where: here,
                   what: homeHealthWhat(i.code) + (i.count > 1 ? "（" + i.count + " 项）" : ""),
                   next: HOME_HEALTH_NEXT[i.next_action] || "检查本机看板的运行日志", go: null });
@@ -3668,7 +3695,10 @@ function renderHomeViews(){
   });
   if (homeView === "home"){
     const s = homeStatus({ localName: homeLocalName(), nodes, fleetError: homeFleetError, health: homeHealth,
-                           healthError: homeHealthError, setup: lastSetup });
+                           healthError: homeHealthError, setup: lastSetup,
+                           // 曾成功加载过(homeReady)之后连续两次取数失败 = 看板停了;
+                           // 从未加载成功是「正在读取」,不是停机。
+                           boardDown: homeReady && boardDownStreak >= 2 });
     // The computers are known only once the fleet reads answered — until then say so rather
     // than print "no other computer" for a board that has one.
     const known = homeExtrasAt > 0;
@@ -3685,8 +3715,12 @@ function renderHomeViews(){
           row.append(b);
         }
         else if (a.go){
-          const b = homeEl("button", a.go === "board" ? "去设置" : "查看详情"); b.type = "button";
-          b.addEventListener("click", () => { if (a.go === "board") setView("board"); else fleetApi?.open(); });
+          const b = homeEl("button", a.go === "board" ? "去设置" : a.go === "retry" ? "重试连接" : "查看详情"); b.type = "button";
+          b.addEventListener("click", () => {
+            if (a.go === "board") setView("board");
+            else if (a.go === "retry"){ b.disabled = true; b.textContent = "重试中…"; refresh().finally(() => loadHomeExtras(true)); }
+            else fleetApi?.open();
+          });
           row.append(b);
         }
         return row;
