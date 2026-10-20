@@ -1194,3 +1194,8 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 刷新保留：打开的任务写进地址栏 #task=…，审阅留言与新建表单存本标签页 sessionStorage（存取均包 try），刷新回填、提交后清除；新建表单未提交的标题也会阻止看板换版时自动刷新。
 - 测试（Windows 本机）：hometest 12（新增 4 组，变异对照可红）、decisiontest 25、conflicttest 5、versiontest 26、gatetest 30、tltest 23、progressdiagnostictest 7、panelauth 11、servertest 198 项通过。临时看板实测新建→排队→执行中→待验收→侧栏结案与侧栏打回，服务端状态逐项核对；改前／改后截图已交操作者。
 - 阻塞：无；第 4 批（启动与故障处理）继续。
+- 2026-10-20 第 3 批独立验收（接手会话）：受影响 9 套件复跑与上批记录逐项一致；临时双板走完新建→侧栏→草稿刷新保留→交付物闸拦截假交付→干净证据两押结案，服务端状态逐项核对，改前／改后截图在 batch3-shots/。两押的武装态会被侧栏周期重渲染复位（真人节奏无感，记为低优先摩擦）。
+- 2026-10-20 启动与故障处理（第 4 批，第一半）：首页分清「电脑在线」与「看板服务正常」——看板停掉后缓存页面不再假装「运行正常」，连续两次取数失败即换一条坏消息和恢复动作（node cli/start.mjs --background + 重试连接按钮），服务回来自动恢复；同类健康问题合并成一条（同码同下一步才合并，计数并进去）。
+- 新增 `node cli/status.mjs`（= npm run status）：一条命令回答「现在怎么了、怎么拉起来」——服务应答/数据可读/健康检查各一行、每行带下一步命令，停机时明说数据目录原封未动；⚠ 本进程 fetch 过之后 process.exit/reallyExit 都会撞 Windows libuv 断言以 127 覆盖退出码（实测），故自然排空、exitCode 带结论。
+- 测试（Windows 本机）：hometest 14（新增 2 组）、panelclient 8、fleetviewtest 14、decisiontest 25、conflicttest 5、servertest 198 通过。实测：杀掉看板 32 秒内首页换停机态，服务重启后页面自行回「实时」；status 对活板 exit=0、对停板 exit=1。改后截图在 batch4-shots/（停机态+恢复后）；改前形态即第 3 批 before-01（无停机区分）。第 4 批剩：开机自启可选入口与「保留任务不重派」的实测。
+- 阻塞：无。
