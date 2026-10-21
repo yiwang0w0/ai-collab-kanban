@@ -74,7 +74,7 @@ labels have one source since v0.14.1. Migration is documented in
 | term | layer | meaning |
 |---|---|---|
 | `stop_reason` = `stopped-by-user` / `stopped-with-board` / `crash` / `exit-normal` | machine | recorded by the stop's INITIATOR before the tree kill; only `crash` triggers backoff restart |
-| 用户停止 / 随看板停止 / 崩溃 code=N / 正常结束 / 启动被拒绝 code=3 | display | `stopText` wordings (single mapping site in the server; the panel maps nothing) |
+| 用户停止 / 随看板停止 / 崩溃（退出码 N） / 正常结束 / 启动被拒绝（退出码 3） | display | `stopText` 展示词，仍由服务端统一生成；退出码及停止判定不变 |
 | exit code `3` (`REFUSED_EXIT` js / `EXIT_REFUSED` py) | machine | a gate refusal — deterministic, never restarted, **paired across the two languages**: change one alone and refusals silently degrade to crashes |
 | error codes `NOT_FOUND` `CONFLICT` `BAD_INPUT` `INTERNAL` → 404/409/400/500 | machine | the original board error taxonomy; unclassified falls to 400 `typed:false`. Peer/broker protocols have additional typed errors (see their qualified contracts below) |
 
@@ -84,6 +84,7 @@ labels have one source since v0.14.1. Migration is documented in
 |---|---|---|
 | option `kind` = `none` / `apply` (legacy `no_sql` / `sql_apply` normalized) | machine | whether a human must take files away and apply them |
 | file `role` = `apply` / `rollback` / `companion` | machine | executable (downloadable) vs view-only attachment |
+| 最终裁定 / 推荐方案 / 成本与风险 / 交接目录 | display | 裁定与附件提示用词；执行文件、回退文件、参考文件分别对应 `apply`、`rollback`、`companion`，不改变下载、执行回执或归档授权 |
 | `files` (legacy wire alias `sql_files`) | machine | option attachment list |
 | handoff target `{id, label, dir, exts, name_pattern}` | machine | operator-authorized destination (allowlist polarity: undeclared dirs are never written) |
 | `decision_action` = `continue` / `request_completion` / `confirm_executed` | machine | the human's action on a confirm card |

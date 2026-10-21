@@ -305,7 +305,8 @@ test("暖色主题沿用原有色彩变量，浅深两种模式的常用文字�
 
 test("推理强度初次渲染和拖动后共用中文展示，协议值不变", () => {
   const start = src.indexOf("function effortName(value){"), end = src.indexOf("function renderCfg(){", start);
-  const name = new Function(src.slice(start, end) + ";return effortName;")();
+  const copyStart = src.indexOf("// ── display-copy(pure;tests/panelcopytest.mjs)──"), copyEnd = src.indexOf("// ── /display-copy ──", copyStart);
+  const name = new Function(src.slice(copyStart, copyEnd) + "\n" + src.slice(start, end) + ";return effortName;")();
   assert.equal(name("high"), "高"); assert.equal(name("max"), "最高");
   assert.ok(src.includes("esc(effortName(a.effort))") && src.includes("b.textContent = effortName(a.effort)"));
   assert.ok(src.includes("a.effort = domOf(a)[Number(el.value)] || a.effort"), "写回的仍是允许域中的机器值");

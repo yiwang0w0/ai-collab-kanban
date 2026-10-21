@@ -561,7 +561,7 @@ section("⑩bis in-progress edit gate + description tail-append");
   const blocked = grabErr(() => store.update(db, { id, maxAttempts: 9 }));
   ok("⭐an in-progress edit is CONFLICT and the text says EVERY field, not just the line",
      blocked?.code === store.ERR.CONFLICT && /in_progress/.test(blocked.message) &&
-     /不可 edit 任何字段/.test(blocked.message), blocked?.message || "it went through");
+     /不能修改字段/.test(blocked.message), blocked?.message || "it went through");
   ok("the refused edit moved no value", store.get(db, id).max_attempts === 3);
 
   const appended = "认领时原文\n—— 追记:人的裁定 ——";
