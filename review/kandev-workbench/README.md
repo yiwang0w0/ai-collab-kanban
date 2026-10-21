@@ -1,5 +1,7 @@
 # Kandev 任务池工作台审查入口
 
+> **方向纠正，2026-10-21：本分支仅归档历史试验，不作为 Kanban 主线方案，不合并为产品实现。** 用户已明确：主产品是 ai-fleet-kanban，在原 Kanban 上借鉴 Kandev 的体验与思路，而不是以 Kandev 为宿主换皮。主线评审移至 [Kanban 原生增强计划](https://github.com/yiwang0w0/ai-fleet-kanban/tree/codex/kanban-native-review-20261021/review/kanban-native)。原试验源码保留用于复盘，不再继续扩展其宿主或全站翻译。
+
 这是供独立 AI／人工审查的 **2026-10-21 源码快照**，不是生产发布，也不将本仓库根目录的旧看板替换成 Kandev。请固定审查分支的提交 SHA，不按不断变化的主分支或截图判断实现状态。
 
 ## 先看什么
