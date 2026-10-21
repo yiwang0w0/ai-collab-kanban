@@ -1,0 +1,382 @@
+package handlers
+
+import (
+	"context"
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/orchestrator"
+	storageworkspaces "github.com/kandev/kandev/internal/system/storage/workspaces"
+	"github.com/kandev/kandev/internal/task/dto"
+	"github.com/kandev/kandev/internal/task/models"
+	"github.com/kandev/kandev/internal/task/service"
+	usermodels "github.com/kandev/kandev/internal/user/models"
+	ws "github.com/kandev/kandev/pkg/websocket"
+	"go.uber.org/zap"
+)
+
+// handlerRepo is the minimal repository interface needed by task handlers.
+type handlerRepo interface {
+	UpsertSessionFileReview(ctx context.Context, review *models.SessionFileReview) error
+	GetSessionFileReviews(ctx context.Context, sessionID string) ([]*models.SessionFileReview, error)
+	DeleteSessionFileReviews(ctx context.Context, sessionID string) error
+	ListTurnsBySession(ctx context.Context, sessionID string) ([]*models.Turn, error)
+	CountToolCallMessagesBySession(ctx context.Context, sessionIDs []string) (map[string]int, error)
+	// ListChildren returns the direct, non-archived, non-ephemeral
+	// subtasks of parentID. Used by httpTaskSubtaskCount to drive the
+	// "Also archive/delete subtasks" checkbox in the frontend dialog.
+	ListChildren(ctx context.Context, parentID string) ([]*models.Task, error)
+}
+
+type TaskHandlers struct {
+	service                       *service.Service
+	orchestrator                  OrchestratorStarter
+	configChatRetirer             ConfigChatSessionRetirer
+	configChatAdmission           configChatAdmission
+	movePreviewer                 WorkflowMovePreviewer
+	foregroundActivity            dto.ForegroundActivityProvider
+	cancellationPending           dto.CancellationPendingProvider
+	parkedProjection              dto.ParkedProvider
+	taskParkedProjection          dto.TaskParkedProvider
+	repo                          handlerRepo
+	planService                   *service.PlanService
+	handoffSvc                    *service.HandoffService
+	workspaceRestorer             WorkspaceQuarantineRestorer
+	unarchiveRecoveryTimeout      time.Duration
+	taskCreateLastUsedRecorder    taskCreateLastUsedRecorder
+	agentProfileRecentUseRecorder agentProfileRecentUseRecorder
+	sidebarSettingsReader         sidebarTaskSettingsReader
+	onTaskCreatedWithPR           func(ctx context.Context, taskID, sessionID, prURL, branch string)
+	backgroundWorkEnabled         bool
+	logger                        *logger.Logger
+}
+
+func (h *TaskHandlers) SetBackgroundWorkEnabled(enabled bool) {
+	h.backgroundWorkEnabled = enabled
+}
+
+func (h *TaskHandlers) isBackgroundWorkEnabled() bool {
+	return h.backgroundWorkEnabled
+}
+
+const defaultUnarchiveRecoveryTimeout = 30 * time.Second
+
+// agentProfileRecentUseTimeout bounds detached preference persistence. The
+// launch response does not wait for this best-effort write, and a stuck store
+// must not leave an unbounded background goroutine behind.
+const agentProfileRecentUseTimeout = 5 * time.Second
+
+func (h *TaskHandlers) detachedRecoveryTimeout() time.Duration {
+	if h.unarchiveRecoveryTimeout > 0 {
+		return h.unarchiveRecoveryTimeout
+	}
+	return defaultUnarchiveRecoveryTimeout
+}
+
+type WorkspaceQuarantineRestorer interface {
+	RestoreTask(ctx context.Context, taskID string) storageworkspaces.WorkspaceRecovery
+}
+
+type taskCreateLastUsedRecorder interface {
+	RecordTaskCreateLastUsed(ctx context.Context, patch usermodels.TaskCreateLastUsed) error
+}
+
+type agentProfileRecentUseRecorder interface {
+	RecordAgentProfileRecentUse(
+		ctx context.Context,
+		contextValue usermodels.AgentProfileRecentUseContext,
+		profileID string,
+	) (*usermodels.AgentProfileRecentUse, error)
+}
+
+type sidebarTaskSettingsReader interface {
+	GetUserSettings(ctx context.Context) (*usermodels.UserSettings, error)
+}
+
+// SetHandoffService wires the office task-handoffs service used by the
+// Kanban subtask path. The task service uses the same instance to attach
+// workspace-group membership before any create route returns.
+//
+// Wiring a HandoffService also re-installs the per-user task guard on it. That
+// is not a convenience: this setter is what makes the archive / delete / unarchive
+// routes call the cascade *instead of* Service.ArchiveTask / DeleteTask, and the
+// cascade walks the task repository directly, so it inherits none of their
+// authorizeTaskID checks. Installing the checker here means the substitution
+// cannot silently unscope those routes. The checker is a no-op for identity-less
+// internal callers (the integration watch-reset paths), exactly as it is
+// everywhere else.
+func (h *TaskHandlers) SetHandoffService(svc *service.HandoffService) {
+	h.handoffSvc = svc
+	if h.service != nil {
+		if svc == nil {
+			h.service.SetWorkspacePolicyAttacher(nil)
+		} else {
+			svc.SetTaskAccessChecker(h.service.AuthorizeTaskAccess)
+			h.service.SetWorkspacePolicyAttacher(svc)
+		}
+	}
+}
+
+func (h *TaskHandlers) SetWorkspaceQuarantineRestorer(restorer WorkspaceQuarantineRestorer) {
+	h.workspaceRestorer = restorer
+}
+
+func (h *TaskHandlers) SetTaskCreateLastUsedRecorder(recorder taskCreateLastUsedRecorder) {
+	h.taskCreateLastUsedRecorder = recorder
+}
+
+func (h *TaskHandlers) SetAgentProfileRecentUseRecorder(recorder agentProfileRecentUseRecorder) {
+	h.agentProfileRecentUseRecorder = recorder
+}
+
+func (h *TaskHandlers) SetSidebarTaskSettingsReader(reader sidebarTaskSettingsReader) {
+	h.sidebarSettingsReader = reader
+}
+
+func (h *TaskHandlers) recordSuccessfulTaskCreateProfileAsync(ctx context.Context, profileID string) {
+	if h.agentProfileRecentUseRecorder == nil || profileID == "" {
+		return
+	}
+	recordCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), agentProfileRecentUseTimeout)
+	go func() {
+		defer cancel()
+		h.recordSuccessfulTaskCreateProfile(recordCtx, profileID)
+	}()
+}
+
+// SetOnTaskCreatedWithPR sets a callback invoked when a task is created with a PR URL
+// in one of its repository inputs. The callback runs in a background goroutine.
+func (h *TaskHandlers) SetOnTaskCreatedWithPR(fn func(ctx context.Context, taskID, sessionID, prURL, branch string)) {
+	h.onTaskCreatedWithPR = fn
+}
+
+type OrchestratorStarter interface {
+	// LaunchSession is the unified entry point for all session operations.
+	LaunchSession(ctx context.Context, req *orchestrator.LaunchSessionRequest) (*orchestrator.LaunchSessionResponse, error)
+	// EnsureSession returns the task's existing primary/newest session if any,
+	// otherwise resolves the agent profile server-side and creates one.
+	EnsureSession(ctx context.Context, taskID string, opts ...orchestrator.EnsureSessionOptions) (*orchestrator.EnsureSessionResponse, error)
+}
+
+// WorkflowMovePreviewer is deliberately separate from OrchestratorStarter so
+// existing launch/ensure fakes and plugin adapters do not need to implement a
+// read-only advisory surface.
+type WorkflowMovePreviewer interface {
+	PreviewWorkflowMove(context.Context, orchestrator.WorkflowMovePreviewRequest) (*orchestrator.WorkflowMovePreview, error)
+}
+
+func NewTaskHandlers(svc *service.Service, orchestrator OrchestratorStarter, repo handlerRepo, planService *service.PlanService, log *logger.Logger) *TaskHandlers {
+	h := &TaskHandlers{
+		service:      svc,
+		orchestrator: orchestrator,
+		repo:         repo,
+		planService:  planService,
+		logger:       log.WithFields(zap.String("component", "task-task-handlers")),
+	}
+	if previewer, ok := orchestrator.(WorkflowMovePreviewer); ok {
+		h.movePreviewer = previewer
+	}
+	if retirer, ok := orchestrator.(ConfigChatSessionRetirer); ok {
+		h.configChatRetirer = retirer
+	}
+	// The orchestrator also surfaces the in-memory fine-grained busy substate
+	// (ADR-0049). Derive the narrow provider from it so the
+	// session-fetch handlers can stamp foreground_activity onto sessions without
+	// waiting for a WS flip — generating for RUNNING sessions, background for any
+	// coarse state still holding detached work. Nil (e.g. in tests) simply omits
+	// the field.
+	if fa, ok := orchestrator.(dto.ForegroundActivityProvider); ok {
+		h.foregroundActivity = fa
+	}
+	if cancellation, ok := orchestrator.(dto.CancellationPendingProvider); ok {
+		h.cancellationPending = cancellation
+	}
+	if parked, ok := orchestrator.(dto.ParkedProvider); ok {
+		h.parkedProjection = parked
+	}
+	if taskParked, ok := orchestrator.(dto.TaskParkedProvider); ok {
+		h.taskParkedProjection = taskParked
+	}
+	return h
+}
+
+func RegisterTaskRoutes(router *gin.Engine, dispatcher *ws.Dispatcher, svc *service.Service, orchestrator OrchestratorStarter, repo handlerRepo, planService *service.PlanService, log *logger.Logger) *TaskHandlers {
+	handlers := NewTaskHandlers(svc, orchestrator, repo, planService, log)
+	handlers.registerHTTP(router)
+	handlers.registerWS(dispatcher)
+	return handlers
+}
+
+func (h *TaskHandlers) registerHTTP(router *gin.Engine) {
+	api := router.Group("/api/v1")
+	api.GET("/workflows/:id/tasks", h.httpListTasks)
+	api.GET("/workspaces/:id/tasks", h.httpListTasksByWorkspace)
+	api.GET("/workspaces/:id/task-pool", h.httpGetPoolProjection)
+	api.POST("/workspaces/:id/sidebar/query", h.httpQuerySidebarTasks)
+	// Task create-idempotency (docs/specs/tasks/requirements/external-id-idempotency.md):
+	// side-effect-free lookup, and an operator-only release. Both take
+	// external_id as a query parameter.
+	api.GET("/workspaces/:id/tasks/by-external-id", h.httpGetTaskByExternalID)
+	api.DELETE("/workspaces/:id/tasks/by-external-id", h.httpReleaseTaskExternalID)
+	api.GET("/tasks/:id", h.httpGetTask)
+	api.GET("/tasks/:id/management-claim", h.httpGetTaskManagementClaim)
+	api.POST("/tasks/:id/management-claim", h.httpChangeTaskManagementClaim)
+	api.GET("/tasks/:id/completion-gate", h.httpGetTaskCompletionGate)
+	api.GET("/tasks/:id/completion-gate/history", h.httpListTaskCompletionGateHistory)
+	api.GET("/tasks/:id/pool-history", h.httpGetPoolHistory)
+	api.GET("/tasks/:id/pool-recovery", h.httpGetPoolRecovery)
+	api.POST("/tasks/:id/pool-recovery", h.httpRecoverPoolRun)
+	api.GET("/tasks/:id/pool-recovery/:operation_id", h.httpGetPoolRecoveryOperation)
+	api.PUT("/tasks/:id/completion-gate/criteria", h.httpSetTaskCompletionCriteria)
+	api.PUT("/tasks/:id/completion-gate/criteria/:criterion_id/evidence", h.httpVerifyTaskCompletionCriterion)
+	api.GET("/tasks/:id/archive-source-manifest", h.httpGetArchiveSourceManifest)
+	api.GET("/tasks/:id/context", h.httpGetTaskContext)
+	api.GET("/task-sessions/:id", h.httpGetTaskSession)
+	api.POST("/task-sessions/:id/last-agent-error/dismiss", h.httpDismissLastAgentError)
+	api.POST("/task-sessions/:id/mark-read", h.httpMarkSessionRead)
+	api.GET("/tasks/:id/sessions", h.httpListTaskSessions)
+	api.POST("/tasks/:id/sessions/ensure", h.httpEnsureTaskSession)
+	api.GET("/tasks/:id/environment", h.httpGetTaskEnvironment)
+	api.GET("/tasks/:id/environment/live", h.httpGetTaskEnvironmentLive)
+	api.POST("/tasks/:id/environment/reset", h.httpResetTaskEnvironment)
+	api.GET("/task-sessions/:id/turns", h.httpListSessionTurns)
+	api.POST("/tasks", h.httpCreateTask)
+	api.POST("/tasks/delete-preflight", h.httpTaskDeletePreflight)
+	api.POST("/tasks/:id/exact-retirement/preview", h.httpPreviewExactRetirement)
+	api.PATCH("/tasks/:id", h.httpUpdateTask)
+	api.PATCH("/tasks/:id/port-forwarding", h.httpUpdateTaskPortForwarding)
+	api.POST("/tasks/:id/detach", h.httpDetachTask)
+	api.POST("/tasks/:id/workspace-sources", h.httpAttachWorkspaceSources)
+	api.PATCH("/tasks/:id/repositories/:repo_id", h.httpUpdateTaskRepository)
+	api.POST("/tasks/:id/move", h.httpMoveTask)
+	api.POST("/tasks/:id/move-preview", h.httpMoveTaskPreview)
+	api.DELETE("/tasks/:id", h.httpDeleteTask)
+	api.POST("/tasks/:id/archive", h.httpArchiveTask)
+	api.POST("/tasks/:id/unarchive", h.httpUnarchiveTask)
+	api.GET("/tasks/:id/subtask-count", h.httpTaskSubtaskCount)
+
+	// Task-cost-ledger read surface (docs/specs/task-cost-ledger/spec.md
+	// AC-18): per-task and per-session usage/cost totals.
+	api.GET("/tasks/:id/usage", h.httpGetTaskUsageTotals)
+	api.GET("/tasks/:id/sessions/:sessionId/usage", h.httpGetTaskSessionUsageTotals)
+	api.GET("/tasks/:id/sessions/:sessionId/usage/turns", h.httpGetTaskSessionUsageTurns)
+	api.GET("/tasks/:id/sessions/:sessionId/usage/turns/:turnId", h.httpGetTaskSessionUsageTurn)
+
+	// Task dependencies ("this task is blocked by that one"). Task-scoped
+	// equivalents of the Office-only blocker routes; both go through the single
+	// validator in the task service.
+	api.POST("/tasks/:id/dependencies", h.httpAddTaskDependency)
+	api.PUT("/tasks/:id/dependencies", h.httpReplaceTaskDependencies)
+	api.DELETE("/tasks/:id/dependencies/:depId", h.httpRemoveTaskDependency)
+
+	api.POST("/tasks/bulk-move", h.httpBulkMoveTasks)
+	api.GET("/workflows/:id/task-count", h.httpGetWorkflowTaskCount)
+	api.GET("/workflow/steps/:id/task-count", h.httpGetStepTaskCount)
+
+	// Kanban task reordering (REQ-TASKS-KANBAN-TASK-REORDERING-001.17): the
+	// only request surface for a reorder, mirroring the hyphenated
+	// collection-reorder precedent PUT /api/v1/workspaces/:id/workflows/reorder.
+	api.PUT("/workflow-steps/:id/tasks/reorder", h.httpReorderStepTasks)
+
+	// Session workflow review endpoints
+	api.POST("/sessions/:id/approve", h.httpApproveSession)
+
+	// Background workload endpoints
+	api.GET("/task-sessions/:id/background-work", h.httpListBackgroundWorkloads)
+	api.GET("/task-sessions/:id/background-work/:workId", h.httpGetBackgroundWorkload)
+	api.POST("/task-sessions/:id/background-work/:workId/action", h.httpExecuteBackgroundAction)
+	api.GET("/task-sessions/:id/background-work/:workId/usage", h.httpGetBackgroundWorkloadUsage)
+
+	// Quick chat endpoints - create ephemeral task with prepared session, and
+	// resync the tab strip so clients that missed WS events converge.
+	api.POST("/workspaces/:id/quick-chat", h.httpStartQuickChat)
+	api.GET("/workspaces/:id/quick-chats", h.httpListQuickChatSessions)
+
+	// Config chat endpoint - creates ephemeral task with config-mode MCP tools
+	api.POST("/workspaces/:id/config-chat", h.httpStartConfigChat)
+	api.POST("/workspaces/:id/config-chat/restart", h.httpRestartConfigChat)
+}
+
+func (h *TaskHandlers) registerWS(dispatcher *ws.Dispatcher) {
+	dispatcher.RegisterFunc(ws.ActionTaskList, h.wsListTasks)
+	dispatcher.RegisterFunc(ws.ActionTaskCreate, h.wsCreateTask)
+	dispatcher.RegisterFunc(ws.ActionTaskGet, h.wsGetTask)
+	dispatcher.RegisterFunc(ws.ActionTaskUpdate, h.wsUpdateTask)
+	dispatcher.RegisterFunc(ws.ActionTaskRepoUpdate, h.wsUpdateTaskRepository)
+	dispatcher.RegisterFunc(ws.ActionTaskDelete, h.wsDeleteTask)
+	dispatcher.RegisterFunc(ws.ActionTaskMove, h.wsMoveTask)
+	dispatcher.RegisterFunc(ws.ActionTaskState, h.wsUpdateTaskState)
+	dispatcher.RegisterFunc(ws.ActionTaskArchive, h.wsArchiveTask)
+	dispatcher.RegisterFunc(ws.ActionTaskRunner, h.wsUpdateTaskRunner)
+	dispatcher.RegisterFunc(ws.ActionTaskSessionList, h.wsListTaskSessions)
+	dispatcher.RegisterFunc(ws.ActionSessionBackgroundWorkList, h.wsListBackgroundWorkloads)
+	dispatcher.RegisterFunc(ws.ActionSessionBackgroundWorkGet, h.wsGetBackgroundWorkload)
+	dispatcher.RegisterFunc(ws.ActionSessionBackgroundWorkAction, h.wsExecuteBackgroundAction)
+	// Git snapshot handler (commits and cumulative diff are handled by agent/handlers/git_handlers.go)
+	dispatcher.RegisterFunc(ws.ActionSessionGitSnapshots, h.wsGetGitSnapshots)
+	// Session file review handlers
+	dispatcher.RegisterFunc(ws.ActionSessionFileReviewGet, h.wsGetSessionFileReviews)
+	dispatcher.RegisterFunc(ws.ActionSessionFileReviewUpdate, h.wsUpdateSessionFileReview)
+	dispatcher.RegisterFunc(ws.ActionSessionFileReviewReset, h.wsResetSessionFileReviews)
+	// Task plan handlers
+	dispatcher.RegisterFunc(ws.ActionTaskPlanCreate, h.wsCreateTaskPlan)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanGet, h.wsGetTaskPlan)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanUpdate, h.wsUpdateTaskPlan)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanDelete, h.wsDeleteTaskPlan)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanRevisionsList, h.wsListTaskPlanRevisions)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanRevisionGet, h.wsGetTaskPlanRevision)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanRevert, h.wsRevertTaskPlan)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanImplement, h.wsMarkTaskPlanImplementationStarted)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanCommentsList, h.wsListTaskPlanComments)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanCommentCreate, h.wsCreateTaskPlanComment)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanCommentUpdate, h.wsUpdateTaskPlanComment)
+	dispatcher.RegisterFunc(ws.ActionTaskPlanCommentDelete, h.wsDeleteTaskPlanComment)
+	dispatcher.RegisterFunc(ws.ActionTaskPreviewFeedbackList, h.wsListTaskPreviewFeedback)
+	dispatcher.RegisterFunc(ws.ActionTaskPreviewFeedbackCreate, h.wsCreateTaskPreviewFeedback)
+	dispatcher.RegisterFunc(ws.ActionTaskPreviewFeedbackUpdate, h.wsUpdateTaskPreviewFeedback)
+	dispatcher.RegisterFunc(ws.ActionTaskPreviewFeedbackDelete, h.wsDeleteTaskPreviewFeedback)
+	dispatcher.RegisterFunc(ws.ActionTaskPreviewFeedbackClear, h.wsClearTaskPreviewFeedback)
+}
+
+// convertToServiceRepos converts dto.TaskRepositoryInput slice to service.TaskRepositoryInput slice.
+func convertToServiceRepos(repos []dto.TaskRepositoryInput) []service.TaskRepositoryInput {
+	result := make([]service.TaskRepositoryInput, len(repos))
+	for i, r := range repos {
+		result[i] = service.TaskRepositoryInput{
+			CheckoutOptions:    r.CheckoutOptions,
+			RepositoryID:       r.RepositoryID,
+			BaseBranch:         r.BaseBranch,
+			CheckoutBranch:     r.CheckoutBranch,
+			BranchPolicyID:     r.BranchPolicyID,
+			PRNumber:           r.PRNumber,
+			LocalPath:          r.LocalPath,
+			Name:               r.Name,
+			DefaultBranch:      r.DefaultBranch,
+			GitHubURL:          r.GitHubURL,
+			RemoteURL:          r.RemoteURL,
+			Provider:           r.Provider,
+			ProviderHost:       r.ProviderHost,
+			ProviderScope:      r.ProviderScope,
+			ProviderRepoID:     r.ProviderRepoID,
+			ProviderOwner:      r.ProviderOwner,
+			ProviderName:       r.ProviderName,
+			PreserveBaseBranch: r.PreserveBaseBranch,
+		}
+	}
+	return result
+}
+
+// convertUpdateRepositories maps an update request's repositories field to the
+// service's replace semantics: an absent field (provided=false) must stay nil
+// so UpdateTask leaves task repositories untouched; a provided list — including
+// an explicitly empty one — replaces them. convertToServiceRepos alone returns
+// a non-nil empty slice for nil input, which wiped repositories on title-only
+// renames.
+func convertUpdateRepositories(provided bool, repos []dto.TaskRepositoryInput) []service.TaskRepositoryInput {
+	if !provided {
+		return nil
+	}
+	return convertToServiceRepos(repos)
+}

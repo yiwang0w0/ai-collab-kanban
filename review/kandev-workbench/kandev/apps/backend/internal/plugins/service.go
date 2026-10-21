@@ -1,0 +1,961 @@
+package plugins
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+
+	"go.uber.org/zap"
+
+	"github.com/google/uuid"
+	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/events/bus"
+	"github.com/kandev/kandev/internal/mcp/plugintools"
+	"github.com/kandev/kandev/internal/plugins/instances"
+	"github.com/kandev/kandev/internal/plugins/manifest"
+	"github.com/kandev/kandev/internal/plugins/marketplace"
+	"github.com/kandev/kandev/internal/plugins/state"
+	"github.com/kandev/kandev/internal/plugins/store"
+	"github.com/kandev/kandev/internal/plugins/webapp"
+	"github.com/kandev/kandev/pkg/pluginsdk"
+)
+
+type userStateCleanupStore interface {
+	DeleteAllForPlugin(context.Context, string) error
+}
+
+// Service is the core plugin service: install/uninstall, the in-memory
+// Registry, the lifecycle state machine, and the runtime.Manager wiring
+// that spawns/supervises each plugin's subprocess.
+//
+// # Extension points
+//
+// Event delivery (internal/plugins/delivery) is wired in by backendapp
+// after Provide, following the same post-construction "SetX" pattern
+// internal/jira/service.go uses for SetTaskDeleter / SetRepositoryLookup
+// (avoids an import cycle between this package and its siblings):
+//
+//   - SetDeliverer(d Deliverer) attaches the event-delivery subsystem.
+//     Install, Uninstall, Enable, Disable, and any successful SetStatus
+//     call notify the attached Deliverer via Refresh() so it can
+//     re-subscribe to the event bus based on current registry state.
+//   - StateStore() exposes the already-constructed *state.Store so the
+//     HTTP layer doesn't need a second NewStore(pool) call.
+//   - Registry() and EventBus() are exposed for any other read-only wiring
+//     (e.g. proxies checking a plugin's manifest/capabilities without
+//     going through Service's error-wrapping Get).
+type Service struct {
+	strictCompletionVerifierID            string
+	automationRevoker                     func(string) error
+	capabilityApprovalWorkspaceAuthorizer func(context.Context, string) error
+	humanInteractionResponseAuthorizer    func(context.Context, string) error
+	mu                                    sync.Mutex
+	approvalEffectMu                      sync.Mutex
+	// ownershipMu makes cross-plugin provider/reference ownership checks and
+	// transitions into active one atomic reservation. Per-plugin lifecycle
+	// locks cannot protect two different IDs claiming the same identity.
+	ownershipMu sync.Mutex
+
+	// syncMu serializes Sync/bootScan calls (service_sync.go) so concurrent
+	// operator clicks — or a boot scan racing an operator-triggered sync —
+	// cannot double-install the same dropped tarball or dir sideload.
+	syncMu sync.Mutex
+
+	// lifecycleLocks serializes Enable/Disable/Install/InstallFromURL/
+	// Uninstall/UpdateConfig per plugin id, so two near-simultaneous
+	// lifecycle requests for the same id (e.g. two Enable clicks) cannot
+	// both pass an idempotency check built on a stale read and race each
+	// other's status-machine transition. Different ids stay fully
+	// concurrent. Never taken by handleStatusChange (the runtime.Manager
+	// supervision-goroutine callback) — that path only touches s.mu — so
+	// holding a lifecycleLocks entry while calling into PluginRuntime
+	// cannot deadlock against it.
+	lifecycleLocks *keyedMutex
+	// dispatchLocks keep lifecycle replacement/disable boundaries from racing
+	// authenticated actions and reference RPCs. Dispatch holds a read lease for
+	// the full RPC; lifecycle mutation holds the write side.
+	dispatchLocks *keyedRWMutex
+
+	// agentToolInstallMu makes exposed-name collision validation and registry
+	// insertion one atomic catalog mutation across different plugin IDs.
+	agentToolInstallMu sync.Mutex
+
+	// extractingMu guards extractingPaths and, crucially, is held across the
+	// pkgtar extraction that registers into it: a version directory must never
+	// be observable on disk before it is marked in flight, or a concurrent
+	// prune could delete it in that gap. See extractPackage.
+	extractingMu sync.Mutex
+	// extractingPaths counts, per version directory, the installs that have
+	// extracted it but have not yet finished. Install extracts before it can
+	// know the plugin id (and therefore before it can take that id's lifecycle
+	// lock), so this is what tells a prune running under the lock that a
+	// directory belongs to an install still waiting for it.
+	extractingPaths map[string]int
+
+	pluginsDir                 string
+	store                      store.Store
+	approvals                  *approvalLedger
+	registry                   *Registry
+	state                      *state.Store
+	exactCommandStore          *state.CommandStore
+	userState                  *state.UserStore
+	instances                  *instances.Store
+	instanceState              *state.InstanceStore
+	webArtifacts               *webapp.ArtifactStore
+	webRuntime                 *webapp.Runtime
+	eventHub                   *webapp.EventHub
+	eventSubscription          bus.Subscription
+	userStateCleanup           userStateCleanupStore
+	agentConvs                 AgentConversationService
+	managedConvs               ManagedAgentConversationService
+	managedAutomationSchedules ManagedConversationScheduleService
+	eventBus                   bus.EventBus
+	conversationTokens         *conversationTokenManager
+	conversationEpoch          string
+	log                        *logger.Logger
+
+	deliverer                       Deliverer
+	agentToolCatalogListener        AgentToolCatalogListener
+	agentToolGeneration             string
+	agentToolRevision               uint64
+	agentToolSnapshot               plugintools.Snapshot
+	agentToolSnapshotReady          bool
+	runtime                         PluginRuntime
+	executorProviderHostHandler     ExecutorProviderHostHandler
+	executorProviderInventoryReader ExecutorProviderInventoryReader
+	executorProviderOpMu            sync.Mutex
+	executorProviderOps             map[string]*activeExecutorProviderOperation
+	executorProviderDispatches      map[string]map[uint64]context.CancelFunc
+	executorProviderAdmissionClosed map[string]bool
+	executorProviderDispatchID      uint64
+	secrets                         SecretVault
+
+	// revokeGitCredentialProvider invalidates leases for a repository provider
+	// when its owning plugin is no longer active. It is wired by backendapp to
+	// the provider-neutral broker after both subsystems are constructed.
+	revokeGitCredentialProvider func(string)
+
+	// Host data API (ADR 0043) service-layer dependencies, wired via
+	// SetDataSources and handed to every pluginHost hostForPlugin builds.
+	// nil until backendapp calls SetDataSources (see its doc comment); a
+	// pluginHost built before that falls back to Unimplemented for these
+	// accessors regardless of declared capabilities (see host_data.go's
+	// accessor nil-checks).
+	taskData               taskDataSource
+	workflows              workflowLister
+	workflowSteps          workflowStepLister
+	agentProfiles          agentProfileDataSource
+	sessionCodeStats       sessionCodeStatsSource
+	messageData            messageDataSource
+	interactionData        interactionDataSource
+	pendingTaskTransitions pendingTaskTransitionSource
+	// taskPRs is guarded by mu and read through taskPRSourceDep, because hosts can
+	// outlive the late SetTaskPRSource wiring.
+	taskPRs               taskPRSource
+	taskWriter            taskWriter
+	workspaceAdminWriter  WorkspaceAdminWriter
+	sourceIssueController SourceIssueController
+
+	// Utility agent invocation dependencies, wired via SetUtilityAgent.
+	utilityDefaultProfile utilityDefaultProfileSource
+	utilityProfiles       agentProfileSource
+	utilityRunner         utilityRunner
+
+	// Host data API write dependencies wired late via SetWriteDeps (ADR
+	// 0043): the task-message delivery path and the orchestrator task-starter,
+	// both constructed after boot-active plugins spawn (see writeDeps on
+	// pluginHost). Mutex-guarded against the concurrent hostForPlugin reads.
+	messenger   taskMessenger
+	taskStarter taskStarter
+
+	// Interaction response path wired late via SetInteractionResponder (ADR
+	// 0052), for the same reason as messenger/taskStarter: the orchestrator
+	// and the clarification handler are constructed after boot-active plugins
+	// spawn. Mutex-guarded against the concurrent hostForPlugin reads.
+	interactionResponder     interactionResponder
+	exactExecutionController exactExecutionController
+	humanInteractionReceipts *humanInteractionResponseReceiptStore
+
+	// authLogin establishes an authenticated browser session for an external
+	// identity an auth-capable plugin asserts via its webhook response
+	// (OIDC/SAML SSO), wired via SetAuthLoginBridge. nil until backendapp
+	// wires it (only when the auth service exists); a nil bridge means the SSO
+	// login directive is rejected.
+	authLogin AuthLoginBridge
+
+	// kandevVersion is the currently running kandev build version, used to
+	// enforce a package's manifest.min_kandev_version at Install (see
+	// SetKandevVersion / checkMinKandevVersion). Empty (the default, e.g. in
+	// tests that construct a Service directly) or the "dev" sentinel means no
+	// enforcement; backendapp wires the real ldflags-injected version.
+	kandevVersion string
+
+	httpClient *http.Client
+
+	// marketplace is the plugin-discovery catalog service (nil until
+	// SetMarketplace is called by Provide). See marketplace.go.
+	marketplace *marketplace.Service
+
+	// settings persists instance-wide plugin preferences (the auto-update
+	// default). nil until SetSettings is called by Provide; the auto-update
+	// accessors treat a nil store as "default off, no overrides possible".
+	settings *settingsStore
+
+	reservedReferenceSources       map[string]struct{}
+	reservedReferenceProviderKinds map[string]struct{}
+}
+
+// ReferenceIdentity reserves a host-owned composer source and its canonical
+// provider/kind pair so a plugin cannot shadow a built-in integration.
+type ReferenceIdentity struct {
+	Source   string
+	Provider string
+	Kind     string
+}
+
+// NewService wires a Service from its already-constructed dependencies.
+// Provide is the usual entry point in production; NewService is exposed
+// directly for tests that want a fake store.Store/PluginRuntime.
+func NewService(pluginStore store.Store, registry *Registry, eventBus bus.EventBus, log *logger.Logger) *Service {
+	service := &Service{
+		store:                           pluginStore,
+		registry:                        registry,
+		eventBus:                        eventBus,
+		log:                             log,
+		httpClient:                      &http.Client{},
+		lifecycleLocks:                  newKeyedMutex(),
+		dispatchLocks:                   newKeyedRWMutex(),
+		agentToolGeneration:             uuid.NewString(),
+		eventHub:                        webapp.NewEventHub(),
+		conversationTokens:              newConversationTokenManager(),
+		conversationEpoch:               uuid.NewString(),
+		humanInteractionReceipts:        newHumanInteractionResponseReceiptStore(),
+		executorProviderOps:             make(map[string]*activeExecutorProviderOperation),
+		executorProviderDispatches:      make(map[string]map[uint64]context.CancelFunc),
+		executorProviderAdmissionClosed: make(map[string]bool),
+	}
+	return service
+}
+
+// ConversationEpoch identifies this backend process for Host-only source
+// reconciliation. A restart starts a new epoch, so a client cannot treat a
+// cursor or live batch from the previous process as current.
+func (s *Service) ConversationEpoch() string {
+	return s.conversationEpoch
+}
+
+// SetGitCredentialLeaseRevoker wires immediate provider-lease revocation for
+// plugin lifecycle changes. The callback receives manifest-declared provider
+// IDs, never a plugin ID, because broker leases are scoped by provider.
+func (s *Service) SetGitCredentialLeaseRevoker(revoker func(string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.revokeGitCredentialProvider = revoker
+}
+
+// SetReservedReferenceIdentities installs the host-owned mention vocabulary.
+// It runs during backend composition before active plugin processes start.
+// Persisted active records that now collide are demoted to error so the
+// dynamic mention bridge cannot make backend startup fail.
+func (s *Service) SetReservedReferenceIdentities(identities []ReferenceIdentity) {
+	sources := make(map[string]struct{}, len(identities))
+	providerKinds := make(map[string]struct{}, len(identities))
+	for _, identity := range identities {
+		source := strings.TrimSpace(identity.Source)
+		provider := strings.TrimSpace(identity.Provider)
+		kind := strings.TrimSpace(identity.Kind)
+		if source == "" || provider == "" || kind == "" {
+			continue
+		}
+		sources[source] = struct{}{}
+		providerKinds[provider+"\x00"+kind] = struct{}{}
+	}
+	s.mu.Lock()
+	s.reservedReferenceSources = sources
+	s.reservedReferenceProviderKinds = providerKinds
+	s.mu.Unlock()
+
+	for _, record := range s.List() {
+		if record.Status != StatusActive || !s.collidesWithReservedReference(record.ReferenceSources) {
+			continue
+		}
+		if err := s.setStatus(record.ID, StatusError); err != nil {
+			s.log.Warn("plugins: could not revoke host-owned reference collision",
+				zap.String("plugin_id", record.ID), zap.Error(err))
+		}
+	}
+}
+
+func (s *Service) collidesWithReservedReference(sources []manifest.ReferenceSource) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, source := range sources {
+		if _, reserved := s.reservedReferenceSources[source.Source]; reserved {
+			return true
+		}
+		if _, reserved := s.reservedReferenceProviderKinds[source.Provider+"\x00"+source.Kind]; reserved {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Service) revokeGitCredentialProviderLeases(providers []string) {
+	s.mu.Lock()
+	revoker := s.revokeGitCredentialProvider
+	s.mu.Unlock()
+	if revoker == nil {
+		return
+	}
+	for _, provider := range providers {
+		revoker(provider)
+	}
+}
+
+// keyedMutex hands out a *sync.Mutex per key, creating it on first use and
+// keeping it around for the process lifetime (the plugin id keyspace is
+// small and long-lived, so there is nothing to garbage-collect). Mirrors the
+// parentMutex pattern in internal/task/service/handoff_service.go.
+type keyedMutex struct {
+	mu    sync.Mutex
+	locks map[string]*sync.Mutex
+}
+
+type keyedRWMutex struct {
+	mu    sync.Mutex
+	locks map[string]*sync.RWMutex
+}
+
+func newKeyedRWMutex() *keyedRWMutex {
+	return &keyedRWMutex{locks: make(map[string]*sync.RWMutex)}
+}
+
+func (k *keyedRWMutex) lockFor(key string) *sync.RWMutex {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	lock, ok := k.locks[key]
+	if !ok {
+		lock = &sync.RWMutex{}
+		k.locks[key] = lock
+	}
+	return lock
+}
+
+func newKeyedMutex() *keyedMutex {
+	return &keyedMutex{locks: make(map[string]*sync.Mutex)}
+}
+
+// lockFor returns the mutex for key, creating it if this is the first call
+// for that key. Callers must Lock/Unlock the returned mutex themselves.
+func (k *keyedMutex) lockFor(key string) *sync.Mutex {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	m, ok := k.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		k.locks[key] = m
+	}
+	return m
+}
+
+// SetDeliverer attaches the event-delivery subsystem. See the "Extension
+// points" doc comment on Service. Safe to call at most once during startup
+// wiring; not safe to call concurrently with Install/SetStatus/Uninstall.
+func (s *Service) SetDeliverer(d Deliverer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deliverer = d
+}
+
+// SetAgentToolCatalogListener attaches the dynamic MCP registry bridge.
+func (s *Service) SetAgentToolCatalogListener(listener AgentToolCatalogListener) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentToolCatalogListener = listener
+}
+
+func (s *Service) notifyAgentToolCatalogChanged() {
+	s.mu.Lock()
+	listener := s.agentToolCatalogListener
+	s.mu.Unlock()
+	if listener != nil {
+		listener.NotifyAgentToolCatalogChanged()
+	}
+}
+
+// Deliverer returns the currently attached event-delivery subsystem, or nil
+// if none has been attached yet.
+func (s *Service) Deliverer() Deliverer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deliverer
+}
+
+// SetState wires the already-constructed plugin_state store. Provide calls
+// this; also exposed for tests (in this package and others, e.g.
+// internal/backendapp) that build a Service without going through Provide.
+func (s *Service) SetState(st *state.Store) {
+	s.state = st
+}
+
+// SetExactCommandStore wires the durable intent and receipt ledger for exact
+// Host commands.
+func (s *Service) SetExactCommandStore(st *state.CommandStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exactCommandStore = st
+}
+
+func (s *Service) exactCommandStoreDep() *state.CommandStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exactCommandStore
+}
+
+// StateStore returns the plugin_state store Provide constructed, for the
+// Host RPC implementation (host.go) and any HTTP wiring that needs it
+// without re-initializing the schema.
+func (s *Service) StateStore() *state.Store {
+	return s.state
+}
+
+// SetUserState wires the already-constructed plugin_user_state store. Provide
+// calls this; also exposed for tests that build a Service without going
+// through Provide. See UserState's doc comment for how it differs from
+// StateStore.
+func (s *Service) SetUserState(st *state.UserStore) {
+	s.userState = st
+	s.userStateCleanup = st
+}
+
+// setUserStateCleanupStore replaces the narrow uninstall-cleanup seam. The
+// concrete UserStore remains the handler-facing store; this seam lets tests
+// exercise fail-closed uninstall behavior without weakening that accessor.
+func (s *Service) setUserStateCleanupStore(cleanup userStateCleanupStore) {
+	s.userStateCleanup = cleanup
+}
+
+// UserState returns the plugin_user_state store Provide constructed, for the
+// authenticated per-user storage HTTP routes (user_state_handlers.go).
+// Unlike StateStore (plugin_state, written only by a plugin's own
+// gRPC-connected backend via the Host RPC), this store is reachable directly
+// from an authenticated browser request — every read/write is scoped to the
+// calling user (Approach D1, docs/decisions/2026-08-01-per-user-plugin-storage.md).
+func (s *Service) UserState() *state.UserStore {
+	return s.userState
+}
+
+// SetWebAppStorage wires the durable instance metadata and immutable static
+// artifact stores used by isolated web applications. Native plugin lifecycle
+// remains independent of these stores.
+func (s *Service) SetWebAppStorage(instanceStore *instances.Store, artifactStore *webapp.ArtifactStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.instances = instanceStore
+	s.webArtifacts = artifactStore
+}
+
+// SetInstanceState wires revisioned state owned by isolated web-app
+// instances. It is separate from plugin_state, which belongs to a managed
+// plugin process and has no instance identity.
+func (s *Service) SetInstanceState(instanceState *state.InstanceStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.instanceState = instanceState
+}
+
+func (s *Service) InstanceState() *state.InstanceStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.instanceState
+}
+
+// Instances returns the scoped web-application instance store.
+func (s *Service) Instances() *instances.Store {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.instances
+}
+
+// WebArtifacts returns immutable static web-application artifact storage.
+func (s *Service) WebArtifacts() *webapp.ArtifactStore {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.webArtifacts
+}
+
+// SetWebRuntime attaches the capability-bound static web-app runtime. The
+// backend registers its route only when the canvas release gate is enabled.
+func (s *Service) SetWebRuntime(runtime *webapp.Runtime) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.webRuntime = runtime
+	if runtime != nil {
+		runtime.SetProtocolHandler(s.handleWebAppProtocol)
+	}
+}
+
+func (s *Service) WebRuntime() *webapp.Runtime {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.webRuntime
+}
+
+// SetWebAppEventHub replaces the in-process public event transport. It is
+// primarily useful for deterministic tests; production creates the hub in
+// NewService and forwards the shared Kandev event bus into it.
+func (s *Service) SetWebAppEventHub(hub *webapp.EventHub) {
+	s.mu.Lock()
+	previous := s.eventHub
+	s.eventHub = hub
+	s.mu.Unlock()
+	if previous != nil && previous != hub {
+		previous.Close()
+	}
+}
+
+// WebAppEventHub returns the bounded SSE transport for capability-bound web
+// applications.
+func (s *Service) WebAppEventHub() *webapp.EventHub {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.eventHub
+}
+
+// SetSecrets wires the secret vault Provide was constructed with.
+func (s *Service) SetSecrets(v SecretVault) {
+	s.secrets = v
+}
+
+// SetDataSources wires the Host data API's (ADR 0043) service-layer
+// dependencies, following the same post-construction "SetX" pattern as
+// SetDeliverer/SetSecrets (see the "Extension points" doc comment on
+// Service). backendapp calls this once, passing its already-constructed
+// task, workflow, agent-settings, and analytics services directly — each
+// argument's interface is a narrow slice of one of those services
+// (host_data.go's taskDataSource/workflowLister/workflowStepLister/
+// agentProfileDataSource/sessionCodeStatsSource), satisfied structurally, so
+// no adapter type is needed. Not called by Provide itself: the plugins
+// package cannot import internal/task/service, internal/workflow/service,
+// etc. without an import cycle, mirroring why event delivery is wired the
+// same way. Every pluginHost hostForPlugin builds after this call gets
+// these dependencies; one built before (e.g. very early boot) falls back to
+// Unimplemented for the Host data API regardless of declared capabilities.
+func (s *Service) SetDataSources(
+	tasks taskDataSource,
+	workflows workflowLister,
+	workflowSteps workflowStepLister,
+	agentProfiles agentProfileDataSource,
+	sessionCodeStats sessionCodeStatsSource,
+	messages messageDataSource,
+	interactions interactionDataSource,
+	taskWrites taskWriter,
+) {
+	s.taskData = tasks
+	s.workflows = workflows
+	s.workflowSteps = workflowSteps
+	s.agentProfiles = agentProfiles
+	s.sessionCodeStats = sessionCodeStats
+	s.messageData = messages
+	s.interactionData = interactions
+	s.taskWriter = taskWrites
+}
+
+// SetWorkspaceAdminWriter wires bounded workspace configuration mutations.
+// The writer is set during backend service assembly before active plugins start.
+func (s *Service) SetWorkspaceAdminWriter(writer WorkspaceAdminWriter) {
+	s.workspaceAdminWriter = writer
+}
+
+// SetSourceIssueController wires native linked Jira and Linear operations.
+func (s *Service) SetSourceIssueController(controller SourceIssueController) {
+	s.sourceIssueController = controller
+}
+
+// SetInteractionResponder wires the interaction write path (ADR 0052): the
+// adapter that answers permissions through the orchestrator and clarification
+// bundles through the clarification handler. Wired LATE for the same reason as
+// SetWriteDeps — both first-party services are constructed after
+// StartActivePlugins has spawned boot-active plugins — so hosts read it live
+// via interactionResponderDep rather than snapshotting it. A nil responder
+// leaves the write RPCs returning Unimplemented; the reads are unaffected.
+// SetTaskPRSource wires the optional pull-request lookup behind
+// Task.PullRequests. It is separate from SetDataSources because GitHub is an
+// optional service; nil leaves tasks with no PullRequests rather than failing
+// the read.
+func (s *Service) SetTaskPRSource(src taskPRSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskPRs = src
+}
+
+// SetPendingTaskTransitionSource wires the durable orchestrator queue used by
+// exact workspace observations. Hosts resolve this source at read time because
+// the orchestrator is constructed after boot-active plugins may have started.
+func (s *Service) SetPendingTaskTransitionSource(src pendingTaskTransitionSource) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingTaskTransitions = src
+}
+
+func (s *Service) pendingTaskTransitionSourceDep() pendingTaskTransitionSource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingTaskTransitions
+}
+
+// taskPRSourceDep returns the currently wired pull-request source. Hosts call
+// this accessor at read time so late wiring reaches already-running plugins.
+func (s *Service) taskPRSourceDep() taskPRSource {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.taskPRs
+}
+
+func (s *Service) SetInteractionResponder(responder interactionResponder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interactionResponder = responder
+}
+
+// interactionResponderDep returns the currently-wired interaction responder,
+// guarded by s.mu against the SetInteractionResponder write.
+func (s *Service) interactionResponderDep() interactionResponder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.interactionResponder
+}
+
+// SetWriteDeps wires the Host data API's late write dependencies (ADR 0043
+// phase 2): the task-message delivery path behind the SendMessage RPC
+// (api_write:messages) and the orchestrator task-starter behind CreateTask's
+// start_agent flag. Wired LATE (not in SetDataSources) because the orchestrator
+// is constructed after StartActivePlugins has spawned boot-active plugins, so
+// hosts read these live via writeDependencies rather than snapshotting them —
+// the write here is mutex-guarded against those concurrent reads. Either
+// argument may be nil (feature-gated off), in which case the corresponding
+// write path returns Unimplemented / is a best-effort no-op.
+func (s *Service) SetWriteDeps(messenger taskMessenger, starter taskStarter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.messenger = messenger
+	s.taskStarter = starter
+}
+
+// SetAgentConversations wires the managed agent conversation service
+// (AgentConversationService). Wired by backendapp, guarded by s.mu against
+// concurrent reads.
+func (s *Service) SetAgentConversations(svc AgentConversationService) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.agentConvs = svc
+}
+
+// agentConversationDeps returns the wired agent conversation service, read
+// live (not snapshotted at hostForPlugin time). Guarded by s.mu.
+func (s *Service) agentConversationDeps() AgentConversationService {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.agentConvs
+}
+
+// SetManagedAgentConversations wires the retained exact Host conversation
+// service. It is separate from v1 AgentConversations to preserve its cleanup
+// behavior.
+func (s *Service) SetManagedAgentConversations(svc ManagedAgentConversationService) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.managedConvs = svc
+}
+
+func (s *Service) managedAgentConversationDeps() ManagedAgentConversationService {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.managedConvs
+}
+
+func (s *Service) SetManagedConversationSchedules(service ManagedConversationScheduleService) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.managedAutomationSchedules = service
+}
+
+func (s *Service) managedConversationScheduleDeps() ManagedConversationScheduleService {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.managedAutomationSchedules
+}
+
+// writeDependencies returns the currently-wired task messenger and task
+// starter. Read live (not snapshotted at hostForPlugin time) so a plugin
+// spawned before SetWriteDeps still resolves them once it is called. Guarded by
+// s.mu against the SetWriteDeps write.
+func (s *Service) writeDependencies() (taskMessenger, taskStarter) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.messenger, s.taskStarter
+}
+
+// SetUtilityAgent wires the default-profile source, profile validator, and
+// sessionless runner behind Host.InvokeUtilityAgent. Wired by backendapp (not
+// Provide) for the same import-cycle reason as SetDataSources. The runner is
+// wired late in boot, so hosts read these live via utilityAgentDeps instead of
+// snapshotting them.
+func (s *Service) SetUtilityAgent(defaultProfile utilityDefaultProfileSource, profiles agentProfileSource, runner utilityRunner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.utilityDefaultProfile = defaultProfile
+	s.utilityProfiles = profiles
+	s.utilityRunner = runner
+}
+
+// utilityAgentDeps returns the currently-wired utility invocation
+// dependencies. Read live so a plugin spawned before SetUtilityAgent still
+// resolves them once it is called. Guarded by s.mu against the write.
+func (s *Service) utilityAgentDeps() (utilityDefaultProfileSource, agentProfileSource, utilityRunner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.utilityDefaultProfile, s.utilityProfiles, s.utilityRunner
+}
+
+// SetAuthLoginBridge wires the SSO login bridge auth-capable plugins use to
+// establish a browser session from a validated external identity (see
+// auth_login.go). Called once during startup wiring, only when the auth
+// service exists.
+func (s *Service) SetAuthLoginBridge(b AuthLoginBridge) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.authLogin = b
+}
+
+// authLoginBridge returns the wired SSO login bridge, or nil when auth is not
+// available. Read under s.mu against the SetAuthLoginBridge write.
+func (s *Service) authLoginBridge() AuthLoginBridge {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.authLogin
+}
+
+// sessionCookieName returns the name of Kandev's own session cookie via the
+// wired auth bridge, or "" when no bridge is wired (auth disabled entirely,
+// so no session cookie is ever minted). Used by the webhook relay to strip
+// that cookie before forwarding headers to a plugin subprocess.
+func (s *Service) sessionCookieName() string {
+	bridge := s.authLoginBridge()
+	if bridge == nil {
+		return ""
+	}
+	return bridge.SessionCookieName()
+}
+
+// SetKandevVersion wires the currently running kandev build version,
+// enabling Install to enforce a package's manifest.min_kandev_version
+// (checkMinKandevVersion): a package requiring a newer kandev is rejected
+// rather than installed and left to fail confusingly at spawn time.
+// Called once during startup wiring from internal/backendapp, which owns the
+// ldflags-injected Version. Passing DevKandevVersion (an un-stamped local
+// build) leaves the check a no-op — see checkMinKandevVersion.
+func (s *Service) SetKandevVersion(v string) {
+	s.kandevVersion = v
+}
+
+// KandevVersion returns the running build version wired via
+// SetKandevVersion, or "" when startup wiring never supplied one (in which
+// case min_kandev_version is not enforced).
+func (s *Service) KandevVersion() string {
+	return s.kandevVersion
+}
+
+// SetRuntime wires the runtime.Manager Provide constructed.
+func (s *Service) SetRuntime(rt PluginRuntime) {
+	s.runtime = rt
+}
+
+// Runtime returns the runtime manager Service spawns/supervises plugin
+// processes through, for boot-time wiring (spawning every active plugin)
+// and the HTTP layer (webhook/tool invocation).
+func (s *Service) Runtime() PluginRuntime {
+	return s.runtime
+}
+
+// Shutdown stops every currently-running plugin process. Callers (e.g.
+// backendapp's startPluginsSubsystems) register this with addCleanup for
+// graceful backend shutdown.
+func (s *Service) Shutdown() {
+	if s.runtime != nil {
+		s.runtime.StopAll()
+	}
+}
+
+// Close stops plugin runtimes after workers stop.
+func (s *Service) Close() error {
+	s.Shutdown()
+	return nil
+}
+
+// SetPluginsDir wires the root directory pkgtar.Install/pkgtar.Remove
+// operate under and initializes the signing key for conversation bindings.
+func (s *Service) SetPluginsDir(dir string) error {
+	// Keep package installation rooted correctly even when binding setup fails
+	// and the caller continues in degraded mode.
+	s.pluginsDir = dir
+	s.approvals = newApprovalLedger(dir)
+	hostDir := filepath.Join(dir, ".host")
+	if err := removeLegacyConversationFiles(hostDir); err != nil {
+		return err
+	}
+	conversationTokens, err := loadOrCreateConversationTokenManager(
+		filepath.Join(hostDir, "conversation-token.key"),
+	)
+	if err != nil {
+		return err
+	}
+	s.pluginsDir = dir
+	s.conversationTokens = conversationTokens
+	return nil
+}
+
+func removeLegacyConversationFiles(hostDir string) error {
+	for _, name := range []string{"session-events.sqlite", "session-events.sqlite-wal", "session-events.sqlite-shm"} {
+		path := filepath.Join(hostDir, name)
+		info, err := os.Lstat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect legacy conversation file %s: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("refusing to remove non-regular legacy conversation file %s", path)
+		}
+		if err := os.Remove(path); err != nil {
+			return fmt.Errorf("remove legacy conversation file %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+// RevealSecret resolves the cleartext value of the secret reference ref via
+// the shared secret vault. Returns an error if no vault was wired (e.g. a
+// test Service constructed via NewService directly) or if ref does not
+// resolve.
+func (s *Service) RevealSecret(ctx context.Context, ref string) (string, error) {
+	if s.secrets == nil {
+		return "", errors.New("plugins: secret vault not configured")
+	}
+	return s.secrets.Reveal(ctx, ref)
+}
+
+// ActiveUIPlugins returns every StatusActive plugin record that declares a
+// native UI bundle (ui.bundle), used to populate the boot payload's Plugins
+// list.
+func (s *Service) ActiveUIPlugins() []store.Record {
+	var out []store.Record
+	for _, rec := range s.List() {
+		if rec.Status == StatusActive && rec.UI.Bundle != "" {
+			out = append(out, *rec)
+		}
+	}
+	return out
+}
+
+// Registry returns the underlying in-memory Registry.
+func (s *Service) Registry() *Registry {
+	return s.registry
+}
+
+// EventBus returns the event bus Service was constructed with (may be nil
+// in tests).
+func (s *Service) EventBus() bus.EventBus {
+	return s.eventBus
+}
+
+// hostForPlugin builds the Host implementation bound to pluginID, gated by
+// that plugin's currently-registered capabilities. Passed to
+// PluginRuntime.Start as the hostFactory; the runtime manager calls it
+// again on every restart, so a config/capability change takes effect on
+// the plugin's next spawn.
+func (s *Service) hostForPlugin(pluginID string) pluginsdk.Host {
+	rec, err := s.Get(pluginID)
+	if err != nil {
+		rec = &store.Record{} // every capability check below denies; should not happen in practice
+	}
+	return &pluginHost{
+		service:                    s,
+		pluginID:                   pluginID,
+		installationID:             rec.InstallationID,
+		commandStore:               s.exactCommandStoreDep(),
+		capabilities:               rec.Capabilities,
+		repositoryProviders:        rec.RepositoryProviders,
+		configSchema:               rec.ConfigSchema,
+		state:                      s.state,
+		secrets:                    s.secrets,
+		bus:                        s.eventBus,
+		configs:                    s.store,
+		taskData:                   s.taskData,
+		workflows:                  s.workflows,
+		workflowSteps:              s.workflowSteps,
+		agentProfiles:              s.agentProfiles,
+		sessionCodeStats:           s.sessionCodeStats,
+		messageData:                s.messageData,
+		interactionData:            s.interactionData,
+		taskPRsDep:                 s.taskPRSourceDep,
+		pendingTaskTransitions:     s.pendingTaskTransitionSourceDep,
+		taskWriter:                 s.taskWriter,
+		workspaceAdminWriter:       s.workspaceAdminWriter,
+		sourceIssueController:      s.sourceIssueController,
+		utilityDeps:                s.utilityAgentDeps,
+		writeDeps:                  s.writeDependencies,
+		interactionDeps:            s.interactionResponderDep,
+		executionControllerDep:     s.exactExecutionControllerDep,
+		agentConversations:         s.agentConversationDeps,
+		managedConversations:       s.managedAgentConversationDeps,
+		managedAutomationSchedules: s.managedConversationScheduleDeps,
+		log:                        s.log,
+	}
+}
+
+// SetExactExecutionController wires the native run, recovery, pending-transition,
+// and provider-mode operations exposed by the exact Host extension.
+func (s *Service) SetExactExecutionController(controller ExactExecutionController) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.exactExecutionController = controller
+}
+
+func (s *Service) exactExecutionControllerDep() exactExecutionController {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.exactExecutionController
+}
+
+// notifyDeliverer calls Refresh on the attached Deliverer, if any. Must be
+// called without s.mu held (Deliverer implementations may call back into
+// Service).
+func (s *Service) notifyDeliverer() {
+	s.mu.Lock()
+	d := s.deliverer
+	s.mu.Unlock()
+	if d != nil {
+		d.Refresh()
+	}
+}
+
+// List returns every installed plugin, sorted by id.
+func (s *Service) List() []*store.Record {
+	return s.registry.List()
+}
+
+// Get returns the record for id, or store.ErrNotFound.
+func (s *Service) Get(id string) (*store.Record, error) {
+	rec, ok := s.registry.Get(id)
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	return rec, nil
+}

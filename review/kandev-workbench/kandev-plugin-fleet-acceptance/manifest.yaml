@@ -1,0 +1,60 @@
+id: "kandev-plugin-fleet-acceptance"
+api_version: 2
+version: "0.1.0"
+display_name: "交付验收"
+description: "单机试点：复用 ai-fleet-kanban 交付检查，将人工回执写入 Kandev 原生门禁。需要严格验收补丁版宿主。"
+author: "ai-fleet-kanban"
+categories: ["tools"]
+min_kandev_version: "0.97.0"
+runtime:
+  type: binary
+  executables:
+    windows-amd64: "server/plugin-windows-amd64.exe"
+capabilities:
+  state: true
+  api_read: ["tasks", "sessions", "agent_profiles"]
+  api_write: ["tasks"]
+actions:
+  - key: "status"
+    scope: "task"
+    access: "authenticated"
+    max_body_bytes: 1024
+  - key: "submit"
+    scope: "task"
+    access: "authenticated"
+    max_body_bytes: 65536
+  - key: "approve"
+    scope: "task"
+    access: "admin"
+    max_body_bytes: 2048
+  - key: "reject"
+    scope: "task"
+    access: "admin"
+    max_body_bytes: 4096
+ui:
+  bundle: "/ui/bundle.js"
+config_schema:
+  type: object
+  required: ["node_path", "checker_path", "repository_id", "repository_root", "acceptance_step_id", "implementation_agent_id", "review_agent_id"]
+  properties:
+    node_path:
+      type: string
+      title: "Node 24 程序绝对路径"
+    checker_path:
+      type: string
+      title: "共享 cli/check-delivery.mjs 绝对路径"
+    repository_id:
+      type: string
+      title: "试点 Kandev 仓库 ID"
+    repository_root:
+      type: string
+      title: "该 Git 仓库原始本地根目录"
+    acceptance_step_id:
+      type: string
+      title: "人工验收步骤 ID"
+    implementation_agent_id:
+      type: string
+      title: "Claude 实现运行时的宿主设置记录 ID"
+    review_agent_id:
+      type: string
+      title: "Codex 独立审查运行时的宿主设置记录 ID"

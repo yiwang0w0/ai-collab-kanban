@@ -1,0 +1,2751 @@
+{
+  "format": "kandev-review-snapshot/v1",
+  "snapshot_date": "2026-10-21",
+  "files": [
+    {
+      "path": ".gitattributes",
+      "bytes": 121,
+      "sha256": "b5077bf0cb36b313471fb75a8733609b57e744182b98cea81cbca83f6e252f36"
+    },
+    {
+      "path": "board/AGENTS.md",
+      "bytes": 2193,
+      "sha256": "3bae68064868e668e4f19b74b9ee0953a140dc092370705814af9b7a3d1e2585"
+    },
+    {
+      "path": "board/cli/check-delivery.mjs",
+      "bytes": 1527,
+      "sha256": "327534b5f810c97356b0e0e0c80265065ca51c10a999b952a806838913a6f345"
+    },
+    {
+      "path": "board/core/server.mjs",
+      "bytes": 208121,
+      "sha256": "623171539db9fee94abffc14b20103bd071dba35d6fa185ed8d5c65dee0542fe"
+    },
+    {
+      "path": "board/docs/plans/kandev-reuse-implementation.md",
+      "bytes": 5929,
+      "sha256": "be9af2742167f7eb9169b78e303b594db36a35d73d5c3db2f45e2fc266794ab3"
+    },
+    {
+      "path": "board/gates/delivery_check.js",
+      "bytes": 14857,
+      "sha256": "453fdf5392af61b70cdfce09b14092f51a619bec8307b34812cbc9357f646138"
+    },
+    {
+      "path": "board/LICENSE",
+      "bytes": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "board/NOTICE",
+      "bytes": 90,
+      "sha256": "5da3108bf366c1adbb763b508498c0c91da82c2b3a76d86f6803d15effe1ab90"
+    },
+    {
+      "path": "board/package.json",
+      "bytes": 7696,
+      "sha256": "cbb4349ef4b13760d3de2e224bac0c0e22f1bab6f802ad8c1963d14bb4b5dc18"
+    },
+    {
+      "path": "board/tests/deliverychecktest.mjs",
+      "bytes": 4469,
+      "sha256": "3f15ff8cd340d2ac3814d39e8e0cc364061cd1aa7fa169706de79aad5559ceab"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/.fleet-checker-ref",
+      "bytes": 41,
+      "sha256": "7e96f48d42662b75e9e5088e9fdbf652b48d48041d2fe531159225edeb7ab50f"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/.github/workflows/build.yml",
+      "bytes": 1390,
+      "sha256": "2f3cc6181cfef9996de1b2b3bf24b3965f4869d41593e79336610207b5ae4b45"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/.github/workflows/ci.yml",
+      "bytes": 2980,
+      "sha256": "4f3139e27b3037a80f25110f49e280586a1d03361e85151091f82d75a24d7838"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/.github/workflows/release.yml",
+      "bytes": 401,
+      "sha256": "2b41fc295d83d03832a7055951d8ce8516f979cc6f81059a119426ad4cf491bd"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/.gitignore",
+      "bytes": 39,
+      "sha256": "405a6a6eda9651520f9bd13fc2a9854000f143d9c5c9a5c5bc480388f5b01f62"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/.kandev-sdk-ref",
+      "bytes": 41,
+      "sha256": "89707c43c075ea5189e7e812d76ce76f3e6204264068cce337ed718f03a0b43c"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/CHANGELOG.md",
+      "bytes": 691,
+      "sha256": "db70d8430ec387296f002b9fcf3f8ed11d76fd745833197d93fc80fba63c0dd4"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/compat/ai-fleet-kanban-public-base-to-v0.24.0.patch",
+      "bytes": 93484,
+      "sha256": "b191bee1a4c03af1e37c657e625061855d5c02d60087bc1fd44380519ec2e427"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/compat/ai-fleet-kanban-v0.24.0-shared-gate.patch",
+      "bytes": 43872,
+      "sha256": "758ca98898a8c0002e18368b24aac4b5e498f328a59150b41c3784eaa878d70c"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/compat/kandev-v0.97.0-agent-pool.manifest.json",
+      "bytes": 88389,
+      "sha256": "1696d79ab872bbe1e28cca7d752b7151598a9004729305e47be37529c32cf4ec"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/compat/kandev-v0.97.0-agent-pool.patch",
+      "bytes": 12120473,
+      "sha256": "ee658badfddb14829a238c2d60e877514b6a774b8fa40b2c22f78605eec82918"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/compat/kandev-v0.97.0-fleet.patch",
+      "bytes": 129586,
+      "sha256": "41cd1a8326e94dc1ce3006225853272f2367cfb40f0d1d7348aed0e025252c53"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/docs/repository-baseline.md",
+      "bytes": 15457,
+      "sha256": "3007e1e6c07c61d9bf023fd9c5529956fad63b1625165f996b63107d879ccee2"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/go.mod",
+      "bytes": 1390,
+      "sha256": "2702dd682e072629ac5de960712ec9056702b14e3458ddaf9e5492c342f5b8d0"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/go.sum",
+      "bytes": 6899,
+      "sha256": "bd58a48f9a8dc08cdd136dee6f31b41dd07ebdbcd8c997d2675bc4ef6f2bb653"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/LICENSE",
+      "bytes": 1063,
+      "sha256": "0d0caa55f91212b3944ce75243dc580dfe0b8f03c81c734903fc67ff28f56b99"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/Makefile",
+      "bytes": 696,
+      "sha256": "162aea4faeef600184e8eb1fefecabd632d88aa23b1372b8ffdf1873843e3587"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/manifest.yaml",
+      "bytes": 1726,
+      "sha256": "5193a4eb04b5503eb0396859159890716e146940ef8a25ee981541a17e822bd6"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/package-lock.json",
+      "bytes": 40236,
+      "sha256": "f72e446ce236ef486eb6b2eb15560929452b5ad5368cc4e9d9f79082e6012f7a"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/package.json",
+      "bytes": 545,
+      "sha256": "7a52ba265dffa79b3a8d0400b37f78b7bb6eedbc40606e47d61f773d099f0a11"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/README.md",
+      "bytes": 10796,
+      "sha256": "0250d984436c59590582ff9755e500782e6fe66e2b8bbfc200c8b00bd9e00b94"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/manifest.fragment.yaml",
+      "bytes": 1646,
+      "sha256": "dfa3694c1df2beda421b582fab3128d8c7f3876d8cffe5778af4ce5539e7e95f"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/README.md",
+      "bytes": 9980,
+      "sha256": "7d42991fe5608ef3183dcb64e811ee6f27e557ecff8f4f2d955ac73da65df4e4"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/server/recipe_test.go",
+      "bytes": 20339,
+      "sha256": "58446dbd15771f5a8390c5be61aa96194602daf0993d03506e6fb7c1609cab09"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/server/recipe.go",
+      "bytes": 20352,
+      "sha256": "c530dfbf21427a15758831cdc33f96e15e8658003b67b47a24aa35447cd359fa"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/server/references_test.go",
+      "bytes": 2638,
+      "sha256": "f76df867281ab6d0481645f3b4df53a68b09d6b66e97fff9dae765c3276b1660"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/server/references.go",
+      "bytes": 2610,
+      "sha256": "d9a1a444800427e88b33c8533faae0a6f31d45190af40e7b1d351e9d238ec531"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/ui/register.test.ts",
+      "bytes": 19641,
+      "sha256": "4c028ce48bff295ea925f1981606ce4cd00b05674d7b89e412313b6b3d048947"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/ui/register.ts",
+      "bytes": 16518,
+      "sha256": "2eecf363dccf052d2e0c74db01f4e25e0116b91dda28674338878d2202739893"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/ui/review-store.test.ts",
+      "bytes": 834,
+      "sha256": "3bbe9145b3a0a7948eca79c2c87a49ae6f9366fe77d4f941aa5cde6a6d343026"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/recipes/source-control/ui/review-store.ts",
+      "bytes": 1741,
+      "sha256": "7a5f94cbe67c1d78a9a61835e20f95085d8baa331982596095ba0dcd00209bcb"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/scripts/package-windows.ps1",
+      "bytes": 3137,
+      "sha256": "f7ed6e9791942f9fc5f8ff73aee82b1ec2447f250607f0160678685b586b4c7c"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/scripts/stable-host-smoke.mjs",
+      "bytes": 18865,
+      "sha256": "fcc609cf47fbc0261ec9980508a8b94e943ad536a3ba4fc3e6f8e190627887d1"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/scripts/test-verify-package.sh",
+      "bytes": 4300,
+      "sha256": "ed227b7139733e23dec5ed878bd5e6d7ca0df6bfa95ae257475aa88789263ffd"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/scripts/test-verify-release-version.sh",
+      "bytes": 2762,
+      "sha256": "88abd556c3dbb8965beccd9549303c58ffd021f25bbfa51cbe0302f687b7098d"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/scripts/verify-package.sh",
+      "bytes": 3359,
+      "sha256": "18051130ce83b6321f5ec81fc3ccb6fa426fffafb39a91d28777a9f415576045"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/scripts/verify-release-version.sh",
+      "bytes": 1445,
+      "sha256": "5ca00c30aa3df499ee59aa1fa4a2d05ad67208d3d00e4b359a51b0442c7e7f01"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/scripts/verify.ps1",
+      "bytes": 2093,
+      "sha256": "887427e04e0192d6fd99ed9ca272b297cf42c928e602167b4b3119b8be85ba96"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/server/checker.go",
+      "bytes": 1545,
+      "sha256": "0fb783b644db32f743a6a8b6ac443d99cd3ac7c43e93975bfdf59e1bdf03e0ea"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/server/main.go",
+      "bytes": 201,
+      "sha256": "6d9af3df4e90c2da490371bd832f7b8484fbad2ef0760bcd01344c1a22da9626"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/server/plugin_test.go",
+      "bytes": 13630,
+      "sha256": "dba845edbb22189a46b7783f919360fb6587520ffc375a6e03a48ef37776036d"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/server/plugin.go",
+      "bytes": 21626,
+      "sha256": "2f760838a5d5524116d4e0fe60b05b777823ea3301556a8e229ef8a82468d3ac"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/server/process_other.go",
+      "bytes": 87,
+      "sha256": "5ccf6863df14853606bd97edc146a1e3956480af1b7051e62ac23cab3aa991cd"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/server/process_windows.go",
+      "bytes": 140,
+      "sha256": "caa06f5c71ea140e24e68f050193b937e43ee9aee4f98bf1ebc51c0882a0bdaf"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/server/types.go",
+      "bytes": 2694,
+      "sha256": "8581761fbf04748cf40320d4169413baf9d6a8408734052cbaca075622ea0e25"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/tests/pilot-smoke.mjs",
+      "bytes": 17608,
+      "sha256": "4d3e4306836a122c640c33f862f1ce0857f298aa6128a013e00869122d3df68f"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/tests/ui-panel.test.js",
+      "bytes": 715,
+      "sha256": "574f77f3fc194a4a248e9b4f9c4514e8048d98fd9ad90bae6e914c453a02cbbe"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/tsconfig.recipes.json",
+      "bytes": 295,
+      "sha256": "61e2ad0ac35eafbd9b9306c8ed02648e8fae884ffb29cd42f4fed75de929eb55"
+    },
+    {
+      "path": "kandev-plugin-fleet-acceptance/ui/bundle.js",
+      "bytes": 9017,
+      "sha256": "ed681d5ab13021b180391c44f4be6f0ae718d69fe1b0cd1de9b575fd78f5e3ed"
+    },
+    {
+      "path": "kandev/AGENTS.md",
+      "bytes": 30379,
+      "sha256": "131819311cf91555bdf3805394d1a76b1846a53fcb62d98646d3c616eb377646"
+    },
+    {
+      "path": "kandev/apps/backend/AGENTS.md",
+      "bytes": 62199,
+      "sha256": "8d614655696eb899d095b3362a784f1b8dcb34a9531104a7d310254f29d72c11"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/controller/controller.go",
+      "bytes": 4738,
+      "sha256": "74e8c2021d43dc40fb7a597659c50a27a3880ffd90c83c2cdf029a597581b642"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/controller/launch_admission.go",
+      "bytes": 1024,
+      "sha256": "2faa4ce3bc405d0120e7f052f1784ed89dc9fd2a6419a4c854ad9b51af1a3f9a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/event_types.go",
+      "bytes": 44827,
+      "sha256": "85825220d0c612b7e2daff4ef5d36641f952f4506d32cfeaac2ea90f710611b5"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/events.go",
+      "bytes": 32246,
+      "sha256": "435904aadd77c6ceea5e654e61f89282e7014515aba863959e28653381ccc220"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/execution_quiescent.go",
+      "bytes": 1401,
+      "sha256": "7f093b0082a5414b0729765de3dc8bff39c9f6bae1e1e9cdd5d0f35f3eb618ff"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/executor_standalone_stop_confirmation.go",
+      "bytes": 1422,
+      "sha256": "733ea7736586f3331bfe4e9c387ec27938a22d4e5776c21be06822cff81a6246"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/manager_events.go",
+      "bytes": 54751,
+      "sha256": "8b276bfd5d62d18bee10db73da1936e9508e67f7a838d757bf467a5928a063c8"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/manager_interaction.go",
+      "bytes": 119783,
+      "sha256": "8bc61c88668f8308262a5e910c21941d36c0b81212f0c113d1a6c1da460fd929"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/pool_execution_quiescent_test.go",
+      "bytes": 2907,
+      "sha256": "a6b99546089d72221a53e760c77587ef5ed35f404015b283c218da7c09e977e5"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/pool_start_provenance_test.go",
+      "bytes": 1267,
+      "sha256": "86d6e66341fff4a0c9c7222e0e6ac0ec5f4bcf41f75f6a78aa6c7e6c3199ede9"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/pool_stop_confirmation_test.go",
+      "bytes": 5887,
+      "sha256": "b87eed373e18a9f1af177cbd0b0d28e59d41a5c024fa6f1607722950a78b2f3d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/pool_stop_publication_test.go",
+      "bytes": 7543,
+      "sha256": "908a50723a98ee5ce024da48e4ba4643fff522cb7c546f2f8917d5324a215a5f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/pool_turn_end_test.go",
+      "bytes": 2773,
+      "sha256": "a485e64fb676084ad23427cc8d8107e9fe1408b2c9bacda60cef7cf0787796af"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/runtime_stop_confirmation.go",
+      "bytes": 3578,
+      "sha256": "e059625d9fcb708e09362e3f96940a3f88ed0976da0593eefd7c8aa9427e727d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/types.go",
+      "bytes": 72521,
+      "sha256": "7579bb4fa992ee5bf7a4b7d500a5519c1e502ef944039fa41e4b11b7e15a90c0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/work_activity_reject_test.go",
+      "bytes": 2699,
+      "sha256": "dcf592241702297561cdb75030c7e2207261f8f503537762f24204531dd6d010"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/work_activity_test.go",
+      "bytes": 4247,
+      "sha256": "52887a14b63706e990c217e2f7b37ecd093f0dcd7d71936039166785dc0a907c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agent/runtime/lifecycle/work_activity.go",
+      "bytes": 3115,
+      "sha256": "dcc4f08a63f0649873dcacbf3a026b2c76fce2222a126c05c5b936f7923fa934"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agentctl/server/adapter/transport/codexappserver/adapter.go",
+      "bytes": 22987,
+      "sha256": "2a4188f2e67c0b92edaed141db12946fbf451fc6a7a36619369eaeda77e3cc1b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agentctl/server/adapter/transport/codexappserver/pool_start_provenance_test.go",
+      "bytes": 1651,
+      "sha256": "7bb30a692d17164d619ca4e697d1b7749ef02e949a0aa9c373a126f9d202cd6c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agentctl/types/streams/agent.go",
+      "bytes": 32373,
+      "sha256": "d5be0e05e0afdd24c64665f2ccf81df1e19eb7977218bb7d25544627d702e343"
+    },
+    {
+      "path": "kandev/apps/backend/internal/agentctl/types/streams/turn_start_source.go",
+      "bytes": 123,
+      "sha256": "f339c8e4b44b7e248102f16cc7dfb4dcc412ac07249799de2971828bd97e8bb0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/adapters_pool_quiescent_test.go",
+      "bytes": 1724,
+      "sha256": "f769457ab26f3f5605826a2b612f3a65ed4c0cec6bff7d3c25e4ba1fcc9d7c12"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/adapters_pool_quiescent.go",
+      "bytes": 334,
+      "sha256": "8b31b122e45bfc4af1c15ecaf4a18311379bebe647880fae96744f0974dd51dd"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/adapters_pool.go",
+      "bytes": 643,
+      "sha256": "367334be0489e0ced6b66fd56e7b918f004abf435937d2a81555f933aba03cb4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/adapters.go",
+      "bytes": 77271,
+      "sha256": "20b54763e5e22bbb0cc41054b526cf0e9f013f4f0ae71259386e06cff74c4717"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/gateway.go",
+      "bytes": 31578,
+      "sha256": "6eb11b1ea0acdd886631f99b5c743bf4c6e1642c5b1be6bc32bab325f2e16490"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/main.go",
+      "bytes": 134066,
+      "sha256": "2c6abae0c21d20dffb7e5a1d34acc8ab377adc9e88b1855ef0da2f48ef51b0bc"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/office_routine_cron_to_session_test.go",
+      "bytes": 31387,
+      "sha256": "5478701db6dae29bf1cc802682277e7c76a54c56aec19fca60a4bfee96cc7134"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_claim_connection_test.go",
+      "bytes": 2970,
+      "sha256": "6ed53bff51fa33523d94990da61d0987fb67bb47781b17e14918828749162d81"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_consumer_stopped_test.go",
+      "bytes": 2660,
+      "sha256": "1e868df1512673e45d47d570927be8af23e9a0c1a0ad51c677b08c52e8a84623"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_consumer_test.go",
+      "bytes": 5843,
+      "sha256": "5584963c84529cb9ce15f688ee35464153773d67b55e45ec834a89dfa99804bc"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_dispatch_test.go",
+      "bytes": 4654,
+      "sha256": "411c07ffe650c3689dadee1cfb2a306294ea9dbfc7b54a40dbb3f53ed9adfd3d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_dispatch.go",
+      "bytes": 776,
+      "sha256": "311a660e71641552598c2a423ea1a925cbd43118b08cc0564437955501aae5e2"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_direct_launch_test.go",
+      "bytes": 2087,
+      "sha256": "69170a3e68ee4e8b26378833cd49402f656e63c8d0a16b171bed4385e9fb6339"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_evidence_test.go",
+      "bytes": 6489,
+      "sha256": "013bebe3a09086f03fb32938ba70281c78d556a6e6fcc53b5ca25c2203c0d825"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_finished_facts_test.go",
+      "bytes": 2933,
+      "sha256": "ceadd7a019622a4ea83b3f5653c9d485e8602f0185f12f17ef96a59060b381a0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_fixture_test.go",
+      "bytes": 7823,
+      "sha256": "d2bed078120f8c292dbd6701f3201121cc21de96c7aeaf103ea71b884f486d36"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_history_test.go",
+      "bytes": 2168,
+      "sha256": "6b776dfaec924b0abd1897442815fea2e11d0954c45727d66b0993a788b3ceef"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_native_test.go",
+      "bytes": 3454,
+      "sha256": "df0b5314a184a9b47150707f3d19b52b095ecbb058f9326a2ea3e3081d6344db"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_process_other_test.go",
+      "bytes": 97,
+      "sha256": "c54f3fc5c9422946b9fc581eabf64ec5528291e9c1c751027c5c39a2045fff9d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_process_windows_test.go",
+      "bytes": 155,
+      "sha256": "7c0a40dc31df1af2ce9d4a3da5c9a95b44be89336e9f92ffd6c3b001163e1f89"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_projection_test.go",
+      "bytes": 2189,
+      "sha256": "5a431e1cc9a5c27b9a988b1840e760e025576b8a99c5a036f7cb6f77f26f7663"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_restart_test.go",
+      "bytes": 5058,
+      "sha256": "d9ddc1d6de63729a46ab3fb4179f1d9f88898b77ed7a49b850c2adc404f52f3d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_stop_test.go",
+      "bytes": 1992,
+      "sha256": "0c29c73dc3cad0d91d9969ec6902ec92f5d58e071a9c33d799a9e1c14667d699"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_host_summary_test.go",
+      "bytes": 1700,
+      "sha256": "d6399609779b6c1afc1ee470c9798463ae47f64d883d59bf76df7ec30c35499e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_mock_wiring_test.go",
+      "bytes": 803,
+      "sha256": "6b746c47031e581703da98bbd8585b47e115da8660790e3df5441409a6204679"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_mock_wiring.go",
+      "bytes": 978,
+      "sha256": "b7702dc734d324a88ca0e91b93a1b983e4a79620a49b19c907dd57aa75299bf8"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_runtime_activity_test.go",
+      "bytes": 3959,
+      "sha256": "d0c45b1e3da9f299b415c485b86b0face8b5fd231a912646f172823e2f018422"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_runtime_early_activity_test.go",
+      "bytes": 4495,
+      "sha256": "e672b2506e248217c35496b359302f1b6ef9f796c1a7bf082a179549971c5770"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_runtime_finished_test.go",
+      "bytes": 4960,
+      "sha256": "e021afbb8a685850cdf49da56ebdfb5655edcc6568b68e37f8dddd88dde67a4d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_runtime_fixture_test.go",
+      "bytes": 5282,
+      "sha256": "391ca26e3513b4541968161845b7ea0a14b1c3d5efe393c5202bb072e2f1c68c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_runtime_prepare_admission_test.go",
+      "bytes": 2115,
+      "sha256": "668b065f6b785a3fb37b4676cc54e7c73850329bb3f808195a28a2ed29b75262"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/pool_runtime_start_test.go",
+      "bytes": 4031,
+      "sha256": "9f6eddc6f8c17dcb8e2549093ffb6c2093d078d4758f9fda94ed9d6b4c8e0330"
+    },
+    {
+      "path": "kandev/apps/backend/internal/backendapp/services.go",
+      "bytes": 106028,
+      "sha256": "3d7db703cdfa8d9b1d12c1018f2df1bd78297a9ad73f415c87cd8dc5bb2c0273"
+    },
+    {
+      "path": "kandev/apps/backend/internal/common/config/catalog_test.go",
+      "bytes": 16487,
+      "sha256": "a48f735f378ccfc40cc58f0170ad5d55a110d40150f2e9c3891f0dfc6a630af3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/common/config/catalog.go",
+      "bytes": 18624,
+      "sha256": "b569dee85aaed86e8b80750e087ffa0f9cd699fc4fb7b2442f93883be7bdceca"
+    },
+    {
+      "path": "kandev/apps/backend/internal/common/config/config.go",
+      "bytes": 42493,
+      "sha256": "2f41383e5e0b709201cfaeb76ecd30955f2feb332b044bca6924e6313a9c7b49"
+    },
+    {
+      "path": "kandev/apps/backend/internal/common/config/source.go",
+      "bytes": 26574,
+      "sha256": "276c632ab4d086abe120ffbe416ddcd1d0874b12a2eb7992135b52d389ef0bdd"
+    },
+    {
+      "path": "kandev/apps/backend/internal/common/config/strict_completion_test.go",
+      "bytes": 1276,
+      "sha256": "7f3a9b73f2dcdfb52aa281924c1c57c128df23553a7047cbf7e0c80c57253ed8"
+    },
+    {
+      "path": "kandev/apps/backend/internal/common/config/strict_completion.go",
+      "bytes": 1643,
+      "sha256": "f11a7e7e0b4857a62fedc455aa1e9f63fa95e1bc4d874a971857119ec50e9629"
+    },
+    {
+      "path": "kandev/apps/backend/internal/events/types.go",
+      "bytes": 29202,
+      "sha256": "580e4993c2c8c3efe136b973b5303301034e4c4d3a60b529dda2d7669786763f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/repository/sqlite/base_migrations.go",
+      "bytes": 44582,
+      "sha256": "50b69493feacf24ee94f03b47153e3b7142470321e5db280fcdf43f9a7ec4d1f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/repository/sqlite/failure.go",
+      "bytes": 17896,
+      "sha256": "259c14fe946430ed7baadcb3605a754da0a3ad2c37dffed9d15136275ba23282"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/repository/sqlite/pool_failure_isolation_test.go",
+      "bytes": 1997,
+      "sha256": "df2c7a26d17e3106198920a250194f549fadc44d85a2239053981b9444eca0c9"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/repository/sqlite/pool_history_schema.go",
+      "bytes": 1294,
+      "sha256": "2cd1b55d4621a08f3c96a27eb8c502ae7f18006286ad178176bba73f9bb0bb88"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/repository/sqlite/pool_routing_isolation_test.go",
+      "bytes": 2595,
+      "sha256": "858524495d3f1697ded8913fa58fd57497d9e3cebeb7565ad32ad3e67ac0de10"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/repository/sqlite/run_routing.go",
+      "bytes": 12268,
+      "sha256": "7878dc9a52ac6627cc3c883ad325bd78cef0861f4ff1595285f95e167fb01301"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/retention/pool_history.go",
+      "bytes": 2735,
+      "sha256": "2ba3842d0d75651dfc3c7095db797883d5733c4d829b6d90917560f2eaf8ad1a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/retention/store.go",
+      "bytes": 18176,
+      "sha256": "9f30b5be26bdfabb059c07b8cf5bba96cbab7c0eb5a270913922d50a63974d10"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/service/pool_compatibility_test.go",
+      "bytes": 3201,
+      "sha256": "25e1475a49c5d29bbfc2547c7e0f5c23c25730496af15d2c13ebfe945cf9bb59"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/service/pool_dispatch_bridge_test.go",
+      "bytes": 4751,
+      "sha256": "f338ec3687623e399d5b53dcdd85ebd4f03cbc17dc7bf88d27299df05ca46303"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/service/pool_run.go",
+      "bytes": 1264,
+      "sha256": "29acba211d4bc4e9e5485f2e6e6f463cadf06f21a91a5ec0f58ce802213bde1a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/service/scheduler_integration.go",
+      "bytes": 53830,
+      "sha256": "a9102b03fad1fe1f616e0d8aa651a089573cbf5e81176368261f6d5b784bd335"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/service/scheduler_runs.go",
+      "bytes": 12497,
+      "sha256": "c9cb6a33934a4d878fd702380bfed1cfc9fc80ca2d24d11bd086bcf4eb75434f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/office/service/service.go",
+      "bytes": 50064,
+      "sha256": "0fd9be4785ab11c00849c70ac724c6028df822ae734b4883533383bd2bdba27b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/ceiling_entry_lock.go",
+      "bytes": 6388,
+      "sha256": "5fb792f27d95dfcc42ea6559e00ddfdcbf432bfcab91590dd40b4221a45f5179"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/ceiling_seams.go",
+      "bytes": 10042,
+      "sha256": "689b628a7fbad32c8239c8f85e4f8fb0c9a90fc14f32c3aa3602f110ac12e225"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/event_handlers_agent.go",
+      "bytes": 173049,
+      "sha256": "2bba7a8e1bd18a31503682253407983d6281bbfd1945ed52c517d3b50e28d67b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/event_handlers_streaming.go",
+      "bytes": 193283,
+      "sha256": "be3ed98eb5195c2cee9e8668eb152a7780bdafb6749b0070cc477af6a3602e1a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/execution_failure_cleanup.go",
+      "bytes": 4105,
+      "sha256": "439e73f35a779dd8f320ee7c1c07e2da942c39172155f9c20e2ddebf2b1781e3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/executor/executor_execute.go",
+      "bytes": 149995,
+      "sha256": "a495737c33e5db185ba21693c5009b658f3960f9f95f835a676d4af554f61d63"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/executor/executor_start_admission_test.go",
+      "bytes": 3550,
+      "sha256": "5bd243d3f08a3b569c9237dc23c434386764fba695c27fa1fa32450251570c18"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/executor/executor_start_ownership_test.go",
+      "bytes": 5142,
+      "sha256": "87bd530af17b97dade25454e1e280d52d60c96d178713fc99dd405f8e5a2b26a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/executor/executor.go",
+      "bytes": 77993,
+      "sha256": "b4ef1feaaf3feaf94960857a28cba13d17af57715d01e4ea451a1b2eeee437fa"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_activity_test.go",
+      "bytes": 3680,
+      "sha256": "e7cd9f4497a1eec3d7f321adce2fc70df6158be52da8eae86c9dd70f21619615"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_activity.go",
+      "bytes": 3484,
+      "sha256": "8959737393fcb882f8c5c8475e723e495ac0c5c34a7195c65488a116dd999a29"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_admission_test.go",
+      "bytes": 2258,
+      "sha256": "06e9e89ca3b478f340f774bdb80d14e1b1c27e1459e2c3889d65be9cd6b5d9ec"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_admission.go",
+      "bytes": 3285,
+      "sha256": "2ef9ea671feb61b4109e3cb3224b7f26f62ac73127f9816a755b1a86d2ad6750"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_direct_preparation_test.go",
+      "bytes": 4040,
+      "sha256": "522153a2f354cb47d2fa7f0258511c76f9cccfaccb5e0b7187ccfbb30e144e6b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_direct_preparation.go",
+      "bytes": 604,
+      "sha256": "8542da6e8030dddfa8dc576783d15229ee7adc9d46788d46b9243156b1636510"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_execution_stopped_test.go",
+      "bytes": 2389,
+      "sha256": "c0b35baa21f0618af88718f93867357cb9d13f9d4be514163cde22fc9cd4fe9f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_execution_stopped.go",
+      "bytes": 2438,
+      "sha256": "b83aa58ffb7fce0c211624ac2bc3a774648fc14f4c77186316fcef3a8a56d4fc"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_execution_test.go",
+      "bytes": 3093,
+      "sha256": "db73f3bf16cf53de9f067659575c4b068da4bed23733518b57ca287f561419c3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_execution.go",
+      "bytes": 2070,
+      "sha256": "6db60bb6de3b5da6e47b0364875fc2fe223f93df2d7cf7873332564d63ddbaa4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_projection_cleanup_test.go",
+      "bytes": 1390,
+      "sha256": "e06416220eacb3712a96a927f21c39c2bfaf64beeec30490afccfc36fed08c73"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_projection_recovery_test.go",
+      "bytes": 642,
+      "sha256": "56ba68ee1e6553072e7e594ac4ce9c9a9906cdf95eb6596cae2d81e204817174"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_projection_test.go",
+      "bytes": 2137,
+      "sha256": "44143ec265d3b22b3d50899a373a341341bdff691bce92c94db9a74e233e9a33"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_projection.go",
+      "bytes": 2158,
+      "sha256": "b1022e55db8e19db8e4aa24cb5391f4cee8cc482080391e6a31064af7b2bcd86"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_quiescent_admission_test.go",
+      "bytes": 3917,
+      "sha256": "8bb842a19163512c92d77243aaacd59ad24869310eae048ede1fb07d7d34cd7f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_quiescent_admission.go",
+      "bytes": 2627,
+      "sha256": "f1caad356ea31f4f333f1ada1d6887cc00be02b5aac25daba1f5e01b9fd962de"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_recovery_stop_test.go",
+      "bytes": 3029,
+      "sha256": "9d475d185b8c7e2d38b751b1a62c8d9c9be6cf6f73f6252c2ef76dfecb607b6a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_recovery_stop.go",
+      "bytes": 2046,
+      "sha256": "abe4e2e663865e9692bb532f09669cccc005dbe70b452af1fc99f2272d38d554"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_session_admission_test.go",
+      "bytes": 3922,
+      "sha256": "ec884f325cd4f7a0b6c887b2082b75d01f0bc776e2134d4413f1b759aaef8b99"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_start_admission_test.go",
+      "bytes": 5048,
+      "sha256": "78ba780258b873dd15e00d4538f411806d4bc4b7db394d613ff65c01579de259"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_start_capacity_test.go",
+      "bytes": 3696,
+      "sha256": "652686e5a0eb58c23e1c249ea5d4bb89d268c8560d9cc25c316ef962aa106205"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_start.go",
+      "bytes": 1193,
+      "sha256": "32f963864ba111b122998ee742f5b91aff21d658ad57a93e752871ebaad1239d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_stop_finalize_test.go",
+      "bytes": 5278,
+      "sha256": "62c3d62db230c1a77c23baaa1b85c0b8a69002b4419df7f4db52bc8b41602cfd"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_stop_finalize.go",
+      "bytes": 1395,
+      "sha256": "d4a312c761aaf457cf1e92e74924d5a4254fbfb11caae9151599844cb942a8f7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_turn_end_test.go",
+      "bytes": 2965,
+      "sha256": "492a61b2ff37899073974a01490b3aae92de34bc76eb32b4e89ccbdda4ae1726"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/pool_turn_end.go",
+      "bytes": 2001,
+      "sha256": "63220cfd853830c18bb1ada61649473c96f6ea160c5d6e4b258011cc38f4f1ce"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/service.go",
+      "bytes": 190651,
+      "sha256": "f0f091855ee1760570259dbd1d0d21dbb341dd304ae7267c0a260c90acaff050"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/task_operations.go",
+      "bytes": 435456,
+      "sha256": "4dcb617b00c85d6e298a8db752ef1de7ed62c850f7b1003d984f79728f853fd4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/watcher/pool_stop_confirmation_test.go",
+      "bytes": 1859,
+      "sha256": "1d54f851ce249bded7d1cb075e9f04fff589a9875c8ac3b1e6f75162c3d66376"
+    },
+    {
+      "path": "kandev/apps/backend/internal/orchestrator/watcher/watcher.go",
+      "bytes": 26229,
+      "sha256": "d164fc58c3c73802f02671c67f9a954f27d6fb7b92f6b8d4f39b39c9a49f65f6"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/action_handlers.go",
+      "bytes": 13619,
+      "sha256": "b0e6bd60af5e345f4ad77a20f5dc100dd3d2330dab58815505031b7f7029e1fd"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/host_completion_read_test.go",
+      "bytes": 1976,
+      "sha256": "477f4adfdad7cc88d383d70c0996feafce440593d1b14310a26af6baa4c13ccb"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/host_completion_read.go",
+      "bytes": 1324,
+      "sha256": "69d492991ccf48b327c763ced240d7d77c85f25171151d8cd4b5d8e3b13a8bdf"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/host_exact_queries.go",
+      "bytes": 52625,
+      "sha256": "cbdbf110c000510bf57943d75a18fb28cb56e83c27fb13870711c60042ce3db3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/host_exact.go",
+      "bytes": 38766,
+      "sha256": "49eb4f269048eabeaf9658195529835b37a6a308bb58c24485053210387ce95c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/service.go",
+      "bytes": 36560,
+      "sha256": "f72824aac70155302cf6eff7de519f4d69330b929a79d2e42fd2f9ed8a9cf5ae"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/strict_acceptance_identity_test.go",
+      "bytes": 1337,
+      "sha256": "4dd493a07654408ef86aaf40cf261131e7ac4189ac0f09cc259ae5fa00574ac3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/plugins/strict_acceptance_identity.go",
+      "bytes": 350,
+      "sha256": "c416425a39251da074a44acef9af341038306d1cd4e2dcbcec8fee2a40bb447e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/claim.go",
+      "bytes": 176,
+      "sha256": "6e0ffdbe7eaf257ddd06ebe6809ffdd4b93c13a9bfce2a6409f2401614da0c35"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_claim_start.go",
+      "bytes": 1241,
+      "sha256": "ed7609586f7a1159bb8ec3e07e02180b1c91cae16de65a157f5bd05db916d289"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_dispatch.go",
+      "bytes": 2320,
+      "sha256": "368eb0e7da06ad0c7082d8d7f6824146d811416422392777ddb9a233812ae846"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_execution_allocation.go",
+      "bytes": 2859,
+      "sha256": "d9511c769f05db4183070047815e0af1a5459b7efa4fa9cd201021a6b8a965bb"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_execution_finish.go",
+      "bytes": 346,
+      "sha256": "9f7e8caeb0dbe65ba6d6a646ea9def9d73aa4bab817c27a8755f3e010d54c604"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_execution_stopped.go",
+      "bytes": 1109,
+      "sha256": "b3d7c0bc73fc3553c75d5a62a82053f4849b4051c9af0536caaffb93641107ad"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_history_clearance_test.go",
+      "bytes": 1919,
+      "sha256": "7d0b2ced66b0184cd264bab75c05c7518006b6cd74b2c5a22378969026cded2a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_history_clearance.go",
+      "bytes": 2261,
+      "sha256": "999c790a63e05ef6b6c32af420c5efca6eef7b1a71f3bf749092b3df87c7eae0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_projection.go",
+      "bytes": 533,
+      "sha256": "89138977bb40d278bffc19a018db8c816878ca1e16ee9168e52b4531cdb66e42"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool_recovery.go",
+      "bytes": 5463,
+      "sha256": "f3633d2ffe2bd5347a997ba625065816a4d458ebcd595eaa7e7ea38eff9f4b8a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/models/pool.go",
+      "bytes": 4281,
+      "sha256": "8943e98ce2133461edb5ecb28327299355a54a461f948ba20f6d907a149850a4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/cancel.go",
+      "bytes": 4300,
+      "sha256": "8621453cb71ff09dae88686af5c88c162f9ac127b846bff6f9282add477cffcf"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/claim.go",
+      "bytes": 21972,
+      "sha256": "d59fe3cad0a6174d64a0b7fd5890158525c276bd01326868455af656b7e2ddb4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_activity.go",
+      "bytes": 2864,
+      "sha256": "43b1412595ab9019209857839a617cb16719d48b321391b7cb28fa985bfe60e3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_claim_queue_cause.go",
+      "bytes": 2328,
+      "sha256": "056f440e9a15a629ed40c9033eefb5ad95366f9962d4ed7413687c2a98b82f26"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_claim_test.go",
+      "bytes": 3753,
+      "sha256": "3f2319078b4b911aff9135c0986c0935a2cab9b8fea3b85fea34e060e3121c46"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_claim.go",
+      "bytes": 1501,
+      "sha256": "34b05168d670b33ee87946adb5615b28ced593030902b36be913ff7be72a5e88"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_event_namespace_test.go",
+      "bytes": 1894,
+      "sha256": "abe7531df57383dd6918b6150ed8c2eeff2c590b02ead3959a7db7fe72ac089d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_execution_allocation.go",
+      "bytes": 2681,
+      "sha256": "ebd5476c32465a8ecbbe244086588414b3740114b5a159b214e077636d9df37f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_execution_finish_evidence.go",
+      "bytes": 2730,
+      "sha256": "061938a4a5a3fd0dce4d5dcde9580b12ac685d705b3e94d12b3f56805590d9f4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_execution_finish.go",
+      "bytes": 2440,
+      "sha256": "69859b72f8f3c5b0c220b95c04f87f2fe1e626810aceb0b6aab1b5ec61437571"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_execution_stopped.go",
+      "bytes": 1319,
+      "sha256": "631dca2cc18e1cf018830904038fdeb92c2d7842c92453dbd7e4e18edb13b41f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_history_clearance.go",
+      "bytes": 843,
+      "sha256": "89eae0e0491c4256012168b2a59fd1c2b28a1a9b3e69cb202d2a15833ffadba2"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_launch_admission.go",
+      "bytes": 2433,
+      "sha256": "45aff128f9dcdea60cc57fc01b15d855acf1865ca6c7688572af4e7fc696d7e7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_mutation_isolation_test.go",
+      "bytes": 2944,
+      "sha256": "293ec721f7ddc93d3fe0f87a56ad14f302b45d7e6675a93ed2f551b2d2935f41"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_publish.go",
+      "bytes": 2005,
+      "sha256": "2206558d00ee541f866bbec64fc60712ea260304bd0933f6b43f7793628f2197"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_receipts_failures_test.go",
+      "bytes": 4554,
+      "sha256": "e4a764aa810e086c1d71e636d82e660113ca30d363c4b6dab307c5eea48c405b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_receipts_test.go",
+      "bytes": 7183,
+      "sha256": "54fb0111f823a96a0ec67f966a8109caa74f9b2dbb2d1fdc1ceacce00b840baa"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_receipts.go",
+      "bytes": 6272,
+      "sha256": "cceb67a34018336e54dfc238470b0d9927d51a95ac12b7c6d3d4f0d77ea1f608"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_recovery_execution.go",
+      "bytes": 2778,
+      "sha256": "90239a389a6da0b7c811fa5882970e91ad4c3d16f5b89f452f6ddcb9a8957902"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_recovery_isolation_test.go",
+      "bytes": 5218,
+      "sha256": "52003fd4f7745acdc11046168485acd4d65f5dac458f0f7493547993b8573678"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_recovery_retry.go",
+      "bytes": 2555,
+      "sha256": "0bf4a76026c709be09ab3dc7b1c821e200346d22a37b6da68423dfc2e8096615"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_recovery.go",
+      "bytes": 3496,
+      "sha256": "75207a9d779b82831184c9dc3d5b1681d156304c0c3ccee2ed2a4c96059db4f3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_terminal_isolation_test.go",
+      "bytes": 3747,
+      "sha256": "62037d0f21dfcc9c1e18576edea9fc4523153c0d991e004bd1fca90bf6267c62"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/pool_turn_end.go",
+      "bytes": 1494,
+      "sha256": "d08014f0aa63fd93d914cd7acc81ef8f7149ac757c84a34e0598edc1f3b02bf6"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/requeue.go",
+      "bytes": 1325,
+      "sha256": "67f2d117ba7903fc695b1c609da0ab561c2b790c6873490753d433d0d5e7525d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/run_events.go",
+      "bytes": 2479,
+      "sha256": "430afb34dca2b5f98493ed84da6f4c114166286eda7b6cee2ec30cbb49af7dad"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/repository/sqlite/runs.go",
+      "bytes": 40584,
+      "sha256": "419d4f055cfb338ad7528b85442463e0513a4c57783c5a0b686192523c9e4ee7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_activity_reject_test.go",
+      "bytes": 3601,
+      "sha256": "71473191f14339969550e1d5f6528e8d2e01e22ce05b64c8ab7085c8a0178cac"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_activity_test.go",
+      "bytes": 4673,
+      "sha256": "a80f992d38d37d3c955c02cec8b9e5b2d47d2cb248e57bdcdfdb16a35191a2ee"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_activity.go",
+      "bytes": 1614,
+      "sha256": "bd06d0dc292886db8c2228e1caf17e33aec449858b9d0c12c8cb5401a9415638"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_claim_start_composition_test.go",
+      "bytes": 1246,
+      "sha256": "10f46f1a26af590d7e34c4bcc240b613e6163557c92647f6a6d41a560bd8dca5"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_claim_start_durability_test.go",
+      "bytes": 3273,
+      "sha256": "3b301d3590fdaa447a4ea49327b7147e787219f4b7f9eb3c42c8061c63a940d1"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_claim_start_reject_test.go",
+      "bytes": 4185,
+      "sha256": "0af972c3f34b0357bbe1135346a78b4d0a35b4fea919a5f34a348dabd2020615"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_claim_start_test.go",
+      "bytes": 3879,
+      "sha256": "3912e784ffb4918cbd3ee45f84455935e1655e98f63d67eb10eb96f2f133be4c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_claim_start.go",
+      "bytes": 2878,
+      "sha256": "7acbad6f102a8f588f9ecbd2c5dc402e64d952ecea58fd1150b01adca6cae72a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_allocation_reject_test.go",
+      "bytes": 5906,
+      "sha256": "42dedd41653e399565dbc7642a09d8e87be312c9dba72fed7f1325062f9db0ca"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_allocation_test.go",
+      "bytes": 3757,
+      "sha256": "27812b011d808b24f5357e4ff66408bb311a4e4caf3d842f76bcd14881a49068"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_allocation.go",
+      "bytes": 2418,
+      "sha256": "5ee9f6ea12d7e2b74f4051d14778bb6ae25e9dfa995b2410fdf7e70d59232214"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_finish_postgres_test.go",
+      "bytes": 1978,
+      "sha256": "ee90240af21faa615a67f7ebe7e778ec18b3bf88a2ac2195ab3305bdf0acfbbb"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_finish_replay_test.go",
+      "bytes": 2491,
+      "sha256": "f457b0a09871d2c08b3a49b4ec821345bcf3e5e3f0912a76e80f64fdb0742e7e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_finish_test.go",
+      "bytes": 7928,
+      "sha256": "760ef9127225215404707d4fbaf29019be86bcf974b3f6bcd2e29c6ae17bd955"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_finish.go",
+      "bytes": 1695,
+      "sha256": "9f40c56ec5c812c5655429f1452f11cd56814a813d1f0dadb5683d3412df7028"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_stopped_reject_test.go",
+      "bytes": 4776,
+      "sha256": "0c75ddabdba0197db1480ec50a72c8d999964a8cc12156a2848ed4ad8c2dec6d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_stopped_test.go",
+      "bytes": 2932,
+      "sha256": "29f2b41c8833ce7bb6b4b0d3d4cda067649e2d134782f9d4e34e46cda2b5fa85"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_execution_stopped.go",
+      "bytes": 640,
+      "sha256": "366de24b343d4a7438ed51c20fca45c004c35a667eb1fefa95622fc08bb2e625"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_finish_resume_carrier_test.go",
+      "bytes": 4439,
+      "sha256": "165876d72669dc23eee0e27fa16b3821c5dc7eb4eed023f287ba38c59b1682b4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_manual_start_test.go",
+      "bytes": 2452,
+      "sha256": "6f455a49eab3c053f72caa4d2c6ff218e59062a077f734ddddf457390334a46f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_namespace_test.go",
+      "bytes": 1681,
+      "sha256": "5159f35f687470688b058265af207c5672b0f1360568f481ba8b3937158abe7c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_namespace.go",
+      "bytes": 217,
+      "sha256": "c9046b12a2a9bf534a9ca422889bc0dc975e2e034d837610ba70df22146fea32"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_projection.go",
+      "bytes": 812,
+      "sha256": "b9a701b51b3c2f21a3cf33bf9302db7df322b5dff17eaca80c69f155163bbf85"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_admission_test.go",
+      "bytes": 5733,
+      "sha256": "cbd458a7d4351a617e3a05fa8e855a2f440de5de5dbebfb7502e3deacb70f161"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_concurrency_test.go",
+      "bytes": 2373,
+      "sha256": "cb75f13c33695ec8667af776a8e675af2d7bac6070309735a976831859140a85"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_failure_test.go",
+      "bytes": 3531,
+      "sha256": "33cd464daa83212feabf0a410d1f730b59d1e0ac065229b12a94e6d651db4469"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_identity_test.go",
+      "bytes": 3820,
+      "sha256": "9e8f6c41e5de7c4ebbcc75e63389930bb52c663974a8451531968a45ddfc3aef"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_postgres_test.go",
+      "bytes": 3380,
+      "sha256": "5bf0a5e3ca172d285c8a5dd49bf5126f3a736a31ca8cd3b7ae4efbf0d3b16749"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_start_admission_test.go",
+      "bytes": 3149,
+      "sha256": "98c576d131398c1f005bc15e8a3fbc8943a942429ea37e801e6f1cd8677a4a34"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_start_race_test.go",
+      "bytes": 3771,
+      "sha256": "60a062f0c57a3d59cffc65d90a7f96b86f7cea05745943cfcf73005cb12075d5"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish_test.go",
+      "bytes": 6949,
+      "sha256": "c25399c30af7c2e530f49f3231ee0b46b32debe98c8ed8d897d1bcb502d59ce9"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_publish.go",
+      "bytes": 5203,
+      "sha256": "c8c31230781b46d622be956556caf1af2b6871fee7cc618979f451566021249a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_quiescent_database_test.go",
+      "bytes": 4692,
+      "sha256": "61d6b24e805571ea9648cff2a4dbe3f99ac5c298ce70c0bf9dfbef60a4d0246d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_management_test.go",
+      "bytes": 2995,
+      "sha256": "69e5762033ef6f8192865c1e8d39a8470c58b21bd482c21577aea835eccd3a87"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_race_test.go",
+      "bytes": 2994,
+      "sha256": "8e2640d56fede675bf48eb7ded0d0b0e8549b8927e9a4948e57b58e99f48c163"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_read.go",
+      "bytes": 4748,
+      "sha256": "e6a2cd38d5d375e827ebb67123864a2e068ac8f803cf1e453dcad042df080aeb"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_reject_test.go",
+      "bytes": 2585,
+      "sha256": "38eb25bcd1f9d01e2b1ad832127a21b9386d742ef0a839d5daf7e263e38a40fa"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_retry_read.go",
+      "bytes": 2431,
+      "sha256": "47e0dd2b0cbaf4cf5857b2f835dedc791d84d8a32cce6174312e0fcbdcd89ae7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_retry_reject_test.go",
+      "bytes": 3112,
+      "sha256": "5d831d30667800cd39648f1728b353be0cd6ffbe7f2eeef789e9bd5f014f5493"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_retry_test.go",
+      "bytes": 7059,
+      "sha256": "d538b3641bae20233c246dfb1dcf476dacb3d404f9c6f3737482794d3411a7cb"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_retry_tx.go",
+      "bytes": 1691,
+      "sha256": "3d774a7dc2d9a360a764d15d6249694b31ebe0798d535cb1d2ad7e82144b372d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_retry.go",
+      "bytes": 3278,
+      "sha256": "043d00c65d03f84fb24e8286cc8c9a92501fa46009a8d3b15ba139a926482a03"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_snapshot.go",
+      "bytes": 1773,
+      "sha256": "dff93038a5dc302a820cc1fabd4426f9cbc573c83f889e49eb67a40b39f107e4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_stop_read.go",
+      "bytes": 1504,
+      "sha256": "16b02c4b9e3d967124ba6f31e0fed0d64f009fd0ca2481151eae37f0ac8b4572"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_stop_test.go",
+      "bytes": 6034,
+      "sha256": "a562cbd51a30298781a7cac32917c9563fc53599d5d1276ca55d1668591e1c25"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_stop.go",
+      "bytes": 4873,
+      "sha256": "f71fb0689e827229452f7723e85f1691a1129b23d5906de85475950ee15a0a8b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery_test.go",
+      "bytes": 2623,
+      "sha256": "0d0e0adda5c87604654d2a3bf653297d61bf12eb425d350f18d1ed064e01bc5e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_recovery.go",
+      "bytes": 5626,
+      "sha256": "578b0ec96ed4edd3100998a06542d8022c4d961b55f4f10496cd07af177c6620"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_start.go",
+      "bytes": 968,
+      "sha256": "c323e3d075d46f5a62319c1fcec788ffecbf38e9b13dcc573eeb5766a33681eb"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_terminal_fixture_test.go",
+      "bytes": 574,
+      "sha256": "25c5d8aff97942de14de637fa4bbb6afb76954be11597b2ad38d21804c285934"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_turn_end_concurrency_test.go",
+      "bytes": 1213,
+      "sha256": "a001fc3f18d1a0981d689e7d3b2d1fe1dddb96f412ed0572f24853bcc2c2d060"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_turn_end_reject_test.go",
+      "bytes": 4039,
+      "sha256": "0b46075f7b3944e907b946a536ec7adebe46c2d9261d4dd55155693e5401ef05"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_turn_end_test.go",
+      "bytes": 2893,
+      "sha256": "58c2fbc5e04be37086252d9b6bdad89763e8088c427d2a4a7d49636be0b50f7a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/pool_turn_end.go",
+      "bytes": 545,
+      "sha256": "6bf2b60da2d7c2ccc37f668e80f9cd813a50779b15ccb78f7ae70b11d43d24fc"
+    },
+    {
+      "path": "kandev/apps/backend/internal/runs/service/service.go",
+      "bytes": 25514,
+      "sha256": "13060e2d6506ef294c59596261aab1c3dee9b2b7c82bb2ab5a299348d6fd013b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/steptelemetry/steptelemetry.go",
+      "bytes": 4964,
+      "sha256": "e4d40b18caad122feebb0955937cfae079ea8dc2a876b107d02e32872ea65565"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/acceptance/checker_test.go",
+      "bytes": 2063,
+      "sha256": "c048b598a68acee6a0ba94fd7e20ae6f5ef663eb49dac1a35e5eeb75a6b22bd8"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/acceptance/checker.go",
+      "bytes": 2995,
+      "sha256": "11050f85dfbeabc0559adb0a83c0441b55bd05f1d6375700d4d2de1323c6f5d0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/acceptance/process_other.go",
+      "bytes": 93,
+      "sha256": "ae172813ca97ae5454013a0a0e0b80ce26458d66472b205bf6c916d696de4563"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/acceptance/process_windows.go",
+      "bytes": 146,
+      "sha256": "b2f685b12b9fa503aa481e870a5c535772a121c92454163961e2644d262b5d7c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/errors.go",
+      "bytes": 11108,
+      "sha256": "a3ffbcb379782e876fb48dc9b4989f0cfde92482940d72f89e28aced258348e0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_create_attachment_test.go",
+      "bytes": 1628,
+      "sha256": "4572167fb8bd61933e10929f85f9f207037a935a4ee4534190a617a14a54b2e0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_create_attachments.go",
+      "bytes": 674,
+      "sha256": "f64cb609b3486a34bd7fd39de79a0ddf426a530d39a105369c91a2179af58f9d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_create_failure_test.go",
+      "bytes": 4902,
+      "sha256": "424241a1a2166115500388238a718eeae6d04a4ad3dd4031c1d8b066990cad5f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_create_finalize_test.go",
+      "bytes": 4608,
+      "sha256": "2bd5b326a0d5a7b6f4a1cdb954f2a3a9c4ecf6f92dfa92acc83d2c311da6a47f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_create_preconditions_test.go",
+      "bytes": 2806,
+      "sha256": "3bc2ca95dae62072e1302e8a6472c00bde870371ecaf16d0d99fc0c30281aaef"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_create_wire_test.go",
+      "bytes": 3293,
+      "sha256": "77c4ef9f1a98b58fa29864dea4d8e5ef0598c4e1f306acd244e2ed1897c2eb39"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_attempt_test.go",
+      "bytes": 3823,
+      "sha256": "60abf9c4919344421a37727f32db4aa7c832873858e1d97771d71b6cb3b34a27"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_bounds_test.go",
+      "bytes": 3059,
+      "sha256": "e12a515dd16d93d20601de1c84ba4440f30b8b57b11fb01a42731966e3959b68"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_clearance_test.go",
+      "bytes": 8443,
+      "sha256": "a887bd4cb8c835242f4aae1e25f196ce3acfc7f45eecf41fe8001a8de7a50def"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_failure_test.go",
+      "bytes": 4560,
+      "sha256": "45e2d5b089c76c0e02dec4c3010ef0fa6988cf94e3694c1d4e83f67858ccb35e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_legacy_test.go",
+      "bytes": 2613,
+      "sha256": "949bd426ff11c8a0637f229c95498cf1472cf7c49b7b6de615c35d627247f68b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_query_budget_test.go",
+      "bytes": 2049,
+      "sha256": "aff634e3b3e73fe40b168478fbb1e52e095e35d202f9029eb4fcbc7ef4e966c9"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_receipt_budget_test.go",
+      "bytes": 3814,
+      "sha256": "ad32bb0116ad23fb3fb33254cd18f75fe83743badff3a0ff2f0e0b5d2b56da0e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_refresh_test.go",
+      "bytes": 3093,
+      "sha256": "b7ed9a423f25924a86db1c7f10a3d3a1a1acda5169e889ccb12c7047140ade51"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_retention_test.go",
+      "bytes": 6485,
+      "sha256": "1c05d2aee58964c51c6a87e142627b8e93ec98b396461d8bd37d898d4806ed28"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history_test.go",
+      "bytes": 6641,
+      "sha256": "2e1d39e31f999690a4e01213dfdb99fccb935eb8ab57f584397d87042ddb1077"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_history.go",
+      "bytes": 1253,
+      "sha256": "625d73d1dbf40c515844f43b91854cc3535e95da07dab8720e40e9b3e66dd38d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_move_fixture_test.go",
+      "bytes": 7057,
+      "sha256": "80f36b4eba5cdf28adee0fa02ace06a6419a2c36db9eca71f815ae596c28883b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_move_wire_identity_test.go",
+      "bytes": 2703,
+      "sha256": "c2c3f0476df80fea905767ebc35f1903f0a4ccd38a6c0daf0d23f60b560edd9a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_move_wire_preconditions_test.go",
+      "bytes": 2263,
+      "sha256": "f88a8a173d1f769a7cc883cf8f296f172a2f930f0666949815d2ce933144ae34"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_move_wire_reject_test.go",
+      "bytes": 2727,
+      "sha256": "9bf4a95fd7e313fe5c3c2183e27d7426ebdff22beed8749eb31ee75387027f75"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_move_wire_test.go",
+      "bytes": 1442,
+      "sha256": "4c0553b538519ae559b27fad989b5505b642366a6da51eb12a78208217f03865"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_admission_version_test.go",
+      "bytes": 2031,
+      "sha256": "6568672850f6f39a66bd26f88f31f70bb32c2b7086e8bc0b1658bce8be857df6"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_attempt_test.go",
+      "bytes": 2854,
+      "sha256": "f4df7706e2cf76cb0335f1e9b7a8fa69fb4e3405223d0813a180849b706b573b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_bounds_test.go",
+      "bytes": 2126,
+      "sha256": "029fb2a89e710f05a34f6b4819043e62dcd33a84dc3db0b27b810b795056f048"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_configuration_test.go",
+      "bytes": 2335,
+      "sha256": "7acaaa046cf89feb0f54fd702e1b65ecce32c885da48b1cea59391ded1110e4d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_context_test.go",
+      "bytes": 4024,
+      "sha256": "9ea376c4f8523a94bec6bba40a487ee6c102a44a82f0b90921da3c376db3d91a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_eligibility_test.go",
+      "bytes": 1960,
+      "sha256": "78ec450656630506741eb7a4c36a71df9808ce999d399d8f24353b7bf9f0e9ff"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_failure_test.go",
+      "bytes": 4786,
+      "sha256": "b7e7451ffaec25d3eb397e790f6bcf5d0af875b1c5f307cd57d63abb7b47ca83"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_isolation_test.go",
+      "bytes": 3855,
+      "sha256": "c7c8dff0f88e5c8978ca93475cb7bfd5da3333b62a610b53941b648f1437e547"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_query_budget_test.go",
+      "bytes": 5989,
+      "sha256": "a8b81ef8536f87080374e44f9c90c0b3e0f3e2d64db83b80ecb163a4e12d1d0f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_query_counter_test.go",
+      "bytes": 3508,
+      "sha256": "1f604460d2d694b52d51ace3b6a282e23afd85809c3af70bdbd7cc1d7c6e79cd"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection_test.go",
+      "bytes": 4116,
+      "sha256": "263047f65a1680decdd747398d1c59e137a2c80230a4e5d8fb9261c4b44b2383"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_projection.go",
+      "bytes": 1226,
+      "sha256": "8ad22b2f6a810a228b24d66908045becbb2c6f1129e711cf2f09350d501045cd"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_recovery_access_test.go",
+      "bytes": 3201,
+      "sha256": "84555105c90e7d62894f1645356b1f87708f8e02c81c87df62775dbd1560e3f4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_recovery_http_boundaries_test.go",
+      "bytes": 3843,
+      "sha256": "446656a4dd5bb02d415025b6cf42e1dc1d02962e80c7e73afca0e2c2ec190d0d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_recovery_http_test.go",
+      "bytes": 5358,
+      "sha256": "9f6b3a6c4f31cda0e78f42b890ac1407996874712cc7e6c56c884b9c2aae1469"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_recovery_projection_test.go",
+      "bytes": 1992,
+      "sha256": "e481c9bfd3935c368a03ac76f2ef5f6471714919d978d96bf6d80020b63f84ed"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_recovery_stop_http_test.go",
+      "bytes": 5170,
+      "sha256": "ee1e0dc90f68bf7e0aa4f46d19a36365fe2152719fd40f6a109e2ebaa95d3eb6"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_recovery.go",
+      "bytes": 4022,
+      "sha256": "0dd85efe66f93860761cc1b0cb416e429d1c58a56a0e13e6c81ebc720b5a671c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_release_errors.go",
+      "bytes": 1323,
+      "sha256": "d47c5f26937ef8ce0271801c14257c4d50a822a00370461ac96b5ea2f7e09d2e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_summary_cas_test.go",
+      "bytes": 2933,
+      "sha256": "238b13b52cac403d64345f22e0c87a8fac51081dd6f27e694477098d709c8fa0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_summary_read_test.go",
+      "bytes": 1779,
+      "sha256": "00da195bcdfeba753f2d2d13e7e6b752900200c3c38643483f44d9399b57c568"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/pool_summary_rebuild_test.go",
+      "bytes": 4234,
+      "sha256": "0c95621a027777ab737b7941af0ccb4f01c92bf8ec6506bbd5038223c9a53858"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/task_handlers.go",
+      "bytes": 18585,
+      "sha256": "3b3091f62398fc9bfb0567a23fed9e165a10d780323c09f43a3e27328f9abb4d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/task_http_handlers.go",
+      "bytes": 106612,
+      "sha256": "6372c360e02e44b2ca7ef7a8c2798f827d09d9baaf6ff213df84b209160b8f4c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/handlers/task_ws_handlers.go",
+      "bytes": 31783,
+      "sha256": "e574b3cfbffc5fbcb0fbe5b4a1118ede248586cca7cd0bb09ce3dce5c6be0faf"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/models/pool_execution_candidate_test.go",
+      "bytes": 1418,
+      "sha256": "f11daaf2c36ae8e7cb17311c98f1e6aa500538f986ec4a2335bdfa56fd4d1db4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/models/pool_execution_candidate.go",
+      "bytes": 2071,
+      "sha256": "caa35ec7767891836f2f580963b3c8e7291c7d4503dc458ad5df20ccbe6126e7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/models/pool_release.go",
+      "bytes": 871,
+      "sha256": "b1689fef619eb8e6420929ae2fe30d6150389fadbb62c92d2f5f0bda131a2354"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/clearance.go",
+      "bytes": 1119,
+      "sha256": "97de2c3dd2e885deeb57e2a8af4bf5a78f17ce1eae0c4f8e29a222cb0f248a0f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/evidence_test.go",
+      "bytes": 8060,
+      "sha256": "67e57e4c133af7b40a87769a1f3c4d767e7a3f0eb7e6552b3024dbaf476cc5ac"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/execution_evidence.go",
+      "bytes": 2983,
+      "sha256": "7bd04d2a08aee54db1972774e78120cf9e6b7ba8c03925294f64a07eafa02511"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/model.go",
+      "bytes": 3651,
+      "sha256": "f4b505fc6fbbe5af4f8c934450ba1f58cb6b15f14b56b739f1daf0be7626839c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/project.go",
+      "bytes": 3807,
+      "sha256": "53a9ed72bbe758481c7aee8d9811114324956175e4266a46dc1e0e01567b9aee"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/query.go",
+      "bytes": 1606,
+      "sha256": "41585fe562ea78afc384381e288fab2218c854ee5862aa24b2bf283dcecc2567"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/receipts.go",
+      "bytes": 2185,
+      "sha256": "2f6409a0a87fc81f9e337f9bb7e530a3600fc75c07d49a22aefad83267456eb4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/recovery_control.go",
+      "bytes": 1299,
+      "sha256": "3c51dcf1321c937487448d227c3fbe7c2f83081aa267deae09dca733e75a6de5"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/recovery_evidence.go",
+      "bytes": 2070,
+      "sha256": "118fe1f64c8a71e294568891218ff92328f37d9ce6234c0c2cb962025a4ebe49"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/render_evidence.go",
+      "bytes": 3024,
+      "sha256": "3c3cce9dc5456c800a3a9f0e81ae32460254b9e229feb4291e01e220b658a52d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/requeue_evidence.go",
+      "bytes": 2895,
+      "sha256": "dfbcaf61a6600988227b7b29b6ca4163dd883290ce06a5f6281269d96599e669"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/selection.go",
+      "bytes": 2955,
+      "sha256": "8c3c7c1808593502c4948afd68c947c231fdb33d86403ef126c1c9bdc316a7b7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/stop_evidence.go",
+      "bytes": 1280,
+      "sha256": "4e4bc20f497a061a22c425dcad0e9c27aafb86b0c58cff14b963f9387c9b2850"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolhistory/work_evidence.go",
+      "bytes": 1689,
+      "sha256": "75b2dcb19670818facda03ed930d3c757cc37f1b31c341c6dcc0c75da1f3044d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolview/eligibility.go",
+      "bytes": 1756,
+      "sha256": "4133df3cbd1a6186cd3297db1d500024acae944b3fe545b41a93c232de908e26"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolview/model.go",
+      "bytes": 2361,
+      "sha256": "0aa951644ed112c8905f8abd488c1536fdbc450468db7638c8750e3131410da4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolview/project.go",
+      "bytes": 2052,
+      "sha256": "91cdb479256895cc1c2c989ffc2d1b3502258509f62323cce625c7a29cbca4b6"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/poolview/query.go",
+      "bytes": 1141,
+      "sha256": "a6d56a7e26dbf35c585483321269450e219e3aa9b2e2ff682ee1d7cd90a0851e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/repoerrors/errors.go",
+      "bytes": 10308,
+      "sha256": "bc53d0deae4bc627f1357a82b7eb4da2e0192a2769666e22ce1d04a700ab81be"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/base.go",
+      "bytes": 14209,
+      "sha256": "5db8830c47d82097885b1478741f7f9fd827204f9ac108b8889596ab85b49e12"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/completion_gates.go",
+      "bytes": 28444,
+      "sha256": "79e2e6c6041a9d8f4fb085deda78df8a4930baabb7f31d16c24c56dda40b119b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_admission_fixture_test.go",
+      "bytes": 3659,
+      "sha256": "cf4918e9f25d524e91d7f6c21f830ca226e8feb48e0b306dc0fdd4e89b8acc5d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_admission_test.go",
+      "bytes": 4460,
+      "sha256": "17291d8e261a08c0f3433419bc8199370f286c5f1514ddfada5157760067fca1"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_admission.go",
+      "bytes": 5181,
+      "sha256": "c43c177ed9a3554471d7036001b239e94960f72e9f7372c0905f3482407d781f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_causal_events.go",
+      "bytes": 1142,
+      "sha256": "fbf8470068e14281b023f07173ca41c443cb27ef3ae4174391098586b0e3cb61"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_creation.go",
+      "bytes": 3327,
+      "sha256": "8a959fe407440b7a247643a0aa5103e2b91a4283df9b17b08cad56467666b966"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_dispatch_ready.go",
+      "bytes": 4243,
+      "sha256": "c51c7cb4b852ecabc2a4cc4cb96985209514a17a51ed6ecb71e41e3f3060524a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_execution_allocation.go",
+      "bytes": 2894,
+      "sha256": "e54d03f91e0f0846f13487631cbb121b167bc0d696d96634cb6d2c16171ce384"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_execution_candidate.go",
+      "bytes": 5130,
+      "sha256": "b641e3e68a40a8cd77d0bb848f25619c5f49ec169c9c57b370d1f50d1f1ac698"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_execution_quiescent.go",
+      "bytes": 2224,
+      "sha256": "35d3ee10820f4f801591f7b3e1dc4279ec541c3b0f37c5fbe88eb01cdcd3c825"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_history_clearances.go",
+      "bytes": 775,
+      "sha256": "949e8abbccb6b56432132198781be95c2cf3a57aad3d64cf18b9fe99845a47df"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_history_events.go",
+      "bytes": 1285,
+      "sha256": "482fab6e5ad8c77823ed6bb24e5d88b9075717c50ec1e627b2987c9268b2bbe5"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_history_guard_test.go",
+      "bytes": 1185,
+      "sha256": "b7512b2f2bb6d6f9f40b3acc8eb09ac3a63d81d4d6980319db16582bc371e051"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_history_runs.go",
+      "bytes": 2457,
+      "sha256": "dc8eca689816323cf2402791efccc807a76aceb699cd8a0496e350ce5d7335b3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_history_selections.go",
+      "bytes": 2356,
+      "sha256": "bb8407b9762667a17597df2529261bb4d19b630e8820474ed67608d426f749a0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_history.go",
+      "bytes": 3603,
+      "sha256": "88482398abfc2f6e45264ea2585b237a4774e18b087aba9039402637c75f4c94"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_projection_claims.go",
+      "bytes": 2458,
+      "sha256": "146caa278fdeb59ba0d58c46e0c8ab74570a844ed5caf908e59dc74a7422f421"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_projection_context_sql.go",
+      "bytes": 2713,
+      "sha256": "a31e5a3055ad956af752f3c2aaa14719138e0344ffc98f29c875eff75fc5c87f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_projection_context.go",
+      "bytes": 4034,
+      "sha256": "3de3488496f42113a7fa5417ecf280e34fe2f73950edda260a9c78e3d13f6678"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_projection_events.go",
+      "bytes": 1770,
+      "sha256": "242b2560dbde11856a0b69c4a4c30e403ba782d917ebb4828ec6644acdefab6b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_projection_facts.go",
+      "bytes": 4283,
+      "sha256": "09586db2e8bb7adfef47094fb10c70d4328bb14e80bd6f942bdf0c3a714948e3"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_projection_guard_test.go",
+      "bytes": 1060,
+      "sha256": "d1a0e1efa47da257c6077a50dad27fa71d73dd4041272f3f623c2697a102cb4f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_projection.go",
+      "bytes": 2057,
+      "sha256": "839080ab29a9f574013ed8333a385cecde3dbed942832b98e770f050d15edf84"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_ready_tx_test.go",
+      "bytes": 5022,
+      "sha256": "c4a1d7e0f29bed70e8ea35ba252560c1af97353e573e414c82963e7fe3138a79"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_recovery_execution.go",
+      "bytes": 1713,
+      "sha256": "6e5c07e88d70c0a5f5eb672d59606d9ef362daac6ed60f557492a990f691f97e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_recovery_header.go",
+      "bytes": 1484,
+      "sha256": "7c20574cc8e974146c42cf0d0828ffa8c1957878767a7b0c0045ac0750657d5b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_release_capacity_test.go",
+      "bytes": 2000,
+      "sha256": "1a09f1971e3df57908e2793009d58f9eea67ce241600bbe450bc4edd2d136c8b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_release_clock_test.go",
+      "bytes": 1204,
+      "sha256": "7bfc2b3bc0c7b322552c2eefd2b12c1388dc774b49fda0cb3e351432521fffe4"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_release_concurrency_test.go",
+      "bytes": 2855,
+      "sha256": "0270853e0afbb1372ab2b2bb0ce7cbb856cb1255761e5cf7af497711209c448d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_release_confirmation_test.go",
+      "bytes": 7935,
+      "sha256": "8fb63412077e73dc699ad154599a4306139cc405037437316c3109aded63f557"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_release_source_test.go",
+      "bytes": 3183,
+      "sha256": "b1254fdc1a20479e00a598d14447965b082c3339d5a203499c66243905f1fa9d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_release_source.go",
+      "bytes": 3282,
+      "sha256": "63eac20595f6d1b4ddd550d4facb1627bccac9ff45f65a3bbb427dce7317eed2"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_resume_carrier.go",
+      "bytes": 2357,
+      "sha256": "a2b57e35e3e00f0c4b71ca7409d4c3246fa79b41212102b276b0b532af88ec81"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_summary_guard_test.go",
+      "bytes": 917,
+      "sha256": "ccb6e5b427719162c0c4e6e32f38c7298b477dcffb51a16db2caad24c0697184"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/pool_summary.go",
+      "bytes": 1605,
+      "sha256": "0c412b0829413f6e8185cfbcb9f888cc5e53f02700414d754428e64dbdd093b2"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/step_transitions.go",
+      "bytes": 17115,
+      "sha256": "70e59c526b514c137fe9e987e9650ba7f90822858d108bee715d12f57eda934e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/strict_completion.go",
+      "bytes": 8337,
+      "sha256": "2ffcc430186692c1dcf73b15be0556a00c2fe3e958617bba4bf8eabd115aa461"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/repository/sqlite/task.go",
+      "bytes": 227301,
+      "sha256": "b8ce3f1eff31b8eccf3f66ae60c8ad4e98700c5da2aaacd0583a9317c0b47e9e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_admission_test.go",
+      "bytes": 473,
+      "sha256": "9bfd8c2e2b0613eeb995234b7ebc7057c3b650ed7b3470705cfbf1ebd1bab5f0"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_admission.go",
+      "bytes": 900,
+      "sha256": "bc8633e3225bb93bf311b895e0f493eb3c87f226503163f4ec0b4068d93b80c8"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_creation.go",
+      "bytes": 3535,
+      "sha256": "2c5610bfdac9fe11ab67f3f73e12504bce96c08f3cef2b1b4b32501d45355c0a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_dispatch_boundary_test.go",
+      "bytes": 2585,
+      "sha256": "bfcc8df6827cc20c330685768c210d9db4e2d36fd3f8f8dad81790728d31c93e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_dispatch_native_entry_test.go",
+      "bytes": 759,
+      "sha256": "76662dcf8387a05472806fc35540ed6834f38f8a0b6938d0b83c7d366d0d37fc"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_dispatch_result_test.go",
+      "bytes": 2397,
+      "sha256": "8b6346abd2b83e38baca9640f662444daa2fb2780a129af77b15d1bb7220fea1"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_dispatch_test.go",
+      "bytes": 5463,
+      "sha256": "7d2f756c3d226d0e0eb9ad4bae48ef3d82418bd60c14f343cbd66cd93c1100c5"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_dispatch.go",
+      "bytes": 2288,
+      "sha256": "4c0c17f3762a188b5e961a1ce5b2601c1198912b8db1cd6ba94c009788be70ca"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_history.go",
+      "bytes": 1428,
+      "sha256": "13e3d3ac869f4686f1d9937edb9af6b8126b766f96a5585d497c60651cb0f7b6"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_projection.go",
+      "bytes": 1643,
+      "sha256": "09e3fa65b8858a54c602c9dfab6a9d56fe2eff99d6cd2696a4aa1f67beb5e0fa"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_recovery.go",
+      "bytes": 3304,
+      "sha256": "889b62751edfb3b678de01c2578e3ecc9ef4843e817a9cc0f68450f8c26a800c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_release_admission_test.go",
+      "bytes": 2356,
+      "sha256": "8916a88b9dd133be311ebc0debe944b58419b19d66999a82a7a06dba835c9e36"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_release_capability_test.go",
+      "bytes": 3759,
+      "sha256": "20afda9e813a6cf769f15857131d6db23e736ef194a0ddcc30d14ff9d194072f"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_release_confirmation.go",
+      "bytes": 767,
+      "sha256": "4d58a992801fea7ad5ea0134f1746226b9853539d336664e3f0953374ad85181"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_release_race_test.go",
+      "bytes": 1855,
+      "sha256": "652d46025b9b3720805ec54f888a8770d88ac1fe653d816c0fce9538f89b81f2"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_release_test.go",
+      "bytes": 3889,
+      "sha256": "7ccd0bdcbd9cddbeb2898030dc75c113ff3e714314c22c9f8ff7b11edcc1395e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_release.go",
+      "bytes": 3813,
+      "sha256": "b3aa38f16bd3b5704f7e01d89d8d69aaf839b8bda69ee53f700a82e829529053"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_summary_reconcile.go",
+      "bytes": 2195,
+      "sha256": "7aaab11f9eca860e4e47493d406194a79298dc65107aa935d067ab819a84266b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/pool_summary_source.go",
+      "bytes": 3804,
+      "sha256": "9fdf6e9b8e6da6dfab1ba54a62cfcc6efa854d1170d88cf297023bd5a5b4c9ee"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/service_requests.go",
+      "bytes": 23325,
+      "sha256": "d628eb56c5070ec6ff4dbac1371b0d90934ed224f89bf2b309056b6837b9f33b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/service_status_summary_rebuild.go",
+      "bytes": 29921,
+      "sha256": "91117075f318c7fa9a908d45431ff042454f9fbf626c30bf7b504ad9d35ce2ce"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/service_tasks.go",
+      "bytes": 178590,
+      "sha256": "58f340ee7a2eba290a275d0a0bd8a40364e55f67664ab91a5bdce7bc382a7c7b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/service_workflow.go",
+      "bytes": 81244,
+      "sha256": "f231c8e6dec0316e85adf30cd3dffe71ced2b91e9b2f8da83c5fba40508616cf"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/service.go",
+      "bytes": 52485,
+      "sha256": "7f7bec31609f707c427dcb15a87cc2c07c9db5a1b4858cecc9429fda7f61d6ce"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/service/strict_completion_test.go",
+      "bytes": 10683,
+      "sha256": "393bfccd267bf53d951bd55ddcf20e13cc932e0a7a46437e08c9c67a980f477c"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/model.go",
+      "bytes": 17006,
+      "sha256": "6570f0244d7e7aadfa39d6540ad76632bfc96925cca45b548069c401b4f2ed6d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/pool_execution_rebuild_test.go",
+      "bytes": 2138,
+      "sha256": "d9cef706a5f489ed6a225d1fcadfebddaef5754d2907ed3112535f7eaa6c4f02"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/pool_execution_test.go",
+      "bytes": 3068,
+      "sha256": "7360d9fa740419295df18847eddc8388152c75f3b56a9024e66fb9e5892ef6f7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/pool_execution.go",
+      "bytes": 2438,
+      "sha256": "f3809fd87b8b8866c8b82a34356ad24e11c4e078ad51b335148b369e47042854"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/projector_derive.go",
+      "bytes": 7604,
+      "sha256": "d60e06b57cc9ddedfec489258c3413411d0479fc6b9e94397fc143520fe271be"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/projector_events.go",
+      "bytes": 31359,
+      "sha256": "31a78ef358cfef52d3c8f32e9e6aa262b9005f135ad9e66835a9f9b62d8b2e60"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/projector_pool_test.go",
+      "bytes": 3375,
+      "sha256": "1c7af5a4e2807fbf993662f801cc2436bde65e631d57c55004323915969a904a"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/projector_pool.go",
+      "bytes": 1495,
+      "sha256": "6eacff8f8a253a0316087554e874d5029625b033e30c72efe554caf2efd88c80"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/projector.go",
+      "bytes": 28345,
+      "sha256": "54f0cb042459c993dee1a46986281286d69162e51af68e06710aa0ddec23bfa7"
+    },
+    {
+      "path": "kandev/apps/backend/internal/task/statussummary/rebuild.go",
+      "bytes": 7026,
+      "sha256": "84389cfbe98d76a5cd763a46104dec8adf0674e5cffb88003d1dcefc20919eba"
+    },
+    {
+      "path": "kandev/apps/backend/internal/user/models/models.go",
+      "bytes": 17250,
+      "sha256": "5c26bdce6c5b72f8c59e12352994f9fd48c5dbb2800baf362a8ce33a74c378ca"
+    },
+    {
+      "path": "kandev/apps/backend/internal/user/service/pool_startup_page_test.go",
+      "bytes": 1678,
+      "sha256": "db964f702501aaf308fe1ec155dcaaaddcb7af5887e865bff6743729f14fba23"
+    },
+    {
+      "path": "kandev/apps/backend/internal/user/service/service.go",
+      "bytes": 50899,
+      "sha256": "2ad05cf5d69ba74b36887c23d35ba201cc95ccdb97aa41c2c05d0badf383657d"
+    },
+    {
+      "path": "kandev/apps/backend/internal/workflow/engine/phase2_callbacks.go",
+      "bytes": 31356,
+      "sha256": "2a26af4a624915a43dbe2251d910929d440668e92727def93e10c581c5ff0e9e"
+    },
+    {
+      "path": "kandev/apps/backend/internal/workflow/engine/pool_queue_boundary_test.go",
+      "bytes": 2132,
+      "sha256": "3d315e53890a12cb9bcaeb6f2366f4acc118e6e4132d1c6e69ea47ae569e6253"
+    },
+    {
+      "path": "kandev/apps/backend/internal/workflow/engine/pool_queue_test.go",
+      "bytes": 4474,
+      "sha256": "dd8bdc17764885aee94fd4c98d6acdadc31c88ab538a1cd8f9758c19a45415bc"
+    },
+    {
+      "path": "kandev/apps/backend/internal/workflow/engine/pool_queue.go",
+      "bytes": 1164,
+      "sha256": "a9c727570d22f458c48c1fa30fc538ce1430053f095d83806ea2c3931de1ab7b"
+    },
+    {
+      "path": "kandev/apps/backend/internal/workflow/engine/types.go",
+      "bytes": 23567,
+      "sha256": "bc9863136f7554a549a4b559b0ba61669019e9d2a30c88509f252a548b5b8d81"
+    },
+    {
+      "path": "kandev/apps/backend/internal/workflow/models/pool_step_test.go",
+      "bytes": 3432,
+      "sha256": "f82485499996bf899abaefe6eb6108c90fbc928bd8ef6e268dc021bea7788371"
+    },
+    {
+      "path": "kandev/apps/backend/internal/workflow/models/pool_step.go",
+      "bytes": 2761,
+      "sha256": "9e91696a74d8330b4d77f46324d7b33f5d037c9672eae193f27fd5520a744b44"
+    },
+    {
+      "path": "kandev/apps/backend/pkg/pluginsdk/completion_read_test.go",
+      "bytes": 973,
+      "sha256": "552d379c32e6bb456efc032e14da672e143e42ed6dd62ecfbbff1b6482f64602"
+    },
+    {
+      "path": "kandev/apps/backend/pkg/pluginsdk/completion_read.go",
+      "bytes": 1643,
+      "sha256": "151baaf6ce636793150332b0c216a00f42bdb3c72f200b79a1a21ff016a2ab1f"
+    },
+    {
+      "path": "kandev/apps/backend/proto/kandev/plugin/v1/plugin_grpc.pb.go",
+      "bytes": 240050,
+      "sha256": "dd71968ae315395a2b7b7dd9a1170d452031a23bf3df5073d369509bbccd319d"
+    },
+    {
+      "path": "kandev/apps/backend/proto/kandev/plugin/v1/plugin.pb.go",
+      "bytes": 1003784,
+      "sha256": "823b7e2d9f4b3149eba77d2c205b66e2089f3b349b690dd71c52e845323276d5"
+    },
+    {
+      "path": "kandev/apps/backend/proto/kandev/plugin/v1/plugin.proto",
+      "bytes": 95837,
+      "sha256": "0c371f042d3caa0b8d5e99058d49a1f6f687cc552f65c961c63c998ae659d271"
+    },
+    {
+      "path": "kandev/apps/web/AGENTS.md",
+      "bytes": 36630,
+      "sha256": "52a6ba29639061d8ff5d7846b75c66af64ce3f31edb752538645821fc2a8c9d4"
+    },
+    {
+      "path": "kandev/apps/web/app/task-pool/task-pool-page-client.tsx",
+      "bytes": 1992,
+      "sha256": "d2d6193986f7f8def3629129e42378b48da889017fdc4f121d59b065755785b1"
+    },
+    {
+      "path": "kandev/apps/web/components/app-sidebar/app-sidebar-primary-nav.tsx",
+      "bytes": 4356,
+      "sha256": "b3a1fef9758fcd3256d9ef96de87227c9b84cb27fee3f287beb35617910ad688"
+    },
+    {
+      "path": "kandev/apps/web/components/settings/startup-page-settings-card.tsx",
+      "bytes": 3690,
+      "sha256": "4956d0440cfeadec5bf1111e09ad47007a5fe8f500b2ef985e4373f7a358c072"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-browser.tsx",
+      "bytes": 2954,
+      "sha256": "a6314dba812f3d38043c4f419eb9cea9f7653d8f6401da5134bdcf3fa6628a9c"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-card.tsx",
+      "bytes": 2526,
+      "sha256": "15c4394f467f938182a7b76dc64527e04dfccfdab7f4844ff0f314fa6ba242f9"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-detail.tsx",
+      "bytes": 6041,
+      "sha256": "900c4e6824e2964813a6b018bf21efe4d429bc0351ef2c3491a51905a5057f87"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-facts.tsx",
+      "bytes": 3184,
+      "sha256": "1fc6c9c1bdee7a725ad799328f861806222f91346ce7d0bcf2dc15362442a9d2"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-filters.tsx",
+      "bytes": 3324,
+      "sha256": "ce014150932f946954e18ead426a43c412c6b3c16277c3c9f48bffd7926591ca"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-recovery-confirmation.tsx",
+      "bytes": 1880,
+      "sha256": "225b05799e51077e35a338a319baf6aea19070cae297b1d4ac62e1c2064a7cd4"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-recovery.tsx",
+      "bytes": 4020,
+      "sha256": "877ae3dfadb3d0dc0bad53f780280f72b9871f272a5037b7169acf939ea59be6"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-relations.tsx",
+      "bytes": 2910,
+      "sha256": "6692b11839c2422a7f7a8a1d7fd1a3096a306bbcdc564bba46807b9cdb589618"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-release-confirmation.tsx",
+      "bytes": 1972,
+      "sha256": "c1b8d382fef6253754a41a127c5c8f9eafa61a150c5a885547163a184f58fefa"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-release.tsx",
+      "bytes": 4090,
+      "sha256": "9bb507143c9b4bc50ea6fe88a7753a98854b10542dc34a5ed133673ac41887a4"
+    },
+    {
+      "path": "kandev/apps/web/components/task-pool/task-pool-toolbar.tsx",
+      "bytes": 4381,
+      "sha256": "616b9e914e44b7211d0dfb3e406de4d9e526517c860da095f3d01e57c133cbb1"
+    },
+    {
+      "path": "kandev/apps/web/e2e/fixtures/backend.ts",
+      "bytes": 25479,
+      "sha256": "23580e4b543d574ffcf1c079b9ebfea544d649d3c84b197d3c65ad3e3deeca29"
+    },
+    {
+      "path": "kandev/apps/web/e2e/global-setup.ts",
+      "bytes": 15559,
+      "sha256": "9d0c6e87044d3eab1cd0eb72a19e72a19197a4f9518cc3ac9f2f69c967628cf6"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/backend-binary.test.ts",
+      "bytes": 716,
+      "sha256": "ab907b5bced347a1e7ff1e4eaba37809c6c7c0ca595e8a52cac4317cabbaf22b"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/backend-binary.ts",
+      "bytes": 245,
+      "sha256": "e671db73ec8fad039344010d7ab67663c336a0462f51432a58b871ee2e3386cc"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-api.ts",
+      "bytes": 3771,
+      "sha256": "090aefd913e9cc3062931b704486ab2acf08383287646055c96643fb9acd184e"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-auth.ts",
+      "bytes": 4199,
+      "sha256": "910c2ae37c046cb3955e9ac9e0c8fe9ccb46fc5d95a1ff916c7e371ef3cb11c5"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-execution-recovery.ts",
+      "bytes": 8090,
+      "sha256": "8fbbf6cd61fab80ea0c991ca8dad443207865a908549d14cec181f3aa3e154bf"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-preference.ts",
+      "bytes": 2047,
+      "sha256": "cab3dc18ad2594ab9de8f8c4498c2933bc5783f8d19fdcca2ecdaeeb1699f360"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-recovery.ts",
+      "bytes": 8193,
+      "sha256": "437c8a21c4ac43c545829eb4ec4a6ebc442ced633b5b06361258d424cc1bfa9b"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-relations.ts",
+      "bytes": 3368,
+      "sha256": "c7744d733d3c0316a0f7bc55a7c7fc6c5919aca987e3b2871dd9ce2489baecd5"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-restart.ts",
+      "bytes": 3728,
+      "sha256": "a60c03477d9dd675097ae08715fd8c22fa6bbae157f0827cb92e77da495b7def"
+    },
+    {
+      "path": "kandev/apps/web/e2e/helpers/task-pool-uncertain-restart.ts",
+      "bytes": 2549,
+      "sha256": "b72d0e6202d3b75b24edb7204773b3a39a51d804e9592b58929b5504e8dfcd76"
+    },
+    {
+      "path": "kandev/apps/web/e2e/tests/auth/mobile-task-pool-auth.spec.ts",
+      "bytes": 3047,
+      "sha256": "c1932dd72275b5a99df3168f59abbb5b18176fd41ce1f05987311a581848fc5d"
+    },
+    {
+      "path": "kandev/apps/web/e2e/tests/auth/mobile-task-pool-recovery-auth.spec.ts",
+      "bytes": 2242,
+      "sha256": "35ce593fbfb1b3758c5031cbee23bd96cee4cf756cab5d820642589334914d1a"
+    },
+    {
+      "path": "kandev/apps/web/e2e/tests/auth/task-pool-auth.spec.ts",
+      "bytes": 4271,
+      "sha256": "80b98a7978ebb348e44d050e69dbca849b7407dd59be92adc1f0f188f4a388ea"
+    },
+    {
+      "path": "kandev/apps/web/e2e/tests/auth/task-pool-recovery-auth.spec.ts",
+      "bytes": 2266,
+      "sha256": "e4440d34e57ce30b4a8267bb13a63943e31c2550262b377d92ad2e5a3e0035d2"
+    },
+    {
+      "path": "kandev/apps/web/e2e/tests/task/mobile-task-pool.spec.ts",
+      "bytes": 3637,
+      "sha256": "16b7ca07da73a74be47b8e92178d8d41493bebda5e318c388da609c9a674d3af"
+    },
+    {
+      "path": "kandev/apps/web/e2e/tests/task/task-pool.spec.ts",
+      "bytes": 1939,
+      "sha256": "09f430550eeb60973b6a7d9971d5ff4c8c67663b57f732709633fd906fd8b906"
+    },
+    {
+      "path": "kandev/apps/web/hooks/domains/task/use-task-pool-page.ts",
+      "bytes": 3090,
+      "sha256": "5736ce666b5d2705fac692d742e8c2431e064be8c43fd44bfab7859ea60e1106"
+    },
+    {
+      "path": "kandev/apps/web/hooks/domains/task/use-task-pool-recovery.test.ts",
+      "bytes": 7729,
+      "sha256": "7922ba271d631108bb98c4559641a3200f010b1fbf4f090fa5beb873b26b2b79"
+    },
+    {
+      "path": "kandev/apps/web/hooks/domains/task/use-task-pool-recovery.ts",
+      "bytes": 7953,
+      "sha256": "cfc867ff1f6df069cfbdd05bca5bd59878947c38fb416fb7184e7a9963ce42b8"
+    },
+    {
+      "path": "kandev/apps/web/hooks/domains/task/use-task-pool-release.test.ts",
+      "bytes": 7392,
+      "sha256": "a6c25b2fdf6f378efa3369e8bb2a13b3269c8ff3ed5070670828ecda8bd139a2"
+    },
+    {
+      "path": "kandev/apps/web/hooks/domains/task/use-task-pool-release.ts",
+      "bytes": 5672,
+      "sha256": "9a3f96e978e3924db51adbc34346218ff4aef4427b354a15c6cfbffbde8440ec"
+    },
+    {
+      "path": "kandev/apps/web/hooks/domains/task/use-task-pool.test.ts",
+      "bytes": 3693,
+      "sha256": "9ccac05157f88aaea67e8f6809c7743d821e4e1c5efe7c4e22601fa73592cecf"
+    },
+    {
+      "path": "kandev/apps/web/hooks/domains/task/use-task-pool.ts",
+      "bytes": 4218,
+      "sha256": "936d3372d08ef2f5b282506804bcf104fcdad091718b9c9d07ddc61fd53d8229"
+    },
+    {
+      "path": "kandev/apps/web/lib/api/domains/kanban-api-pool.test.ts",
+      "bytes": 2956,
+      "sha256": "476d8030f64ab83778c756c1f725755b3ecee7398bf94adfbe40fa5220650ddd"
+    },
+    {
+      "path": "kandev/apps/web/lib/api/domains/kanban-api.ts",
+      "bytes": 17467,
+      "sha256": "8a35d478765eb579984fdd55f65698b8fe6fe89b44c4b470446c2f320514137f"
+    },
+    {
+      "path": "kandev/apps/web/lib/api/domains/task-dependencies-api.ts",
+      "bytes": 1937,
+      "sha256": "132a7131ebe00a82bd24dbb6a187ab98429225cc78840a735ab4b588973edb72"
+    },
+    {
+      "path": "kandev/apps/web/lib/api/domains/task-pool-api.test.ts",
+      "bytes": 1740,
+      "sha256": "a931902bc9fa8d84fa666570fcce67cf13b108de8bd29938899f61f31329dd9d"
+    },
+    {
+      "path": "kandev/apps/web/lib/api/domains/task-pool-api.ts",
+      "bytes": 932,
+      "sha256": "a65cd2481e8384574b3bed6aba30530cca9defb35b3abf11315ac04d10ed9a33"
+    },
+    {
+      "path": "kandev/apps/web/lib/api/domains/task-pool-recovery-api.test.ts",
+      "bytes": 2020,
+      "sha256": "b4fd23b4675fac34859cd651621a04f1c1c2ae8d185adafff6a3d30976a1a997"
+    },
+    {
+      "path": "kandev/apps/web/lib/api/domains/task-pool-recovery-api.ts",
+      "bytes": 1246,
+      "sha256": "2a02f99c2ef7a2c16b3b87a977418f242e02c9f17a2f6ead2846f917714e37a6"
+    },
+    {
+      "path": "kandev/apps/web/lib/navigation/core-destinations.ts",
+      "bytes": 7429,
+      "sha256": "e74fc5349e6673a68f4952840b6ce89ddfc1ce517498cd3d30f68a13290fbe77"
+    },
+    {
+      "path": "kandev/apps/web/lib/navigation/resolve-destinations.test.ts",
+      "bytes": 7075,
+      "sha256": "628e29fe23d65e26e7be6477346738b9f5ad02e2d1886339089b56bcb255d2fe"
+    },
+    {
+      "path": "kandev/apps/web/lib/navigation/task-pool-navigation.test.ts",
+      "bytes": 1517,
+      "sha256": "b34afd6bdd57d5688d7d117b14ff458251b0384b5a797dc88bf085a883177ec5"
+    },
+    {
+      "path": "kandev/apps/web/lib/navigation/workspace-home.ts",
+      "bytes": 1086,
+      "sha256": "917775ecdbc7f2c0a284134d4fc841120a0718db502a6a46047b7b6d76ee0614"
+    },
+    {
+      "path": "kandev/apps/web/lib/ssr/user-settings.ts",
+      "bytes": 18446,
+      "sha256": "ce0580ab96c37438e6dd90f6c37adf6cd5b33f0d7ba811106f9d47585e0e4818"
+    },
+    {
+      "path": "kandev/apps/web/lib/startup-page.ts",
+      "bytes": 2298,
+      "sha256": "9410753e6000a5050ac867023efb17760186d352f38b2e16ede744d8b6c32418"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-recovery-pending.test.ts",
+      "bytes": 2301,
+      "sha256": "518866846ca48c5c7350130e46352c4a26f51d24e475b5a61bdde6ed11883cf2"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-recovery-pending.ts",
+      "bytes": 2369,
+      "sha256": "c00afd77013ea2683d2db92d54b712309f86d3cd81c7b31e534559d5c151b2d1"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-recovery.test.ts",
+      "bytes": 3050,
+      "sha256": "3d66b8e8301ed64986fb20cd2c87a99b8a3b270d61bf1cf6cf3cef606e67c412"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-recovery.ts",
+      "bytes": 2371,
+      "sha256": "1ebd541f219565f80a9ee806d773e687c6f232069a4672c323ff19fe69590e19"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-release.test.ts",
+      "bytes": 4029,
+      "sha256": "3179411ec841d3e7c4c696c46fc93f29a56490865c133df976065face56627fe"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-release.ts",
+      "bytes": 4055,
+      "sha256": "34fa88529b9ae16c21c68ec4edae765426a22d776b0deb92e3ca7ce6932a67f6"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-startup.test.ts",
+      "bytes": 1754,
+      "sha256": "a149d174278be095f2ef2308427a925084d5f98978e70efc6e15329e5ec48651"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-view-model.test.ts",
+      "bytes": 3755,
+      "sha256": "84f986218ae136da80e874bce1a26154ca3fc1469f6c1feff849d75c83ea0c31"
+    },
+    {
+      "path": "kandev/apps/web/lib/task-pool-view-model.ts",
+      "bytes": 3232,
+      "sha256": "4a5f13bb0bde2bd1929a8fde9d46e2692006a98df8bb0f4c8f665d9eca7da318"
+    },
+    {
+      "path": "kandev/apps/web/lib/types/http-user-settings.ts",
+      "bytes": 10996,
+      "sha256": "cfcdd66ee24c567ae7851ff114d7ac58c598b68e82f2f87b6287ecacbafc0bb0"
+    },
+    {
+      "path": "kandev/apps/web/lib/types/task-pool-recovery.ts",
+      "bytes": 863,
+      "sha256": "dc17baee78cd611dd8baad80098762449c23ee7240509c6c93a68fd638b38cef"
+    },
+    {
+      "path": "kandev/apps/web/lib/types/task-pool.ts",
+      "bytes": 761,
+      "sha256": "78ed18f12912f59670aec74b898a043c9ecedd872d041ed9e8c687b76f8ef679"
+    },
+    {
+      "path": "kandev/apps/web/lib/types/task-status-summary.ts",
+      "bytes": 3836,
+      "sha256": "67b032f5b2951c7e25c1445a040280071ba0dfe20f6f5fc36f609c1eedad5d74"
+    },
+    {
+      "path": "kandev/apps/web/lib/types/workflow-actions.ts",
+      "bytes": 5401,
+      "sha256": "bffec9dab0b14b1e2b058b6680b1b45e92fb81f5751ef17ffc9639fafef7c82e"
+    },
+    {
+      "path": "kandev/apps/web/lib/ws/handlers/tasks-pool-summary.test.ts",
+      "bytes": 4689,
+      "sha256": "4504caa4b495490074aa4d979f3e7a8a397a632585e7346b69d46f047ab95a68"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/en/taskPool.json",
+      "bytes": 7484,
+      "sha256": "af768d1115be5adac158649957048507775e01f17c5972b39b72b5649836923c"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/ja/taskPool.json",
+      "bytes": 9081,
+      "sha256": "73cfee8b2c8dc3276c1b7e09cca3409d8502e5f03c4a83c254f6da1b48f27d39"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/ko/taskPool.json",
+      "bytes": 8815,
+      "sha256": "5f9201e41ca92ae0006734340eab71dd95e388c8099aba64d183ae0d4a258d99"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/pseudo/taskPool.json",
+      "bytes": 11456,
+      "sha256": "f413cbedd0a21ce830ef97852be3206332c8736b2227f6b123a256d898c0cac0"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/pt-pt/taskPool.json",
+      "bytes": 8273,
+      "sha256": "36948b00ebc39423728ee6756339c2b27108e6d886e99a7e9eaae1d0662e4ea0"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/zh-cn/taskPool.json",
+      "bytes": 7007,
+      "sha256": "c1963727c7adae08907335e27333b8a245aaa27a21a14d573af91aee301c2945"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/zh-hk/taskPool.json",
+      "bytes": 7025,
+      "sha256": "5c6cc3abf328b2dd562a03411f8830db833ed4e296efe957b5aecb3cd5b98675"
+    },
+    {
+      "path": "kandev/apps/web/src/locales/zh-tw/taskPool.json",
+      "bytes": 7109,
+      "sha256": "40201800d1e6aaf30232589221165e9654b255538ac1cf7b87303e20a9bb2911"
+    },
+    {
+      "path": "kandev/apps/web/src/spa-routes.tsx",
+      "bytes": 26809,
+      "sha256": "b24efeb00fe91f31ed6a5555f88a7d669414d6a537fbe27145a7d560ae9cdd1a"
+    },
+    {
+      "path": "kandev/docs/decisions/2026-10-16-agent-pool-native-run-authority.md",
+      "bytes": 3077,
+      "sha256": "aced3f3f0584afd8941611ad2698836d9c1b9bd68c58bd1da72e03124b9b4baf"
+    },
+    {
+      "path": "kandev/docs/decisions/2026-10-19-pool-history-clearance.md",
+      "bytes": 1821,
+      "sha256": "2bb503197bb545e15230cc76a9d594ee2d4c1aac0cbe8ce19d16a44497524936"
+    },
+    {
+      "path": "kandev/docs/plans/agent-pool-workbench/acceptance-audit.md",
+      "bytes": 9189,
+      "sha256": "408bf710e4add1112147733786a4eae62c54d06971d2831ba7d472cd7187c77a"
+    },
+    {
+      "path": "kandev/docs/plans/agent-pool-workbench/decision-history-retention.md",
+      "bytes": 6877,
+      "sha256": "c8479175ffe77259eeab13fdc8011cccc678d37336b46f858395e08f47cc9cb0"
+    },
+    {
+      "path": "kandev/docs/plans/agent-pool-workbench/plan.md",
+      "bytes": 26594,
+      "sha256": "30cee4d8a698ad3e769a4e9010c31b7ebc2da126b8a92987232cdc9aab45160c"
+    },
+    {
+      "path": "kandev/docs/plans/agent-pool-workbench/task-01-native-dispatch-receipts.md",
+      "bytes": 103078,
+      "sha256": "b41cc2ed70cdb70189319a0556746d9d6e510d1a22b7d7018ca44147163a9610"
+    },
+    {
+      "path": "kandev/docs/plans/agent-pool-workbench/task-02-pool-projection.md",
+      "bytes": 37121,
+      "sha256": "670f693081dec609d5b43e4e955a1819c6e321dfeaf298c17efc868d5fd0c291"
+    },
+    {
+      "path": "kandev/docs/plans/agent-pool-workbench/task-03-workbench-ui.md",
+      "bytes": 13951,
+      "sha256": "0dbe10982b40421aca406d27855c2890c5760941b44066d691e37dd6fd03010b"
+    },
+    {
+      "path": "kandev/docs/plans/agent-pool-workbench/task-04-manual-recovery.md",
+      "bytes": 21859,
+      "sha256": "00ad2fdda855fd7ff860e6014f8124adb8c477d1d3252ac005e22d4c833d9789"
+    },
+    {
+      "path": "kandev/docs/plans/plugins/GRPC-CONTRACT.md",
+      "bytes": 74048,
+      "sha256": "97a8174408789f6c3594ea38d459759445e6ac6db3da82071ceeb6bfdbd3ec70"
+    },
+    {
+      "path": "kandev/docs/public/configuration.md",
+      "bytes": 84555,
+      "sha256": "4f076ca520d9e99d31d5e4253f3a82374bd87e54697b72450b8a97c7abbfda23"
+    },
+    {
+      "path": "kandev/docs/public/plugins-authoring.md",
+      "bytes": 223230,
+      "sha256": "d0725c820a97d2c0b135dce0b01dd3435d3cddf145397bf67d4cc5eb6ee28e32"
+    },
+    {
+      "path": "kandev/docs/public/plugins-manifest.md",
+      "bytes": 106111,
+      "sha256": "c345cb0c6c39543e875a41cce1c6e2a9a51ec0960208316f939780a64c6aeba7"
+    },
+    {
+      "path": "kandev/docs/public/tasks-and-workflows.md",
+      "bytes": 78529,
+      "sha256": "012af81eca3268517fbcccec0b27e2297e2c59bd6cbad7b85918a48952f300dc"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/requirements/agent-pool-workbench.md",
+      "bytes": 7833,
+      "sha256": "11bb5cf4ac46f70264168935d5e0a38852b68c2783371f96ceaca4ea7d75c28d"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-creation-release.md",
+      "bytes": 5846,
+      "sha256": "2254ff264f2f95dd6b72f6f351e98baca19aa398ae950a4337639d299586080a"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-execution-retirement.md",
+      "bytes": 6547,
+      "sha256": "eaae8b111c23af287d2cba48d7a4be52a5b121604cc81b6291d7d9d1c9485c26"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-history-clearance.md",
+      "bytes": 4693,
+      "sha256": "096ddeafaaff08f520d13d32407e680f1c4ee8ed28e3c72af48d1056309307e2"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-history-projection.md",
+      "bytes": 8072,
+      "sha256": "5f9e4a3ecca70d021a0a0f7fdb6f4a6a49d0428e2f5486a0f76cc641bd328859"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-recovery.md",
+      "bytes": 6658,
+      "sha256": "2ab3f996dd461e389f7529055169829d15d768c8e4a1fae996018605534f44a6"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-summary-refresh.md",
+      "bytes": 8058,
+      "sha256": "61f7ce7d00e89c026962a2a8fbc9b748a18e7ba9b537d97dc6b93432703975b7"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-workbench.md",
+      "bytes": 32517,
+      "sha256": "fef5179d6e729cd4884b5a7d42bc58ce04a3c6f11d124b1b9914401028e8ef93"
+    },
+    {
+      "path": "kandev/docs/specs/tasks/system-design/agent-pool-workspace-projection.md",
+      "bytes": 8667,
+      "sha256": "2c12debe64e35680519c95f9218ec1b70f76755b8855b6f5fead7a39b91fe337"
+    },
+    {
+      "path": "kandev/LICENSE",
+      "bytes": 34523,
+      "sha256": "0d96a4ff68ad6d4b6f1f30f713b18d5184912ba8dd389f86aa7710db079abcb0"
+    },
+    {
+      "path": "NEXT-STEPS.md",
+      "bytes": 2925,
+      "sha256": "2d4a1055e1658b2e355d264cc798220b543da86fc2f57e0b1c955fe7be341db2"
+    },
+    {
+      "path": "README.md",
+      "bytes": 5947,
+      "sha256": "30065ec4c116e30a0576963ddfcf326110940fd5f8841a5edf2f48e7c264a8a7"
+    },
+    {
+      "path": "REVIEW.md",
+      "bytes": 2766,
+      "sha256": "5a2f4773bdd6d6b9483f07a33f8a5954e7d14dd56e6affc1075b693a9d099591"
+    },
+    {
+      "path": "SOURCES.json",
+      "bytes": 160116,
+      "sha256": "785f757f68994a0e546beb63e323084206e776ab545c9de032b0bd229a4915b9"
+    },
+    {
+      "path": "tools/verify-snapshot.mjs",
+      "bytes": 4295,
+      "sha256": "d9eae92fc5ed4f06fbf69b0e35be90223c107423daa99a57bc38c12bcee81671"
+    },
+    {
+      "path": "tools/verify-snapshot.test.mjs",
+      "bytes": 1954,
+      "sha256": "46c3db7734e88fb7c895458efb660437174106870c1cec28a77ee56853c12a4b"
+    },
+    {
+      "path": "VALIDATION.md",
+      "bytes": 3259,
+      "sha256": "7c099ac7f6453a69740c8a56db9df7f2a11b81738908ce6df33782bf4021d400"
+    }
+  ]
+}

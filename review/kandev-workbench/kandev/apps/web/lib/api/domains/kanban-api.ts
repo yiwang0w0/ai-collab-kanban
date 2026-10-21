@@ -1,0 +1,568 @@
+import type { RepositoryCheckoutOptions } from "@/lib/types/repository-checkout-options";
+import { fetchJson, type ApiRequestOptions } from "../client";
+import { getBackendConfig } from "@/lib/config";
+import type {
+  WorkflowSnapshot,
+  ListWorkflowsResponse,
+  ListTasksResponse,
+  CreateTaskResponse,
+  AttachTaskWorkspaceSourcesRequest,
+  AttachTaskWorkspaceSourcesResponse,
+  Task,
+  SidebarTaskQuery,
+  SidebarTaskPageResponse,
+  TaskPriority,
+  MoveTaskResponse,
+  ReorderBand,
+  ReorderStepTasksResponse,
+} from "@/lib/types/http";
+
+// Workflow operations
+export async function listWorkflows(
+  workspaceId: string,
+  options?: ApiRequestOptions & { includeHidden?: boolean },
+) {
+  const { includeHidden, ...requestOptions } = options ?? {};
+  const baseUrl = requestOptions.baseUrl ?? getBackendConfig().apiBaseUrl;
+  const url = new URL(`${baseUrl}/api/v1/workflows`);
+  url.searchParams.set("workspace_id", workspaceId);
+  if (includeHidden) {
+    url.searchParams.set("include_hidden", "true");
+  }
+  return fetchJson<ListWorkflowsResponse>(url.toString(), requestOptions);
+}
+
+export async function fetchWorkflowSnapshot(workflowId: string, options?: ApiRequestOptions) {
+  return fetchJson<WorkflowSnapshot>(`/api/v1/workflows/${workflowId}/snapshot`, options);
+}
+
+export async function reorderWorkflows(
+  workspaceId: string,
+  workflowIds: string[],
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<{ success: boolean }>(`/api/v1/workspaces/${workspaceId}/workflows/reorder`, {
+    ...options,
+    init: {
+      method: "PUT",
+      body: JSON.stringify({ workflow_ids: workflowIds }),
+      ...(options?.init ?? {}),
+    },
+  });
+}
+
+// Task operations
+type CreateTaskTitlePayload =
+  | {
+      title: string;
+      auto_title?: false;
+      description?: string;
+    }
+  | {
+      title?: never;
+      auto_title: true;
+      description: string;
+    };
+
+export async function createTask(
+  payload: CreateTaskTitlePayload & {
+    workspace_id: string;
+    workflow_id: string;
+    workflow_step_id?: string;
+    pool_release?: PoolReleaseConfirmation | null;
+    position?: number;
+    repositories?: Array<{
+      checkout_options?: RepositoryCheckoutOptions;
+      repository_id: string;
+      branch_policy_id?: string;
+      base_branch?: string;
+      checkout_branch?: string;
+      pr_number?: number;
+      local_path?: string;
+      name?: string;
+      default_branch?: string;
+      github_url?: string;
+      remote_url?: string;
+      provider?: string;
+      provider_host?: string;
+      provider_scope?: string;
+      provider_repo_id?: string;
+      provider_owner?: string;
+      provider_name?: string;
+      fresh_branch?: boolean;
+      confirm_discard?: boolean;
+      consented_dirty_files?: string[];
+    }>;
+    state?: Task["state"];
+    start_agent?: boolean;
+    prepare_session?: boolean;
+    agent_profile_id?: string;
+    executor_id?: string;
+    executor_profile_id?: string;
+    plan_mode?: boolean;
+    attachments?: Array<{
+      type: string;
+      data?: string;
+      attachment_id?: string;
+      mime_type: string;
+      name?: string;
+      size_bytes?: number;
+      delivery_mode?: "prompt" | "path";
+    }>;
+    parent_id?: string;
+    /**
+     * Task IDs this task depends on. With these set, an agent-start request is
+     * recorded as a start-when-unblocked intent rather than launching now.
+     */
+    blocked_by?: string[];
+    /** Explicitly opt out of (false) or into (true) the auto-start-on-unblock intent. */
+    start_when_unblocked?: boolean;
+    workspace_path?: string;
+    priority?: TaskPriority;
+    project_id?: string;
+    metadata?: Record<string, unknown>;
+    /** Office agent instance to seat as the task's runner at create time. */
+    assignee_agent_profile_id?: string;
+    /** Office task-handoffs phase 4/5 — workspace policy. */
+    workspace_mode?: "inherit_parent" | "new_workspace" | "shared_group";
+    workspace_group_id?: string;
+    default_child_workspace?: "inherit_parent" | "new_workspace";
+    default_child_ordering?: "sequential" | "parallel";
+    /** Start the task in autopilot mode. Fixed at creation time. */
+    autopilot?: boolean;
+    /** Task-only replacements for fixed workflow step agent profiles. */
+    workflow_agent_overrides?: Record<string, string>;
+  },
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<CreateTaskResponse>("/api/v1/tasks", {
+    ...options,
+    init: { method: "POST", body: JSON.stringify(payload), ...(options?.init ?? {}) },
+  });
+}
+
+export async function updateTask(
+  taskId: string,
+  payload: {
+    title?: string;
+    description?: string;
+    position?: number;
+    state?: Task["state"];
+    repositories?: Array<{
+      checkout_options?: RepositoryCheckoutOptions;
+      repository_id: string;
+      base_branch?: string;
+    }>;
+    /** Nest under another task. Empty string clears the parent (un-nest). */
+    parent_id?: string;
+    /** Human assignee. "" unassigns; omitting the field leaves it alone. */
+    assignee_user_id?: string;
+    priority?: TaskPriority;
+  },
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<Task>(`/api/v1/tasks/${taskId}`, {
+    ...options,
+    init: { method: "PATCH", body: JSON.stringify(payload), ...(options?.init ?? {}) },
+  });
+}
+
+export async function updateTaskPortForwarding(
+  taskId: string,
+  enabled: boolean,
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<Task>(`/api/v1/tasks/${taskId}/port-forwarding`, {
+    ...options,
+    init: {
+      method: "PATCH",
+      body: JSON.stringify({ enabled }),
+      ...(options?.init ?? {}),
+    },
+  });
+}
+
+export async function detachTask(taskId: string, options?: ApiRequestOptions) {
+  return fetchJson<Task>(`/api/v1/tasks/${taskId}/detach`, {
+    ...options,
+    init: { method: "POST", ...(options?.init ?? {}) },
+  });
+}
+
+/** Attach a validated batch of repository and folder sources to an idle task. */
+export async function attachTaskWorkspaceSources(
+  taskId: string,
+  payload: AttachTaskWorkspaceSourcesRequest,
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<AttachTaskWorkspaceSourcesResponse>(
+    `/api/v1/tasks/${taskId}/workspace-sources`,
+    {
+      ...options,
+      init: { method: "POST", body: JSON.stringify(payload), ...(options?.init ?? {}) },
+    },
+  );
+}
+
+export async function updateTaskRepositoryBaseBranch(
+  taskId: string,
+  taskRepositoryId: string,
+  baseBranch: string,
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<{
+    id: string;
+    task_id: string;
+    repository_id: string;
+    base_branch: string;
+    checkout_branch?: string;
+    position?: number;
+  }>(`/api/v1/tasks/${taskId}/repositories/${taskRepositoryId}`, {
+    ...options,
+    init: {
+      ...(options?.init ?? {}),
+      method: "PATCH",
+      body: JSON.stringify({ base_branch: baseBranch }),
+    },
+  });
+}
+
+export type DeleteTaskParams = {
+  cascade?: boolean;
+  discardWorktreeChanges?: boolean;
+  confirmationId?: string;
+};
+
+export type TaskDeletePreflightResponse = {
+  requires_discard_consent: boolean;
+  confirmation_id: string;
+};
+
+export async function getTaskDeletePreflight(
+  taskIds: string[],
+  cascade: boolean,
+  discardWorktreeChanges = false,
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<TaskDeletePreflightResponse>("/api/v1/tasks/delete-preflight", {
+    ...options,
+    cache: "no-store",
+    init: {
+      method: "POST",
+      body: JSON.stringify({
+        task_ids: taskIds,
+        cascade,
+        discard_worktree_changes: discardWorktreeChanges,
+      }),
+      ...(options?.init ?? {}),
+    },
+  });
+}
+
+export async function deleteTask(
+  taskId: string,
+  params?: DeleteTaskParams,
+  options?: ApiRequestOptions,
+) {
+  const queryParams = new URLSearchParams();
+  if (params?.cascade) queryParams.set("cascade", "true");
+  if (params?.discardWorktreeChanges) {
+    queryParams.set("discard_worktree_changes", "true");
+  }
+  const query = queryParams.toString() ? `?${queryParams.toString()}` : "";
+  const headers = new Headers(options?.init?.headers);
+  if (params?.confirmationId) {
+    headers.set("X-Kandev-Task-Delete-Confirmation", params.confirmationId);
+  }
+  return fetchJson<void>(`/api/v1/tasks/${taskId}${query}`, {
+    ...options,
+    init: { method: "DELETE", ...options?.init, headers },
+  });
+}
+
+/**
+ * Deletes a task after a native app action has already confirmed that outcome
+ * (for example, closing a quick-chat session). Dialog-driven deletion should
+ * pass its preview ticket directly to `deleteTask` instead.
+ */
+export async function deleteTaskAfterUserAction(
+  taskId: string,
+  params?: DeleteTaskParams,
+  options?: ApiRequestOptions,
+) {
+  const preview = await getTaskDeletePreflight(
+    [taskId],
+    params?.cascade ?? false,
+    params?.discardWorktreeChanges ?? false,
+    options,
+  );
+  return deleteTask(taskId, { ...params, confirmationId: preview.confirmation_id }, options);
+}
+
+/** One-shot values applied when a task enters the destination workflow step. */
+export type WorkflowMoveEntryOptions = {
+  reset_context?: boolean;
+  instructions?: string;
+  skip_step_prompt?: boolean;
+};
+
+export type WorkflowChangePayload = {
+  expected_workflow_id: string;
+  expected_step_id: string;
+  expected_updated_at: string;
+  agent_overrides: Record<string, string>;
+};
+
+export type MoveTaskPayload = {
+  workflow_id: string;
+  workflow_step_id: string;
+  /** @deprecated Server computes arrival position per AC.28; this field is transmitted but ignored. */
+  position?: number;
+  entry_options?: WorkflowMoveEntryOptions | null;
+  workflow_change?: WorkflowChangePayload | null;
+  completion_override?: TaskCompletionMoveOverride | null;
+  pool_release?: PoolReleaseConfirmation | null;
+};
+
+export type PoolReleaseConfirmation = {
+  confirm_cli_quota: boolean;
+  expected_resource_version: string;
+  expected_step_version: string;
+};
+
+export type TaskCompletionMoveOverride = {
+  expected_revision: number;
+  reason: string;
+};
+
+/** Move response fields added by the one-shot entry-options transport. */
+export type WorkflowMoveResponse = MoveTaskResponse & {
+  entry_options?: WorkflowMoveEntryOptions;
+};
+
+export type WorkflowMovePreviewOutcome =
+  | "reuse_current"
+  | "reuse_other"
+  | "create_new"
+  | "no_session"
+  | "unknown";
+export type WorkflowMovePreviewApplicability = "planned" | "unchanged" | "skipped" | "unknown";
+export type WorkflowMovePreviewSourceDisposition = "keep" | "park" | "complete" | "unknown";
+export type WorkflowMovePreviewDispatch =
+  | "prompt"
+  | "no_prompt"
+  | "deferred"
+  | "no_session"
+  | "unknown";
+
+export type WorkflowMovePreviewModelValue = {
+  id?: string;
+  label?: string;
+  known: boolean;
+  mode?: string;
+  config_options?: Record<string, string>;
+};
+
+export type WorkflowMovePreviewResponse = {
+  task_id: string;
+  workflow_step_id: string;
+  source_session_id?: string;
+  evaluated_at: string;
+  outcome: WorkflowMovePreviewOutcome;
+  recipient?: {
+    session_id?: string;
+    session_name?: string;
+    profile_id?: string;
+    profile_name?: string;
+    agent_family?: string;
+  };
+  model: {
+    before: WorkflowMovePreviewModelValue;
+    after: WorkflowMovePreviewModelValue;
+    before_source?: string;
+    after_source?: string;
+  };
+  changes?: Array<{
+    key: string;
+    label: string;
+    before?: string;
+    after?: string;
+    applicability: WorkflowMovePreviewApplicability;
+  }>;
+  context_reset: boolean;
+  context_reset_state: WorkflowMovePreviewApplicability;
+  source_disposition: WorkflowMovePreviewSourceDisposition;
+  dispatch: WorkflowMovePreviewDispatch;
+  notices?: Array<{ code: string; params?: Record<string, string> }>;
+};
+
+/**
+ * Converts form values into the wire contract. Blank text has no one-shot
+ * effect, and an absent/empty object keeps the legacy destination-only body.
+ */
+export function normalizeWorkflowMoveEntryOptions(
+  options: WorkflowMoveEntryOptions | null | undefined,
+): WorkflowMoveEntryOptions | undefined {
+  if (!options) return undefined;
+
+  const normalized: WorkflowMoveEntryOptions = {};
+  if (options.reset_context === true) normalized.reset_context = true;
+  if (options.skip_step_prompt === true) normalized.skip_step_prompt = true;
+
+  const instructions = options.instructions?.trim();
+  if (instructions) normalized.instructions = instructions;
+
+  return Object.keys(normalized).length > 0 ? normalized : undefined;
+}
+
+export async function moveTask(
+  taskId: string,
+  payload: MoveTaskPayload,
+  options?: ApiRequestOptions,
+): Promise<WorkflowMoveResponse> {
+  const { entry_options, ...destination } = payload;
+  const normalizedEntryOptions = normalizeWorkflowMoveEntryOptions(entry_options);
+  const requestPayload = normalizedEntryOptions
+    ? { ...destination, entry_options: normalizedEntryOptions }
+    : destination;
+
+  return fetchJson<WorkflowMoveResponse>(`/api/v1/tasks/${taskId}/move`, {
+    ...options,
+    init: { method: "POST", body: JSON.stringify(requestPayload), ...(options?.init ?? {}) },
+  });
+}
+
+export async function previewWorkflowMove(
+  taskId: string,
+  payload: MoveTaskPayload,
+  options?: ApiRequestOptions,
+): Promise<WorkflowMovePreviewResponse> {
+  const { entry_options, ...destination } = payload;
+  const normalizedEntryOptions = normalizeWorkflowMoveEntryOptions(entry_options);
+  const requestPayload = normalizedEntryOptions
+    ? { ...destination, entry_options: normalizedEntryOptions }
+    : destination;
+
+  return fetchJson<WorkflowMovePreviewResponse>(`/api/v1/tasks/${taskId}/move-preview`, {
+    ...options,
+    cache: "no-store",
+    init: { method: "POST", body: JSON.stringify(requestPayload), ...(options?.init ?? {}) },
+  });
+}
+
+/**
+ * Reorders one workflow step's band. The only request surface for a reorder
+ * (REQ-TASKS-KANBAN-TASK-REORDERING-001) — a WebSocket action was cut in the
+ * design. On a 409 `step_changed` conflict the thrown ApiError's `body`
+ * carries this same ReorderStepTasksResponse shape (the authoritative order
+ * to reconcile to silently); on a 400 `invalid_reorder` it carries only
+ * `{code}`.
+ */
+export async function reorderStepTasks(
+  workflowStepId: string,
+  payload: { band: ReorderBand; ordered_task_ids: string[] },
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<ReorderStepTasksResponse>(
+    `/api/v1/workflow-steps/${workflowStepId}/tasks/reorder`,
+    {
+      ...options,
+      init: { method: "PUT", body: JSON.stringify(payload), ...(options?.init ?? {}) },
+    },
+  );
+}
+
+export async function bulkMoveSelectedTasks(
+  payload: { task_ids: string[]; target_workflow_id: string; target_step_id: string },
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<{ moved_count: number }>("/api/v1/tasks/bulk-move", {
+    ...options,
+    init: { method: "POST", body: JSON.stringify(payload), ...(options?.init ?? {}) },
+  });
+}
+
+export async function fetchTask(taskId: string, options?: ApiRequestOptions) {
+  return fetchJson<Task>(`/api/v1/tasks/${taskId}`, options);
+}
+
+export async function archiveTask(
+  taskId: string,
+  params?: { cascade?: boolean },
+  options?: ApiRequestOptions,
+) {
+  const query = params?.cascade ? "?cascade=true" : "";
+  return fetchJson<void>(`/api/v1/tasks/${taskId}/archive${query}`, {
+    ...options,
+    init: { method: "POST", ...(options?.init ?? {}) },
+  });
+}
+
+export type BranchRecovery = {
+  task_id: string;
+  repository_id: string;
+  branch: string;
+  status: "local" | "remote" | "missing";
+};
+
+export type UnarchiveTaskResponse = {
+  success: boolean;
+  cascade_id: string;
+  unarchived_ids: string[];
+  skipped_ids: string[];
+  affected_group_ids: string[];
+  recovery: BranchRecovery[];
+};
+
+export async function unarchiveTask(taskId: string, options?: ApiRequestOptions) {
+  return fetchJson<UnarchiveTaskResponse>(`/api/v1/tasks/${taskId}/unarchive`, {
+    ...options,
+    init: { method: "POST", ...(options?.init ?? {}) },
+  });
+}
+
+export async function getSubtaskCount(taskId: string, options?: ApiRequestOptions) {
+  return fetchJson<{ count: number }>(`/api/v1/tasks/${taskId}/subtask-count`, options);
+}
+
+export async function listTasksByWorkspace(
+  workspaceId: string,
+  params: {
+    page?: number;
+    pageSize?: number;
+    query?: string;
+    includeArchived?: boolean;
+    onlyArchived?: boolean;
+    workflowId?: string | null;
+    repositoryId?: string | null;
+    sort?: string;
+  } = {},
+  options?: ApiRequestOptions,
+) {
+  const baseUrl = options?.baseUrl ?? getBackendConfig().apiBaseUrl;
+  const url = new URL(`${baseUrl}/api/v1/workspaces/${workspaceId}/tasks`);
+  if (params.page) url.searchParams.set("page", String(params.page));
+  if (params.pageSize) url.searchParams.set("page_size", String(params.pageSize));
+  if (params.query) url.searchParams.set("query", params.query);
+  if (params.includeArchived) url.searchParams.set("include_archived", "true");
+  if (params.onlyArchived) url.searchParams.set("only_archived", "true");
+  if (params.workflowId) url.searchParams.set("workflow_id", params.workflowId);
+  if (params.repositoryId) url.searchParams.set("repository_id", params.repositoryId);
+  if (params.sort) url.searchParams.set("sort", params.sort);
+  return fetchJson<ListTasksResponse>(url.toString(), options);
+}
+
+export async function querySidebarTasks(
+  workspaceId: string,
+  query: SidebarTaskQuery,
+  options?: ApiRequestOptions,
+) {
+  return fetchJson<SidebarTaskPageResponse>(`/api/v1/workspaces/${workspaceId}/sidebar/query`, {
+    ...options,
+    init: {
+      method: "POST",
+      body: JSON.stringify(query),
+      ...(options?.init ?? {}),
+    },
+  });
+}

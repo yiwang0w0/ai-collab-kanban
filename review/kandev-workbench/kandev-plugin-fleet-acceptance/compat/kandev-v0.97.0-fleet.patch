@@ -1,0 +1,1869 @@
+diff --git a/apps/backend/internal/backendapp/services.go b/apps/backend/internal/backendapp/services.go
+index 12e69ffa..3258a616 100644
+--- a/apps/backend/internal/backendapp/services.go
++++ b/apps/backend/internal/backendapp/services.go
+@@ -53,8 +53,10 @@ import (
+ 	"github.com/kandev/kandev/internal/sentry"
+ 	"github.com/kandev/kandev/internal/steptelemetry"
+ 	systemsettings "github.com/kandev/kandev/internal/system/settings"
++	"github.com/kandev/kandev/internal/task/acceptance"
+ 	taskmodels "github.com/kandev/kandev/internal/task/models"
+ 	"github.com/kandev/kandev/internal/task/repository/repoerrors"
++	tasksqlite "github.com/kandev/kandev/internal/task/repository/sqlite"
+ 	taskservice "github.com/kandev/kandev/internal/task/service"
+ 	"github.com/kandev/kandev/internal/task/share"
+ 	userservice "github.com/kandev/kandev/internal/user/service"
+@@ -117,6 +119,9 @@ func provideServices(ctx context.Context, cfg *config.Config, log *logger.Logger
+ 		return nil, nil, err
+ 	}
+ 	pluginsSvc := integrations.pluginsSvc
++	if pluginsSvc != nil {
++		pluginsSvc.SetStrictCompletionVerifierID(cfg.Tasks.CompletionVerifierID)
++	}
+ 
+ 	services := assembleServices(managedRuntimeSelections, core, providers, integrations)
+ 	if services.Plugins != nil {
+@@ -210,6 +215,10 @@ func initCoreTaskServices(
+ 	storeTracker *requiredstores.Tracker,
+ 	log *logger.Logger,
+ ) (*coreTaskServices, error) {
++	if cfg.Tasks.CompletionVerifierID != "" {
++		checker := acceptance.Checker{NodePath: cfg.Tasks.CompletionNodePath, ScriptPath: cfg.Tasks.CompletionCheckerPath, RepositoryID: cfg.Tasks.CompletionRepositoryID, RepositoryRoot: cfg.Tasks.CompletionRepositoryRoot}
++		repos.Task.SetStrictCompletionPolicy(&tasksqlite.StrictCompletionPolicy{VerifierID: cfg.Tasks.CompletionVerifierID, Check: checker.Check})
++	}
+ 	userSvc := userservice.NewService(repos.User, eventBus, log)
+ 	editorSvc := editorservice.NewService(repos.Editor, repos.Task, userSvc)
+ 	promptSvc := promptservice.NewService(repos.Prompts)
+diff --git a/apps/backend/internal/common/config/catalog.go b/apps/backend/internal/common/config/catalog.go
+index 8f2cc789..22561a90 100644
+--- a/apps/backend/internal/common/config/catalog.go
++++ b/apps/backend/internal/common/config/catalog.go
+@@ -115,6 +115,11 @@ var startupCatalog = []CatalogEntry{
+ 	{Key: "githubCredentialBroker.publicBaseUrl", EnvVars: []string{"KANDEV_GITHUB_CREDENTIAL_BROKER_PUBLIC_BASE_URL"}, Owner: "github credential broker", Default: ""},
+ 	{Key: "tasks.preparationTimeout", EnvVars: []string{"KANDEV_TASK_PREPARATION_TIMEOUT"}, Owner: "task lifecycle", Default: "10m"},
+ 	{Key: "tasks.stallDetectionThreshold", EnvVars: []string{"KANDEV_TASK_STALL_DETECTION_THRESHOLD"}, Owner: "task lifecycle", Default: "2h"},
++	{Key: "tasks.completionVerifierId", EnvVars: []string{"KANDEV_COMPLETION_VERIFIER_ID"}, Owner: "strict completion", Default: ""},
++	{Key: "tasks.completionNodePath", EnvVars: []string{"KANDEV_COMPLETION_NODE_PATH"}, Owner: "strict completion", Default: ""},
++	{Key: "tasks.completionCheckerPath", EnvVars: []string{"KANDEV_COMPLETION_CHECKER_PATH"}, Owner: "strict completion", Default: ""},
++	{Key: "tasks.completionRepositoryId", EnvVars: []string{"KANDEV_COMPLETION_REPOSITORY_ID"}, Owner: "strict completion", Default: ""},
++	{Key: "tasks.completionRepositoryRoot", EnvVars: []string{"KANDEV_COMPLETION_REPOSITORY_ROOT"}, Owner: "strict completion", Default: ""},
+ 	{Key: "credentials.file", EnvVars: []string{"KANDEV_CREDENTIALS_FILE"}, Owner: "credentials", Default: ""},
+ 	{Key: "limits.ghMaxConcurrent", EnvVars: []string{"KANDEV_GH_MAX_CONCURRENT"}, Owner: "subprocess admission", Default: "8"},
+ 	{Key: "limits.gitMaxConcurrent", EnvVars: []string{"KANDEV_GIT_MAX_CONCURRENT"}, Owner: "subprocess admission", Default: "12"},
+diff --git a/apps/backend/internal/common/config/catalog_test.go b/apps/backend/internal/common/config/catalog_test.go
+index fc98a756..37c6d7a7 100644
+--- a/apps/backend/internal/common/config/catalog_test.go
++++ b/apps/backend/internal/common/config/catalog_test.go
+@@ -145,6 +145,11 @@ func auditedStartupEnvironmentInventory() []auditedStartupEnvironment {
+ 		{envVar: "KANDEV_GITHUB_CREDENTIAL_BROKER_PUBLIC_BASE_URL", class: "catalog"},
+ 		{envVar: "KANDEV_TASK_PREPARATION_TIMEOUT", class: "catalog"},
+ 		{envVar: "KANDEV_TASK_STALL_DETECTION_THRESHOLD", class: "catalog"},
++		{envVar: "KANDEV_COMPLETION_VERIFIER_ID", class: "catalog"},
++		{envVar: "KANDEV_COMPLETION_NODE_PATH", class: "catalog"},
++		{envVar: "KANDEV_COMPLETION_CHECKER_PATH", class: "catalog"},
++		{envVar: "KANDEV_COMPLETION_REPOSITORY_ID", class: "catalog"},
++		{envVar: "KANDEV_COMPLETION_REPOSITORY_ROOT", class: "catalog"},
+ 		{envVar: "KANDEV_CREDENTIALS_FILE", class: "catalog"},
+ 		{envVar: "KANDEV_GH_MAX_CONCURRENT", class: "catalog"},
+ 		{envVar: "KANDEV_GIT_MAX_CONCURRENT", class: "catalog"},
+diff --git a/apps/backend/internal/common/config/config.go b/apps/backend/internal/common/config/config.go
+index 26154beb..1ca9f347 100644
+--- a/apps/backend/internal/common/config/config.go
++++ b/apps/backend/internal/common/config/config.go
+@@ -64,7 +64,12 @@ type TasksConfig struct {
+ 	// session reconciliation sweep classifies an active session with no live
+ 	// execution as stalled (issue #3712). The orphaned-session healing grace
+ 	// window is twice this value.
+-	StallDetectionThreshold time.Duration `mapstructure:"stallDetectionThreshold"`
++	StallDetectionThreshold  time.Duration `mapstructure:"stallDetectionThreshold"`
++	CompletionVerifierID     string        `mapstructure:"completionVerifierId"`
++	CompletionNodePath       string        `mapstructure:"completionNodePath"`
++	CompletionCheckerPath    string        `mapstructure:"completionCheckerPath"`
++	CompletionRepositoryID   string        `mapstructure:"completionRepositoryId"`
++	CompletionRepositoryRoot string        `mapstructure:"completionRepositoryRoot"`
+ }
+ 
+ // CredentialsConfig contains operator-managed credential file settings.
+@@ -907,6 +912,9 @@ func loadWithPath(configPath, homeDir string) (*Config, error) {
+ // In development mode (default), most fields are optional.
+ func validate(cfg *Config) error {
+ 	var errs []string
++	if err := cfg.validateStrictCompletion(); err != nil {
++		errs = append(errs, err.Error())
++	}
+ 
+ 	// Server validation - always required
+ 	if cfg.Server.Port <= 0 || cfg.Server.Port > 65535 {
+diff --git a/apps/backend/internal/common/config/source.go b/apps/backend/internal/common/config/source.go
+index e1dabff4..05929089 100644
+--- a/apps/backend/internal/common/config/source.go
++++ b/apps/backend/internal/common/config/source.go
+@@ -68,6 +68,11 @@ var yamlOnlyStartupKeys = map[string]struct{}{
+ 	"server.trustedProxies":                    {},
+ 	"tasks.preparationTimeout":                 {},
+ 	"tasks.stallDetectionThreshold":            {},
++	"tasks.completionVerifierId":               {},
++	"tasks.completionNodePath":                 {},
++	"tasks.completionCheckerPath":              {},
++	"tasks.completionRepositoryId":             {},
++	"tasks.completionRepositoryRoot":           {},
+ 	"credentials.file":                         {},
+ 	"limits.ghMaxConcurrent":                   {},
+ 	"limits.gitMaxConcurrent":                  {},
+@@ -298,6 +303,11 @@ func applyStartupDefaults(cfg *Config, yamlKeys map[string]bool, profileDefaults
+ 	}
+ 	setDefaultDuration("tasks.preparationTimeout", &cfg.Tasks.PreparationTimeout, 10*time.Minute)
+ 	setDefaultDuration("tasks.stallDetectionThreshold", &cfg.Tasks.StallDetectionThreshold, 2*time.Hour)
++	for key, target := range strictCompletionSettings(cfg) {
++		if !yamlKeys[key] {
++			*target = ""
++		}
++	}
+ 	if !yamlKeys["credentials.file"] {
+ 		cfg.Credentials.File = ""
+ 	}
+@@ -339,6 +349,9 @@ func applyStartupEnvironment(cfg *Config, envSnapshot map[string]string, sources
+ 	applyTrustedProxiesEnv(cfg, envSnapshot, sources)
+ 	applyDurationEnv("tasks.preparationTimeout", &cfg.Tasks.PreparationTimeout, 10*time.Minute, envSnapshot, sources)
+ 	applyDurationEnv("tasks.stallDetectionThreshold", &cfg.Tasks.StallDetectionThreshold, 2*time.Hour, envSnapshot, sources)
++	for key, target := range strictCompletionSettings(cfg) {
++		applyStringEnvAllowEmpty(key, target, envSnapshot, sources)
++	}
+ 	applyStringEnvAllowEmpty("credentials.file", &cfg.Credentials.File, envSnapshot, sources)
+ 	applyPositiveIntEnv("limits.ghMaxConcurrent", &cfg.Limits.GHMaxConcurrent, 8, envSnapshot, sources)
+ 	applyPositiveIntEnv("limits.gitMaxConcurrent", &cfg.Limits.GitMaxConcurrent, 12, envSnapshot, sources)
+diff --git a/apps/backend/internal/common/config/strict_completion.go b/apps/backend/internal/common/config/strict_completion.go
+new file mode 100644
+index 00000000..943f1a88
+--- /dev/null
++++ b/apps/backend/internal/common/config/strict_completion.go
+@@ -0,0 +1,44 @@
++package config
++
++import (
++	"errors"
++	"path/filepath"
++	"strings"
++)
++
++func strictCompletionSettings(cfg *Config) map[string]*string {
++	return map[string]*string{
++		"tasks.completionVerifierId":     &cfg.Tasks.CompletionVerifierID,
++		"tasks.completionNodePath":       &cfg.Tasks.CompletionNodePath,
++		"tasks.completionCheckerPath":    &cfg.Tasks.CompletionCheckerPath,
++		"tasks.completionRepositoryId":   &cfg.Tasks.CompletionRepositoryID,
++		"tasks.completionRepositoryRoot": &cfg.Tasks.CompletionRepositoryRoot,
++	}
++}
++
++func (cfg *Config) validateStrictCompletion() error {
++	t := cfg.Tasks
++	values := []string{t.CompletionVerifierID, t.CompletionNodePath, t.CompletionCheckerPath, t.CompletionRepositoryID, t.CompletionRepositoryRoot}
++	set := 0
++	for _, value := range values {
++		if strings.TrimSpace(value) != "" {
++			set++
++		}
++	}
++	if set == 0 {
++		return nil
++	}
++	if set != len(values) || !strings.HasPrefix(t.CompletionVerifierID, "plugin:") || len(strings.TrimPrefix(t.CompletionVerifierID, "plugin:")) == 0 {
++		return errors.New("严格验收配置必须同时指定插件安装身份、Node、校验脚本、仓库 ID 与根目录")
++	}
++	if !cfg.Features.Auth {
++		return errors.New("严格验收要求启用 features.auth，匿名本地调用不能作为人工验收")
++	}
++	if strings.ToLower(cfg.Database.Driver) != "sqlite" {
++		return errors.New("本批严格验收只支持单机 SQLite；PostgreSQL 尚未验证")
++	}
++	if !filepath.IsAbs(t.CompletionNodePath) || !filepath.IsAbs(t.CompletionCheckerPath) || !filepath.IsAbs(t.CompletionRepositoryRoot) {
++		return errors.New("严格验收程序与仓库必须使用绝对路径")
++	}
++	return nil
++}
+diff --git a/apps/backend/internal/common/config/strict_completion_test.go b/apps/backend/internal/common/config/strict_completion_test.go
+new file mode 100644
+index 00000000..5eace13b
+--- /dev/null
++++ b/apps/backend/internal/common/config/strict_completion_test.go
+@@ -0,0 +1,46 @@
++package config
++
++import (
++	"path/filepath"
++	"testing"
++)
++
++func TestStrictCompletionConfiguration(t *testing.T) {
++	cfg := &Config{}
++	cfg.Database.Driver = "sqlite"
++	if err := cfg.validateStrictCompletion(); err != nil {
++		t.Fatal(err)
++	}
++	cfg.Tasks.CompletionVerifierID = "plugin:fixture"
++	if cfg.validateStrictCompletion() == nil {
++		t.Fatal("允许不完整严格配置")
++	}
++	root := t.TempDir()
++	cfg.Tasks.CompletionNodePath = filepath.Join(root, "node.exe")
++	cfg.Tasks.CompletionCheckerPath = filepath.Join(root, "check.mjs")
++	cfg.Tasks.CompletionRepositoryRoot = root
++	cfg.Tasks.CompletionRepositoryID = "repo-one"
++	if cfg.validateStrictCompletion() == nil {
++		t.Fatal("匿名模式可以开启人工验收")
++	}
++	cfg.Features.Auth = true
++	if err := cfg.validateStrictCompletion(); err != nil {
++		t.Fatal(err)
++	}
++	cfg.Database.Driver = "postgres"
++	if cfg.validateStrictCompletion() == nil {
++		t.Fatal("允许未验证的 PostgreSQL 严格验收")
++	}
++	cfg.Database.Driver = "sqlite"
++	for key, target := range strictCompletionSettings(cfg) {
++		if _, ok := CatalogEntryForKey(key); !ok {
++			t.Fatalf("配置未登记: %s", key)
++		}
++		value := *target
++		*target = ""
++		if cfg.validateStrictCompletion() == nil {
++			t.Fatalf("空值未拒绝: %s", key)
++		}
++		*target = value
++	}
++}
+diff --git a/apps/backend/internal/plugins/action_handlers.go b/apps/backend/internal/plugins/action_handlers.go
+index de5cb002..0004814d 100644
+--- a/apps/backend/internal/plugins/action_handlers.go
++++ b/apps/backend/internal/plugins/action_handlers.go
+@@ -42,6 +42,13 @@ func (c *Controller) action(ctx *gin.Context) {
+ 	if !ok {
+ 		return
+ 	}
++	if c.svc.requiresRealAcceptanceActor(record.InstallationID) {
++		identity, authenticated := authn.FromGin(ctx)
++		if !authenticated || identity.Synthetic {
++			ctx.JSON(http.StatusForbidden, gin.H{actionErrorField: "严格验收需要真实登录用户"})
++			return
++		}
++	}
+ 
+ 	declared, ok := manifestAction(record, ctx.Param("key"))
+ 	if !ok {
+diff --git a/apps/backend/internal/plugins/host_completion_read.go b/apps/backend/internal/plugins/host_completion_read.go
+new file mode 100644
+index 00000000..861888e8
+--- /dev/null
++++ b/apps/backend/internal/plugins/host_completion_read.go
+@@ -0,0 +1,36 @@
++package plugins
++
++import (
++	"context"
++
++	taskmodels "github.com/kandev/kandev/internal/task/models"
++	"github.com/kandev/kandev/pkg/pluginsdk"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++)
++
++func (h *pluginHost) ReadTaskCompletionGate(ctx context.Context, query pluginsdk.TaskCompletionGateRead) (*pluginsdk.TaskCompletionGate, error) {
++	_, unlock, err := h.exactReadAdmission(ctx, query.RequestID, query.WorkspaceID, "ReadTaskCompletionGate", "host.v2.read:tasks", map[string]string{"task_id": query.TaskID})
++	if err != nil {
++		return nil, err
++	}
++	defer unlock()
++	reader, ok := h.taskData.(interface {
++		GetTaskCompletionGate(context.Context, string) (*taskmodels.TaskCompletionGateSnapshot, error)
++	})
++	if !ok {
++		return nil, status.Error(codes.Unimplemented, "任务门禁读取服务不可用")
++	}
++	task, err := h.taskData.GetTask(ctx, query.TaskID)
++	if err != nil || task == nil || task.WorkspaceID != query.WorkspaceID {
++		return nil, status.Error(codes.NotFound, "任务不存在")
++	}
++	gate, err := reader.GetTaskCompletionGate(ctx, query.TaskID)
++	if err != nil {
++		return nil, err
++	}
++	if gate == nil || gate.TaskID != query.TaskID || gate.WorkspaceID != query.WorkspaceID {
++		return nil, status.Error(codes.Unavailable, "任务门禁范围不一致")
++	}
++	return taskCompletionGateToSDK(gate), nil
++}
+diff --git a/apps/backend/internal/plugins/host_completion_read_test.go b/apps/backend/internal/plugins/host_completion_read_test.go
+new file mode 100644
+index 00000000..6ed2d0ca
+--- /dev/null
++++ b/apps/backend/internal/plugins/host_completion_read_test.go
+@@ -0,0 +1,43 @@
++package plugins
++
++import (
++	"context"
++	taskmodels "github.com/kandev/kandev/internal/task/models"
++	"github.com/kandev/kandev/pkg/pluginsdk"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++	"testing"
++)
++
++type completionReadData struct{ *fakeTaskDataSource }
++
++func (d completionReadData) GetTaskCompletionGate(_ context.Context, id string) (*taskmodels.TaskCompletionGateSnapshot, error) {
++	return &taskmodels.TaskCompletionGateSnapshot{TaskID: id, WorkspaceID: "workspace-one", Revision: 8, Blocked: true}, nil
++}
++
++func TestCompletionGateReadIsWorkspaceAuthorized(t *testing.T) {
++	data := completionReadData{&fakeTaskDataSource{
++		tasksByID:        map[string]*taskmodels.Task{"task-one": {ID: "task-one", WorkspaceID: "workspace-one"}, "task-foreign": {ID: "task-foreign", WorkspaceID: "workspace-two"}},
++		workspaces:       []*taskmodels.Workspace{{ID: "workspace-one"}},
++		tasksByWorkspace: map[string][]*taskmodels.Task{"workspace-one": {{ID: "task-one", WorkspaceID: "workspace-one"}}, "workspace-two": {{ID: "task-foreign", WorkspaceID: "workspace-two"}}},
++	}}
++	host := newExactTaskReadHost(t, data)
++	reader, ok := pluginsdk.HostTaskCompletionGateReader(dialPluginHostOverWire(t, host))
++	if !ok {
++		t.Fatal("缺少只读门禁接口")
++	}
++	query := pluginsdk.TaskCompletionGateRead{RequestID: "gate-read", WorkspaceID: "workspace-one", TaskID: "task-one"}
++	gate, err := reader.ReadTaskCompletionGate(context.Background(), query)
++	if err != nil || gate.Revision != 8 {
++		t.Fatalf("门禁未读回: %+v %v", gate, err)
++	}
++	query.TaskID = "task-foreign"
++	if _, err := reader.ReadTaskCompletionGate(context.Background(), query); status.Code(err) != codes.NotFound {
++		t.Fatalf("跨工作区泄露: %v", err)
++	}
++	denied := newExactReadHost(t, data, []string{"tasks"}, nil)
++	query.TaskID = "task-one"
++	if _, err := denied.ReadTaskCompletionGate(context.Background(), query); status.Code(err) != codes.PermissionDenied {
++		t.Fatalf("无授权可读: %v", err)
++	}
++}
+diff --git a/apps/backend/internal/plugins/host_exact.go b/apps/backend/internal/plugins/host_exact.go
+index 6188f80b..6417bc82 100644
+--- a/apps/backend/internal/plugins/host_exact.go
++++ b/apps/backend/internal/plugins/host_exact.go
+@@ -426,6 +426,12 @@ func exactReadUnavailableReason(method string, host *pluginHost) string {
+ //nolint:cyclop // The method matrix lists each read dependency and its fail-closed reason.
+ func exactReadSpecificUnavailableReason(method string, host *pluginHost) string {
+ 	switch method {
++	case exactReadCompletionGate:
++		if _, ok := host.taskData.(interface {
++			GetTaskCompletionGate(context.Context, string) (*taskmodels.TaskCompletionGateSnapshot, error)
++		}); !ok {
++			return "completion_gate_reader_unavailable"
++		}
+ 	case exactReadSourceIssueCapabilities:
+ 		if host.sourceIssueController == nil {
+ 			return "source_issue_controller_unavailable"
+diff --git a/apps/backend/internal/plugins/host_exact_queries.go b/apps/backend/internal/plugins/host_exact_queries.go
+index 94469d6f..b5ab359b 100644
+--- a/apps/backend/internal/plugins/host_exact_queries.go
++++ b/apps/backend/internal/plugins/host_exact_queries.go
+@@ -27,6 +27,7 @@ const (
+ 	exactReadListWorkflowSteps       = "ListWorkflowStepsExact"
+ 	exactReadListTasks               = "ListTasksExact"
+ 	exactReadGetTask                 = "GetTaskExact"
++	exactReadCompletionGate          = "ReadTaskCompletionGate"
+ 	exactReadListSessions            = "ListSessionsExact"
+ 	exactReadListInteractions        = "ListPendingInteractionsExact"
+ 	exactReadGetInteraction          = "GetInteractionExact"
+@@ -48,6 +49,7 @@ var exactReadMethods = []exactMethod{
+ 	{method: exactReadListWorkflowSteps, capability: "host.v2.read:workflows", description: "Read one workflow step snapshot"},
+ 	{method: exactReadListTasks, capability: "host.v2.read:tasks", description: "Read canonical workspace task projections"},
+ 	{method: exactReadGetTask, capability: "host.v2.read:tasks", description: "Read one workspace task projection"},
++	{method: exactReadCompletionGate, capability: "host.v2.read:tasks", description: "读取任务原生完成条件、证据和阻塞原因"},
+ 	{method: exactReadListSessions, capability: "host.v2.read:sessions", description: "Read workspace session projections"},
+ 	{method: exactReadListInteractions, capability: "host.v2.read:interactions", description: "Read workspace human interactions"},
+ 	{method: exactReadGetInteraction, capability: "host.v2.read:interactions", description: "Read one workspace human interaction"},
+diff --git a/apps/backend/internal/plugins/service.go b/apps/backend/internal/plugins/service.go
+index ad5e0b9d..3eec55ca 100644
+--- a/apps/backend/internal/plugins/service.go
++++ b/apps/backend/internal/plugins/service.go
+@@ -50,6 +50,7 @@ type userStateCleanupStore interface {
+ //     (e.g. proxies checking a plugin's manifest/capabilities without
+ //     going through Service's error-wrapping Get).
+ type Service struct {
++	strictCompletionVerifierID            string
+ 	automationRevoker                     func(string) error
+ 	capabilityApprovalWorkspaceAuthorizer func(context.Context, string) error
+ 	humanInteractionResponseAuthorizer    func(context.Context, string) error
+diff --git a/apps/backend/internal/plugins/strict_acceptance_identity.go b/apps/backend/internal/plugins/strict_acceptance_identity.go
+new file mode 100644
+index 00000000..6ac97dc4
+--- /dev/null
++++ b/apps/backend/internal/plugins/strict_acceptance_identity.go
+@@ -0,0 +1,12 @@
++package plugins
++
++func (s *Service) SetStrictCompletionVerifierID(id string) {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	s.strictCompletionVerifierID = id
++}
++func (s *Service) requiresRealAcceptanceActor(installationID string) bool {
++	s.mu.Lock()
++	defer s.mu.Unlock()
++	return installationID != "" && s.strictCompletionVerifierID == "plugin:"+installationID
++}
+diff --git a/apps/backend/internal/plugins/strict_acceptance_identity_test.go b/apps/backend/internal/plugins/strict_acceptance_identity_test.go
+new file mode 100644
+index 00000000..a1964176
+--- /dev/null
++++ b/apps/backend/internal/plugins/strict_acceptance_identity_test.go
+@@ -0,0 +1,32 @@
++package plugins
++
++import (
++	"github.com/kandev/kandev/internal/auth/authn"
++	"github.com/kandev/kandev/pkg/pluginsdk"
++	"net/http"
++	"net/http/httptest"
++	"strings"
++	"testing"
++)
++
++func TestStrictAcceptanceRequiresRealIdentity(t *testing.T) {
++	invoker := &recordingActionInvoker{response: &pluginsdk.PluginActionResponse{Body: []byte(`{"ok":true}`)}}
++	router, svc := newActionTestRouter(t, invoker)
++	record, err := svc.Install(t.Context(), adminActionPackage(t))
++	if err != nil {
++		t.Fatal(err)
++	}
++	svc.SetStrictCompletionVerifierID("plugin:" + record.InstallationID)
++	req := httptest.NewRequest(http.MethodPost, "/api/plugins/kandev-plugin-admin-action/actions/connection.set", strings.NewReader(`{"workspaceId":"workspace-1","body":{}}`))
++	req.Header.Set("Content-Type", "application/json")
++	req = req.WithContext(authn.WithIdentity(req.Context(), authn.Identity{UserID: "implicit", Role: authn.RoleAdmin, Synthetic: true}))
++	response := httptest.NewRecorder()
++	router.ServeHTTP(response, req)
++	if response.Code != http.StatusForbidden || invoker.calls != 0 {
++		t.Fatalf("合成管理员能够调用人工验收: %d %d", response.Code, invoker.calls)
++	}
++	real := doActionRequestAsRole(router, authn.RoleAdmin)
++	if real.Code != http.StatusOK || invoker.calls != 1 {
++		t.Fatalf("真实管理员被误拦: %d %d", real.Code, invoker.calls)
++	}
++}
+diff --git a/apps/backend/internal/task/acceptance/checker.go b/apps/backend/internal/task/acceptance/checker.go
+new file mode 100644
+index 00000000..1411c329
+--- /dev/null
++++ b/apps/backend/internal/task/acceptance/checker.go
+@@ -0,0 +1,81 @@
++package acceptance
++
++import (
++	"bytes"
++	"context"
++	"encoding/json"
++	"errors"
++	"io"
++	"os/exec"
++	"time"
++)
++
++var ErrInvalidReceipt = errors.New("验收回执失效或不可测")
++
++type Checker struct{ NodePath, ScriptPath, RepositoryID, RepositoryRoot string }
++
++type receipt struct {
++	Format                  string          `json:"format"`
++	TaskID                  string          `json:"task_id"`
++	RepositoryID            string          `json:"repository_id"`
++	HeadBranch              string          `json:"head_branch"`
++	ImplementationSessionID string          `json:"implementation_session_id"`
++	ReviewSessionID         string          `json:"review_session_id"`
++	Task                    json.RawMessage `json:"task"`
++	Check                   struct {
++		Status       string `json:"status"`
++		Head         string `json:"head"`
++		Fingerprint  string `json:"fingerprint"`
++		RulesVersion string `json:"rules_version"`
++	} `json:"check"`
++}
++
++func (r receipt) validFor(taskID, repositoryID string) bool {
++	return r.Format == "fleet-acceptance/v1" && r.TaskID == taskID && r.RepositoryID == repositoryID &&
++		r.HeadBranch != "" && r.ImplementationSessionID != "" && r.ReviewSessionID != "" && r.ImplementationSessionID != r.ReviewSessionID &&
++		r.Check.Status == "pass" && r.Check.Head != "" && r.Check.Fingerprint != "" && r.Check.RulesVersion != ""
++}
++
++// 这里只执行同一份无服务的校验脚本，不连接旧看板，也不信任回执中的磁盘路径。
++func (c Checker) Check(ctx context.Context, taskID, summary string) error {
++	var value receipt
++	if json.Unmarshal([]byte(summary), &value) != nil || !value.validFor(taskID, c.RepositoryID) {
++		return ErrInvalidReceipt
++	}
++	input, err := json.Marshal(map[string]any{"format": "ai-fleet-delivery-input/v1", "repo_root": c.RepositoryRoot, "head_branch": value.HeadBranch, "task": value.Task, "expected": value.Check})
++	if err != nil {
++		return ErrInvalidReceipt
++	}
++	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
++	defer cancel()
++	cmd := exec.CommandContext(ctx, c.NodePath, c.ScriptPath)
++	hideWindow(cmd)
++	cmd.Stdin = bytes.NewReader(input)
++	output := &boundedOutput{}
++	cmd.Stdout = output
++	cmd.Stderr = io.Discard
++	cmd.WaitDelay = time.Second
++	if cmd.Run() != nil {
++		return ErrInvalidReceipt
++	}
++	var result struct {
++		Format       string `json:"format"`
++		Status       string `json:"status"`
++		Head         string `json:"head"`
++		Fingerprint  string `json:"fingerprint"`
++		RulesVersion string `json:"rules_version"`
++	}
++	if json.Unmarshal(output.Bytes(), &result) != nil || result.Format != "ai-fleet-delivery-check/v1" || result.Status != "pass" || result.Head != value.Check.Head || result.Fingerprint != value.Check.Fingerprint || result.RulesVersion != value.Check.RulesVersion {
++		return ErrInvalidReceipt
++	}
++	return nil
++}
++
++type boundedOutput struct{ bytes.Buffer }
++
++func (w *boundedOutput) Write(data []byte) (int, error) {
++	if w.Len()+len(data) > 512*1024 {
++		return 0, ErrInvalidReceipt
++	}
++	return w.Buffer.Write(data)
++}
+diff --git a/apps/backend/internal/task/acceptance/checker_test.go b/apps/backend/internal/task/acceptance/checker_test.go
+new file mode 100644
+index 00000000..bab69a55
+--- /dev/null
++++ b/apps/backend/internal/task/acceptance/checker_test.go
+@@ -0,0 +1,47 @@
++package acceptance
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"testing"
++)
++
++func TestCheckerUsesConfiguredRootAndFailsClosed(t *testing.T) {
++	node, err := exec.LookPath("node")
++	if err != nil {
++		t.Skip("进程契约测试需要 Node 24")
++	}
++	root := t.TempDir()
++	script := filepath.Join(root, "checker.mjs")
++	encodedRoot, _ := json.Marshal(root)
++	source := `let raw='';for await(const part of process.stdin)raw+=part;const input=JSON.parse(raw);
++if(input.repo_root!==` + string(encodedRoot) + `||input.head_branch!=='task/fixture')process.exit(3);
++const mode=input.task.result;if(mode==='overflow'){process.stdout.write('x'.repeat(600000));process.exit(0)}
++const result={format:'ai-fleet-delivery-check/v1',status:mode==='fail'?'fail':'pass',head:'commit',fingerprint:mode==='stale'?'changed':'fingerprint',rules_version:'rules'};
++process.stdout.write(JSON.stringify(result));process.exit(mode==='fail'?2:0);`
++	if err := os.WriteFile(script, []byte(source), 0600); err != nil {
++		t.Fatal(err)
++	}
++	checker := Checker{NodePath: node, ScriptPath: script, RepositoryID: "repo", RepositoryRoot: root}
++	for _, mode := range []string{"pass", "fail", "stale", "overflow"} {
++		t.Run(mode, func(t *testing.T) {
++			value := map[string]any{"format": "fleet-acceptance/v1", "task_id": "task", "repository_id": "repo", "repo_root": "untrusted-path", "head_branch": "task/fixture", "implementation_session_id": "implementation", "review_session_id": "review", "task": map[string]string{"result": mode}, "check": map[string]string{"status": "pass", "head": "commit", "fingerprint": "fingerprint", "rules_version": "rules"}}
++			summary, _ := json.Marshal(value)
++			err := checker.Check(context.Background(), "task", string(summary))
++			if mode == "pass" {
++				if err != nil {
++					t.Fatal(err)
++				}
++			} else if !errors.Is(err, ErrInvalidReceipt) {
++				t.Fatalf("无效结果未拒绝: %v", err)
++			}
++		})
++	}
++	if !errors.Is(checker.Check(context.Background(), "task", `{}`), ErrInvalidReceipt) {
++		t.Fatal("不完整回执被接受")
++	}
++}
+diff --git a/apps/backend/internal/task/acceptance/process_other.go b/apps/backend/internal/task/acceptance/process_other.go
+new file mode 100644
+index 00000000..a2f093a9
+--- /dev/null
++++ b/apps/backend/internal/task/acceptance/process_other.go
+@@ -0,0 +1,7 @@
++//go:build !windows
++
++package acceptance
++
++import "os/exec"
++
++func hideWindow(cmd *exec.Cmd) {}
+diff --git a/apps/backend/internal/task/acceptance/process_windows.go b/apps/backend/internal/task/acceptance/process_windows.go
+new file mode 100644
+index 00000000..a0c42d0d
+--- /dev/null
++++ b/apps/backend/internal/task/acceptance/process_windows.go
+@@ -0,0 +1,8 @@
++package acceptance
++
++import (
++	"os/exec"
++	"syscall"
++)
++
++func hideWindow(cmd *exec.Cmd) { cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true} }
+diff --git a/apps/backend/internal/task/repository/sqlite/base.go b/apps/backend/internal/task/repository/sqlite/base.go
+index 70fea830..095e1f90 100644
+--- a/apps/backend/internal/task/repository/sqlite/base.go
++++ b/apps/backend/internal/task/repository/sqlite/base.go
+@@ -6,6 +6,7 @@ import (
+ 	"database/sql"
+ 	"fmt"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/jmoiron/sqlx"
+@@ -148,7 +149,8 @@ type Repository struct {
+ 	// (see dispatchStepEntry in step_entry_dispatch.go): unset in every
+ 	// test that doesn't exercise it, and in production until
+ 	// SetStepEntryDispatcher is called during boot wiring.
+-	stepEntryDispatcher StepEntryDispatcher
++	stepEntryDispatcher    StepEntryDispatcher
++	strictCompletionPolicy atomic.Pointer[StrictCompletionPolicy]
+ }
+ 
+ func (r *Repository) nowUTC() time.Time {
+diff --git a/apps/backend/internal/task/repository/sqlite/completion_gates.go b/apps/backend/internal/task/repository/sqlite/completion_gates.go
+index 80b0e9d3..82380128 100644
+--- a/apps/backend/internal/task/repository/sqlite/completion_gates.go
++++ b/apps/backend/internal/task/repository/sqlite/completion_gates.go
+@@ -73,6 +73,9 @@ func (r *Repository) setTaskCompletionCriteria(ctx context.Context, change model
+ 	if current.Revision != change.ExpectedRevision {
+ 		return nil, false, repoerrors.ErrTaskCompletionCriteriaConflict
+ 	}
++	if !r.strictCriteriaChangeAllowed(change, current, exact) {
++		return nil, false, repoerrors.ErrTaskCompletionGateBlocked
++	}
+ 	oldByID := make(map[string]models.TaskCompletionCriterion, len(current.Criteria))
+ 	for _, criterion := range current.Criteria {
+ 		oldByID[criterion.ID] = criterion
+@@ -87,6 +90,9 @@ func (r *Repository) setTaskCompletionCriteria(ctx context.Context, change model
+ 		if retained && completionCriterionEquivalent(previous, next) {
+ 			continue
+ 		}
++		if previous.ID == StrictCompletionCriterionID && r.strictCompletionActor(exact, change.ActorKind, change.ActorID) {
++			continue
++		}
+ 		blocked, err := r.completionCriterionBlockedTx(ctx, tx, change.TaskID, previous)
+ 		if err != nil {
+ 			return nil, false, err
+@@ -180,6 +186,9 @@ func (r *Repository) VerifyTaskCompletionCriterionExact(ctx context.Context, cha
+ 
+ //nolint:cyclop,funlen,gocognit // The transaction verifies one typed criterion and appends its evidence record.
+ func (r *Repository) verifyTaskCompletionCriterion(ctx context.Context, change models.TaskCompletionEvidenceChange, exact bool) (*models.TaskCompletionGateSnapshot, bool, error) {
++	if r.strictCompletionPolicy.Load() != nil && change.CriterionID == StrictCompletionCriterionID && !r.strictCompletionActor(exact, change.ActorKind, change.ActorID) {
++		return nil, false, repoerrors.ErrTaskCompletionGateBlocked
++	}
+ 	if change.CriterionID == "" || !validEvidenceSubject(change.Evidence.Subject) {
+ 		return nil, false, repoerrors.ErrTaskCompletionEvidenceChanged
+ 	}
+@@ -309,13 +318,20 @@ func (r *Repository) ListTaskCompletionGateHistory(ctx context.Context, taskID s
+ 
+ //nolint:cyclop // The transaction checks completion gates before allowing a terminal state transition.
+ func (r *Repository) guardTaskCompletionTransitionTx(ctx context.Context, tx *sql.Tx, taskID string, currentState, nextState v1.TaskState, currentWorkflowID, currentStepID, targetWorkflowID, targetStepID string) error {
+-	if nextState != v1.TaskStateCompleted || currentState == v1.TaskStateCompleted {
++	if nextState != v1.TaskStateCompleted || (currentState == v1.TaskStateCompleted && r.strictCompletionPolicy.Load() == nil) {
+ 		return nil
+ 	}
+ 	snapshot, err := r.readTaskCompletionGateTx(ctx, tx, taskID, true)
+ 	if err != nil {
+ 		return err
+ 	}
++	protected, err := r.strictCompletionProtectedTx(ctx, tx, taskID)
++	if err != nil {
++		return err
++	}
++	if protected {
++		return r.guardStrictCompletionTx(ctx, tx, taskID, snapshot)
++	}
+ 	if len(snapshot.Criteria) == 0 || len(snapshot.Blockers) == 0 {
+ 		return nil
+ 	}
+@@ -405,7 +421,14 @@ func (r *Repository) readTaskCompletionGateTx(ctx context.Context, tx *sql.Tx, t
+ 			snapshot.Blockers = append(snapshot.Blockers, models.TaskCompletionBlocker{CriterionID: criterion.ID, Reason: reason})
+ 		}
+ 	}
+-	snapshot.Blocked = len(snapshot.Criteria) > 0 && len(snapshot.Blockers) > 0
++	protected, err := r.strictCompletionProtectedTx(ctx, tx, taskID)
++	if err != nil {
++		return nil, err
++	}
++	if protected && !r.strictCriterionTrusted(taskID, strictRequiredCriterion(taskID, snapshot.Criteria)) {
++		snapshot.Blockers = append(snapshot.Blockers, models.TaskCompletionBlocker{CriterionID: StrictCompletionCriterionID, Reason: "unverified"})
++	}
++	snapshot.Blocked = len(snapshot.Blockers) > 0
+ 	return snapshot, nil
+ }
+ 
+diff --git a/apps/backend/internal/task/repository/sqlite/strict_completion.go b/apps/backend/internal/task/repository/sqlite/strict_completion.go
+new file mode 100644
+index 00000000..eaf9d3dc
+--- /dev/null
++++ b/apps/backend/internal/task/repository/sqlite/strict_completion.go
+@@ -0,0 +1,186 @@
++package sqlite
++
++import (
++	"context"
++	"database/sql"
++	"encoding/json"
++	"strings"
++	"time"
++
++	"github.com/kandev/kandev/internal/task/models"
++	"github.com/kandev/kandev/internal/task/repository/repoerrors"
++)
++
++const StrictCompletionCriterionID = "fleet.acceptance"
++
++// 严格策略由宿主启动配置指定，插件只能提交校验结果。
++type StrictCompletionPolicy struct {
++	VerifierID string
++	Check      func(context.Context, string, string) error
++}
++
++func (r *Repository) SetStrictCompletionPolicy(policy *StrictCompletionPolicy) {
++	if policy == nil {
++		r.strictCompletionPolicy.Store(nil)
++		return
++	}
++	copy := *policy
++	r.strictCompletionPolicy.Store(&copy)
++}
++
++func (r *Repository) strictCompletionProtectedTx(ctx context.Context, tx *sql.Tx, taskID string) (bool, error) {
++	if r.strictCompletionPolicy.Load() == nil {
++		return false, nil
++	}
++	var ephemeral bool
++	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT is_ephemeral FROM tasks WHERE id = ?`), taskID).Scan(&ephemeral); err != nil {
++		return false, err
++	}
++	return !ephemeral, nil
++}
++
++func (r *Repository) strictCompletionActor(exact bool, kind, id string) bool {
++	policy := r.strictCompletionPolicy.Load()
++	return policy != nil && exact && kind == completionGateActorPlugin &&
++		strings.HasPrefix(policy.VerifierID, "plugin:") && id == policy.VerifierID
++}
++
++func strictRequiredCriterion(taskID string, criteria []models.TaskCompletionCriterion) *models.TaskCompletionCriterion {
++	for i := range criteria {
++		item := &criteria[i]
++		if item.ID == StrictCompletionCriterionID && item.EvidenceSubject.Kind == models.TaskCompletionEvidenceArtifact && item.EvidenceSubject.ID == taskID {
++			return item
++		}
++	}
++	return nil
++}
++
++// 只允许指定插件创建或轮换必需条件。其他条件仍沿用宿主原有的人工确认规则。
++func (r *Repository) strictCriteriaChangeAllowed(change models.TaskCompletionCriteriaChange, current *models.TaskCompletionGateSnapshot, exact bool) bool {
++	if r.strictCompletionPolicy.Load() == nil {
++		return true
++	}
++	next := strictRequiredCriterion(change.TaskID, change.Criteria)
++	if next == nil {
++		return false
++	}
++	if r.strictCompletionActor(exact, change.ActorKind, change.ActorID) {
++		return true
++	}
++	previous := strictRequiredCriterion(change.TaskID, current.Criteria)
++	return previous != nil && completionCriterionEquivalent(*previous, *next)
++}
++
++func (r *Repository) strictCriterionTrusted(taskID string, criterion *models.TaskCompletionCriterion) bool {
++	policy := r.strictCompletionPolicy.Load()
++	return policy != nil && criterion != nil && criterion.VerifiedRevision == criterion.CriterionRevision &&
++		criterion.Evidence != nil && criterion.Evidence.Subject.Kind == models.TaskCompletionEvidenceArtifact &&
++		criterion.Evidence.Subject.ID == taskID && criterion.Evidence.Subject.Revision != "" &&
++		criterion.VerifierKind == completionGateActorPlugin && criterion.VerifierID == policy.VerifierID
++}
++
++func (r *Repository) guardStrictCompletionTx(ctx context.Context, tx *sql.Tx, taskID string, snapshot *models.TaskCompletionGateSnapshot) error {
++	policy := r.strictCompletionPolicy.Load()
++	criterion := strictRequiredCriterion(taskID, snapshot.Criteria)
++	if policy == nil || policy.Check == nil || !r.strictCriterionTrusted(taskID, criterion) || len(snapshot.Blockers) != 0 {
++		return repoerrors.ErrTaskCompletionGateBlocked
++	}
++	receipt, err := r.readStrictCompletionReceipt(taskID, criterion.Evidence.Summary)
++	if err != nil {
++		return err
++	}
++	if err := r.checkStrictTaskVersionTx(ctx, tx, taskID, receipt.TaskResourceVersion); err != nil {
++		return err
++	}
++	if err := r.checkStrictSessionVersionsTx(ctx, tx, taskID, receipt); err != nil {
++		return err
++	}
++	if err := r.checkStrictReviewOrderTx(ctx, tx, taskID, receipt); err != nil {
++		return err
++	}
++	if err := r.checkStrictActivityTx(ctx, tx, taskID, receipt.AcceptedAt); err != nil {
++		return err
++	}
++	if policy.Check(ctx, taskID, criterion.Evidence.Summary) != nil {
++		return repoerrors.ErrTaskCompletionGateBlocked
++	}
++	return nil
++}
++
++type strictCompletionReceipt struct {
++	Format                        string    `json:"format"`
++	TaskID                        string    `json:"task_id"`
++	TaskResourceVersion           string    `json:"task_resource_version"`
++	AcceptedAt                    time.Time `json:"accepted_at"`
++	ActorID                       string    `json:"actor_id"`
++	ImplementationSessionID       string    `json:"implementation_session_id"`
++	ReviewSessionID               string    `json:"review_session_id"`
++	ImplementationResourceVersion string    `json:"implementation_resource_version"`
++	ReviewResourceVersion         string    `json:"review_resource_version"`
++}
++
++func (r *Repository) readStrictCompletionReceipt(taskID, summary string) (strictCompletionReceipt, error) {
++	var receipt strictCompletionReceipt
++	if len(summary) > 512*1024 || json.Unmarshal([]byte(summary), &receipt) != nil ||
++		receipt.Format != "fleet-acceptance/v1" || receipt.TaskID != taskID || receipt.ActorID == "" || receipt.AcceptedAt.IsZero() || receipt.AcceptedAt.After(r.nowUTC()) ||
++		receipt.ImplementationSessionID == "" || receipt.ReviewSessionID == "" || receipt.ImplementationSessionID == receipt.ReviewSessionID {
++		return receipt, repoerrors.ErrTaskCompletionGateBlocked
++	}
++	return receipt, nil
++}
++
++func (r *Repository) checkStrictTaskVersionTx(ctx context.Context, tx *sql.Tx, taskID, expected string) error {
++	var updatedAt time.Time
++	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT updated_at FROM tasks WHERE id = ?`), taskID).Scan(&updatedAt); err != nil {
++		return err
++	}
++	version, err := time.Parse(time.RFC3339Nano, expected)
++	if err != nil || !version.Equal(updatedAt) {
++		return repoerrors.ErrTaskCompletionGateBlocked
++	}
++	return nil
++}
++
++func (r *Repository) checkStrictSessionVersionsTx(ctx context.Context, tx *sql.Tx, taskID string, receipt strictCompletionReceipt) error {
++	for id, expected := range map[string]string{receipt.ImplementationSessionID: receipt.ImplementationResourceVersion, receipt.ReviewSessionID: receipt.ReviewResourceVersion} {
++		var observed time.Time
++		if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT updated_at FROM task_sessions WHERE id = ? AND task_id = ?`), id, taskID).Scan(&observed); err != nil {
++			return repoerrors.ErrTaskCompletionGateBlocked
++		}
++		version, err := time.Parse(time.RFC3339Nano, expected)
++		if err != nil || !version.Equal(observed) {
++			return repoerrors.ErrTaskCompletionGateBlocked
++		}
++	}
++	return nil
++}
++
++func (r *Repository) checkStrictReviewOrderTx(ctx context.Context, tx *sql.Tx, taskID string, receipt strictCompletionReceipt) error {
++	var implementationEnd, reviewStart time.Time
++	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT completed_at FROM task_session_turns WHERE task_id = ? AND task_session_id = ? AND completed_at IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1`), taskID, receipt.ImplementationSessionID).Scan(&implementationEnd); err != nil {
++		return repoerrors.ErrTaskCompletionGateBlocked
++	}
++	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT started_at FROM task_session_turns WHERE task_id = ? AND task_session_id = ? AND completed_at IS NOT NULL ORDER BY started_at DESC, id DESC LIMIT 1`), taskID, receipt.ReviewSessionID).Scan(&reviewStart); err != nil || reviewStart.Before(implementationEnd) {
++		return repoerrors.ErrTaskCompletionGateBlocked
++	}
++	return nil
++}
++
++func (r *Repository) checkStrictActivityTx(ctx context.Context, tx *sql.Tx, taskID string, acceptedAt time.Time) error {
++	// 新一轮、尚未结束的一轮或仍在执行的会话，均要求重新验收。
++	var changed int
++	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT COUNT(*) FROM task_session_turns WHERE task_id = ? AND (completed_at IS NULL OR updated_at > ? OR started_at > ?)`), taskID, acceptedAt, acceptedAt).Scan(&changed); err != nil {
++		return err
++	}
++	if changed != 0 {
++		return repoerrors.ErrTaskCompletionGateBlocked
++	}
++	if err := tx.QueryRowContext(ctx, r.db.Rebind(`SELECT COUNT(*) FROM task_sessions WHERE task_id = ? AND state NOT IN (?, ?, ?, ?, ?)`),
++		taskID, models.TaskSessionStateWaitingForInput, models.TaskSessionStateIdle, models.TaskSessionStateCompleted, models.TaskSessionStateFailed, models.TaskSessionStateCancelled).Scan(&changed); err != nil {
++		return err
++	}
++	if changed != 0 {
++		return repoerrors.ErrTaskCompletionGateBlocked
++	}
++	return nil
++}
+diff --git a/apps/backend/internal/task/repository/sqlite/task.go b/apps/backend/internal/task/repository/sqlite/task.go
+index 88ec9368..3e15ed78 100644
+--- a/apps/backend/internal/task/repository/sqlite/task.go
++++ b/apps/backend/internal/task/repository/sqlite/task.go
+@@ -415,6 +415,9 @@ func (r *Repository) prepareTaskForCreate(task *models.Task) error {
+ }
+ 
+ func (r *Repository) insertTaskTx(ctx context.Context, tx *sql.Tx, task *models.Task) (entryID string, err error) {
++	if r.strictCompletionPolicy.Load() != nil && !task.IsEphemeral && task.State == v1.TaskStateCompleted {
++		return "", repoerrors.ErrTaskCompletionGateBlocked
++	}
+ 	metadata, err := json.Marshal(task.Metadata)
+ 	if err != nil {
+ 		metadata = []byte("{}")
+diff --git a/apps/backend/internal/task/service/strict_completion_test.go b/apps/backend/internal/task/service/strict_completion_test.go
+new file mode 100644
+index 00000000..4ab50252
+--- /dev/null
++++ b/apps/backend/internal/task/service/strict_completion_test.go
+@@ -0,0 +1,221 @@
++package service
++
++import (
++	"context"
++	"encoding/json"
++	"errors"
++	"strings"
++	"testing"
++	"time"
++
++	"github.com/kandev/kandev/internal/auth/authn"
++	"github.com/kandev/kandev/internal/task/models"
++	"github.com/kandev/kandev/internal/task/repository/repoerrors"
++	sqliterepo "github.com/kandev/kandev/internal/task/repository/sqlite"
++	wfmodels "github.com/kandev/kandev/internal/workflow/models"
++	v1 "github.com/kandev/kandev/pkg/api/v1"
++)
++
++func strictFixture(t *testing.T) (context.Context, *Service, *sqliterepo.Repository) {
++	t.Helper()
++	ctx := authn.WithIdentity(context.Background(), authn.Identity{UserID: "fixture-human", Role: authn.RoleAdmin, Synthetic: true})
++	svc, _, repo := createTestService(t)
++	seedMoveWorkflows(t, ctx, repo)
++	seedMoveSteps(svc)
++	svc.workflowStepGetter.(*fakeWorkflowStepGetter).steps["step-done"] = &wfmodels.WorkflowStep{
++		ID: "step-done", WorkflowID: "wf-source", Name: "Done", Position: 2, CompleteTaskOnEnter: true,
++	}
++	createMoveTask(t, ctx, repo, "strict-task", "wf-source", "step-source", nil)
++	return ctx, svc, repo
++}
++
++func enableStrict(repo *sqliterepo.Repository) {
++	repo.SetStrictCompletionPolicy(&sqliterepo.StrictCompletionPolicy{VerifierID: "plugin:fixture", Check: func(context.Context, string, string) error { return nil }})
++}
++
++func seedStrictCriterion(t *testing.T, ctx context.Context, svc *Service, repo *sqliterepo.Repository) string {
++	t.Helper()
++	task, err := repo.GetTask(ctx, "strict-task")
++	if err != nil {
++		t.Fatal(err)
++	}
++	_, err = svc.SetTaskCompletionCriteria(ctx, task.ID, SetTaskCompletionCriteriaRequest{ExpectedRevision: 0, Criteria: []models.TaskCompletionCriterion{{
++		ID: sqliterepo.StrictCompletionCriterionID, Description: "交付验收", EvidenceSubject: models.TaskCompletionEvidenceSubject{Kind: models.TaskCompletionEvidenceArtifact, ID: task.ID},
++	}}})
++	if err != nil {
++		t.Fatal(err)
++	}
++	return task.UpdatedAt.UTC().Format(time.RFC3339Nano)
++}
++
++func TestStrictCompletionBlocksMissingGateAcrossEntryPoints(t *testing.T) {
++	ctx, svc, repo := strictFixture(t)
++	enableStrict(repo)
++	if _, err := svc.MoveTask(ctx, "strict-task", "wf-source", "step-done", 0); !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("缺少验收条件仍能移动至 Done: %v", err)
++	}
++	if _, err := svc.UpdateTaskState(ctx, "strict-task", v1.TaskStateCompleted); !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("缺少回执仍能直接完成: %v", err)
++	}
++	if _, err := svc.BulkMoveSelectedTasks(ctx, []string{"strict-task"}, "wf-source", "step-done"); !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("批量选中移动绕过验收: %v", err)
++	}
++	if _, err := svc.BulkMoveTasks(ctx, "wf-source", "step-source", "wf-source", "step-done"); !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("整列移动绕过验收: %v", err)
++	}
++	task, err := repo.GetTask(ctx, "strict-task")
++	if err != nil || task.State == v1.TaskStateCompleted {
++		t.Fatalf("拒绝后任务被修改: %+v %v", task, err)
++	}
++}
++
++func TestStrictCompletionRejectsNativeOverrideAndCriteriaRemoval(t *testing.T) {
++	ctx, svc, repo := strictFixture(t)
++	seedStrictCriterion(t, ctx, svc, repo)
++	enableStrict(repo)
++	_, err := svc.MoveTaskWithOptions(ctx, "strict-task", "wf-source", "step-done", 0, MoveTaskOptions{
++		CompletionOverride: &TaskCompletionMoveOverrideRequest{ExpectedRevision: 1, Reason: "人工请求覆盖"},
++	})
++	if !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("人工覆盖绕过严格验收: %v", err)
++	}
++	_, err = svc.SetTaskCompletionCriteria(ctx, "strict-task", SetTaskCompletionCriteriaRequest{
++		ExpectedRevision: 1, HumanConfirmation: &TaskCompletionHumanConfirmation{ExpectedRevision: 1, Reason: "删除条件"},
++	})
++	if !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("可以删除必需验收条件: %v", err)
++	}
++}
++
++func TestStrictCompletionRejectsForgedNativeVerification(t *testing.T) {
++	ctx, svc, repo := strictFixture(t)
++	version := seedStrictCriterion(t, ctx, svc, repo)
++	enableStrict(repo)
++	_, err := svc.VerifyTaskCompletionCriterion(ctx, "strict-task", VerifyTaskCompletionCriterionRequest{
++		ExpectedRevision: 1, CriterionID: sqliterepo.StrictCompletionCriterionID,
++		Evidence: models.TaskCompletionEvidence{Subject: models.TaskCompletionEvidenceSubject{Kind: models.TaskCompletionEvidenceTaskRevision, ID: "strict-task", Revision: version}, Summary: "伪造通过"},
++	})
++	if !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("非指定插件可写入有效验证: %v", err)
++	}
++}
++
++func approveStrictFixture(t *testing.T, ctx context.Context, svc *Service, repo *sqliterepo.Repository) {
++	t.Helper()
++	start := time.Now().UTC().Add(-time.Minute)
++	for i, id := range []string{"implementation", "review"} {
++		session := &models.TaskSession{ID: id, TaskID: "strict-task", State: models.TaskSessionStateWaitingForInput, StartedAt: start}
++		if err := repo.CreateTaskSession(ctx, session); err != nil {
++			t.Fatal(err)
++		}
++		turnStart := start.Add(time.Duration(i) * 10 * time.Second)
++		end := turnStart.Add(time.Second)
++		if err := repo.CreateTurn(ctx, &models.Turn{ID: id + "-turn", TaskID: "strict-task", TaskSessionID: id, StartedAt: turnStart, CompletedAt: &end}); err != nil {
++			t.Fatal(err)
++		}
++	}
++	task, err := repo.GetTask(ctx, "strict-task")
++	if err != nil {
++		t.Fatal(err)
++	}
++	version := task.UpdatedAt.UTC().Format(time.RFC3339Nano)
++	actor := "plugin:fixture"
++	fence := models.TaskManagementClaimFence{InstallationID: "fixture"}
++	criteria, err := svc.SetTaskCompletionCriteriaExact(ctx, task.ID, ExactTaskCompletionCriteriaRequest{
++		WorkspaceID: task.WorkspaceID, ExpectedTaskResourceVersion: version, OperationID: "strict-set",
++		PayloadDigest: "sha256:" + strings.Repeat("a", 64), ActorID: actor, ClaimFence: fence,
++		Criteria: []models.TaskCompletionCriterion{{ID: sqliterepo.StrictCompletionCriterionID, Description: "等待人工验收", EvidenceSubject: models.TaskCompletionEvidenceSubject{Kind: models.TaskCompletionEvidenceArtifact, ID: task.ID}}},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++	implementation, _ := repo.GetTaskSession(ctx, "implementation")
++	review, _ := repo.GetTaskSession(ctx, "review")
++	summary, _ := json.Marshal(map[string]any{"format": "fleet-acceptance/v1", "task_id": task.ID, "task_resource_version": version, "actor_id": "fixture-human", "accepted_at": time.Now().UTC(), "implementation_session_id": "implementation", "review_session_id": "review", "implementation_resource_version": implementation.UpdatedAt.UTC().Format(time.RFC3339Nano), "review_resource_version": review.UpdatedAt.UTC().Format(time.RFC3339Nano)})
++	_, err = svc.VerifyTaskCompletionCriterionExact(ctx, task.ID, ExactTaskCompletionEvidenceRequest{
++		WorkspaceID: task.WorkspaceID, ExpectedTaskResourceVersion: version, ExpectedRevision: criteria.Snapshot.Revision,
++		OperationID: "strict-verify", PayloadDigest: "sha256:" + strings.Repeat("b", 64), ActorID: actor, ClaimFence: fence,
++		CriterionID: sqliterepo.StrictCompletionCriterionID, Evidence: models.TaskCompletionEvidence{
++			Subject: models.TaskCompletionEvidenceSubject{Kind: models.TaskCompletionEvidenceArtifact, ID: task.ID, Revision: "candidate-1"}, Summary: string(summary),
++		},
++	})
++	if err != nil {
++		t.Fatal(err)
++	}
++}
++
++func TestStrictCompletionAllowsOnlyFreshTrustedReceipt(t *testing.T) {
++	for _, scenario := range []string{"有效", "文件变化", "任务变化", "会话变化", "审查顺序错误", "执行仍活动", "校验器缺失", "新一轮执行"} {
++		t.Run(scenario, func(t *testing.T) {
++			ctx, svc, repo := strictFixture(t)
++			enableStrict(repo)
++			approveStrictFixture(t, ctx, svc, repo)
++			switch scenario {
++			case "会话变化":
++				session, _ := repo.GetTaskSession(ctx, "review")
++				session.Name = "变更后的审查会话"
++				if err := repo.UpdateTaskSession(ctx, session); err != nil {
++					t.Fatal(err)
++				}
++			case "审查顺序错误":
++				if _, err := repo.DB().ExecContext(ctx, `UPDATE task_session_turns SET started_at = ? WHERE id = ?`, time.Now().UTC().Add(-2*time.Minute), "review-turn"); err != nil {
++					t.Fatal(err)
++				}
++			case "执行仍活动":
++				if err := repo.CreateTaskSession(ctx, &models.TaskSession{ID: "other-active", TaskID: "strict-task", State: models.TaskSessionStateRunning, StartedAt: time.Now().UTC()}); err != nil {
++					t.Fatal(err)
++				}
++			case "新一轮执行":
++				if err := repo.CreateTurn(ctx, &models.Turn{ID: "new-turn", TaskID: "strict-task", TaskSessionID: "implementation", StartedAt: time.Now().UTC()}); err != nil {
++					t.Fatal(err)
++				}
++			case "文件变化":
++				repo.SetStrictCompletionPolicy(&sqliterepo.StrictCompletionPolicy{VerifierID: "plugin:fixture", Check: func(context.Context, string, string) error { return errors.New("stale") }})
++			case "校验器缺失":
++				repo.SetStrictCompletionPolicy(&sqliterepo.StrictCompletionPolicy{VerifierID: "plugin:fixture"})
++			case "任务变化":
++				task, _ := repo.GetTask(ctx, "strict-task")
++				task.Title = "已更新任务"
++				if err := repo.UpdateTask(ctx, task); err != nil {
++					t.Fatal(err)
++				}
++			}
++			var err error
++			if scenario == "执行仍活动" {
++				// 直接测持久化门禁，不以服务层原有的活动会话检查代替。
++				err = repo.UpdateTaskState(ctx, "strict-task", v1.TaskStateCompleted)
++			} else {
++				_, err = svc.MoveTask(ctx, "strict-task", "wf-source", "step-done", 0)
++			}
++			if scenario == "有效" {
++				if err != nil {
++					t.Fatal(err)
++				}
++				return
++			}
++			if !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++				t.Fatalf("陈旧或不可测回执仍可完成: %v", err)
++			}
++		})
++	}
++}
++
++func TestStrictCompletionRejectsCompletedCreationAndPluginWeakening(t *testing.T) {
++	ctx, svc, repo := strictFixture(t)
++	enableStrict(repo)
++	task, _ := repo.GetTask(ctx, "strict-task")
++	task.ID = "forged-done"
++	task.State = v1.TaskStateCompleted
++	if err := repo.CreateTask(ctx, task); !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("可以直接创建已完成任务: %v", err)
++	}
++	approveStrictFixture(t, ctx, svc, repo)
++	task, _ = repo.GetTask(ctx, "strict-task")
++	_, err := svc.SetTaskCompletionCriteriaExact(ctx, task.ID, ExactTaskCompletionCriteriaRequest{
++		WorkspaceID: task.WorkspaceID, ExpectedTaskResourceVersion: task.UpdatedAt.UTC().Format(time.RFC3339Nano), ExpectedRevision: 1,
++		OperationID: "strict-remove", PayloadDigest: "sha256:" + strings.Repeat("c", 64), ActorID: "plugin:fixture", ClaimFence: models.TaskManagementClaimFence{InstallationID: "fixture"},
++	})
++	if !errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
++		t.Fatalf("指定插件也不能移除必需条件: %v", err)
++	}
++}
+diff --git a/apps/backend/pkg/pluginsdk/completion_read.go b/apps/backend/pkg/pluginsdk/completion_read.go
+new file mode 100644
+index 00000000..4d5e8b51
+--- /dev/null
++++ b/apps/backend/pkg/pluginsdk/completion_read.go
+@@ -0,0 +1,42 @@
++package pluginsdk
++
++import (
++	"context"
++	pluginv1 "github.com/kandev/kandev/proto/kandev/plugin/v1"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++)
++
++type TaskCompletionGateRead struct{ RequestID, WorkspaceID, TaskID string }
++
++type TaskCompletionGateReader interface {
++	ReadTaskCompletionGate(context.Context, TaskCompletionGateRead) (*TaskCompletionGate, error)
++}
++
++func HostTaskCompletionGateReader(host Host) (TaskCompletionGateReader, bool) {
++	reader, ok := host.(TaskCompletionGateReader)
++	return reader, ok
++}
++
++func (h *grpcHostClient) ReadTaskCompletionGate(ctx context.Context, query TaskCompletionGateRead) (*TaskCompletionGate, error) {
++	response, err := h.client.ReadTaskCompletionGate(ctx, &pluginv1.GetTaskExactRequest{RequestId: query.RequestID, WorkspaceId: query.WorkspaceID, TaskId: query.TaskID})
++	if err != nil {
++		return nil, err
++	}
++	if response.GetSnapshot() == nil {
++		return nil, status.Error(codes.Unavailable, "门禁快照缺失")
++	}
++	return completionGateFromProto(response.GetSnapshot()), nil
++}
++
++func (s *grpcHostServer) ReadTaskCompletionGate(ctx context.Context, query *pluginv1.GetTaskExactRequest) (*pluginv1.TaskCompletionGateExactResponse, error) {
++	reader, ok := s.impl.(TaskCompletionGateReader)
++	if !ok {
++		return nil, status.Error(codes.Unimplemented, "只读门禁接口不可用")
++	}
++	gate, err := reader.ReadTaskCompletionGate(ctx, TaskCompletionGateRead{RequestID: query.GetRequestId(), WorkspaceID: query.GetWorkspaceId(), TaskID: query.GetTaskId()})
++	if err != nil {
++		return nil, err
++	}
++	return &pluginv1.TaskCompletionGateExactResponse{Snapshot: completionGateToProto(gate)}, nil
++}
+diff --git a/apps/backend/pkg/pluginsdk/completion_read_test.go b/apps/backend/pkg/pluginsdk/completion_read_test.go
+new file mode 100644
+index 00000000..dc4e0ca7
+--- /dev/null
++++ b/apps/backend/pkg/pluginsdk/completion_read_test.go
+@@ -0,0 +1,22 @@
++package pluginsdk
++
++import (
++	"context"
++	"github.com/stretchr/testify/require"
++	"testing"
++)
++
++func (h *exactHostFixture) ReadTaskCompletionGate(_ context.Context, query TaskCompletionGateRead) (*TaskCompletionGate, error) {
++	return &TaskCompletionGate{TaskID: query.TaskID, WorkspaceID: query.WorkspaceID, Revision: 9, Blocked: true, Criteria: []TaskCompletionCriterion{{ID: "fleet.acceptance", Description: "等待验收"}}}, nil
++}
++
++func TestCompletionGateReadRoundTrip(t *testing.T) {
++	host := dialHostOverBufconn(t, &exactHostFixture{})
++	reader, ok := HostTaskCompletionGateReader(host)
++	require.True(t, ok, "客户端缺少只读门禁接口")
++	gate, err := reader.ReadTaskCompletionGate(context.Background(), TaskCompletionGateRead{RequestID: "read-1", WorkspaceID: "workspace-1", TaskID: "task-1"})
++	require.NoError(t, err)
++	require.Equal(t, int64(9), gate.Revision)
++	require.Equal(t, "task-1", gate.TaskID)
++	require.Equal(t, "fleet.acceptance", gate.Criteria[0].ID)
++}
+diff --git a/apps/backend/proto/kandev/plugin/v1/plugin.pb.go b/apps/backend/proto/kandev/plugin/v1/plugin.pb.go
+index c54249e5..c4e7cb27 100644
+--- a/apps/backend/proto/kandev/plugin/v1/plugin.pb.go
++++ b/apps/backend/proto/kandev/plugin/v1/plugin.pb.go
+@@ -26165,7 +26165,7 @@ const file_kandev_plugin_v1_plugin_proto_rawDesc = "" +
+ 	"\x19AttachExecutorEnvironment\x122.kandev.plugin.v1.AttachExecutorEnvironmentRequest\x1a3.kandev.plugin.v1.AttachExecutorEnvironmentResponse\x12\x87\x01\n" +
+ 	"\x1aInspectExecutorEnvironment\x123.kandev.plugin.v1.InspectExecutorEnvironmentRequest\x1a4.kandev.plugin.v1.InspectExecutorEnvironmentResponse\x12\x84\x01\n" +
+ 	"\x19ResolveExecutorConnection\x122.kandev.plugin.v1.ResolveExecutorConnectionRequest\x1a3.kandev.plugin.v1.ResolveExecutorConnectionResponse\x12\x87\x01\n" +
+-	"\x1aDestroyExecutorEnvironment\x123.kandev.plugin.v1.DestroyExecutorEnvironmentRequest\x1a4.kandev.plugin.v1.DestroyExecutorEnvironmentResponse2\x9ac\n" +
++	"\x1aDestroyExecutorEnvironment\x123.kandev.plugin.v1.DestroyExecutorEnvironmentRequest\x1a4.kandev.plugin.v1.DestroyExecutorEnvironmentResponse2\x8ed\n" +
+ 	"\x04Host\x12u\n" +
+ 	"\x14GetCapabilityContext\x12-.kandev.plugin.v1.GetCapabilityContextRequest\x1a..kandev.plugin.v1.GetCapabilityContextResponse\x12f\n" +
+ 	"\x0fUpdateTaskExact\x12(.kandev.plugin.v1.UpdateTaskExactRequest\x1a).kandev.plugin.v1.UpdateTaskExactResponse\x12f\n" +
+@@ -26183,7 +26183,8 @@ const file_kandev_plugin_v1_plugin_proto_rawDesc = "" +
+ 	"\x1fReleaseTaskManagementClaimExact\x128.kandev.plugin.v1.ReleaseTaskManagementClaimExactRequest\x1a2.kandev.plugin.v1.TaskManagementClaimExactResponse\x12\x91\x01\n" +
+ 	" TransferTaskManagementClaimExact\x129.kandev.plugin.v1.TransferTaskManagementClaimExactRequest\x1a2.kandev.plugin.v1.TaskManagementClaimExactResponse\x12\x8c\x01\n" +
+ 	"\x1eSetTaskCompletionCriteriaExact\x127.kandev.plugin.v1.SetTaskCompletionCriteriaExactRequest\x1a1.kandev.plugin.v1.TaskCompletionGateExactResponse\x12\x94\x01\n" +
+-	"\"VerifyTaskCompletionCriterionExact\x12;.kandev.plugin.v1.VerifyTaskCompletionCriterionExactRequest\x1a1.kandev.plugin.v1.TaskCompletionGateExactResponse\x12\x97\x01\n" +
++	"\"VerifyTaskCompletionCriterionExact\x12;.kandev.plugin.v1.VerifyTaskCompletionCriterionExactRequest\x1a1.kandev.plugin.v1.TaskCompletionGateExactResponse\x12r\n" +
++	"\x16ReadTaskCompletionGate\x12%.kandev.plugin.v1.GetTaskExactRequest\x1a1.kandev.plugin.v1.TaskCompletionGateExactResponse\x12\x97\x01\n" +
+ 	"!ApplyWorkspaceAdministrationExact\x12:.kandev.plugin.v1.ApplyWorkspaceAdministrationExactRequest\x1a6.kandev.plugin.v1.WorkspaceAdministrationExactResponse\x12\x96\x01\n" +
+ 	"\x1fGetSourceIssueCapabilitiesExact\x128.kandev.plugin.v1.GetSourceIssueCapabilitiesExactRequest\x1a9.kandev.plugin.v1.GetSourceIssueCapabilitiesExactResponse\x12\x80\x01\n" +
+ 	"\x17CommentSourceIssueExact\x120.kandev.plugin.v1.CommentSourceIssueExactRequest\x1a3.kandev.plugin.v1.SourceIssueWritebackExactResponse\x12\x86\x01\n" +
+@@ -26941,214 +26942,216 @@ var file_kandev_plugin_v1_plugin_proto_depIdxs = []int32{
+ 	31,  // 311: kandev.plugin.v1.Host.TransferTaskManagementClaimExact:input_type -> kandev.plugin.v1.TransferTaskManagementClaimExactRequest
+ 	39,  // 312: kandev.plugin.v1.Host.SetTaskCompletionCriteriaExact:input_type -> kandev.plugin.v1.SetTaskCompletionCriteriaExactRequest
+ 	40,  // 313: kandev.plugin.v1.Host.VerifyTaskCompletionCriterionExact:input_type -> kandev.plugin.v1.VerifyTaskCompletionCriterionExactRequest
+-	42,  // 314: kandev.plugin.v1.Host.ApplyWorkspaceAdministrationExact:input_type -> kandev.plugin.v1.ApplyWorkspaceAdministrationExactRequest
+-	58,  // 315: kandev.plugin.v1.Host.GetSourceIssueCapabilitiesExact:input_type -> kandev.plugin.v1.GetSourceIssueCapabilitiesExactRequest
+-	61,  // 316: kandev.plugin.v1.Host.CommentSourceIssueExact:input_type -> kandev.plugin.v1.CommentSourceIssueExactRequest
+-	62,  // 317: kandev.plugin.v1.Host.TransitionSourceIssueExact:input_type -> kandev.plugin.v1.TransitionSourceIssueExactRequest
+-	70,  // 318: kandev.plugin.v1.Host.EnsureManagedAgentConversationExact:input_type -> kandev.plugin.v1.EnsureManagedAgentConversationExactRequest
+-	72,  // 319: kandev.plugin.v1.Host.GetManagedAgentConversationStatusExact:input_type -> kandev.plugin.v1.GetManagedAgentConversationStatusExactRequest
+-	74,  // 320: kandev.plugin.v1.Host.ListManagedAgentConversationsExact:input_type -> kandev.plugin.v1.ListManagedAgentConversationsExactRequest
+-	76,  // 321: kandev.plugin.v1.Host.SetManagedAgentConversationPausedExact:input_type -> kandev.plugin.v1.SetManagedAgentConversationPausedExactRequest
+-	78,  // 322: kandev.plugin.v1.Host.DeleteManagedAgentConversationExact:input_type -> kandev.plugin.v1.DeleteManagedAgentConversationExactRequest
+-	81,  // 323: kandev.plugin.v1.Host.EnqueueManagedAgentInputExact:input_type -> kandev.plugin.v1.EnqueueManagedAgentInputExactRequest
+-	83,  // 324: kandev.plugin.v1.Host.GetManagedAgentInputExact:input_type -> kandev.plugin.v1.GetManagedAgentInputExactRequest
+-	85,  // 325: kandev.plugin.v1.Host.ListManagedAgentInputsExact:input_type -> kandev.plugin.v1.ListManagedAgentInputsExactRequest
+-	87,  // 326: kandev.plugin.v1.Host.CancelManagedAgentInputExact:input_type -> kandev.plugin.v1.CancelManagedAgentInputExactRequest
+-	89,  // 327: kandev.plugin.v1.Host.DispatchManagedAgentConversationExact:input_type -> kandev.plugin.v1.DispatchManagedAgentConversationExactRequest
+-	93,  // 328: kandev.plugin.v1.Host.ListManagedConversationSchedulesExact:input_type -> kandev.plugin.v1.ListManagedConversationSchedulesExactRequest
+-	95,  // 329: kandev.plugin.v1.Host.CreateManagedConversationScheduleExact:input_type -> kandev.plugin.v1.CreateManagedConversationScheduleExactRequest
+-	96,  // 330: kandev.plugin.v1.Host.UpdateManagedConversationScheduleExact:input_type -> kandev.plugin.v1.UpdateManagedConversationScheduleExactRequest
+-	97,  // 331: kandev.plugin.v1.Host.SetManagedConversationScheduleEnabledExact:input_type -> kandev.plugin.v1.SetManagedConversationScheduleEnabledExactRequest
+-	98,  // 332: kandev.plugin.v1.Host.DeleteManagedConversationScheduleExact:input_type -> kandev.plugin.v1.DeleteManagedConversationScheduleExactRequest
+-	100, // 333: kandev.plugin.v1.Host.EnsureTaskRunExact:input_type -> kandev.plugin.v1.EnsureTaskRunExactRequest
+-	102, // 334: kandev.plugin.v1.Host.StopTaskRunExact:input_type -> kandev.plugin.v1.StopTaskRunExactRequest
+-	104, // 335: kandev.plugin.v1.Host.RecoverSessionExact:input_type -> kandev.plugin.v1.RecoverSessionExactRequest
+-	106, // 336: kandev.plugin.v1.Host.CancelPendingTaskTransitionExact:input_type -> kandev.plugin.v1.CancelPendingTaskTransitionExactRequest
+-	109, // 337: kandev.plugin.v1.Host.GetSessionModeContextExact:input_type -> kandev.plugin.v1.GetSessionModeContextExactRequest
+-	111, // 338: kandev.plugin.v1.Host.SetSessionModeExact:input_type -> kandev.plugin.v1.SetSessionModeExactRequest
+-	114, // 339: kandev.plugin.v1.Host.RespondPermissionExact:input_type -> kandev.plugin.v1.RespondPermissionExactRequest
+-	116, // 340: kandev.plugin.v1.Host.AnswerClarificationExact:input_type -> kandev.plugin.v1.AnswerClarificationExactRequest
+-	293, // 341: kandev.plugin.v1.Host.ListWorkspacesExact:input_type -> kandev.plugin.v1.ListWorkspacesExactRequest
+-	295, // 342: kandev.plugin.v1.Host.ListWorkflowsExact:input_type -> kandev.plugin.v1.ListWorkflowsExactRequest
+-	297, // 343: kandev.plugin.v1.Host.ListWorkflowStepsExact:input_type -> kandev.plugin.v1.ListWorkflowStepsExactRequest
+-	299, // 344: kandev.plugin.v1.Host.ListTasksExact:input_type -> kandev.plugin.v1.ListTasksExactRequest
+-	301, // 345: kandev.plugin.v1.Host.GetTaskExact:input_type -> kandev.plugin.v1.GetTaskExactRequest
+-	303, // 346: kandev.plugin.v1.Host.ListSessionsExact:input_type -> kandev.plugin.v1.ListSessionsExactRequest
+-	305, // 347: kandev.plugin.v1.Host.ListPendingInteractionsExact:input_type -> kandev.plugin.v1.ListPendingInteractionsExactRequest
+-	307, // 348: kandev.plugin.v1.Host.GetInteractionExact:input_type -> kandev.plugin.v1.GetInteractionExactRequest
+-	309, // 349: kandev.plugin.v1.Host.ListSanitizedMessagesExact:input_type -> kandev.plugin.v1.ListSanitizedMessagesExactRequest
+-	311, // 350: kandev.plugin.v1.Host.ListTaskInboxExact:input_type -> kandev.plugin.v1.ListTaskInboxExactRequest
+-	313, // 351: kandev.plugin.v1.Host.GetTaskDirectiveExact:input_type -> kandev.plugin.v1.GetTaskDirectiveExactRequest
+-	315, // 352: kandev.plugin.v1.Host.ListTaskDirectivesExact:input_type -> kandev.plugin.v1.ListTaskDirectivesExactRequest
+-	317, // 353: kandev.plugin.v1.Host.GetTaskRelationsExact:input_type -> kandev.plugin.v1.GetTaskRelationsExactRequest
+-	319, // 354: kandev.plugin.v1.Host.ListTaskRelationsExact:input_type -> kandev.plugin.v1.ListTaskRelationsExactRequest
+-	321, // 355: kandev.plugin.v1.Host.ListPendingTaskTransitionsExact:input_type -> kandev.plugin.v1.ListPendingTaskTransitionsExactRequest
+-	323, // 356: kandev.plugin.v1.Host.ListChangeRequestEvidenceExact:input_type -> kandev.plugin.v1.ListChangeRequestEvidenceExactRequest
+-	325, // 357: kandev.plugin.v1.Host.ListTaskUsageExact:input_type -> kandev.plugin.v1.ListTaskUsageExactRequest
+-	137, // 358: kandev.plugin.v1.Host.GetState:input_type -> kandev.plugin.v1.GetStateRequest
+-	139, // 359: kandev.plugin.v1.Host.SetState:input_type -> kandev.plugin.v1.SetStateRequest
+-	141, // 360: kandev.plugin.v1.Host.DeleteState:input_type -> kandev.plugin.v1.DeleteStateRequest
+-	143, // 361: kandev.plugin.v1.Host.ListState:input_type -> kandev.plugin.v1.ListStateRequest
+-	154, // 362: kandev.plugin.v1.Host.RevealSecret:input_type -> kandev.plugin.v1.RevealSecretRequest
+-	156, // 363: kandev.plugin.v1.Host.EmitEvent:input_type -> kandev.plugin.v1.EmitEventRequest
+-	148, // 364: kandev.plugin.v1.Host.GetSecret:input_type -> kandev.plugin.v1.GetSecretRequest
+-	150, // 365: kandev.plugin.v1.Host.SetSecret:input_type -> kandev.plugin.v1.SetSecretRequest
+-	152, // 366: kandev.plugin.v1.Host.DeleteSecret:input_type -> kandev.plugin.v1.DeleteSecretRequest
+-	146, // 367: kandev.plugin.v1.Host.GetConfig:input_type -> kandev.plugin.v1.GetConfigRequest
+-	165, // 368: kandev.plugin.v1.Host.ListTasks:input_type -> kandev.plugin.v1.ListTasksRequest
+-	167, // 369: kandev.plugin.v1.Host.GetTask:input_type -> kandev.plugin.v1.GetTaskRequest
+-	170, // 370: kandev.plugin.v1.Host.ListTaskStepTransitions:input_type -> kandev.plugin.v1.ListTaskStepTransitionsRequest
+-	173, // 371: kandev.plugin.v1.Host.ListWorkspaces:input_type -> kandev.plugin.v1.ListWorkspacesRequest
+-	176, // 372: kandev.plugin.v1.Host.ListWorkflows:input_type -> kandev.plugin.v1.ListWorkflowsRequest
+-	182, // 373: kandev.plugin.v1.Host.ListWorkflowSteps:input_type -> kandev.plugin.v1.ListWorkflowStepsRequest
+-	179, // 374: kandev.plugin.v1.Host.ListWorkflowTransitionGroups:input_type -> kandev.plugin.v1.ListWorkflowTransitionGroupsRequest
+-	185, // 375: kandev.plugin.v1.Host.ListAgentProfiles:input_type -> kandev.plugin.v1.ListAgentProfilesRequest
+-	188, // 376: kandev.plugin.v1.Host.ListExecutorProfiles:input_type -> kandev.plugin.v1.ListExecutorProfilesRequest
+-	211, // 377: kandev.plugin.v1.Host.CheckpointExecutorResource:input_type -> kandev.plugin.v1.CheckpointExecutorResourceRequest
+-	213, // 378: kandev.plugin.v1.Host.ReportExecutorProgress:input_type -> kandev.plugin.v1.ReportExecutorProgressRequest
+-	215, // 379: kandev.plugin.v1.Host.ReadExecutorRuntimeArtifact:input_type -> kandev.plugin.v1.ReadExecutorRuntimeArtifactRequest
+-	218, // 380: kandev.plugin.v1.Host.ListRepositories:input_type -> kandev.plugin.v1.ListRepositoriesRequest
+-	222, // 381: kandev.plugin.v1.Host.ListSessions:input_type -> kandev.plugin.v1.ListSessionsRequest
+-	225, // 382: kandev.plugin.v1.Host.ListSessionCodeStats:input_type -> kandev.plugin.v1.ListSessionCodeStatsRequest
+-	229, // 383: kandev.plugin.v1.Host.ListMessages:input_type -> kandev.plugin.v1.ListMessagesRequest
+-	235, // 384: kandev.plugin.v1.Host.ListPendingInteractions:input_type -> kandev.plugin.v1.ListPendingInteractionsRequest
+-	237, // 385: kandev.plugin.v1.Host.GetInteraction:input_type -> kandev.plugin.v1.GetInteractionRequest
+-	246, // 386: kandev.plugin.v1.Host.InvokeUtilityAgent:input_type -> kandev.plugin.v1.InvokeUtilityAgentRequest
+-	247, // 387: kandev.plugin.v1.Host.InvokeUtilityAgentWithOptions:input_type -> kandev.plugin.v1.InvokeUtilityAgentWithOptionsRequest
+-	249, // 388: kandev.plugin.v1.Host.CreateTask:input_type -> kandev.plugin.v1.CreateTaskRequest
+-	254, // 389: kandev.plugin.v1.Host.UpdateTask:input_type -> kandev.plugin.v1.UpdateTaskRequest
+-	256, // 390: kandev.plugin.v1.Host.MoveTask:input_type -> kandev.plugin.v1.MoveTaskRequest
+-	258, // 391: kandev.plugin.v1.Host.SendMessage:input_type -> kandev.plugin.v1.SendMessageRequest
+-	260, // 392: kandev.plugin.v1.Host.PreviewPluginOwnedTaskTree:input_type -> kandev.plugin.v1.PreviewPluginOwnedTaskTreeRequest
+-	262, // 393: kandev.plugin.v1.Host.DeletePluginOwnedTaskTree:input_type -> kandev.plugin.v1.DeletePluginOwnedTaskTreeRequest
+-	267, // 394: kandev.plugin.v1.Host.EnsureAgentConversation:input_type -> kandev.plugin.v1.EnsureAgentConversationRequest
+-	269, // 395: kandev.plugin.v1.Host.DispatchAgentConversation:input_type -> kandev.plugin.v1.DispatchAgentConversationRequest
+-	271, // 396: kandev.plugin.v1.Host.DeleteAgentConversation:input_type -> kandev.plugin.v1.DeleteAgentConversationRequest
+-	239, // 397: kandev.plugin.v1.Host.RespondToPermission:input_type -> kandev.plugin.v1.RespondToPermissionRequest
+-	242, // 398: kandev.plugin.v1.Host.AnswerClarification:input_type -> kandev.plugin.v1.AnswerClarificationRequest
+-	244, // 399: kandev.plugin.v1.Host.CancelClarification:input_type -> kandev.plugin.v1.CancelClarificationRequest
+-	119, // 400: kandev.plugin.v1.Plugin.DeliverEvent:output_type -> kandev.plugin.v1.EventAck
+-	124, // 401: kandev.plugin.v1.Plugin.HandleWebhook:output_type -> kandev.plugin.v1.WebhookResponse
+-	274, // 402: kandev.plugin.v1.Plugin.DescribeAutomationCondition:output_type -> kandev.plugin.v1.AutomationConditionResponse
+-	276, // 403: kandev.plugin.v1.Plugin.VerifyAutomationWebhook:output_type -> kandev.plugin.v1.AutomationWebhookResponse
+-	127, // 404: kandev.plugin.v1.Plugin.HandleAction:output_type -> kandev.plugin.v1.PluginActionResponse
+-	129, // 405: kandev.plugin.v1.Plugin.SearchEntityReferences:output_type -> kandev.plugin.v1.SearchEntityReferencesResponse
+-	132, // 406: kandev.plugin.v1.Plugin.AuthorizeEntityReference:output_type -> kandev.plugin.v1.AuthorizeEntityReferenceResponse
+-	134, // 407: kandev.plugin.v1.Plugin.ResolveGitCredential:output_type -> kandev.plugin.v1.ResolveGitCredentialResponse
+-	136, // 408: kandev.plugin.v1.Plugin.GetGitCredentialBinding:output_type -> kandev.plugin.v1.GitCredentialBindingResponse
+-	122, // 409: kandev.plugin.v1.Plugin.InvokeAgentTool:output_type -> kandev.plugin.v1.AgentToolResponse
+-	197, // 410: kandev.plugin.v1.Plugin.ValidateExecutorProfile:output_type -> kandev.plugin.v1.ValidateExecutorProfileResponse
+-	199, // 411: kandev.plugin.v1.Plugin.ProvisionExecutorEnvironment:output_type -> kandev.plugin.v1.ProvisionExecutorEnvironmentResponse
+-	201, // 412: kandev.plugin.v1.Plugin.RecoverExecutorOperation:output_type -> kandev.plugin.v1.RecoverExecutorOperationResponse
+-	203, // 413: kandev.plugin.v1.Plugin.AttachExecutorEnvironment:output_type -> kandev.plugin.v1.AttachExecutorEnvironmentResponse
+-	205, // 414: kandev.plugin.v1.Plugin.InspectExecutorEnvironment:output_type -> kandev.plugin.v1.InspectExecutorEnvironmentResponse
+-	208, // 415: kandev.plugin.v1.Plugin.ResolveExecutorConnection:output_type -> kandev.plugin.v1.ResolveExecutorConnectionResponse
+-	210, // 416: kandev.plugin.v1.Plugin.DestroyExecutorEnvironment:output_type -> kandev.plugin.v1.DestroyExecutorEnvironmentResponse
+-	7,   // 417: kandev.plugin.v1.Host.GetCapabilityContext:output_type -> kandev.plugin.v1.GetCapabilityContextResponse
+-	11,  // 418: kandev.plugin.v1.Host.UpdateTaskExact:output_type -> kandev.plugin.v1.UpdateTaskExactResponse
+-	13,  // 419: kandev.plugin.v1.Host.CreateTaskExact:output_type -> kandev.plugin.v1.CreateTaskExactResponse
+-	15,  // 420: kandev.plugin.v1.Host.SetTaskLabelsExact:output_type -> kandev.plugin.v1.SetTaskLabelsExactResponse
+-	17,  // 421: kandev.plugin.v1.Host.AssignTaskExact:output_type -> kandev.plugin.v1.AssignTaskExactResponse
+-	19,  // 422: kandev.plugin.v1.Host.MoveTaskExact:output_type -> kandev.plugin.v1.MoveTaskExactResponse
+-	21,  // 423: kandev.plugin.v1.Host.ArchiveTaskExact:output_type -> kandev.plugin.v1.ArchiveTaskExactResponse
+-	23,  // 424: kandev.plugin.v1.Host.AddTaskRelationExact:output_type -> kandev.plugin.v1.AddTaskRelationExactResponse
+-	25,  // 425: kandev.plugin.v1.Host.RemoveTaskRelationExact:output_type -> kandev.plugin.v1.RemoveTaskRelationExactResponse
+-	27,  // 426: kandev.plugin.v1.Host.SendTaskMessageExact:output_type -> kandev.plugin.v1.SendTaskMessageExactResponse
+-	65,  // 427: kandev.plugin.v1.Host.IssueTaskDirectiveExact:output_type -> kandev.plugin.v1.IssueTaskDirectiveExactResponse
+-	67,  // 428: kandev.plugin.v1.Host.ResolveTaskDirectiveExact:output_type -> kandev.plugin.v1.ResolveTaskDirectiveExactResponse
+-	32,  // 429: kandev.plugin.v1.Host.AcquireTaskManagementClaimExact:output_type -> kandev.plugin.v1.TaskManagementClaimExactResponse
+-	32,  // 430: kandev.plugin.v1.Host.ReleaseTaskManagementClaimExact:output_type -> kandev.plugin.v1.TaskManagementClaimExactResponse
+-	32,  // 431: kandev.plugin.v1.Host.TransferTaskManagementClaimExact:output_type -> kandev.plugin.v1.TaskManagementClaimExactResponse
+-	41,  // 432: kandev.plugin.v1.Host.SetTaskCompletionCriteriaExact:output_type -> kandev.plugin.v1.TaskCompletionGateExactResponse
+-	41,  // 433: kandev.plugin.v1.Host.VerifyTaskCompletionCriterionExact:output_type -> kandev.plugin.v1.TaskCompletionGateExactResponse
+-	55,  // 434: kandev.plugin.v1.Host.ApplyWorkspaceAdministrationExact:output_type -> kandev.plugin.v1.WorkspaceAdministrationExactResponse
+-	59,  // 435: kandev.plugin.v1.Host.GetSourceIssueCapabilitiesExact:output_type -> kandev.plugin.v1.GetSourceIssueCapabilitiesExactResponse
+-	63,  // 436: kandev.plugin.v1.Host.CommentSourceIssueExact:output_type -> kandev.plugin.v1.SourceIssueWritebackExactResponse
+-	63,  // 437: kandev.plugin.v1.Host.TransitionSourceIssueExact:output_type -> kandev.plugin.v1.SourceIssueWritebackExactResponse
+-	71,  // 438: kandev.plugin.v1.Host.EnsureManagedAgentConversationExact:output_type -> kandev.plugin.v1.EnsureManagedAgentConversationExactResponse
+-	73,  // 439: kandev.plugin.v1.Host.GetManagedAgentConversationStatusExact:output_type -> kandev.plugin.v1.GetManagedAgentConversationStatusExactResponse
+-	75,  // 440: kandev.plugin.v1.Host.ListManagedAgentConversationsExact:output_type -> kandev.plugin.v1.ListManagedAgentConversationsExactResponse
+-	77,  // 441: kandev.plugin.v1.Host.SetManagedAgentConversationPausedExact:output_type -> kandev.plugin.v1.SetManagedAgentConversationPausedExactResponse
+-	79,  // 442: kandev.plugin.v1.Host.DeleteManagedAgentConversationExact:output_type -> kandev.plugin.v1.DeleteManagedAgentConversationExactResponse
+-	82,  // 443: kandev.plugin.v1.Host.EnqueueManagedAgentInputExact:output_type -> kandev.plugin.v1.EnqueueManagedAgentInputExactResponse
+-	84,  // 444: kandev.plugin.v1.Host.GetManagedAgentInputExact:output_type -> kandev.plugin.v1.GetManagedAgentInputExactResponse
+-	86,  // 445: kandev.plugin.v1.Host.ListManagedAgentInputsExact:output_type -> kandev.plugin.v1.ListManagedAgentInputsExactResponse
+-	88,  // 446: kandev.plugin.v1.Host.CancelManagedAgentInputExact:output_type -> kandev.plugin.v1.CancelManagedAgentInputExactResponse
+-	90,  // 447: kandev.plugin.v1.Host.DispatchManagedAgentConversationExact:output_type -> kandev.plugin.v1.DispatchManagedAgentConversationExactResponse
+-	94,  // 448: kandev.plugin.v1.Host.ListManagedConversationSchedulesExact:output_type -> kandev.plugin.v1.ListManagedConversationSchedulesExactResponse
+-	99,  // 449: kandev.plugin.v1.Host.CreateManagedConversationScheduleExact:output_type -> kandev.plugin.v1.ManagedConversationScheduleExactResponse
+-	99,  // 450: kandev.plugin.v1.Host.UpdateManagedConversationScheduleExact:output_type -> kandev.plugin.v1.ManagedConversationScheduleExactResponse
+-	99,  // 451: kandev.plugin.v1.Host.SetManagedConversationScheduleEnabledExact:output_type -> kandev.plugin.v1.ManagedConversationScheduleExactResponse
+-	9,   // 452: kandev.plugin.v1.Host.DeleteManagedConversationScheduleExact:output_type -> kandev.plugin.v1.HostCommandResult
+-	101, // 453: kandev.plugin.v1.Host.EnsureTaskRunExact:output_type -> kandev.plugin.v1.EnsureTaskRunExactResponse
+-	103, // 454: kandev.plugin.v1.Host.StopTaskRunExact:output_type -> kandev.plugin.v1.StopTaskRunExactResponse
+-	105, // 455: kandev.plugin.v1.Host.RecoverSessionExact:output_type -> kandev.plugin.v1.RecoverSessionExactResponse
+-	107, // 456: kandev.plugin.v1.Host.CancelPendingTaskTransitionExact:output_type -> kandev.plugin.v1.CancelPendingTaskTransitionExactResponse
+-	110, // 457: kandev.plugin.v1.Host.GetSessionModeContextExact:output_type -> kandev.plugin.v1.GetSessionModeContextExactResponse
+-	112, // 458: kandev.plugin.v1.Host.SetSessionModeExact:output_type -> kandev.plugin.v1.SetSessionModeExactResponse
+-	115, // 459: kandev.plugin.v1.Host.RespondPermissionExact:output_type -> kandev.plugin.v1.RespondPermissionExactResponse
+-	117, // 460: kandev.plugin.v1.Host.AnswerClarificationExact:output_type -> kandev.plugin.v1.AnswerClarificationExactResponse
+-	294, // 461: kandev.plugin.v1.Host.ListWorkspacesExact:output_type -> kandev.plugin.v1.ListWorkspacesExactResponse
+-	296, // 462: kandev.plugin.v1.Host.ListWorkflowsExact:output_type -> kandev.plugin.v1.ListWorkflowsExactResponse
+-	298, // 463: kandev.plugin.v1.Host.ListWorkflowStepsExact:output_type -> kandev.plugin.v1.ListWorkflowStepsExactResponse
+-	300, // 464: kandev.plugin.v1.Host.ListTasksExact:output_type -> kandev.plugin.v1.ListTasksExactResponse
+-	302, // 465: kandev.plugin.v1.Host.GetTaskExact:output_type -> kandev.plugin.v1.GetTaskExactResponse
+-	304, // 466: kandev.plugin.v1.Host.ListSessionsExact:output_type -> kandev.plugin.v1.ListSessionsExactResponse
+-	306, // 467: kandev.plugin.v1.Host.ListPendingInteractionsExact:output_type -> kandev.plugin.v1.ListPendingInteractionsExactResponse
+-	308, // 468: kandev.plugin.v1.Host.GetInteractionExact:output_type -> kandev.plugin.v1.GetInteractionExactResponse
+-	310, // 469: kandev.plugin.v1.Host.ListSanitizedMessagesExact:output_type -> kandev.plugin.v1.ListSanitizedMessagesExactResponse
+-	312, // 470: kandev.plugin.v1.Host.ListTaskInboxExact:output_type -> kandev.plugin.v1.ListTaskInboxExactResponse
+-	314, // 471: kandev.plugin.v1.Host.GetTaskDirectiveExact:output_type -> kandev.plugin.v1.GetTaskDirectiveExactResponse
+-	316, // 472: kandev.plugin.v1.Host.ListTaskDirectivesExact:output_type -> kandev.plugin.v1.ListTaskDirectivesExactResponse
+-	318, // 473: kandev.plugin.v1.Host.GetTaskRelationsExact:output_type -> kandev.plugin.v1.GetTaskRelationsExactResponse
+-	320, // 474: kandev.plugin.v1.Host.ListTaskRelationsExact:output_type -> kandev.plugin.v1.ListTaskRelationsExactResponse
+-	322, // 475: kandev.plugin.v1.Host.ListPendingTaskTransitionsExact:output_type -> kandev.plugin.v1.ListPendingTaskTransitionsExactResponse
+-	324, // 476: kandev.plugin.v1.Host.ListChangeRequestEvidenceExact:output_type -> kandev.plugin.v1.ListChangeRequestEvidenceExactResponse
+-	326, // 477: kandev.plugin.v1.Host.ListTaskUsageExact:output_type -> kandev.plugin.v1.ListTaskUsageExactResponse
+-	138, // 478: kandev.plugin.v1.Host.GetState:output_type -> kandev.plugin.v1.GetStateResponse
+-	140, // 479: kandev.plugin.v1.Host.SetState:output_type -> kandev.plugin.v1.SetStateResponse
+-	142, // 480: kandev.plugin.v1.Host.DeleteState:output_type -> kandev.plugin.v1.DeleteStateResponse
+-	144, // 481: kandev.plugin.v1.Host.ListState:output_type -> kandev.plugin.v1.ListStateResponse
+-	155, // 482: kandev.plugin.v1.Host.RevealSecret:output_type -> kandev.plugin.v1.RevealSecretResponse
+-	157, // 483: kandev.plugin.v1.Host.EmitEvent:output_type -> kandev.plugin.v1.EmitEventResponse
+-	149, // 484: kandev.plugin.v1.Host.GetSecret:output_type -> kandev.plugin.v1.GetSecretResponse
+-	151, // 485: kandev.plugin.v1.Host.SetSecret:output_type -> kandev.plugin.v1.SetSecretResponse
+-	153, // 486: kandev.plugin.v1.Host.DeleteSecret:output_type -> kandev.plugin.v1.DeleteSecretResponse
+-	147, // 487: kandev.plugin.v1.Host.GetConfig:output_type -> kandev.plugin.v1.GetConfigResponse
+-	166, // 488: kandev.plugin.v1.Host.ListTasks:output_type -> kandev.plugin.v1.ListTasksResponse
+-	168, // 489: kandev.plugin.v1.Host.GetTask:output_type -> kandev.plugin.v1.GetTaskResponse
+-	171, // 490: kandev.plugin.v1.Host.ListTaskStepTransitions:output_type -> kandev.plugin.v1.ListTaskStepTransitionsResponse
+-	174, // 491: kandev.plugin.v1.Host.ListWorkspaces:output_type -> kandev.plugin.v1.ListWorkspacesResponse
+-	177, // 492: kandev.plugin.v1.Host.ListWorkflows:output_type -> kandev.plugin.v1.ListWorkflowsResponse
+-	183, // 493: kandev.plugin.v1.Host.ListWorkflowSteps:output_type -> kandev.plugin.v1.ListWorkflowStepsResponse
+-	180, // 494: kandev.plugin.v1.Host.ListWorkflowTransitionGroups:output_type -> kandev.plugin.v1.ListWorkflowTransitionGroupsResponse
+-	186, // 495: kandev.plugin.v1.Host.ListAgentProfiles:output_type -> kandev.plugin.v1.ListAgentProfilesResponse
+-	189, // 496: kandev.plugin.v1.Host.ListExecutorProfiles:output_type -> kandev.plugin.v1.ListExecutorProfilesResponse
+-	212, // 497: kandev.plugin.v1.Host.CheckpointExecutorResource:output_type -> kandev.plugin.v1.CheckpointExecutorResourceResponse
+-	214, // 498: kandev.plugin.v1.Host.ReportExecutorProgress:output_type -> kandev.plugin.v1.ReportExecutorProgressResponse
+-	216, // 499: kandev.plugin.v1.Host.ReadExecutorRuntimeArtifact:output_type -> kandev.plugin.v1.ExecutorRuntimeArtifactChunk
+-	219, // 500: kandev.plugin.v1.Host.ListRepositories:output_type -> kandev.plugin.v1.ListRepositoriesResponse
+-	223, // 501: kandev.plugin.v1.Host.ListSessions:output_type -> kandev.plugin.v1.ListSessionsResponse
+-	226, // 502: kandev.plugin.v1.Host.ListSessionCodeStats:output_type -> kandev.plugin.v1.ListSessionCodeStatsResponse
+-	230, // 503: kandev.plugin.v1.Host.ListMessages:output_type -> kandev.plugin.v1.ListMessagesResponse
+-	236, // 504: kandev.plugin.v1.Host.ListPendingInteractions:output_type -> kandev.plugin.v1.ListPendingInteractionsResponse
+-	238, // 505: kandev.plugin.v1.Host.GetInteraction:output_type -> kandev.plugin.v1.GetInteractionResponse
+-	248, // 506: kandev.plugin.v1.Host.InvokeUtilityAgent:output_type -> kandev.plugin.v1.InvokeUtilityAgentResponse
+-	248, // 507: kandev.plugin.v1.Host.InvokeUtilityAgentWithOptions:output_type -> kandev.plugin.v1.InvokeUtilityAgentResponse
+-	253, // 508: kandev.plugin.v1.Host.CreateTask:output_type -> kandev.plugin.v1.CreateTaskResponse
+-	255, // 509: kandev.plugin.v1.Host.UpdateTask:output_type -> kandev.plugin.v1.UpdateTaskResponse
+-	257, // 510: kandev.plugin.v1.Host.MoveTask:output_type -> kandev.plugin.v1.MoveTaskResponse
+-	259, // 511: kandev.plugin.v1.Host.SendMessage:output_type -> kandev.plugin.v1.SendMessageResponse
+-	261, // 512: kandev.plugin.v1.Host.PreviewPluginOwnedTaskTree:output_type -> kandev.plugin.v1.PreviewPluginOwnedTaskTreeResponse
+-	263, // 513: kandev.plugin.v1.Host.DeletePluginOwnedTaskTree:output_type -> kandev.plugin.v1.DeletePluginOwnedTaskTreeResponse
+-	268, // 514: kandev.plugin.v1.Host.EnsureAgentConversation:output_type -> kandev.plugin.v1.EnsureAgentConversationResponse
+-	270, // 515: kandev.plugin.v1.Host.DispatchAgentConversation:output_type -> kandev.plugin.v1.DispatchAgentConversationResponse
+-	272, // 516: kandev.plugin.v1.Host.DeleteAgentConversation:output_type -> kandev.plugin.v1.DeleteAgentConversationResponse
+-	240, // 517: kandev.plugin.v1.Host.RespondToPermission:output_type -> kandev.plugin.v1.RespondToPermissionResponse
+-	243, // 518: kandev.plugin.v1.Host.AnswerClarification:output_type -> kandev.plugin.v1.AnswerClarificationResponse
+-	245, // 519: kandev.plugin.v1.Host.CancelClarification:output_type -> kandev.plugin.v1.CancelClarificationResponse
+-	400, // [400:520] is the sub-list for method output_type
+-	280, // [280:400] is the sub-list for method input_type
++	301, // 314: kandev.plugin.v1.Host.ReadTaskCompletionGate:input_type -> kandev.plugin.v1.GetTaskExactRequest
++	42,  // 315: kandev.plugin.v1.Host.ApplyWorkspaceAdministrationExact:input_type -> kandev.plugin.v1.ApplyWorkspaceAdministrationExactRequest
++	58,  // 316: kandev.plugin.v1.Host.GetSourceIssueCapabilitiesExact:input_type -> kandev.plugin.v1.GetSourceIssueCapabilitiesExactRequest
++	61,  // 317: kandev.plugin.v1.Host.CommentSourceIssueExact:input_type -> kandev.plugin.v1.CommentSourceIssueExactRequest
++	62,  // 318: kandev.plugin.v1.Host.TransitionSourceIssueExact:input_type -> kandev.plugin.v1.TransitionSourceIssueExactRequest
++	70,  // 319: kandev.plugin.v1.Host.EnsureManagedAgentConversationExact:input_type -> kandev.plugin.v1.EnsureManagedAgentConversationExactRequest
++	72,  // 320: kandev.plugin.v1.Host.GetManagedAgentConversationStatusExact:input_type -> kandev.plugin.v1.GetManagedAgentConversationStatusExactRequest
++	74,  // 321: kandev.plugin.v1.Host.ListManagedAgentConversationsExact:input_type -> kandev.plugin.v1.ListManagedAgentConversationsExactRequest
++	76,  // 322: kandev.plugin.v1.Host.SetManagedAgentConversationPausedExact:input_type -> kandev.plugin.v1.SetManagedAgentConversationPausedExactRequest
++	78,  // 323: kandev.plugin.v1.Host.DeleteManagedAgentConversationExact:input_type -> kandev.plugin.v1.DeleteManagedAgentConversationExactRequest
++	81,  // 324: kandev.plugin.v1.Host.EnqueueManagedAgentInputExact:input_type -> kandev.plugin.v1.EnqueueManagedAgentInputExactRequest
++	83,  // 325: kandev.plugin.v1.Host.GetManagedAgentInputExact:input_type -> kandev.plugin.v1.GetManagedAgentInputExactRequest
++	85,  // 326: kandev.plugin.v1.Host.ListManagedAgentInputsExact:input_type -> kandev.plugin.v1.ListManagedAgentInputsExactRequest
++	87,  // 327: kandev.plugin.v1.Host.CancelManagedAgentInputExact:input_type -> kandev.plugin.v1.CancelManagedAgentInputExactRequest
++	89,  // 328: kandev.plugin.v1.Host.DispatchManagedAgentConversationExact:input_type -> kandev.plugin.v1.DispatchManagedAgentConversationExactRequest
++	93,  // 329: kandev.plugin.v1.Host.ListManagedConversationSchedulesExact:input_type -> kandev.plugin.v1.ListManagedConversationSchedulesExactRequest
++	95,  // 330: kandev.plugin.v1.Host.CreateManagedConversationScheduleExact:input_type -> kandev.plugin.v1.CreateManagedConversationScheduleExactRequest
++	96,  // 331: kandev.plugin.v1.Host.UpdateManagedConversationScheduleExact:input_type -> kandev.plugin.v1.UpdateManagedConversationScheduleExactRequest
++	97,  // 332: kandev.plugin.v1.Host.SetManagedConversationScheduleEnabledExact:input_type -> kandev.plugin.v1.SetManagedConversationScheduleEnabledExactRequest
++	98,  // 333: kandev.plugin.v1.Host.DeleteManagedConversationScheduleExact:input_type -> kandev.plugin.v1.DeleteManagedConversationScheduleExactRequest
++	100, // 334: kandev.plugin.v1.Host.EnsureTaskRunExact:input_type -> kandev.plugin.v1.EnsureTaskRunExactRequest
++	102, // 335: kandev.plugin.v1.Host.StopTaskRunExact:input_type -> kandev.plugin.v1.StopTaskRunExactRequest
++	104, // 336: kandev.plugin.v1.Host.RecoverSessionExact:input_type -> kandev.plugin.v1.RecoverSessionExactRequest
++	106, // 337: kandev.plugin.v1.Host.CancelPendingTaskTransitionExact:input_type -> kandev.plugin.v1.CancelPendingTaskTransitionExactRequest
++	109, // 338: kandev.plugin.v1.Host.GetSessionModeContextExact:input_type -> kandev.plugin.v1.GetSessionModeContextExactRequest
++	111, // 339: kandev.plugin.v1.Host.SetSessionModeExact:input_type -> kandev.plugin.v1.SetSessionModeExactRequest
++	114, // 340: kandev.plugin.v1.Host.RespondPermissionExact:input_type -> kandev.plugin.v1.RespondPermissionExactRequest
++	116, // 341: kandev.plugin.v1.Host.AnswerClarificationExact:input_type -> kandev.plugin.v1.AnswerClarificationExactRequest
++	293, // 342: kandev.plugin.v1.Host.ListWorkspacesExact:input_type -> kandev.plugin.v1.ListWorkspacesExactRequest
++	295, // 343: kandev.plugin.v1.Host.ListWorkflowsExact:input_type -> kandev.plugin.v1.ListWorkflowsExactRequest
++	297, // 344: kandev.plugin.v1.Host.ListWorkflowStepsExact:input_type -> kandev.plugin.v1.ListWorkflowStepsExactRequest
++	299, // 345: kandev.plugin.v1.Host.ListTasksExact:input_type -> kandev.plugin.v1.ListTasksExactRequest
++	301, // 346: kandev.plugin.v1.Host.GetTaskExact:input_type -> kandev.plugin.v1.GetTaskExactRequest
++	303, // 347: kandev.plugin.v1.Host.ListSessionsExact:input_type -> kandev.plugin.v1.ListSessionsExactRequest
++	305, // 348: kandev.plugin.v1.Host.ListPendingInteractionsExact:input_type -> kandev.plugin.v1.ListPendingInteractionsExactRequest
++	307, // 349: kandev.plugin.v1.Host.GetInteractionExact:input_type -> kandev.plugin.v1.GetInteractionExactRequest
++	309, // 350: kandev.plugin.v1.Host.ListSanitizedMessagesExact:input_type -> kandev.plugin.v1.ListSanitizedMessagesExactRequest
++	311, // 351: kandev.plugin.v1.Host.ListTaskInboxExact:input_type -> kandev.plugin.v1.ListTaskInboxExactRequest
++	313, // 352: kandev.plugin.v1.Host.GetTaskDirectiveExact:input_type -> kandev.plugin.v1.GetTaskDirectiveExactRequest
++	315, // 353: kandev.plugin.v1.Host.ListTaskDirectivesExact:input_type -> kandev.plugin.v1.ListTaskDirectivesExactRequest
++	317, // 354: kandev.plugin.v1.Host.GetTaskRelationsExact:input_type -> kandev.plugin.v1.GetTaskRelationsExactRequest
++	319, // 355: kandev.plugin.v1.Host.ListTaskRelationsExact:input_type -> kandev.plugin.v1.ListTaskRelationsExactRequest
++	321, // 356: kandev.plugin.v1.Host.ListPendingTaskTransitionsExact:input_type -> kandev.plugin.v1.ListPendingTaskTransitionsExactRequest
++	323, // 357: kandev.plugin.v1.Host.ListChangeRequestEvidenceExact:input_type -> kandev.plugin.v1.ListChangeRequestEvidenceExactRequest
++	325, // 358: kandev.plugin.v1.Host.ListTaskUsageExact:input_type -> kandev.plugin.v1.ListTaskUsageExactRequest
++	137, // 359: kandev.plugin.v1.Host.GetState:input_type -> kandev.plugin.v1.GetStateRequest
++	139, // 360: kandev.plugin.v1.Host.SetState:input_type -> kandev.plugin.v1.SetStateRequest
++	141, // 361: kandev.plugin.v1.Host.DeleteState:input_type -> kandev.plugin.v1.DeleteStateRequest
++	143, // 362: kandev.plugin.v1.Host.ListState:input_type -> kandev.plugin.v1.ListStateRequest
++	154, // 363: kandev.plugin.v1.Host.RevealSecret:input_type -> kandev.plugin.v1.RevealSecretRequest
++	156, // 364: kandev.plugin.v1.Host.EmitEvent:input_type -> kandev.plugin.v1.EmitEventRequest
++	148, // 365: kandev.plugin.v1.Host.GetSecret:input_type -> kandev.plugin.v1.GetSecretRequest
++	150, // 366: kandev.plugin.v1.Host.SetSecret:input_type -> kandev.plugin.v1.SetSecretRequest
++	152, // 367: kandev.plugin.v1.Host.DeleteSecret:input_type -> kandev.plugin.v1.DeleteSecretRequest
++	146, // 368: kandev.plugin.v1.Host.GetConfig:input_type -> kandev.plugin.v1.GetConfigRequest
++	165, // 369: kandev.plugin.v1.Host.ListTasks:input_type -> kandev.plugin.v1.ListTasksRequest
++	167, // 370: kandev.plugin.v1.Host.GetTask:input_type -> kandev.plugin.v1.GetTaskRequest
++	170, // 371: kandev.plugin.v1.Host.ListTaskStepTransitions:input_type -> kandev.plugin.v1.ListTaskStepTransitionsRequest
++	173, // 372: kandev.plugin.v1.Host.ListWorkspaces:input_type -> kandev.plugin.v1.ListWorkspacesRequest
++	176, // 373: kandev.plugin.v1.Host.ListWorkflows:input_type -> kandev.plugin.v1.ListWorkflowsRequest
++	182, // 374: kandev.plugin.v1.Host.ListWorkflowSteps:input_type -> kandev.plugin.v1.ListWorkflowStepsRequest
++	179, // 375: kandev.plugin.v1.Host.ListWorkflowTransitionGroups:input_type -> kandev.plugin.v1.ListWorkflowTransitionGroupsRequest
++	185, // 376: kandev.plugin.v1.Host.ListAgentProfiles:input_type -> kandev.plugin.v1.ListAgentProfilesRequest
++	188, // 377: kandev.plugin.v1.Host.ListExecutorProfiles:input_type -> kandev.plugin.v1.ListExecutorProfilesRequest
++	211, // 378: kandev.plugin.v1.Host.CheckpointExecutorResource:input_type -> kandev.plugin.v1.CheckpointExecutorResourceRequest
++	213, // 379: kandev.plugin.v1.Host.ReportExecutorProgress:input_type -> kandev.plugin.v1.ReportExecutorProgressRequest
++	215, // 380: kandev.plugin.v1.Host.ReadExecutorRuntimeArtifact:input_type -> kandev.plugin.v1.ReadExecutorRuntimeArtifactRequest
++	218, // 381: kandev.plugin.v1.Host.ListRepositories:input_type -> kandev.plugin.v1.ListRepositoriesRequest
++	222, // 382: kandev.plugin.v1.Host.ListSessions:input_type -> kandev.plugin.v1.ListSessionsRequest
++	225, // 383: kandev.plugin.v1.Host.ListSessionCodeStats:input_type -> kandev.plugin.v1.ListSessionCodeStatsRequest
++	229, // 384: kandev.plugin.v1.Host.ListMessages:input_type -> kandev.plugin.v1.ListMessagesRequest
++	235, // 385: kandev.plugin.v1.Host.ListPendingInteractions:input_type -> kandev.plugin.v1.ListPendingInteractionsRequest
++	237, // 386: kandev.plugin.v1.Host.GetInteraction:input_type -> kandev.plugin.v1.GetInteractionRequest
++	246, // 387: kandev.plugin.v1.Host.InvokeUtilityAgent:input_type -> kandev.plugin.v1.InvokeUtilityAgentRequest
++	247, // 388: kandev.plugin.v1.Host.InvokeUtilityAgentWithOptions:input_type -> kandev.plugin.v1.InvokeUtilityAgentWithOptionsRequest
++	249, // 389: kandev.plugin.v1.Host.CreateTask:input_type -> kandev.plugin.v1.CreateTaskRequest
++	254, // 390: kandev.plugin.v1.Host.UpdateTask:input_type -> kandev.plugin.v1.UpdateTaskRequest
++	256, // 391: kandev.plugin.v1.Host.MoveTask:input_type -> kandev.plugin.v1.MoveTaskRequest
++	258, // 392: kandev.plugin.v1.Host.SendMessage:input_type -> kandev.plugin.v1.SendMessageRequest
++	260, // 393: kandev.plugin.v1.Host.PreviewPluginOwnedTaskTree:input_type -> kandev.plugin.v1.PreviewPluginOwnedTaskTreeRequest
++	262, // 394: kandev.plugin.v1.Host.DeletePluginOwnedTaskTree:input_type -> kandev.plugin.v1.DeletePluginOwnedTaskTreeRequest
++	267, // 395: kandev.plugin.v1.Host.EnsureAgentConversation:input_type -> kandev.plugin.v1.EnsureAgentConversationRequest
++	269, // 396: kandev.plugin.v1.Host.DispatchAgentConversation:input_type -> kandev.plugin.v1.DispatchAgentConversationRequest
++	271, // 397: kandev.plugin.v1.Host.DeleteAgentConversation:input_type -> kandev.plugin.v1.DeleteAgentConversationRequest
++	239, // 398: kandev.plugin.v1.Host.RespondToPermission:input_type -> kandev.plugin.v1.RespondToPermissionRequest
++	242, // 399: kandev.plugin.v1.Host.AnswerClarification:input_type -> kandev.plugin.v1.AnswerClarificationRequest
++	244, // 400: kandev.plugin.v1.Host.CancelClarification:input_type -> kandev.plugin.v1.CancelClarificationRequest
++	119, // 401: kandev.plugin.v1.Plugin.DeliverEvent:output_type -> kandev.plugin.v1.EventAck
++	124, // 402: kandev.plugin.v1.Plugin.HandleWebhook:output_type -> kandev.plugin.v1.WebhookResponse
++	274, // 403: kandev.plugin.v1.Plugin.DescribeAutomationCondition:output_type -> kandev.plugin.v1.AutomationConditionResponse
++	276, // 404: kandev.plugin.v1.Plugin.VerifyAutomationWebhook:output_type -> kandev.plugin.v1.AutomationWebhookResponse
++	127, // 405: kandev.plugin.v1.Plugin.HandleAction:output_type -> kandev.plugin.v1.PluginActionResponse
++	129, // 406: kandev.plugin.v1.Plugin.SearchEntityReferences:output_type -> kandev.plugin.v1.SearchEntityReferencesResponse
++	132, // 407: kandev.plugin.v1.Plugin.AuthorizeEntityReference:output_type -> kandev.plugin.v1.AuthorizeEntityReferenceResponse
++	134, // 408: kandev.plugin.v1.Plugin.ResolveGitCredential:output_type -> kandev.plugin.v1.ResolveGitCredentialResponse
++	136, // 409: kandev.plugin.v1.Plugin.GetGitCredentialBinding:output_type -> kandev.plugin.v1.GitCredentialBindingResponse
++	122, // 410: kandev.plugin.v1.Plugin.InvokeAgentTool:output_type -> kandev.plugin.v1.AgentToolResponse
++	197, // 411: kandev.plugin.v1.Plugin.ValidateExecutorProfile:output_type -> kandev.plugin.v1.ValidateExecutorProfileResponse
++	199, // 412: kandev.plugin.v1.Plugin.ProvisionExecutorEnvironment:output_type -> kandev.plugin.v1.ProvisionExecutorEnvironmentResponse
++	201, // 413: kandev.plugin.v1.Plugin.RecoverExecutorOperation:output_type -> kandev.plugin.v1.RecoverExecutorOperationResponse
++	203, // 414: kandev.plugin.v1.Plugin.AttachExecutorEnvironment:output_type -> kandev.plugin.v1.AttachExecutorEnvironmentResponse
++	205, // 415: kandev.plugin.v1.Plugin.InspectExecutorEnvironment:output_type -> kandev.plugin.v1.InspectExecutorEnvironmentResponse
++	208, // 416: kandev.plugin.v1.Plugin.ResolveExecutorConnection:output_type -> kandev.plugin.v1.ResolveExecutorConnectionResponse
++	210, // 417: kandev.plugin.v1.Plugin.DestroyExecutorEnvironment:output_type -> kandev.plugin.v1.DestroyExecutorEnvironmentResponse
++	7,   // 418: kandev.plugin.v1.Host.GetCapabilityContext:output_type -> kandev.plugin.v1.GetCapabilityContextResponse
++	11,  // 419: kandev.plugin.v1.Host.UpdateTaskExact:output_type -> kandev.plugin.v1.UpdateTaskExactResponse
++	13,  // 420: kandev.plugin.v1.Host.CreateTaskExact:output_type -> kandev.plugin.v1.CreateTaskExactResponse
++	15,  // 421: kandev.plugin.v1.Host.SetTaskLabelsExact:output_type -> kandev.plugin.v1.SetTaskLabelsExactResponse
++	17,  // 422: kandev.plugin.v1.Host.AssignTaskExact:output_type -> kandev.plugin.v1.AssignTaskExactResponse
++	19,  // 423: kandev.plugin.v1.Host.MoveTaskExact:output_type -> kandev.plugin.v1.MoveTaskExactResponse
++	21,  // 424: kandev.plugin.v1.Host.ArchiveTaskExact:output_type -> kandev.plugin.v1.ArchiveTaskExactResponse
++	23,  // 425: kandev.plugin.v1.Host.AddTaskRelationExact:output_type -> kandev.plugin.v1.AddTaskRelationExactResponse
++	25,  // 426: kandev.plugin.v1.Host.RemoveTaskRelationExact:output_type -> kandev.plugin.v1.RemoveTaskRelationExactResponse
++	27,  // 427: kandev.plugin.v1.Host.SendTaskMessageExact:output_type -> kandev.plugin.v1.SendTaskMessageExactResponse
++	65,  // 428: kandev.plugin.v1.Host.IssueTaskDirectiveExact:output_type -> kandev.plugin.v1.IssueTaskDirectiveExactResponse
++	67,  // 429: kandev.plugin.v1.Host.ResolveTaskDirectiveExact:output_type -> kandev.plugin.v1.ResolveTaskDirectiveExactResponse
++	32,  // 430: kandev.plugin.v1.Host.AcquireTaskManagementClaimExact:output_type -> kandev.plugin.v1.TaskManagementClaimExactResponse
++	32,  // 431: kandev.plugin.v1.Host.ReleaseTaskManagementClaimExact:output_type -> kandev.plugin.v1.TaskManagementClaimExactResponse
++	32,  // 432: kandev.plugin.v1.Host.TransferTaskManagementClaimExact:output_type -> kandev.plugin.v1.TaskManagementClaimExactResponse
++	41,  // 433: kandev.plugin.v1.Host.SetTaskCompletionCriteriaExact:output_type -> kandev.plugin.v1.TaskCompletionGateExactResponse
++	41,  // 434: kandev.plugin.v1.Host.VerifyTaskCompletionCriterionExact:output_type -> kandev.plugin.v1.TaskCompletionGateExactResponse
++	41,  // 435: kandev.plugin.v1.Host.ReadTaskCompletionGate:output_type -> kandev.plugin.v1.TaskCompletionGateExactResponse
++	55,  // 436: kandev.plugin.v1.Host.ApplyWorkspaceAdministrationExact:output_type -> kandev.plugin.v1.WorkspaceAdministrationExactResponse
++	59,  // 437: kandev.plugin.v1.Host.GetSourceIssueCapabilitiesExact:output_type -> kandev.plugin.v1.GetSourceIssueCapabilitiesExactResponse
++	63,  // 438: kandev.plugin.v1.Host.CommentSourceIssueExact:output_type -> kandev.plugin.v1.SourceIssueWritebackExactResponse
++	63,  // 439: kandev.plugin.v1.Host.TransitionSourceIssueExact:output_type -> kandev.plugin.v1.SourceIssueWritebackExactResponse
++	71,  // 440: kandev.plugin.v1.Host.EnsureManagedAgentConversationExact:output_type -> kandev.plugin.v1.EnsureManagedAgentConversationExactResponse
++	73,  // 441: kandev.plugin.v1.Host.GetManagedAgentConversationStatusExact:output_type -> kandev.plugin.v1.GetManagedAgentConversationStatusExactResponse
++	75,  // 442: kandev.plugin.v1.Host.ListManagedAgentConversationsExact:output_type -> kandev.plugin.v1.ListManagedAgentConversationsExactResponse
++	77,  // 443: kandev.plugin.v1.Host.SetManagedAgentConversationPausedExact:output_type -> kandev.plugin.v1.SetManagedAgentConversationPausedExactResponse
++	79,  // 444: kandev.plugin.v1.Host.DeleteManagedAgentConversationExact:output_type -> kandev.plugin.v1.DeleteManagedAgentConversationExactResponse
++	82,  // 445: kandev.plugin.v1.Host.EnqueueManagedAgentInputExact:output_type -> kandev.plugin.v1.EnqueueManagedAgentInputExactResponse
++	84,  // 446: kandev.plugin.v1.Host.GetManagedAgentInputExact:output_type -> kandev.plugin.v1.GetManagedAgentInputExactResponse
++	86,  // 447: kandev.plugin.v1.Host.ListManagedAgentInputsExact:output_type -> kandev.plugin.v1.ListManagedAgentInputsExactResponse
++	88,  // 448: kandev.plugin.v1.Host.CancelManagedAgentInputExact:output_type -> kandev.plugin.v1.CancelManagedAgentInputExactResponse
++	90,  // 449: kandev.plugin.v1.Host.DispatchManagedAgentConversationExact:output_type -> kandev.plugin.v1.DispatchManagedAgentConversationExactResponse
++	94,  // 450: kandev.plugin.v1.Host.ListManagedConversationSchedulesExact:output_type -> kandev.plugin.v1.ListManagedConversationSchedulesExactResponse
++	99,  // 451: kandev.plugin.v1.Host.CreateManagedConversationScheduleExact:output_type -> kandev.plugin.v1.ManagedConversationScheduleExactResponse
++	99,  // 452: kandev.plugin.v1.Host.UpdateManagedConversationScheduleExact:output_type -> kandev.plugin.v1.ManagedConversationScheduleExactResponse
++	99,  // 453: kandev.plugin.v1.Host.SetManagedConversationScheduleEnabledExact:output_type -> kandev.plugin.v1.ManagedConversationScheduleExactResponse
++	9,   // 454: kandev.plugin.v1.Host.DeleteManagedConversationScheduleExact:output_type -> kandev.plugin.v1.HostCommandResult
++	101, // 455: kandev.plugin.v1.Host.EnsureTaskRunExact:output_type -> kandev.plugin.v1.EnsureTaskRunExactResponse
++	103, // 456: kandev.plugin.v1.Host.StopTaskRunExact:output_type -> kandev.plugin.v1.StopTaskRunExactResponse
++	105, // 457: kandev.plugin.v1.Host.RecoverSessionExact:output_type -> kandev.plugin.v1.RecoverSessionExactResponse
++	107, // 458: kandev.plugin.v1.Host.CancelPendingTaskTransitionExact:output_type -> kandev.plugin.v1.CancelPendingTaskTransitionExactResponse
++	110, // 459: kandev.plugin.v1.Host.GetSessionModeContextExact:output_type -> kandev.plugin.v1.GetSessionModeContextExactResponse
++	112, // 460: kandev.plugin.v1.Host.SetSessionModeExact:output_type -> kandev.plugin.v1.SetSessionModeExactResponse
++	115, // 461: kandev.plugin.v1.Host.RespondPermissionExact:output_type -> kandev.plugin.v1.RespondPermissionExactResponse
++	117, // 462: kandev.plugin.v1.Host.AnswerClarificationExact:output_type -> kandev.plugin.v1.AnswerClarificationExactResponse
++	294, // 463: kandev.plugin.v1.Host.ListWorkspacesExact:output_type -> kandev.plugin.v1.ListWorkspacesExactResponse
++	296, // 464: kandev.plugin.v1.Host.ListWorkflowsExact:output_type -> kandev.plugin.v1.ListWorkflowsExactResponse
++	298, // 465: kandev.plugin.v1.Host.ListWorkflowStepsExact:output_type -> kandev.plugin.v1.ListWorkflowStepsExactResponse
++	300, // 466: kandev.plugin.v1.Host.ListTasksExact:output_type -> kandev.plugin.v1.ListTasksExactResponse
++	302, // 467: kandev.plugin.v1.Host.GetTaskExact:output_type -> kandev.plugin.v1.GetTaskExactResponse
++	304, // 468: kandev.plugin.v1.Host.ListSessionsExact:output_type -> kandev.plugin.v1.ListSessionsExactResponse
++	306, // 469: kandev.plugin.v1.Host.ListPendingInteractionsExact:output_type -> kandev.plugin.v1.ListPendingInteractionsExactResponse
++	308, // 470: kandev.plugin.v1.Host.GetInteractionExact:output_type -> kandev.plugin.v1.GetInteractionExactResponse
++	310, // 471: kandev.plugin.v1.Host.ListSanitizedMessagesExact:output_type -> kandev.plugin.v1.ListSanitizedMessagesExactResponse
++	312, // 472: kandev.plugin.v1.Host.ListTaskInboxExact:output_type -> kandev.plugin.v1.ListTaskInboxExactResponse
++	314, // 473: kandev.plugin.v1.Host.GetTaskDirectiveExact:output_type -> kandev.plugin.v1.GetTaskDirectiveExactResponse
++	316, // 474: kandev.plugin.v1.Host.ListTaskDirectivesExact:output_type -> kandev.plugin.v1.ListTaskDirectivesExactResponse
++	318, // 475: kandev.plugin.v1.Host.GetTaskRelationsExact:output_type -> kandev.plugin.v1.GetTaskRelationsExactResponse
++	320, // 476: kandev.plugin.v1.Host.ListTaskRelationsExact:output_type -> kandev.plugin.v1.ListTaskRelationsExactResponse
++	322, // 477: kandev.plugin.v1.Host.ListPendingTaskTransitionsExact:output_type -> kandev.plugin.v1.ListPendingTaskTransitionsExactResponse
++	324, // 478: kandev.plugin.v1.Host.ListChangeRequestEvidenceExact:output_type -> kandev.plugin.v1.ListChangeRequestEvidenceExactResponse
++	326, // 479: kandev.plugin.v1.Host.ListTaskUsageExact:output_type -> kandev.plugin.v1.ListTaskUsageExactResponse
++	138, // 480: kandev.plugin.v1.Host.GetState:output_type -> kandev.plugin.v1.GetStateResponse
++	140, // 481: kandev.plugin.v1.Host.SetState:output_type -> kandev.plugin.v1.SetStateResponse
++	142, // 482: kandev.plugin.v1.Host.DeleteState:output_type -> kandev.plugin.v1.DeleteStateResponse
++	144, // 483: kandev.plugin.v1.Host.ListState:output_type -> kandev.plugin.v1.ListStateResponse
++	155, // 484: kandev.plugin.v1.Host.RevealSecret:output_type -> kandev.plugin.v1.RevealSecretResponse
++	157, // 485: kandev.plugin.v1.Host.EmitEvent:output_type -> kandev.plugin.v1.EmitEventResponse
++	149, // 486: kandev.plugin.v1.Host.GetSecret:output_type -> kandev.plugin.v1.GetSecretResponse
++	151, // 487: kandev.plugin.v1.Host.SetSecret:output_type -> kandev.plugin.v1.SetSecretResponse
++	153, // 488: kandev.plugin.v1.Host.DeleteSecret:output_type -> kandev.plugin.v1.DeleteSecretResponse
++	147, // 489: kandev.plugin.v1.Host.GetConfig:output_type -> kandev.plugin.v1.GetConfigResponse
++	166, // 490: kandev.plugin.v1.Host.ListTasks:output_type -> kandev.plugin.v1.ListTasksResponse
++	168, // 491: kandev.plugin.v1.Host.GetTask:output_type -> kandev.plugin.v1.GetTaskResponse
++	171, // 492: kandev.plugin.v1.Host.ListTaskStepTransitions:output_type -> kandev.plugin.v1.ListTaskStepTransitionsResponse
++	174, // 493: kandev.plugin.v1.Host.ListWorkspaces:output_type -> kandev.plugin.v1.ListWorkspacesResponse
++	177, // 494: kandev.plugin.v1.Host.ListWorkflows:output_type -> kandev.plugin.v1.ListWorkflowsResponse
++	183, // 495: kandev.plugin.v1.Host.ListWorkflowSteps:output_type -> kandev.plugin.v1.ListWorkflowStepsResponse
++	180, // 496: kandev.plugin.v1.Host.ListWorkflowTransitionGroups:output_type -> kandev.plugin.v1.ListWorkflowTransitionGroupsResponse
++	186, // 497: kandev.plugin.v1.Host.ListAgentProfiles:output_type -> kandev.plugin.v1.ListAgentProfilesResponse
++	189, // 498: kandev.plugin.v1.Host.ListExecutorProfiles:output_type -> kandev.plugin.v1.ListExecutorProfilesResponse
++	212, // 499: kandev.plugin.v1.Host.CheckpointExecutorResource:output_type -> kandev.plugin.v1.CheckpointExecutorResourceResponse
++	214, // 500: kandev.plugin.v1.Host.ReportExecutorProgress:output_type -> kandev.plugin.v1.ReportExecutorProgressResponse
++	216, // 501: kandev.plugin.v1.Host.ReadExecutorRuntimeArtifact:output_type -> kandev.plugin.v1.ExecutorRuntimeArtifactChunk
++	219, // 502: kandev.plugin.v1.Host.ListRepositories:output_type -> kandev.plugin.v1.ListRepositoriesResponse
++	223, // 503: kandev.plugin.v1.Host.ListSessions:output_type -> kandev.plugin.v1.ListSessionsResponse
++	226, // 504: kandev.plugin.v1.Host.ListSessionCodeStats:output_type -> kandev.plugin.v1.ListSessionCodeStatsResponse
++	230, // 505: kandev.plugin.v1.Host.ListMessages:output_type -> kandev.plugin.v1.ListMessagesResponse
++	236, // 506: kandev.plugin.v1.Host.ListPendingInteractions:output_type -> kandev.plugin.v1.ListPendingInteractionsResponse
++	238, // 507: kandev.plugin.v1.Host.GetInteraction:output_type -> kandev.plugin.v1.GetInteractionResponse
++	248, // 508: kandev.plugin.v1.Host.InvokeUtilityAgent:output_type -> kandev.plugin.v1.InvokeUtilityAgentResponse
++	248, // 509: kandev.plugin.v1.Host.InvokeUtilityAgentWithOptions:output_type -> kandev.plugin.v1.InvokeUtilityAgentResponse
++	253, // 510: kandev.plugin.v1.Host.CreateTask:output_type -> kandev.plugin.v1.CreateTaskResponse
++	255, // 511: kandev.plugin.v1.Host.UpdateTask:output_type -> kandev.plugin.v1.UpdateTaskResponse
++	257, // 512: kandev.plugin.v1.Host.MoveTask:output_type -> kandev.plugin.v1.MoveTaskResponse
++	259, // 513: kandev.plugin.v1.Host.SendMessage:output_type -> kandev.plugin.v1.SendMessageResponse
++	261, // 514: kandev.plugin.v1.Host.PreviewPluginOwnedTaskTree:output_type -> kandev.plugin.v1.PreviewPluginOwnedTaskTreeResponse
++	263, // 515: kandev.plugin.v1.Host.DeletePluginOwnedTaskTree:output_type -> kandev.plugin.v1.DeletePluginOwnedTaskTreeResponse
++	268, // 516: kandev.plugin.v1.Host.EnsureAgentConversation:output_type -> kandev.plugin.v1.EnsureAgentConversationResponse
++	270, // 517: kandev.plugin.v1.Host.DispatchAgentConversation:output_type -> kandev.plugin.v1.DispatchAgentConversationResponse
++	272, // 518: kandev.plugin.v1.Host.DeleteAgentConversation:output_type -> kandev.plugin.v1.DeleteAgentConversationResponse
++	240, // 519: kandev.plugin.v1.Host.RespondToPermission:output_type -> kandev.plugin.v1.RespondToPermissionResponse
++	243, // 520: kandev.plugin.v1.Host.AnswerClarification:output_type -> kandev.plugin.v1.AnswerClarificationResponse
++	245, // 521: kandev.plugin.v1.Host.CancelClarification:output_type -> kandev.plugin.v1.CancelClarificationResponse
++	401, // [401:522] is the sub-list for method output_type
++	280, // [280:401] is the sub-list for method input_type
+ 	280, // [280:280] is the sub-list for extension type_name
+ 	280, // [280:280] is the sub-list for extension extendee
+ 	0,   // [0:280] is the sub-list for field type_name
+diff --git a/apps/backend/proto/kandev/plugin/v1/plugin.proto b/apps/backend/proto/kandev/plugin/v1/plugin.proto
+index 840e4c99..55034855 100644
+--- a/apps/backend/proto/kandev/plugin/v1/plugin.proto
++++ b/apps/backend/proto/kandev/plugin/v1/plugin.proto
+@@ -81,6 +81,7 @@ service Host {
+   rpc TransferTaskManagementClaimExact(TransferTaskManagementClaimExactRequest) returns (TaskManagementClaimExactResponse);
+   rpc SetTaskCompletionCriteriaExact(SetTaskCompletionCriteriaExactRequest) returns (TaskCompletionGateExactResponse);
+   rpc VerifyTaskCompletionCriterionExact(VerifyTaskCompletionCriterionExactRequest) returns (TaskCompletionGateExactResponse);
++  rpc ReadTaskCompletionGate(GetTaskExactRequest) returns (TaskCompletionGateExactResponse);
+   rpc ApplyWorkspaceAdministrationExact(ApplyWorkspaceAdministrationExactRequest) returns (WorkspaceAdministrationExactResponse);
+   rpc GetSourceIssueCapabilitiesExact(GetSourceIssueCapabilitiesExactRequest) returns (GetSourceIssueCapabilitiesExactResponse);
+   rpc CommentSourceIssueExact(CommentSourceIssueExactRequest) returns (SourceIssueWritebackExactResponse);
+diff --git a/apps/backend/proto/kandev/plugin/v1/plugin_grpc.pb.go b/apps/backend/proto/kandev/plugin/v1/plugin_grpc.pb.go
+index 8400fff0..0b42bed5 100644
+--- a/apps/backend/proto/kandev/plugin/v1/plugin_grpc.pb.go
++++ b/apps/backend/proto/kandev/plugin/v1/plugin_grpc.pb.go
+@@ -778,6 +778,7 @@ const (
+ 	Host_TransferTaskManagementClaimExact_FullMethodName           = "/kandev.plugin.v1.Host/TransferTaskManagementClaimExact"
+ 	Host_SetTaskCompletionCriteriaExact_FullMethodName             = "/kandev.plugin.v1.Host/SetTaskCompletionCriteriaExact"
+ 	Host_VerifyTaskCompletionCriterionExact_FullMethodName         = "/kandev.plugin.v1.Host/VerifyTaskCompletionCriterionExact"
++	Host_ReadTaskCompletionGate_FullMethodName                     = "/kandev.plugin.v1.Host/ReadTaskCompletionGate"
+ 	Host_ApplyWorkspaceAdministrationExact_FullMethodName          = "/kandev.plugin.v1.Host/ApplyWorkspaceAdministrationExact"
+ 	Host_GetSourceIssueCapabilitiesExact_FullMethodName            = "/kandev.plugin.v1.Host/GetSourceIssueCapabilitiesExact"
+ 	Host_CommentSourceIssueExact_FullMethodName                    = "/kandev.plugin.v1.Host/CommentSourceIssueExact"
+@@ -909,6 +910,7 @@ type HostClient interface {
+ 	TransferTaskManagementClaimExact(ctx context.Context, in *TransferTaskManagementClaimExactRequest, opts ...grpc.CallOption) (*TaskManagementClaimExactResponse, error)
+ 	SetTaskCompletionCriteriaExact(ctx context.Context, in *SetTaskCompletionCriteriaExactRequest, opts ...grpc.CallOption) (*TaskCompletionGateExactResponse, error)
+ 	VerifyTaskCompletionCriterionExact(ctx context.Context, in *VerifyTaskCompletionCriterionExactRequest, opts ...grpc.CallOption) (*TaskCompletionGateExactResponse, error)
++	ReadTaskCompletionGate(ctx context.Context, in *GetTaskExactRequest, opts ...grpc.CallOption) (*TaskCompletionGateExactResponse, error)
+ 	ApplyWorkspaceAdministrationExact(ctx context.Context, in *ApplyWorkspaceAdministrationExactRequest, opts ...grpc.CallOption) (*WorkspaceAdministrationExactResponse, error)
+ 	GetSourceIssueCapabilitiesExact(ctx context.Context, in *GetSourceIssueCapabilitiesExactRequest, opts ...grpc.CallOption) (*GetSourceIssueCapabilitiesExactResponse, error)
+ 	CommentSourceIssueExact(ctx context.Context, in *CommentSourceIssueExactRequest, opts ...grpc.CallOption) (*SourceIssueWritebackExactResponse, error)
+@@ -1248,6 +1250,16 @@ func (c *hostClient) VerifyTaskCompletionCriterionExact(ctx context.Context, in
+ 	return out, nil
+ }
+ 
++func (c *hostClient) ReadTaskCompletionGate(ctx context.Context, in *GetTaskExactRequest, opts ...grpc.CallOption) (*TaskCompletionGateExactResponse, error) {
++	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
++	out := new(TaskCompletionGateExactResponse)
++	err := c.cc.Invoke(ctx, Host_ReadTaskCompletionGate_FullMethodName, in, out, cOpts...)
++	if err != nil {
++		return nil, err
++	}
++	return out, nil
++}
++
+ func (c *hostClient) ApplyWorkspaceAdministrationExact(ctx context.Context, in *ApplyWorkspaceAdministrationExactRequest, opts ...grpc.CallOption) (*WorkspaceAdministrationExactResponse, error) {
+ 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+ 	out := new(WorkspaceAdministrationExactResponse)
+@@ -2160,6 +2172,7 @@ type HostServer interface {
+ 	TransferTaskManagementClaimExact(context.Context, *TransferTaskManagementClaimExactRequest) (*TaskManagementClaimExactResponse, error)
+ 	SetTaskCompletionCriteriaExact(context.Context, *SetTaskCompletionCriteriaExactRequest) (*TaskCompletionGateExactResponse, error)
+ 	VerifyTaskCompletionCriterionExact(context.Context, *VerifyTaskCompletionCriterionExactRequest) (*TaskCompletionGateExactResponse, error)
++	ReadTaskCompletionGate(context.Context, *GetTaskExactRequest) (*TaskCompletionGateExactResponse, error)
+ 	ApplyWorkspaceAdministrationExact(context.Context, *ApplyWorkspaceAdministrationExactRequest) (*WorkspaceAdministrationExactResponse, error)
+ 	GetSourceIssueCapabilitiesExact(context.Context, *GetSourceIssueCapabilitiesExactRequest) (*GetSourceIssueCapabilitiesExactResponse, error)
+ 	CommentSourceIssueExact(context.Context, *CommentSourceIssueExactRequest) (*SourceIssueWritebackExactResponse, error)
+@@ -2380,6 +2393,9 @@ func (UnimplementedHostServer) SetTaskCompletionCriteriaExact(context.Context, *
+ func (UnimplementedHostServer) VerifyTaskCompletionCriterionExact(context.Context, *VerifyTaskCompletionCriterionExactRequest) (*TaskCompletionGateExactResponse, error) {
+ 	return nil, status.Errorf(codes.Unimplemented, "method VerifyTaskCompletionCriterionExact not implemented")
+ }
++func (UnimplementedHostServer) ReadTaskCompletionGate(context.Context, *GetTaskExactRequest) (*TaskCompletionGateExactResponse, error) {
++	return nil, status.Errorf(codes.Unimplemented, "method ReadTaskCompletionGate not implemented")
++}
+ func (UnimplementedHostServer) ApplyWorkspaceAdministrationExact(context.Context, *ApplyWorkspaceAdministrationExactRequest) (*WorkspaceAdministrationExactResponse, error) {
+ 	return nil, status.Errorf(codes.Unimplemented, "method ApplyWorkspaceAdministrationExact not implemented")
+ }
+@@ -2965,6 +2981,24 @@ func _Host_VerifyTaskCompletionCriterionExact_Handler(srv interface{}, ctx conte
+ 	return interceptor(ctx, in, info, handler)
+ }
+ 
++func _Host_ReadTaskCompletionGate_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
++	in := new(GetTaskExactRequest)
++	if err := dec(in); err != nil {
++		return nil, err
++	}
++	if interceptor == nil {
++		return srv.(HostServer).ReadTaskCompletionGate(ctx, in)
++	}
++	info := &grpc.UnaryServerInfo{
++		Server:     srv,
++		FullMethod: Host_ReadTaskCompletionGate_FullMethodName,
++	}
++	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
++		return srv.(HostServer).ReadTaskCompletionGate(ctx, req.(*GetTaskExactRequest))
++	}
++	return interceptor(ctx, in, info, handler)
++}
++
+ func _Host_ApplyWorkspaceAdministrationExact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+ 	in := new(ApplyWorkspaceAdministrationExactRequest)
+ 	if err := dec(in); err != nil {
+@@ -4581,6 +4615,10 @@ var Host_ServiceDesc = grpc.ServiceDesc{
+ 			MethodName: "VerifyTaskCompletionCriterionExact",
+ 			Handler:    _Host_VerifyTaskCompletionCriterionExact_Handler,
+ 		},
++		{
++			MethodName: "ReadTaskCompletionGate",
++			Handler:    _Host_ReadTaskCompletionGate_Handler,
++		},
+ 		{
+ 			MethodName: "ApplyWorkspaceAdministrationExact",
+ 			Handler:    _Host_ApplyWorkspaceAdministrationExact_Handler,
+diff --git a/docs/plans/plugins/GRPC-CONTRACT.md b/docs/plans/plugins/GRPC-CONTRACT.md
+index 953c1d68..401d9b4f 100644
+--- a/docs/plans/plugins/GRPC-CONTRACT.md
++++ b/docs/plans/plugins/GRPC-CONTRACT.md
+@@ -133,6 +133,7 @@ service Host {
+   rpc TransferTaskManagementClaimExact(TransferTaskManagementClaimExactRequest) returns (TaskManagementClaimExactResponse);
+   rpc SetTaskCompletionCriteriaExact(SetTaskCompletionCriteriaExactRequest) returns (TaskCompletionGateExactResponse);
+   rpc VerifyTaskCompletionCriterionExact(VerifyTaskCompletionCriterionExactRequest) returns (TaskCompletionGateExactResponse);
++  rpc ReadTaskCompletionGate(GetTaskExactRequest) returns (TaskCompletionGateExactResponse);
+   rpc EnsureManagedAgentConversationExact(EnsureManagedAgentConversationExactRequest) returns (EnsureManagedAgentConversationExactResponse);
+   rpc GetManagedAgentConversationStatusExact(GetManagedAgentConversationStatusExactRequest) returns (GetManagedAgentConversationStatusExactResponse);
+   rpc ListManagedAgentConversationsExact(ListManagedAgentConversationsExactRequest) returns (ListManagedAgentConversationsExactResponse);
+@@ -664,6 +665,12 @@ claim even when its plugin is unavailable.
+ 
+ #### Host v2 task completion gates
+ 
++本地严格验收补丁增加可选 `pluginsdk.HostTaskCompletionGateReader(host)`。
++`ReadTaskCompletionGate` 使用 `GetTaskExactRequest` 和 `TaskCompletionGateExactResponse`
++的 `snapshot`，要求 `api_read: tasks` 及工作区 `host.v2.read:tasks` 授权，
++并核对任务归属。它只读取原生门禁，不创建命令、不更改条件；旧宿主返回
++`Unimplemented`，不得把失败当作没有阻塞。此接口不属于未打补丁的 v0.97.0。
++
+ `HostTaskCompletionGates(host)` exposes `SetCriteria` and `Verify`. Both
+ commands require the task's observed resource version, completion-set revision,
+ stable idempotency key, approved `host.v2.write:tasks` grant, and the current
+diff --git a/docs/public/configuration.md b/docs/public/configuration.md
+index eeb5ef94..79b652b5 100644
+--- a/docs/public/configuration.md
++++ b/docs/public/configuration.md
+@@ -196,6 +196,25 @@ environment value falls back to `2h`, and non-positive values from a profile
+ default are ignored, leaving the `2h` default in effect. The environment
+ variable overrides YAML, and changes require a backend restart.
+ 
++### 本地严格交付验收（单机复用补丁）
++
++以下配置仅存在于固定 v0.97.0 的本地严格验收补丁，未宣称由上游发行版提供。
++默认全部为空，保持原生行为；启用时五项必须完整，要求 `features.auth: true`
++及 `database.driver: sqlite`，改变配置须重启后端。
++
++| YAML 配置 | 环境变量 | 含义 |
++| --- | --- | --- |
++| `tasks.completionVerifierId` | `KANDEV_COMPLETION_VERIFIER_ID` | `plugin:<installation_id>`，只能由这一安装身份提交必需验收条件的有效证据 |
++| `tasks.completionNodePath` | `KANDEV_COMPLETION_NODE_PATH` | Node 可执行文件的绝对路径 |
++| `tasks.completionCheckerPath` | `KANDEV_COMPLETION_CHECKER_PATH` | 共享 `check-delivery.mjs` 的绝对路径 |
++| `tasks.completionRepositoryId` | `KANDEV_COMPLETION_REPOSITORY_ID` | 此单仓库试点的原生仓库 ID |
++| `tasks.completionRepositoryRoot` | `KANDEV_COMPLETION_REPOSITORY_ROOT` | 操作者指定的本地 Git 仓库绝对路径；会话分支解析至原生 worktree |
++
++启用后，普通任务在完成写入前必须通过新鲜证据及实时文件检查；条件缺失、
++证据陈旧、校验器不可用均阻止完成。人工覆盖、删除必需条件、直接创建已完成任务
++不能绕过。内部临时会话任务不在本批范围。该策略没有关闭原生的其他完成条件；
++本地配置、校验代码与操作系统权限仍须由操作者保护，不能防止本机管理员篡改。
++
+ ### Capacity and managed-process startup settings
+ 
+ | YAML key                                   | Environment variable                              | Type and default                  | Current behavior                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+diff --git a/docs/public/plugins-authoring.md b/docs/public/plugins-authoring.md
+index 547451be..a4a722e9 100644
+--- a/docs/public/plugins-authoring.md
++++ b/docs/public/plugins-authoring.md
+@@ -923,6 +923,7 @@ subscription vocabulary and wildcard rules are in the
+ | Workspace administration  | `HostWorkspaceAdministration(host)`, `Apply`                                                                                   | Defaults: `api_write: workspaces` plus `host.v2.write:workspaces`; workflows and steps: `api_write: workflows` plus `host.v2.write:workflows`; repositories: `api_write: repositories` plus `host.v2.write:repositories` | One typed operation per call. Commands use observed versions, approval revision, manifest digest, and an idempotency key. Only supported non-destructive settings are available.                                                                                                      |
+ | Task management claims    | `HostTaskManagementClaims(host)`, `Acquire`, `Transfer`, `Release`                                                               | `api_write: tasks` plus `host.v2.write:tasks`                                                                                                    | Optional task owner, separate from worker assignment; version-checked changes create audit entries; claims never time out. Human transfer and release use existing authorized APIs outside the plugin Host API. Task detail has no claim inspection or recovery dialog.                    |
+ | Completion gates          | `HostTaskCompletionGates(host)`, `SetCriteria`, `Verify`                                                                         | `api_write: tasks` plus `host.v2.write:tasks`                                                                                                    | Task-version, criteria-revision, claim-generation, and idempotency fenced; returns typed criteria, evidence, and blockers. Plugins cannot weaken unmet criteria or issue human overrides. Human recovery APIs remain outside the plugin Host API. Task detail has no gate inspection or recovery dialog. |
++| 原生门禁读取（本地补丁） | `HostTaskCompletionGateReader(host)`, `ReadTaskCompletionGate` | `api_read: tasks` 及 `host.v2.read:tasks` | 可选只读扩展，返回原生条件、证据和阻塞项；无写入与覆盖权；须检查宿主接口支持。 |
+ | Task directives            | `IssueDirective`, `ResolveDirective`                                                                                             | `api_write: task_directives` plus `host.v2.write:task_directives`; delegated capability must also be approved for the target                      | Short-lived, version-fenced request records; instruction and resolution bodies are represented by digests                                                                                                                                                                                 |
+ | Native task deletion       | `PluginOwnedTaskTrees().Preview`; legacy `Delete` remains in the v1 SDK                                                          | Preview is source-scoped; native deletion is a Human-only task UI action                                                                          | The current Host denies plugin `Delete` with `PermissionDenied` and `native_human_confirmation_required`; see [deletion consent](#native-task-deletion-consent)                                                                                                                           |
+ | Exact execution controls   | `HostExecutionCommands(host)`: `EnsureTaskRun`, `StopTaskRun`, `RecoverSession`, `CancelPendingTaskTransition`, `GetSessionModeContext`, `SetSessionMode` | Writes require `api_write: execution` plus `host.v2.write:execution`; mode reads require `api_read: sessions` plus `host.v2.read:sessions` | Exact task/session versions, execution IDs, and the observed management claim generation fence controls; the Host derives the caller installation and serializes effects with ownership changes. Recovery uses normal launch admission; unsafe provider modes are filtered |
+@@ -2194,6 +2195,15 @@ sanitized response message. A retry hint belongs in the typed error and the allo
+ 
+ ## Provider, task, review, and reference registrations
+ 
++### 本地严格验收补丁：读取原生完成门禁
++
++本地补丁提供可选 `pluginsdk.HostTaskCompletionGateReader(host)`，通过
++`ReadTaskCompletionGate(ctx, pluginsdk.TaskCompletionGateRead{RequestID, WorkspaceID, TaskID})`
++读取当前条件、证据、集合版本和阻塞原因。需要声明 `api_read: [tasks]`，
++并获得工作区 `host.v2.read:tasks` 授权；跨工作区请求被拒绝。
++该接口不修改任何记录，也不代表文件实时检查已通过；完成动作仍需宿主门禁复核。
++必须使用本地补丁版 SDK 与宿主；未打补丁的 v0.97.0 返回不支持，不能回退为放行。
++
+ A native bundle can register a manifest-owned repository provider with
+ `registry.registerRepositoryProvider(...)`, children of the task menu's **Link**
+ submenu with
+diff --git a/docs/public/plugins-manifest.md b/docs/public/plugins-manifest.md
+index f120bf93..f006468c 100644
+--- a/docs/public/plugins-manifest.md
++++ b/docs/public/plugins-manifest.md
+@@ -409,6 +409,10 @@ for provider operations, callbacks, connection leases, and cleanup behavior.
+ 
+ ## Host data API resource vocabulary
+ 
++本地单机复用补丁的可选 `ReadTaskCompletionGate` 读取也使用 `api_read: tasks`
++及 `host.v2.read:tasks` 工作区授权。它不引入新资源，也不授予写入或人工覆盖权；
++插件必须发现接口支持并检查授权，未打补丁的 v0.97.0 不提供此读取扩展。
++
+ `capabilities.api_read` gates the read-only Host data accessors (ADR 0043,
+ ADR 0047). Recognized resource values include `tasks`, `sessions`, `messages`,
+ `interactions`, `workspaces`, `workflows`, `agent_profiles`, `executor_profiles`,

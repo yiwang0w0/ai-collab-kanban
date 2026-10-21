@@ -1,0 +1,13 @@
+name: 验证发布候选
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  candidate:
+    uses: ./.github/workflows/ci.yml
+  notice:
+    runs-on: windows-latest
+    steps:
+      - shell: pwsh
+        run: Write-Output '本地试点尚未配置公开插件仓库；此工作流只验证候选，不创建提交、标签、Release 或市场条目。公开发布须另行授权并配置。'

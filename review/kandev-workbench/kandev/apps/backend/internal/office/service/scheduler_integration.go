@@ -1,0 +1,1337 @@
+package service
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"go.uber.org/zap"
+
+	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/office/models"
+	"github.com/kandev/kandev/internal/office/pause"
+	"github.com/kandev/kandev/internal/office/routing"
+	officeruntime "github.com/kandev/kandev/internal/office/runtime"
+	"github.com/kandev/kandev/internal/office/shared"
+	"github.com/kandev/kandev/internal/office/wakeup"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
+)
+
+// ErrLaunchDeferredByCapacity is the TaskStarter-side sentinel a
+// TaskStarter*ReturningSession implementation returns when the underlying
+// launch was deferred rather than started or failed — the orchestrator's
+// session ceiling admitted no reservation but persisted a replay record of
+// its own, so the launch will complete later without this caller's
+// involvement. A caller that only distinguishes "session created" from
+// "error" cannot tell a deferred launch apart from an ordinary success
+// that forgot to report its session id; recognizing this sentinel lets it
+// stop short of recording the launch as started (counters, health,
+// persisted session id) while also not treating it as a failure worth
+// retrying through provider fallback or restoring a one-shot claim over.
+var ErrLaunchDeferredByCapacity = errors.New("office: launch deferred by capacity, not started")
+
+// DefaultTickInterval is the default run processing interval.
+const DefaultTickInterval = 5 * time.Second
+
+// staleClaimedRunAge is the age after which a claimed run is recovered
+// if no agent lifecycle event returned it to a terminal queue state.
+const staleClaimedRunAge = 30 * time.Minute
+
+// TickIntervalFromConfig converts the resolved typed millisecond setting into
+// the office scheduler duration. Invalid values retain the safe default.
+func TickIntervalFromConfig(milliseconds int) time.Duration {
+	if milliseconds <= 0 {
+		return DefaultTickInterval
+	}
+	return time.Duration(milliseconds) * time.Millisecond
+}
+
+// TickIntervalFromEnv remains as a compatibility helper for package callers.
+// Backend startup resolves the setting through common/config and passes the
+// result to NewSchedulerIntegration.
+func TickIntervalFromEnv() time.Duration {
+	return DefaultTickInterval
+}
+
+// SchedulerIntegration runs the run processing tick loop.
+// Each tick claims the next eligible run, validates guards,
+// resolves executor config, builds the prompt, and either launches the agent
+// or finishes the run with a terminal scheduler outcome.
+// TaskContextProvider supplies the office task-handoffs prompt context
+// (related tasks, available document keys, workspace group). Optional —
+// when nil the prompt builder omits the handoff section. The
+// HandoffService in task/service satisfies this interface via
+// GetTaskContext.
+type TaskContextProvider interface {
+	GetTaskContext(ctx context.Context, taskID string) (*v1.TaskContext, error)
+}
+
+type SchedulerIntegration struct {
+	svc          *Service
+	tickInterval time.Duration
+	logger       *logger.Logger
+	// taskContexts feeds PromptContext.HandoffContext on every run.
+	// nil-safe: when unconfigured, the handoff section is omitted.
+	taskContexts TaskContextProvider
+}
+
+// SetTaskContextProvider wires the office task-handoffs prompt
+// enrichment hook. Called by cmd/kandev after the HandoffService is
+// constructed.
+func (si *SchedulerIntegration) SetTaskContextProvider(p TaskContextProvider) {
+	si.taskContexts = p
+}
+
+// NewSchedulerIntegration creates a new SchedulerIntegration.
+func NewSchedulerIntegration(svc *Service, tickInterval time.Duration) *SchedulerIntegration {
+	if tickInterval <= 0 {
+		tickInterval = DefaultTickInterval
+	}
+	return &SchedulerIntegration{
+		svc:          svc,
+		tickInterval: tickInterval,
+		logger:       svc.logger.WithFields(zap.String("component", "runs-processor")),
+	}
+}
+
+// Start runs the tick loop until the context is cancelled.
+// It should be called in a background goroutine.
+func (si *SchedulerIntegration) Start(ctx context.Context) {
+	si.logger.Info("office scheduler starting",
+		zap.Duration("tick_interval", si.tickInterval))
+
+	ticker := time.NewTicker(si.tickInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			si.logger.Info("office scheduler stopping")
+			return
+		case <-ticker.C:
+			si.tick(ctx)
+		}
+	}
+}
+
+// maxRunsPerTick is the maximum number of runs drained per tick.
+const maxRunsPerTick = 10
+
+// Tick implements the runs/scheduler.RunProcessor interface so the
+// new runs scheduler (internal/runs/scheduler) can drive this
+// processor on both periodic ticks and event-driven signals (B3.5).
+// It forwards to the unexported tick implementation that already
+// existed for the in-package Start loop.
+func (si *SchedulerIntegration) Tick(ctx context.Context) { si.tick(ctx) }
+
+// tick drains up to maxRunsPerTick runs from the queue.
+func (si *SchedulerIntegration) tick(ctx context.Context) {
+	si.liftParkedRoutingRuns(ctx)
+	for i := 0; i < maxRunsPerTick; i++ {
+		run, err := si.svc.claimNextRunWithClaim(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			si.logger.Error("failed to claim run", zap.Error(err))
+			return
+		}
+		if run == nil {
+			break
+		}
+
+		si.processClaimedRun(ctx, run)
+	}
+	si.recoverStaleClaimedRuns(ctx)
+	si.reapStaleCheckouts(ctx)
+}
+
+// liftParkedRoutingRuns clears routing-block status on runs whose
+// earliest_retry_at has passed so subsequent claim passes can re-dispatch
+// them through the routing path. No-op when no dispatcher is wired.
+func (si *SchedulerIntegration) liftParkedRoutingRuns(ctx context.Context) {
+	type lifter interface {
+		LiftParkedRuns(ctx context.Context, now time.Time) (int, error)
+	}
+	rd, ok := si.svc.routingDispatcher.(lifter)
+	if !ok {
+		return
+	}
+	lifted, err := rd.LiftParkedRuns(ctx, time.Now().UTC())
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		si.logger.Warn("lift parked runs failed", zap.Error(err))
+		return
+	}
+	if lifted > 0 {
+		si.logger.Info("lifted parked routing runs", zap.Int("count", lifted))
+	}
+}
+
+func (si *SchedulerIntegration) recoverStaleClaimedRuns(ctx context.Context) {
+	count, err := si.svc.repo.RecoverStale(ctx, time.Now().UTC().Add(-staleClaimedRunAge))
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		si.logger.Error("failed to recover stale claimed runs", zap.Error(err))
+		return
+	}
+	if count > 0 {
+		si.logger.Info("recovered stale claimed runs", zap.Int64("count", count))
+	}
+}
+
+// reapStaleCheckouts is the backstop for task checkouts that never got
+// released on a run's terminal transition (see releaseTaskCheckoutForRun
+// in scheduler_runs.go for the primary release path). Reuses
+// staleClaimedRunAge as the staleness threshold — the same age already
+// used to decide a claimed run has gone unanswered, so a checkout held
+// past that point with no in-flight run behind it is equally stuck.
+func (si *SchedulerIntegration) reapStaleCheckouts(ctx context.Context) {
+	count, err := si.svc.repo.ReapStaleCheckouts(ctx, time.Now().UTC().Add(-staleClaimedRunAge))
+	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		si.logger.Error("failed to reap stale task checkouts", zap.Error(err))
+		return
+	}
+	if count > 0 {
+		si.logger.Info("reaped stale task checkouts", zap.Int64("count", count))
+	}
+}
+
+// processRun runs guard checks, checkout, budget check, resolves executor,
+// builds prompt, logs the result, and marks the run finished.
+func (si *SchedulerIntegration) processRun(ctx context.Context, run *models.Run) {
+	runID := run.ID
+	agentInstanceID := run.AgentProfileID
+
+	// Lifecycle: run picked up by the scheduler. Drives the first
+	// row in the run detail page's Events log.
+	si.svc.AppendRunEvent(ctx, runID, "init", "info", map[string]interface{}{
+		"agent_profile_id": agentInstanceID,
+		"reason":           run.Reason,
+	})
+
+	// Guard: check agent status. AC-OFFICE-BUDGET-001.13 gives the two ways
+	// this lookup can fail different dispositions: a genuine "no such
+	// agent" (soft-deleted or never existed) is cancelled, never retried or
+	// escalated, since an orphaned run has no workspace and therefore no
+	// ceiling that could ever be evaluated; a transient lookup error is
+	// deferred/retried on the same terms as an evaluator fault and, at
+	// MaxRetryCount, failed without escalation (AC-OFFICE-BUDGET-006.4) --
+	// neither disposition may queue a run for any other agent
+	// (AC-OFFICE-BUDGET-001.17), so neither uses the generic
+	// HandleRunFailure/escalateFailure path, which does exactly that.
+	agent, err := si.svc.GetAgentFromConfig(ctx, agentInstanceID)
+	if err != nil {
+		si.logger.Error("failed to get agent instance",
+			zap.String("run_id", runID), zap.Error(err))
+		if errors.Is(err, sql.ErrNoRows) {
+			si.cancelUnresolvableAgentRun(ctx, run)
+			return
+		}
+		si.deferWorkspaceLookupFailure(ctx, run)
+		return
+	}
+
+	// Pause gate sits before the agent-active check (F47): a paused
+	// workspace should finish the run as workspace_paused, not
+	// agent_inactive, regardless of the agent's own status. A gate-read
+	// error requeues the run (nothing about the run itself failed) so
+	// the next tick tries again.
+	paused, gateErr := si.svc.pauseGateState(ctx, agent.WorkspaceID)
+	if gateErr != nil {
+		pause.RecordGateError("process_run")
+		si.logger.Warn("process run: pause gate read failed",
+			zap.String("run_id", runID), zap.Error(gateErr))
+		if _, reqErr := si.svc.repo.RequeueClaimedRun(ctx, runID); reqErr != nil {
+			si.logger.Warn("process run: requeue after gate error failed",
+				zap.String("run_id", runID), zap.Error(reqErr))
+		}
+		return
+	}
+	if paused {
+		pause.RecordBlocked("process_run")
+		// This run may have been requeued after an earlier launch marked
+		// the agent working (see the comment on the mark-before-launch
+		// call below); the CAS makes this a safe no-op otherwise.
+		si.svc.clearAgentWorking(ctx, agent.ID, runID)
+		_, _ = si.svc.FinishRun(ctx, runID, RunOutcomeWorkspacePaused)
+		return
+	}
+
+	if !isAgentActive(agent.Status) {
+		si.logger.Info("run skipped (agent not active)",
+			zap.String("run_id", runID),
+			zap.String("agent_status", string(agent.Status)))
+		if _, err := si.svc.FinishRun(ctx, runID, RunOutcomeAgentInactive); err != nil {
+			si.logger.Error("failed to finish agent-inactive run",
+				zap.String("run_id", runID), zap.Error(err))
+		}
+		return
+	}
+
+	// Staleness check.
+	cancel, reason, staleErr := si.evaluateRunStaleness(ctx, run)
+	if staleErr != nil {
+		si.logger.Warn("run staleness check failed; retrying run",
+			zap.String("run_id", runID), zap.Error(staleErr))
+		_ = si.svc.HandleRunFailure(ctx, run, staleErr)
+		return
+	}
+	if cancel {
+		si.cancelStaleRun(ctx, run, agent, reason)
+		return
+	}
+
+	// Idle skip: heartbeat with no actionable tasks.
+	if si.checkIdleSkip(ctx, run, agent) {
+		si.logger.Info("run skipped (no actionable tasks)",
+			zap.String("run_id", runID),
+			zap.String("agent", agent.Name))
+		si.svc.clearAgentWorking(ctx, agent.ID, runID)
+		wrote, err := si.svc.FinishRun(ctx, runID, RunOutcomeIdleSkipped)
+		if err != nil {
+			si.logger.Error("failed to finish idle-skipped run",
+				zap.String("run_id", runID), zap.Error(err))
+			return
+		}
+		if !wrote {
+			// Another writer already moved the run out of claimed; it did
+			// not actually end via an idle skip, so there is nothing to
+			// log.
+			return
+		}
+		si.svc.LogActivityWithRun(ctx, agent.WorkspaceID,
+			"scheduler", "office-scheduler",
+			"run_idle_skipped", "run", runID,
+			mustJSON(map[string]string{
+				"agent":    agent.Name,
+				"agent_id": agent.ID,
+			}), runID, "")
+		return
+	}
+
+	// Atomic task checkout.
+	taskID := si.extractTaskID(run.Payload)
+	if !si.checkoutTask(ctx, run, taskID, agentInstanceID) {
+		return
+	}
+
+	// Pre-launch budget admission (AC-OFFICE-BUDGET-001.14's five gates).
+	if !si.admitRun(ctx, run, agent) {
+		return
+	}
+
+	// Resolve executor config (needed before delivery to choose strategy).
+	execCfg, err := si.resolveExecutorForRun(ctx, agent, run.Payload)
+	if err != nil {
+		si.logger.Warn("executor resolution failed; retrying run",
+			zap.String("run_id", runID), zap.Error(err))
+		si.releaseCheckoutIfNeeded(ctx, run)
+		_ = si.svc.HandleRunFailure(ctx, run, err)
+		return
+	}
+
+	si.prepareAndLaunch(ctx, run, agent, taskID, execCfg)
+}
+
+// prepareAndLaunch builds the skill manifest, env vars, prompt, and launches the
+// agent. Extracted from processRun to keep it within funlen limits.
+func (si *SchedulerIntegration) prepareAndLaunch(
+	ctx context.Context, run *models.Run,
+	agent *models.AgentInstance, taskID string, execCfg *ExecutorConfig,
+) {
+	runCtx, err := (&officeruntime.ContextBuilder{
+		Agents:       si.svc,
+		Runs:         si.svc.repo,
+		Seats:        si.svc,
+		RunnerLister: si.svc.repo,
+		ScopeEvents:  si.svc,
+	}).BuildAndPersist(ctx, run)
+	if err != nil {
+		si.logger.Warn("runtime context build failed; retrying run",
+			zap.String("run_id", run.ID), zap.Error(err))
+		si.releaseCheckoutIfNeeded(ctx, run)
+		_ = si.svc.HandleRunFailure(ctx, run, err)
+		return
+	}
+	si.svc.AppendRunEvent(ctx, run.ID, "runtime.context", "info", map[string]interface{}{
+		"agent_id":     runCtx.AgentID,
+		"task_id":      runCtx.TaskID,
+		"capabilities": run.Capabilities,
+		"session_id":   runCtx.SessionID,
+		"workspace_id": runCtx.WorkspaceID,
+		"wake_reason":  runCtx.Reason,
+	})
+	// ADR 0005 Wave E: skill + instruction file delivery moved into the
+	// runtime (internal/agent/runtime/lifecycle/skill). We still build
+	// the manifest here to extract AGENTS.md content for the prompt and
+	// to compute the deterministic instructionsDir path the runtime
+	// will write to. No filesystem side effects from this call.
+	manifest := si.buildSkillManifest(ctx, agent, defaultWorkspaceName, runCtx.AvailableActions...)
+	instructionsDir, agentsMD := si.resolveInstructionsForPrompt(manifest, execCfg.Type)
+	si.snapshotRunSkills(ctx, run.ID, manifest, instructionsDir)
+
+	token, err := si.mintRuntimeToken(run, agent, runCtx)
+	if err != nil {
+		si.logger.Warn("runtime token mint failed; retrying run",
+			zap.String("run_id", run.ID), zap.Error(err))
+		si.releaseCheckoutIfNeeded(ctx, run)
+		_ = si.svc.HandleRunFailure(ctx, run, err)
+		return
+	}
+	env := si.buildEnvVars(run, agent, token, agent.WorkspaceID)
+	si.injectKandevCLI(env, execCfg.Type)
+
+	if payload, pErr := si.svc.BuildWakePayload(ctx, &RunPayloadInput{
+		Payload: run.Payload,
+	}); pErr == nil && payload != "" {
+		env["KANDEV_WAKE_PAYLOAD_JSON"] = payload
+	}
+
+	prompt := si.assembleAgentPrompt(ctx, run, agent, taskID, runCtx, instructionsDir, agentsMD)
+	profileID := si.resolveProfileForRun(ctx, run.Reason, taskID, agent)
+
+	si.logger.Debug("session env vars prepared",
+		zap.String("run_id", run.ID),
+		zap.Int("env_count", len(env)))
+
+	launchCtx := LaunchContext{
+		ExecutorID:           execCfg.Type,
+		Prompt:               prompt,
+		Env:                  env,
+		ProfileID:            profileID,
+		AdditionalSkillSlugs: decisionSkillSlugs(runCtx.AvailableActions),
+	}
+
+	// Final pause gate, immediately before the launch that actually
+	// starts the agent process. A pause confirmed between processRun's
+	// earlier read and here must still stop the launch. The checkout
+	// this run holds is released first in both outcomes — a paused
+	// workspace's task isn't in progress, and a gate-read error leaves
+	// nothing to hold the checkout for.
+	paused, gateErr := si.svc.pauseGateState(ctx, agent.WorkspaceID)
+	if gateErr != nil {
+		pause.RecordGateError("prepare_and_launch")
+		si.logger.Warn("prepare and launch: pause gate read failed",
+			zap.String("run_id", run.ID), zap.Error(gateErr))
+		si.releaseCheckoutIfNeeded(ctx, run)
+		if _, reqErr := si.svc.repo.RequeueClaimedRun(ctx, run.ID); reqErr != nil {
+			si.logger.Warn("prepare and launch: requeue after gate error failed",
+				zap.String("run_id", run.ID), zap.Error(reqErr))
+		}
+		return
+	}
+	if paused {
+		pause.RecordBlocked("prepare_and_launch")
+		si.releaseCheckoutIfNeeded(ctx, run)
+		// Safe no-op via CAS on a run that never launched; guards the case
+		// where an earlier launch attempt on this same run marked the
+		// agent working before this requeue.
+		si.svc.clearAgentWorking(ctx, agent.ID, run.ID)
+		_, _ = si.svc.FinishRun(ctx, run.ID, RunOutcomeWorkspacePaused)
+		return
+	}
+
+	// launchAgent returns true only when the adapter was actually invoked.
+	// When it was, leave the run `claimed` and let the AgentCompleted/
+	// AgentStopped event subscribers in event_subscribers.go finish it.
+	// This serves as the "agent is busy on this task" lock that
+	// ClaimNextEligibleRun respects, so new runs (comments, status changes)
+	// for the same agent + task queue up rather than racing the active turn.
+	//
+	// Mark before launching, not after: launchAgent returns only once the
+	// adapter has been invoked, by which point a fast run's completion
+	// event may already have been processed — a mark-after-launch would
+	// race that reset and strand the agent showing "working" forever.
+	si.svc.markAgentWorking(ctx, agent, run.ID)
+	if !si.launchAgent(ctx, run, agent, taskID, execCfg.Type, launchCtx) {
+		// No adapter was invoked, so no AgentCompleted/AgentStopped/
+		// AgentFailed event will ever arrive to clear the status — every
+		// non-launch exit (taskless/unlaunchable failure, routing parked,
+		// routing dispatch error, legacy start failure) must clear here.
+		// The underlying CAS makes this a safe no-op on paths that already
+		// cleared it themselves (e.g. HandleAgentFailure).
+		si.svc.clearAgentWorking(ctx, agent.ID, run.ID)
+	}
+}
+
+// assembleAgentPrompt builds the wake-context prompt, decides whether the
+// session is a resume, loads any continuation summary, runs BuildAgentPrompt,
+// and persists prompt artifacts. Returns the rendered prompt ready for launch.
+// Extracted from prepareAndLaunch to keep that function within funlen limits.
+func (si *SchedulerIntegration) assembleAgentPrompt(
+	ctx context.Context,
+	run *models.Run,
+	agent *models.AgentInstance,
+	taskID string,
+	runCtx officeruntime.RunContext,
+	instructionsDir, agentsMD string,
+) string {
+	pc := si.buildPromptContext(ctx, run.Reason, run.Payload, run.ContextSnapshot)
+	pc.RunID = runCtx.RunID
+	pc.AgentID = runCtx.AgentID
+	pc.SessionID = runCtx.SessionID
+	pc.TaskScope = append([]string(nil), runCtx.Capabilities.AllowedTaskIDs...)
+	pc.AllowedActions = append(runCtx.Capabilities.AllowedKeys(), runCtx.AvailableActions...)
+	wakeContext := BuildPrompt(pc)
+
+	// Resume = the (task, agent_instance) session has run before. On resume
+	// the agent CLI's --resume restores the prior conversation (which already
+	// contains the role prompt), so we skip re-sending AGENTS.md.
+	isResume := false
+	if taskID != "" {
+		if has, hErr := si.svc.repo.HasPriorSessionForAgent(ctx, taskID, agent.ID); hErr == nil {
+			isResume = has
+		}
+	}
+
+	continuationSummary := si.loadContinuationSummary(ctx, run, agent.ID, taskID)
+	promptResult := si.svc.BuildAgentPrompt(
+		run, agent, instructionsDir, agentsMD, isResume, wakeContext,
+		taskID, continuationSummary,
+	)
+	si.persistPromptArtifacts(ctx, run, promptResult.Prompt, promptResult.SummaryInjected)
+	return promptResult.Prompt
+}
+
+// loadContinuationSummary fetches the per-(agent, scope) continuation
+// summary for a taskless run. Returns "" when:
+// - taskID is non-empty (task-bound runs don't use the summary doc)
+// - the summary table has no row yet (first wake ever for the scope)
+// - the lookup errors out (best-effort, fall back to no-summary)
+//
+// wakeup/dispatcher.go's createFreshRun passes taskID=="" on every
+// lightweight-routine fire (the pre-installed coordinator heartbeat,
+// among others), so this branch runs on a real cadence today. The
+// assembled prompt is still built for these runs before the run-owned runtime
+// launch is admitted.
+//
+// The scope read here is run.ContinuationScope — the same key
+// models.ContinuationScopeForRun computed once, at run-creation time, and
+// that refreshContinuationSummary (event_subscribers.go) later writes
+// under. This deliberately does NOT recompute the scope from run's
+// ContextSnapshot: a routine wakeup that coalesces into this run after
+// claim (MarkWakeupRequestCoalesced) patches only context_snapshot, so a
+// second derivation here — against a run object that may itself predate
+// that patch — could disagree with what the writer used at completion.
+// Reading the persisted field closes that race for every caller instead
+// of relying on ordering between two independent derivations.
+func (si *SchedulerIntegration) loadContinuationSummary(
+	ctx context.Context, run *models.Run, agentID, taskID string,
+) string {
+	if run == nil || taskID != "" || agentID == "" {
+		return ""
+	}
+	prior, err := si.svc.repo.GetContinuationSummary(ctx, agentID, run.ContinuationScope)
+	if err != nil || prior == nil {
+		return ""
+	}
+	return prior.Content
+}
+
+// persistPromptArtifacts stores the assembled prompt and the summary
+// snapshot onto the run row so the run-detail UI can render exactly
+// what the agent saw. Errors are logged at warn — the run still
+// proceeds because the artifact persistence is purely diagnostic.
+func (si *SchedulerIntegration) persistPromptArtifacts(
+	ctx context.Context, run *models.Run, prompt, summaryInjected string,
+) {
+	if run == nil || run.ID == "" {
+		return
+	}
+	run.AssembledPrompt = prompt
+	run.SummaryInjected = summaryInjected
+	if err := si.svc.repo.UpdateRunPromptArtifacts(ctx, run.ID, prompt, summaryInjected); err != nil {
+		si.logger.Warn("failed to persist run prompt artifacts",
+			zap.String("run_id", run.ID), zap.Error(err))
+	}
+}
+
+func (si *SchedulerIntegration) snapshotRunSkills(ctx context.Context, runID string, manifest *SkillManifest, instructionsDir string) {
+	if manifest == nil || len(manifest.Skills) == 0 {
+		return
+	}
+	snapshots := make([]models.RunSkillSnapshot, 0, len(manifest.Skills))
+	for _, skill := range manifest.Skills {
+		snapshots = append(snapshots, models.RunSkillSnapshot{
+			RunID:            runID,
+			SkillID:          skill.ID,
+			DisplayName:      skill.DisplayName,
+			Slug:             skill.Slug,
+			LabelSource:      "captured",
+			Version:          skill.Version,
+			ContentHash:      skill.ContentHash,
+			MaterializedPath: instructionsDir,
+		})
+	}
+	if err := si.svc.repo.CreateRunSkillSnapshots(ctx, snapshots); err != nil {
+		si.logger.Warn("failed to snapshot run skills", zap.String("run_id", runID), zap.Error(err))
+	}
+}
+
+// resolveProfileForRun returns the agent profile id to launch with.
+// Provider routing is the single seam for cheap/expensive variants now
+// (see internal/office/routing's TierPerReason). The legacy
+// cheap_agent_profile_id mechanism was removed in the wake-reason tier
+// policy patch — every run uses agent.ID, and the resolver picks the
+// concrete provider/model based on wake reason + workspace policy.
+func (si *SchedulerIntegration) resolveProfileForRun(_ context.Context, _, _ string, agent *models.AgentInstance) string {
+	return agent.ID
+}
+
+func (si *SchedulerIntegration) mintRuntimeToken(
+	run *models.Run,
+	agent *models.AgentInstance,
+	runCtx officeruntime.RunContext,
+) (string, error) {
+	if si.svc.agentTokenMinter == nil {
+		return "", nil
+	}
+	return si.svc.agentTokenMinter.MintRuntimeJWT(
+		agent.ID,
+		runCtx.TaskID,
+		agent.WorkspaceID,
+		run.ID,
+		runCtx.SessionID,
+		run.Capabilities,
+	)
+}
+
+// checkoutTask performs the atomic task checkout guard. Returns false if the
+// caller should abort processing (tree-gated or checkout failed).
+func (si *SchedulerIntegration) checkoutTask(ctx context.Context, run *models.Run, taskID, agentInstanceID string) bool {
+	if taskID == "" {
+		return true
+	}
+	if si.isTaskTreeGated(ctx, run.ID, taskID) {
+		// This run may have been requeued after an earlier launch (e.g. a
+		// post-start provider fallback) that left the agent "working" with
+		// no launch/complete cycle left to clear it.
+		si.svc.clearAgentWorking(ctx, agentInstanceID, run.ID)
+		return false
+	}
+	return si.tryCheckout(ctx, run, taskID, agentInstanceID)
+}
+
+func (si *SchedulerIntegration) isTaskTreeGated(ctx context.Context, runID, taskID string) bool {
+	hold, err := si.svc.repo.GetActiveHoldForMember(ctx, taskID)
+	if err != nil || hold == nil {
+		if err != nil {
+			si.logger.Warn("tree hold gate check failed",
+				zap.String("run_id", runID),
+				zap.String("task_id", taskID),
+				zap.Error(err))
+		}
+		return false
+	}
+	si.logger.Info("run gated by active task tree hold",
+		zap.String("run_id", runID),
+		zap.String("task_id", taskID),
+		zap.String("hold_id", hold.ID),
+		zap.String("mode", hold.Mode))
+	if _, err := si.svc.FinishRun(ctx, runID, RunOutcomeTaskTreeHeld); err != nil {
+		si.logger.Error("failed to finish tree-held run",
+			zap.String("run_id", runID), zap.String("task_id", taskID), zap.Error(err))
+	}
+	return true
+}
+
+// launchAgent starts the agent through the task starter or the run-owned
+// runtime launcher. Returns false if the run could not be launched; the
+// failure is already handled by the selected launch path.
+func (si *SchedulerIntegration) launchAgent(
+	ctx context.Context, run *models.Run,
+	agent *models.AgentInstance, taskID, executorType string,
+	launch LaunchContext,
+) bool {
+	runID := run.ID
+
+	if taskID == "" {
+		if handled, launched := si.tryRoutingDispatch(ctx, run, agent, taskID, launch); handled {
+			return launched
+		}
+		if si.svc.runSessionLauncher == nil {
+			si.logger.Error("cannot launch taskless run: no run-session launcher configured",
+				zap.String("run_id", runID), zap.String("agent", agent.Name))
+			si.failTasklessRun(ctx, run, agent,
+				"scheduler cannot launch a taskless run: no run-session launcher is configured")
+			return false
+		}
+		si.logger.Info("launching taskless agent for run",
+			zap.String("run_id", runID), zap.String("agent", agent.Name),
+			zap.String("executor_type", executorType),
+			zap.Int("prompt_len", len(launch.Prompt)))
+		var route *RouteOverride
+		result, err := si.svc.runSessionLauncher.StartRunSession(ctx, run, agent, launch, route)
+		if err != nil {
+			si.logger.Error("taskless agent launch failed", zap.String("run_id", runID), zap.Error(err))
+			si.svc.AppendRunEvent(ctx, runID, "error", "error", map[string]interface{}{
+				"phase": "adapter.invoke", "error_message": err.Error(),
+			})
+			si.releaseCheckoutIfNeeded(ctx, run)
+			_ = si.svc.HandleRunFailure(ctx, run, err)
+			return false
+		}
+		IncLoopLaunch(agent.WorkspaceID)
+		si.persistLaunchedSession(ctx, runID, agent.WorkspaceID, result.SessionID)
+		return true
+	}
+	if si.svc.taskStarter == nil {
+		si.logger.Error("cannot launch run: no task starter configured",
+			zap.String("run_id", runID),
+			zap.String("agent", agent.Name),
+			zap.String("task_id", taskID),
+		)
+		si.failUnlaunchableRun(ctx, run, agent,
+			"scheduler cannot launch run: no task starter is configured")
+		return false
+	}
+
+	si.logger.Info("launching agent for run",
+		zap.String("run_id", runID),
+		zap.String("agent", agent.Name),
+		zap.String("task_id", taskID),
+		zap.String("executor_type", executorType),
+		zap.Int("prompt_len", len(launch.Prompt)),
+	)
+	// Lifecycle: orchestrator handed the prompt to the adapter. Pin
+	// model + executor on the event so the run detail Events log can
+	// render them inline.
+	si.svc.AppendRunEvent(ctx, runID, "adapter.invoke", "info", map[string]interface{}{
+		"agent":         agent.Name,
+		"task_id":       taskID,
+		"profile_id":    launch.ProfileID,
+		"executor_type": executorType,
+		"prompt_len":    len(launch.Prompt),
+	})
+	if handled, launched := si.tryRoutingDispatch(ctx, run, agent, taskID, launch); handled {
+		return launched
+	}
+	var err error
+	var sessionID string
+	switch starter := si.svc.taskStarter.(type) {
+	case TaskStarterWithLaunchContextSession:
+		sessionID, err = starter.StartTaskWithLaunchContextReturningSession(ctx, taskID, launch.ProfileID, launch)
+	case TaskStarterWithLaunchContext:
+		err = starter.StartTaskWithLaunchContext(ctx, taskID, launch.ProfileID, launch)
+	case TaskStarterWithSession:
+		sessionID, err = starter.StartTaskWithEnvReturningSession(ctx, taskID, launch.ProfileID, "", "", "",
+			launch.Prompt, "", false, nil, launch.Env)
+	case TaskStarterWithEnv:
+		err = starter.StartTaskWithEnv(ctx, taskID, launch.ProfileID, "", "", "",
+			launch.Prompt, "", false, nil, launch.Env)
+	default:
+		err = si.svc.taskStarter.StartTask(ctx, taskID, launch.ProfileID, "", "", "",
+			launch.Prompt, "", false, nil)
+	}
+	if errors.Is(err, ErrLaunchDeferredByCapacity) {
+		si.handleLaunchDeferred(ctx, run)
+		return false
+	}
+	if err != nil {
+		si.logger.Error("agent launch failed",
+			zap.String("run_id", runID), zap.Error(err))
+		si.svc.AppendRunEvent(ctx, runID, "error", "error", map[string]interface{}{
+			"phase":                   "adapter.invoke",
+			runEventFieldErrorMessage: err.Error(),
+		})
+		si.releaseCheckoutIfNeeded(ctx, run)
+		_ = si.svc.HandleRunFailure(ctx, run, err)
+		return false
+	}
+	IncLoopLaunch(agent.WorkspaceID)
+	si.persistLaunchedSession(ctx, runID, agent.WorkspaceID, sessionID)
+	return true
+}
+
+// handleLaunchDeferred is launchAgent's disposition when the task starter
+// reports ErrLaunchDeferredByCapacity: the orchestrator's own session
+// ceiling already persisted a replay record for this exact launch and owns
+// retrying it, so this run must not be counted as launched (no session was
+// created) and must not go through HandleRunFailure's backoff-retry path —
+// a second automatic attempt from there would race the ceiling's own
+// replay into a double launch. Parking under blocked_provider_action_required
+// (the same status the routed dispatch path uses for the identical
+// disposition, see scheduler.SchedulerService.handleLaunchDeferred) keeps
+// the scheduler's own wake-up loop from ever picking the run back up on
+// its own. There is no reconciliation path back from the orchestrator's
+// ceiling state today (REQ-OFFICE-LAUNCH-SAFETY-003/REQ-OFFICE-BACKPRESSURE-003
+// require a durable operator-visible record here, not a lift mechanism), so
+// the run stays parked until an operator finds it and clears the routing
+// block by hand.
+func (si *SchedulerIntegration) handleLaunchDeferred(ctx context.Context, run *models.Run) {
+	si.releaseCheckoutIfNeeded(ctx, run)
+	si.svc.AppendRunEvent(ctx, run.ID, "adapter.invoke", "info", map[string]interface{}{
+		"phase":  "deferred",
+		"reason": "session_ceiling",
+	})
+	if err := si.svc.repo.ParkRunForProviderCapacity(ctx,
+		run.ID, routing.StatusBlockedActionRequired, time.Time{}); err != nil {
+		si.logger.Error("failed to park run deferred by session ceiling",
+			zap.String("run_id", run.ID), zap.Error(err))
+		return
+	}
+	si.logger.Info("run parked: launch deferred by session ceiling",
+		zap.String("run_id", run.ID))
+}
+
+// persistLaunchedSession stores the session id a successful direct
+// launch produced (AC-OFFICE-LOOP-LIVENESS-002.7) — the scheduler-side
+// counterpart to scheduler.SchedulerService.persistLaunchedSession for
+// the routed launch path. See that method's doc comment for the
+// without-session / persist-failed counter semantics (AC-002.8, .11).
+func (si *SchedulerIntegration) persistLaunchedSession(
+	ctx context.Context, runID, workspaceID, sessionID string,
+) {
+	if sessionID == "" {
+		IncLoopLaunchWithoutSession(workspaceID)
+		return
+	}
+	wrote, err := si.svc.repo.SetRunSessionID(ctx, runID, sessionID)
+	if err != nil {
+		si.logger.Warn("persist launched session id failed",
+			zap.String("run_id", runID), zap.String("session_id", sessionID), zap.Error(err))
+		IncLoopSessionPersistFailed(workspaceID)
+		return
+	}
+	if !wrote {
+		si.logger.Warn("persist launched session id matched no row",
+			zap.String("run_id", runID), zap.String("session_id", sessionID))
+		IncLoopSessionPersistFailed(workspaceID)
+	}
+}
+
+// failTasklessRun terminally fails a run that launchAgent determined has
+// no task_id and no run-session launcher. This is a scheduler wiring failure,
+// not an agent failure, so
+// it must NOT go through HandleAgentFailure's consecutive-failure/
+// auto-pause accounting. The pre-installed "Coordinator heartbeat" routine
+// is taskless by design and fires every 5 minutes, so counting these toward
+// auto-pause paused every default install's coordinator within ~15
+// minutes; once paused, every subsequent run — including task-bound
+// event-driven ones that work today — was silently finished with no
+// launch (WO-35 Review round 1, Finding 1).
+//
+// The production composition wires the run-session launcher. This fallback
+// remains for incomplete compositions and tests so a taskless run still fails
+// loud and visible rather than silently reporting success with no agent.
+//
+// A bare MarkRunFailed still leaves a visible failed row (surfaces via
+// ListFailedRunsForInbox, since the agent is never auto-paused here), so
+// it also publishes OfficeRunProcessed with the agent's workspace_id
+// (the run has no task_id for the WS gateway to resolve a workspace from
+// otherwise — WO-35 Review round 2, Finding 1) — restoring live UI
+// updates for this path (the pre-fix `finishRun` published on every
+// terminal run, including this one). Because the "Coordinator heartbeat"
+// routine fires every 5 minutes forever, every fire after the first would
+// otherwise add a permanent, non-actionable inbox row and evict real
+// failures from ListFailedRunsForInbox's LIMIT 200 window within ~17
+// hours; only the agent's first taskless failure stays visible; the rest
+// are auto-dismissed via the existing "_auto" sentinel (WO-35 Review
+// round 2, Finding 2).
+func (si *SchedulerIntegration) failTasklessRun(
+	ctx context.Context, run *models.Run, agent *models.AgentInstance, msg string,
+) {
+	si.releaseCheckoutIfNeeded(ctx, run)
+	wrote, err := si.svc.repo.MarkRunFailed(ctx, run.ID, msg)
+	if err != nil {
+		si.logger.Error("failed to mark taskless run as failed",
+			zap.String("run_id", run.ID), zap.Error(err))
+		return // don't publish a terminal event when persistence failed
+	}
+	if !wrote {
+		// Already terminal via another writer (e.g. a concurrent cancel)
+		// between the caller's read and this write — nothing to classify,
+		// publish, or log as a scheduler-launch error on this run's
+		// timeline (Review round 3, R3-1).
+		return
+	}
+	si.svc.AppendRunEvent(ctx, run.ID, "error", "error", map[string]interface{}{
+		"phase":                   "scheduler.launch",
+		runEventFieldErrorMessage: msg,
+	})
+	si.svc.recordTerminalShape(ctx, run, RunStatusFailed, nil)
+	run.ErrorMessage = msg
+
+	// Settle the auto-dismiss decision before publishing: the frontend
+	// refetches the inbox off this event (see office.ts), so the dismissal
+	// row must already exist by the time that refetch lands or the UI
+	// would show a repeat taskless failure that a later event never
+	// corrects (PR Fixup round 1, WO-35).
+	hasPrior, err := si.svc.repo.HasPriorTasklessFailedRun(
+		ctx, agent.ID, run.ContinuationScope, run.ID,
+	)
+	if err != nil {
+		si.logger.Error("failed to check prior taskless failures for scope",
+			zap.String("run_id", run.ID),
+			zap.String("agent_id", agent.ID),
+			zap.String("continuation_scope", run.ContinuationScope),
+			zap.Error(err))
+	} else if hasPrior {
+		if err := si.svc.repo.DismissInboxItem(ctx, autoDismissUserID, InboxKindAgentRunFailed, run.ID); err != nil {
+			si.logger.Error("failed to auto-dismiss repeat taskless failure",
+				zap.String("run_id", run.ID),
+				zap.String("agent_id", agent.ID),
+				zap.String("continuation_scope", run.ContinuationScope),
+				zap.Error(err))
+		}
+	}
+
+	si.svc.publishRunProcessedForWorkspace(ctx, run.ID, RunStatusFailed, run, agent.WorkspaceID)
+}
+
+// failUnlaunchableRun terminally fails a run that launchAgent determined
+// can never reach the adapter because the office service was constructed
+// without a task starter. Unlike a taskless run (failTasklessRun above),
+// this is a genuine wiring fault present for the process's whole
+// lifetime — the deployment cannot launch anything until it is fixed —
+// so auto-pausing the agent via HandleAgentFailure (immediate fail +
+// auto-pause accounting) is defensible here, unlike for a taskless run.
+// HandleRunFailure's retry-with-backoff is not used either: retrying a
+// condition that cannot change would just multiply the noise (WO-35).
+//
+// This run carries a real task_id (only the taskStarter is missing, not
+// the task), so the pre-fix `finishRun` published OfficeRunProcessed for
+// it and the WS gateway resolved its workspace via task_id — publish here
+// too (with the agent's workspace_id directly, since HandleAgentFailure
+// itself does not) to restore that live UI update (WO-35 Review round 2,
+// Finding 1).
+func (si *SchedulerIntegration) failUnlaunchableRun(
+	ctx context.Context, run *models.Run, agent *models.AgentInstance, msg string,
+) {
+	si.svc.AppendRunEvent(ctx, run.ID, "error", "error", map[string]interface{}{
+		"phase":                   "scheduler.launch",
+		runEventFieldErrorMessage: msg,
+	})
+	si.releaseCheckoutIfNeeded(ctx, run)
+	// No lifecycle event backs a wiring fault, so there is no agent id to
+	// thread — the message classifies unclassified from text alone either
+	// way (TestHandleAgentFailure_UnlaunchableMessageNotRetried).
+	wrote, err := si.svc.HandleAgentFailure(ctx, run, msg, "", nil)
+	if err != nil {
+		si.logger.Error("failed to handle agent failure for unlaunchable run",
+			zap.String("run_id", run.ID), zap.Error(err))
+		return // don't publish a terminal event when persistence failed
+	}
+	if !wrote {
+		// Already terminal via another writer — nothing to publish
+		// (Review round 3, R3-1).
+		return
+	}
+	run.ErrorMessage = msg
+	si.svc.publishRunProcessedForWorkspace(ctx, run.ID, RunStatusFailed, run, agent.WorkspaceID)
+}
+
+// tryRoutingDispatch routes through the provider-routing dispatcher when
+// one is wired. handled is true when the dispatcher took over (launched OR
+// parked OR error-handled), telling the caller not to fall through to the
+// legacy launch path. launched is true only when the adapter was actually
+// invoked — parked and error-handled outcomes are "handled" but not
+// "launched", and callers must not treat them as if a process is running.
+func (si *SchedulerIntegration) tryRoutingDispatch(
+	ctx context.Context, run *models.Run, agent *models.AgentInstance,
+	taskID string, launch LaunchContext,
+) (handled bool, launched bool) {
+	if agent.ExecutionAgentProfileID != "" {
+		// A dynamic-bound Office agent owns provider order through its bound
+		// profile; the legacy workspace-routing dispatcher must not override it.
+		return false, false
+	}
+	rd := si.svc.routingDispatcher
+	if rd == nil {
+		return false, false
+	}
+	launched, parked, err := rd.DispatchWithRouting(ctx, run, agent, launch)
+	if err != nil {
+		si.logger.Error("routing dispatch failed",
+			zap.String("run_id", run.ID), zap.Error(err))
+		si.svc.AppendRunEvent(ctx, run.ID, "error", "error", map[string]interface{}{
+			"phase":                   "routing.dispatch",
+			runEventFieldErrorMessage: err.Error(),
+		})
+		si.releaseCheckoutIfNeeded(ctx, run)
+		_ = si.svc.HandleRunFailure(ctx, run, err)
+		return true, false
+	}
+	if launched {
+		return true, true
+	}
+	if parked {
+		si.releaseCheckoutIfNeeded(ctx, run)
+		return true, false
+	}
+	return false, false
+}
+
+// checkoutContendedRetryDelay is the backoff before a run that lost the
+// atomic task checkout is retried. Deliberately much shorter than
+// HandleRunFailure's exponential schedule (2m-2h): losing a checkout race
+// isn't a failure, the task is just busy, so a short delay is enough for
+// the current holder to finish and release it.
+//
+// Set to 60s (not the original 30s) so the full MaxRetryCount(4) budget
+// covers 4 minutes of contention before escalating to a permanent failure.
+// The defect this fix accompanies was itself observed with a ~3-minute
+// holder-release delay; the previous 30s x 4 = 2-minute budget would have
+// escalated (and permanently failed the reviewer's run) before the holder
+// ever released the lock. Retried at a flat delay rather than exponential
+// backoff, on purpose: unlike a real failure, a wait here is bounded by how
+// long the current holder takes, not by how many times we've already tried.
+const checkoutContendedRetryDelay = 60 * time.Second
+
+// tryCheckout attempts to acquire an exclusive lock on the task. Returns true
+// if the checkout succeeded or was not needed, false if blocked.
+func (si *SchedulerIntegration) tryCheckout(
+	ctx context.Context, run *models.Run, taskID, agentID string,
+) bool {
+	acquired, err := si.svc.repo.CheckoutTaskForRun(ctx, taskID, agentID, run.ID)
+	if err != nil {
+		si.logger.Error("task checkout error",
+			zap.String("run_id", run.ID), zap.Error(err))
+		// A transient CheckoutTask error (e.g. SQLITE_BUSY) is not a
+		// successful completion: route it through the same
+		// retry-then-escalate path as every other run failure in this
+		// file, rather than FinishRun, which would silently mark a run
+		// that never executed as finished. Checkout errors therefore remain
+		// on the retry/failure path.
+		_ = si.svc.HandleRunFailure(ctx, run, err)
+		return false
+	}
+	if !acquired {
+		si.logger.Info("run skipped (task checked out by another agent)",
+			zap.String("run_id", run.ID),
+			zap.String("task_id", taskID))
+		// Requeue rather than FinishRun: a run that did not acquire the
+		// checkout must not be reported as completed work.
+		si.requeueContendedCheckout(ctx, run, taskID)
+		return false
+	}
+	return true
+}
+
+// requeueContendedCheckout re-queues a run that lost the atomic task
+// checkout instead of finishing it as though it had completed
+// successfully. RunStatus has no dedicated "skipped" state, so finishing
+// it here was indistinguishable from a real completion, and nothing else
+// re-queued the loser once the holder released the task — the run was
+// silently dropped. Bounded by MaxRetryCount so a stuck holder can't
+// spin this forever; past that it escalates exactly like any other
+// exhausted retry.
+func (si *SchedulerIntegration) requeueContendedCheckout(ctx context.Context, run *models.Run, taskID string) {
+	si.svc.AppendRunEvent(ctx, run.ID, "checkout.contended", "info", map[string]interface{}{
+		"task_id":     taskID,
+		"retry_count": run.RetryCount,
+	})
+	if run.RetryCount >= MaxRetryCount {
+		if err := si.svc.escalateFailure(ctx, run, fmt.Errorf("task checkout contended past max retries")); err != nil {
+			si.logger.Error("failed to escalate contended checkout",
+				zap.String("run_id", run.ID), zap.Error(err))
+		}
+		return
+	}
+	retryAt := time.Now().UTC().Add(checkoutContendedRetryDelay)
+	if err := si.svc.repo.ScheduleRetry(ctx, run.ID, retryAt, run.RetryCount+1); err != nil {
+		si.logger.Error("failed to requeue contended checkout",
+			zap.String("run_id", run.ID), zap.Error(err))
+	}
+}
+
+// releaseCheckoutIfNeeded releases the task checkout the given run may hold.
+// Delegates to the owner-scoped releaseTaskCheckoutForRun (Review round 3)
+// rather than the unscoped repo.ReleaseTaskCheckout: every call site here
+// runs before or in place of a run's own terminal transition, so a run that
+// never actually held the checkout (an escalated contention loser, a
+// stale/inactive-agent cancel) must not clear a different, currently-active
+// agent's live lock out from under it (Review round 4, BLOCKING FINDING 1).
+func (si *SchedulerIntegration) releaseCheckoutIfNeeded(ctx context.Context, run *models.Run) {
+	si.svc.releaseTaskCheckoutForRun(ctx, run)
+}
+
+// extractTaskID parses the task_id from a run payload, trimmed so a
+// whitespace-only value is treated as absent — the same "taskless" test
+// officeruntime.ContextBuilder applies, so checkoutTask's task-bound/
+// taskless branch and the runtime's scope-derivation branch never disagree
+// on which run has a task.
+func (si *SchedulerIntegration) extractTaskID(payload string) string {
+	return strings.TrimSpace(ParseRunPayload(payload)["task_id"])
+}
+
+// extractProjectID looks up the project ID for a task in the payload.
+func (si *SchedulerIntegration) extractProjectID(ctx context.Context, payload string) string {
+	taskID := ParseRunPayload(payload)["task_id"]
+	if taskID == "" {
+		return ""
+	}
+	info, err := si.svc.repo.GetTaskBasicInfo(ctx, taskID)
+	if err != nil || info == nil {
+		return ""
+	}
+	return info.ProjectID
+}
+
+// isAgentActive returns true if the agent status allows processing runs.
+func isAgentActive(status models.AgentStatus) bool {
+	return status == models.AgentStatusIdle || status == models.AgentStatusWorking
+}
+
+// checkIdleSkip returns true if the run should be skipped because the agent
+// is configured to skip idle periodic wakes and has no actionable tasks
+// assigned. Returns false (do not skip) on any DB error to fail open.
+func (si *SchedulerIntegration) checkIdleSkip(
+	ctx context.Context, run *models.Run, agent *models.AgentInstance,
+) bool {
+	if !shared.IsPeriodicTasklessWake(run.Reason) {
+		return false
+	}
+	if !agent.SkipIdleRuns {
+		return false
+	}
+	count, err := si.svc.repo.CountActionableTasksForAgent(ctx, agent.ID)
+	if err != nil {
+		si.logger.Warn("idle skip check failed; proceeding",
+			zap.String("run_id", run.ID), zap.Error(err))
+		return false // fail open
+	}
+	return count == 0
+}
+
+// resolveExecutorForRun resolves the executor config for a run.
+// Priority: agent preference -> project config -> fallback. The legacy
+// task-level execution_policy override was retired in Phase 4 of
+// task-model-unification.
+func (si *SchedulerIntegration) resolveExecutorForRun(
+	ctx context.Context, agent *models.AgentInstance, payload string,
+) (*ExecutorConfig, error) {
+	projectID := si.extractProjectID(ctx, payload)
+	return si.svc.ResolveExecutor(ctx, "", agent.ID, projectID, "")
+}
+
+// buildPromptContext assembles a PromptContext from run data. contextSnapshot
+// is run.ContextSnapshot — decoded as a wakeup.RoutinePayload only when
+// reason is one of the three routine-dispatch reasons, so every other run's
+// prompt stays byte-identical to before this parameter existed
+// (AC-OFFICE-ROUTINE-CATCHUP-002.5).
+func (si *SchedulerIntegration) buildPromptContext(
+	ctx context.Context, reason, payload, contextSnapshot string,
+) *PromptContext {
+	parsed := ParseRunPayload(payload)
+	pc := &PromptContext{Reason: reason}
+	pc.OneTimeInstructions = parsed[RunPayloadOneTimeInstructionsKey]
+	applyRoutineCatchUpContext(pc, reason, contextSnapshot)
+
+	if taskID := parsed["task_id"]; taskID != "" {
+		si.enrichTaskContext(ctx, pc, taskID)
+		si.enrichHandoffContext(ctx, pc, taskID)
+		if reason == RunReasonTaskChildrenCompleted || reason == legacyRunReasonChildrenCompleted {
+			si.enrichChildrenContext(ctx, pc, taskID)
+		}
+	}
+
+	if reason == RunReasonApprovalResolved {
+		pc.ApprovalStatus = parsed["status"]
+		pc.ApprovalNote = parsed["decision_note"]
+	}
+
+	if reason == RunReasonTaskAssigned || reason == RunReasonTaskReviewRequested ||
+		reason == legacyRunReasonReviewStarted || reason == legacyRunReasonApprovalStarted {
+		_, pc.StageID, pc.StageType = si.svc.resolveReviewStage(ctx, reason, parsed)
+		pc.ReviewFeedback = parsed["feedback"]
+
+		if (pc.StageType == stageTypeReview || pc.StageType == stageTypeApproval) && pc.TaskID != "" {
+			si.enrichBuilderComments(ctx, pc)
+		}
+	}
+
+	if reason == RunReasonTaskChangesRequested {
+		pc.ReviewFeedback = parsed["decision_comment"]
+		if pc.ReviewFeedback == "" {
+			// Keep compatibility with older queued runs that used the
+			// generic feedback field before decision_comment was added.
+			pc.ReviewFeedback = parsed["feedback"]
+		}
+	}
+
+	if reason == RunReasonTaskComment {
+		si.enrichCommentContext(ctx, pc, parsed["comment_id"])
+	}
+
+	if reason == RunReasonAgentError {
+		pc.FailedAgentID = parsed["failed_agent_id"]
+		pc.FailedSessionID = parsed["failed_session_id"]
+		pc.AgentErrorMessage = parsed["error"]
+	}
+
+	return pc
+}
+
+// applyRoutineCatchUpContext decodes contextSnapshot as a
+// wakeup.RoutinePayload and copies its catch-up fields onto pc, but only
+// when reason is one of the three routine-dispatch reasons. Gating on all
+// three, not just RunReasonRoutineDispatchCron, matters:
+// PromoteRunAndCoalesceWakeupIfQueued can rewrite an in-flight run's reason
+// to RunReasonRoutineDispatchEvent after a cron claim already measured and
+// stored the gap, so a Cron-only gate would silently drop it
+// (AC-OFFICE-ROUTINE-CATCHUP-002.5). A manual or webhook fire never writes
+// these fields, so gating the other two reasons this way is safe: there is
+// nothing to decode for them. Any run with a different reason is left
+// byte-identical to before this function existed.
+func applyRoutineCatchUpContext(pc *PromptContext, reason, contextSnapshot string) {
+	switch reason {
+	case shared.RunReasonRoutineDispatchCron, shared.RunReasonRoutineDispatchEvent, shared.RunReasonRoutineDispatch:
+	default:
+		return
+	}
+	var routinePayload wakeup.RoutinePayload
+	if err := wakeup.UnmarshalPayload(contextSnapshot, &routinePayload); err != nil {
+		return
+	}
+	if routinePayload.MissedTicks <= 0 || routinePayload.MissedSince == "" {
+		return
+	}
+	pc.MissedTicks = routinePayload.MissedTicks
+	pc.MissedSince = routinePayload.MissedSince
+	pc.MissedTruncated = routinePayload.MissedTruncated
+}
+
+// enrichHandoffContext populates pc.HandoffContext from the office
+// task-handoffs context API so the run prompt's BuildPrompt can render
+// the Related-tasks / Documents-available / Workspace section.
+// Failures are logged at debug — the prompt still runs, just without
+// the handoff section.
+func (si *SchedulerIntegration) enrichHandoffContext(
+	ctx context.Context, pc *PromptContext, taskID string,
+) {
+	if si.taskContexts == nil {
+		return
+	}
+	hc, err := si.taskContexts.GetTaskContext(ctx, taskID)
+	if err != nil {
+		si.logger.Debug("load handoff context for prompt failed",
+			zap.String("task_id", taskID), zap.Error(err))
+		return
+	}
+	pc.HandoffContext = hc
+}
+
+// enrichCommentContext loads the triggering comment and populates the
+// comment-specific PromptContext fields. Failures are logged at debug and
+// leave the fields empty rather than failing the wakeup pipeline.
+func (si *SchedulerIntegration) enrichCommentContext(
+	ctx context.Context, pc *PromptContext, commentID string,
+) {
+	if commentID == "" {
+		return
+	}
+	comment, err := si.svc.repo.GetTaskComment(ctx, commentID)
+	if err != nil || comment == nil {
+		si.logger.Debug("load comment for prompt context failed",
+			zap.String("comment_id", commentID), zap.Error(err))
+		return
+	}
+	pc.CommentBody = comment.Body
+	pc.CommentAuthorType = comment.AuthorType
+	pc.CommentAuthor = si.resolveCommentAuthor(ctx, comment)
+}
+
+// resolveCommentAuthor returns a display label for the comment author.
+// Agents are looked up via GetAgentFromConfig; users get a generic "User"
+// label since the office service does not currently track user names.
+func (si *SchedulerIntegration) resolveCommentAuthor(
+	ctx context.Context, comment *models.TaskComment,
+) string {
+	if comment.AuthorType == "agent" && comment.AuthorID != "" {
+		agent, err := si.svc.GetAgentFromConfig(ctx, comment.AuthorID)
+		if err == nil && agent != nil && agent.Name != "" {
+			return agent.Name
+		}
+		return "Agent"
+	}
+	return "User"
+}
+
+// enrichBuilderComments fetches the most recent task comments and appends them
+// to pc.BuilderComments for review and approval prompts.
+func (si *SchedulerIntegration) enrichBuilderComments(ctx context.Context, pc *PromptContext) {
+	comments, err := si.svc.repo.ListRecentTaskComments(ctx, pc.TaskID, 5)
+	if err != nil {
+		return
+	}
+	for _, c := range comments {
+		if c.Body != "" {
+			pc.BuilderComments = append(pc.BuilderComments, c.Body)
+		}
+	}
+}
+
+// enrichChildrenContext populates the child list section from the parent's
+// children as they are now, not from anything the producer recorded.
+//
+// Four producers can queue a children-completed run and exactly one survives a
+// completion wave, a race none of them can observe. Reading here, after that
+// race has been decided, is what makes the section identical whichever producer
+// won: there is no per-producer path left to render differently. It also means
+// the section reports a child's state and last comment as of this moment rather
+// than as of queue time, which matters because a child's concluding comment is
+// frequently written after the state change that queued the wake.
+//
+// Failures leave the section empty and never fail the run: the list is context,
+// not the reason the parent is being woken.
+func (si *SchedulerIntegration) enrichChildrenContext(
+	ctx context.Context, pc *PromptContext, parentTaskID string,
+) {
+	children, truncated, err := si.svc.repo.GetChildSummaries(ctx, parentTaskID)
+	if err != nil {
+		// Warn, not debug: an empty section is indistinguishable from a parent
+		// with no children, so a silent failure looks like correct output.
+		si.logger.Warn("load child summaries for prompt failed",
+			zap.String("task_id", parentTaskID), zap.Error(err))
+		return
+	}
+	if len(children) == 0 {
+		return
+	}
+
+	prsByTask := si.svc.lookupChildPRLinks(ctx, children)
+	for _, c := range children {
+		pc.ChildSummaries = append(pc.ChildSummaries, ChildSummaryPrompt{
+			Identifier:  c.Identifier,
+			Title:       c.Title,
+			State:       c.State,
+			LastComment: c.LastComment,
+			PRLinks:     prsByTask[c.TaskID],
+		})
+	}
+	pc.ChildSummariesTruncated = truncated
+}
+
+// enrichTaskContext populates task-related fields on the PromptContext.
+func (si *SchedulerIntegration) enrichTaskContext(
+	ctx context.Context, pc *PromptContext, taskID string,
+) {
+	pc.TaskID = taskID
+	info, err := si.svc.repo.GetTaskBasicInfo(ctx, taskID)
+	if err != nil || info == nil {
+		return
+	}
+	pc.TaskTitle = info.Title
+	pc.TaskDescription = info.Description
+	pc.TaskIdentifier = info.Identifier
+	pc.TaskPriority = info.Priority
+
+	if info.ProjectID != "" {
+		project, projErr := si.svc.GetProjectFromConfig(ctx, info.ProjectID)
+		if projErr == nil && project != nil {
+			pc.ProjectName = project.Name
+		}
+	}
+}

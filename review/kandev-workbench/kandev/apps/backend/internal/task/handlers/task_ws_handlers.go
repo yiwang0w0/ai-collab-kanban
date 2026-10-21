@@ -1,0 +1,717 @@
+package handlers
+
+import (
+	"context"
+	"errors"
+	"strings"
+
+	"github.com/kandev/kandev/internal/common/constants"
+	"github.com/kandev/kandev/internal/common/logger"
+	"github.com/kandev/kandev/internal/orchestrator"
+	"github.com/kandev/kandev/internal/task/dto"
+	"github.com/kandev/kandev/internal/task/models"
+	"github.com/kandev/kandev/internal/task/repository/repoerrors"
+	"github.com/kandev/kandev/internal/task/service"
+	wfmodels "github.com/kandev/kandev/internal/workflow/models"
+	workflowmove "github.com/kandev/kandev/internal/workflow/move"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
+	ws "github.com/kandev/kandev/pkg/websocket"
+	"go.uber.org/zap"
+)
+
+type wsListTaskSessionsRequest struct {
+	TaskID string `json:"task_id"`
+}
+
+func (h *TaskHandlers) wsListTaskSessions(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsListTaskSessionsRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	return h.doListTaskSessions(ctx, msg, req.TaskID)
+}
+
+func (h *TaskHandlers) doListTaskSessions(ctx context.Context, msg *ws.Message, taskID string) (*ws.Message, error) {
+	if taskID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "task_id is required", nil)
+	}
+	sessions, err := h.service.ListTaskSessions(ctx, taskID)
+	if err != nil {
+		h.logger.Error("failed to list task sessions", zap.Error(err))
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to list task sessions", nil)
+	}
+	sessionDTOs, projectionErr := h.taskSessionSummariesWithPendingActions(ctx, sessions)
+	if projectionErr != nil {
+		h.logger.Error("get task session pending actions failed", zap.Error(projectionErr))
+		return ws.NewError(
+			msg.ID,
+			msg.Action,
+			ws.ErrorCodeInternalError,
+			"Failed to load task session pending actions",
+			nil,
+		)
+	}
+	resp := dto.ListTaskSessionSummariesResponse{
+		Sessions: sessionDTOs,
+		Total:    len(sessionDTOs),
+	}
+	return ws.NewResponse(msg.ID, msg.Action, resp)
+}
+
+type wsListTasksRequest struct {
+	WorkflowID string `json:"workflow_id"`
+}
+
+func (h *TaskHandlers) wsListTasks(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsListTasksRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.WorkflowID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "workflow_id is required", nil)
+	}
+
+	tasks, err := h.service.ListTasks(ctx, req.WorkflowID)
+	if err != nil {
+		h.logger.Error("failed to list tasks", zap.Error(err))
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to list tasks", nil)
+	}
+	taskDTOs, err := h.toTaskDTOsWithSessionInfo(ctx, tasks)
+	if err != nil {
+		h.logger.Error("failed to enrich tasks with status summaries", zap.Error(err))
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to list tasks", nil)
+	}
+	resp := dto.ListTasksResponse{
+		Tasks: taskDTOs,
+		Total: len(tasks),
+	}
+	return ws.NewResponse(msg.ID, msg.Action, resp)
+}
+
+type wsCreateTaskRequest struct {
+	PoolRelease            *service.PoolReleaseConfirmation `json:"pool_release,omitempty"`
+	WorkspaceID            string                           `json:"workspace_id"`
+	WorkflowID             string                           `json:"workflow_id"`
+	WorkflowStepID         string                           `json:"workflow_step_id"`
+	WorkflowAgentOverrides map[string]string                `json:"workflow_agent_overrides,omitempty"`
+	Title                  string                           `json:"title"`
+	Description            string                           `json:"description,omitempty"`
+	Autopilot              bool                             `json:"autopilot,omitempty"`
+	Priority               string                           `json:"priority,omitempty"`
+	State                  *v1.TaskState                    `json:"state,omitempty"`
+	Repositories           []httpTaskRepositoryInput        `json:"repositories,omitempty"`
+	Position               int                              `json:"position,omitempty"`
+	Metadata               map[string]interface{}           `json:"metadata,omitempty"`
+	StartAgent             bool                             `json:"start_agent,omitempty"`
+	AgentProfileID         string                           `json:"agent_profile_id,omitempty"`
+	ExecutorID             string                           `json:"executor_id,omitempty"`
+	ExecutorProfileID      string                           `json:"executor_profile_id,omitempty"`
+	PlanMode               bool                             `json:"plan_mode,omitempty"`
+	Attachments            []v1.MessageAttachment           `json:"attachments,omitempty"`
+	ParentID               string                           `json:"parent_id,omitempty"`
+}
+
+func (h *TaskHandlers) wsCreateTask(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsCreateTaskRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.WorkspaceID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "workspace_id is required", nil)
+	}
+	if req.WorkflowID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "workflow_id is required", nil)
+	}
+	if req.Title == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "title is required", nil)
+	}
+	if req.StartAgent && req.AgentProfileID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "agent_profile_id is required to start agent", nil)
+	}
+
+	// Convert repositories
+	var repos []dto.TaskRepositoryInput
+	for _, r := range req.Repositories {
+		if r.RepositoryID == "" && r.LocalPath == "" && strings.TrimSpace(r.RemoteURL) == "" && strings.TrimSpace(r.GitHubURL) == "" {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "repository_id, local_path, or remote_url is required", nil)
+		}
+		repos = append(repos, dto.TaskRepositoryInput{
+			CheckoutOptions: r.CheckoutOptions,
+			RepositoryID:    r.RepositoryID,
+			BaseBranch:      r.BaseBranch,
+			CheckoutBranch:  r.CheckoutBranch,
+			BranchPolicyID:  r.BranchPolicyID,
+			PRNumber:        r.PRNumber,
+			LocalPath:       r.LocalPath,
+			Name:            r.Name,
+			DefaultBranch:   r.DefaultBranch,
+			GitHubURL:       r.GitHubURL,
+			RemoteURL:       r.RemoteURL,
+			Provider:        r.Provider,
+			ProviderHost:    r.ProviderHost,
+			ProviderScope:   r.ProviderScope,
+			ProviderRepoID:  r.ProviderRepoID,
+			ProviderOwner:   r.ProviderOwner,
+			ProviderName:    r.ProviderName,
+		})
+	}
+
+	// Always persist profile IDs in task metadata so they can be used as the
+	// task's "default" agent profile. This is needed for deferred agent start
+	// (handleTaskMovedNoSession) and workflow steps that explicitly use the
+	// workflow/task default profile.
+	if req.AgentProfileID != "" {
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]interface{})
+		}
+		req.Metadata[models.MetaKeyAgentProfileID] = req.AgentProfileID
+	}
+	if req.ExecutorProfileID != "" {
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]interface{})
+		}
+		req.Metadata[models.MetaKeyExecutorProfileID] = req.ExecutorProfileID
+	}
+
+	title := strings.TrimSpace(req.Title)
+	description := strings.TrimSpace(req.Description)
+	var deferredLaunch map[string]interface{}
+	if req.StartAgent {
+		deferredLaunch = map[string]interface{}{
+			"intent": "start", "agent_profile_id": req.AgentProfileID, "executor_id": req.ExecutorID,
+			"executor_profile_id": req.ExecutorProfileID, "prompt": description,
+			"plan_mode":   req.PlanMode,
+			"attachments": req.Attachments,
+		}
+	}
+
+	result, err := h.service.CreateTask(ctx, &service.CreateTaskRequest{
+		WorkspaceID:                 req.WorkspaceID,
+		WorkflowID:                  req.WorkflowID,
+		WorkflowStepID:              req.WorkflowStepID,
+		WorkflowAgentOverrides:      req.WorkflowAgentOverrides,
+		ExecutorID:                  req.ExecutorID,
+		ExecutorProfileID:           req.ExecutorProfileID,
+		Title:                       title,
+		Description:                 description,
+		Autopilot:                   req.Autopilot,
+		Priority:                    req.Priority,
+		State:                       req.State,
+		Repositories:                convertToServiceRepos(repos),
+		Position:                    req.Position,
+		Metadata:                    req.Metadata,
+		DeferredLaunch:              deferredLaunch,
+		RecordAgentProfileRecentUse: true,
+		PoolRelease:                 req.PoolRelease,
+		PlanMode:                    req.PlanMode,
+		StartAgent:                  req.StartAgent,
+		ParentID:                    req.ParentID,
+	})
+	if err != nil {
+		h.logger.Error("failed to create task", zap.Error(err))
+		if _, status, code, ok := poolReleaseError(err); ok {
+			return ws.NewError(msg.ID, msg.Action, status, code, map[string]interface{}{errorDetailKeyErrorCode: code})
+		}
+		if code, ok := repositorySelectionWSCode(err); ok {
+			return ws.NewError(msg.ID, msg.Action, code, err.Error(), taskErrorDetails(err))
+		}
+		if errors.Is(err, service.ErrWIPLimitExceeded) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, err.Error(), nil)
+		}
+		if isTaskCreateValidationError(err) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, err.Error(), taskErrorDetails(err))
+		}
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to create task", nil)
+	}
+
+	if req.PoolRelease != nil {
+		if err := h.claimPoolCreateAttachments(ctx, result.Task.ID, req.Attachments); err != nil {
+			if errors.Is(err, service.ErrAttachmentForbidden) || errors.Is(err, service.ErrAttachmentNotFound) || errors.Is(err, service.ErrAttachmentClaimConflict) {
+				return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeNotFound, "attachment not found", nil)
+			}
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to claim task attachments", nil)
+		}
+	}
+	if _, _, err := h.service.CompleteTaskCreation(ctx, result); err != nil {
+		if _, status, code, ok := poolReleaseError(err); ok {
+			return ws.NewError(msg.ID, msg.Action, status, code, map[string]interface{}{errorDetailKeyErrorCode: code})
+		}
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to complete task creation", nil)
+	}
+	task := result.Task
+	taskDTO := dto.FromTask(task)
+	// The WS task.create action does not accept external_id (deferred
+	// surface), so this is always a genuine, complete creation — never
+	// deduplicated, and CreationComplete must be true rather than the zero
+	// value false, which would misleadingly read as "still in progress".
+	response := createTaskResponse{TaskDTO: taskDTO, Deduplicated: false, CreationComplete: true}
+	if req.StartAgent && task.QueuedForStepID == "" && req.AgentProfileID != "" && h.orchestrator != nil {
+		launchResp, err := h.launchAgentForNewTask(ctx, taskDTO, req)
+		if err != nil {
+			h.logger.Error("failed to start agent for task", zap.Error(err))
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to start agent for task", nil)
+		}
+		response.TaskSessionID = launchResp.SessionID
+		response.AgentExecutionID = launchResp.AgentExecutionID
+		response.AgentProfileID = launchResp.AgentProfileID
+		if launchResp.Success {
+			h.recordSuccessfulTaskCreateProfileAsync(ctx, launchResp.AgentProfileID)
+		}
+	}
+	h.recordTaskCreateLastUsed(ctx, httpCreateTaskRequest{
+		WorkspaceID:       req.WorkspaceID,
+		WorkflowID:        req.WorkflowID,
+		AgentProfileID:    req.AgentProfileID,
+		ExecutorProfileID: req.ExecutorProfileID,
+		Repositories:      req.Repositories,
+	}, repos)
+	return ws.NewResponse(msg.ID, msg.Action, response)
+}
+
+// launchAgentForNewTask starts an agent session for a newly created task via WebSocket.
+func (h *TaskHandlers) launchAgentForNewTask(ctx context.Context, taskDTO dto.TaskDTO, req wsCreateTaskRequest) (*orchestrator.LaunchSessionResponse, error) {
+	launchResp, err := h.orchestrator.LaunchSession(ctx, &orchestrator.LaunchSessionRequest{
+		TaskID:            taskDTO.ID,
+		Intent:            orchestrator.IntentStart,
+		AgentProfileID:    req.AgentProfileID,
+		ExecutorID:        req.ExecutorID,
+		ExecutorProfileID: req.ExecutorProfileID,
+		Priority:          req.Priority,
+		Prompt:            taskDTO.Description,
+		WorkflowStepID:    taskDTO.WorkflowStepID,
+		PlanMode:          req.PlanMode,
+		Attachments:       req.Attachments,
+	})
+	if err != nil {
+		return nil, err
+	}
+	h.logger.Info("wsCreateTask started agent",
+		zap.String("task_id", taskDTO.ID),
+		zap.String("executor_id", req.ExecutorID),
+		zap.String("workflow_step_id", taskDTO.WorkflowStepID),
+		zap.String("session_id", launchResp.SessionID))
+	return launchResp, nil
+}
+
+type wsGetTaskRequest struct {
+	ID string `json:"id"`
+}
+
+func (h *TaskHandlers) wsGetTask(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsGetTaskRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.ID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "id is required", nil)
+	}
+
+	task, err := h.service.GetTask(ctx, req.ID)
+	if err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeNotFound, "Task not found", nil)
+	}
+	dtos, err := buildTaskDTOsWithSessionInfo(ctx, h.service, h.logger, h.foregroundActivity, h.taskParkedProjection, []*models.Task{task})
+	if err != nil {
+		h.logger.Error("failed to build task DTO", zap.Error(err))
+		return ws.NewResponse(msg.ID, msg.Action, dto.FromTask(task))
+	}
+	return ws.NewResponse(msg.ID, msg.Action, dtos[0])
+}
+
+type wsUpdateTaskRequest struct {
+	ID           string                    `json:"id"`
+	Title        *string                   `json:"title,omitempty"`
+	Description  *string                   `json:"description,omitempty"`
+	Priority     *string                   `json:"priority,omitempty"`
+	State        *v1.TaskState             `json:"state,omitempty"`
+	Repositories []httpTaskRepositoryInput `json:"repositories,omitempty"`
+	Position     *int                      `json:"position,omitempty"`
+	Metadata     map[string]interface{}    `json:"metadata,omitempty"`
+	// ParentID nests the task under another task. "" clears the parent.
+	ParentID *string `json:"parent_id,omitempty"`
+	// AssigneeUserID sets the human assignee. "" unassigns.
+	AssigneeUserID *string `json:"assignee_user_id,omitempty"`
+}
+
+func (h *TaskHandlers) wsUpdateTask(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsUpdateTaskRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.ID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "id is required", nil)
+	}
+
+	// Convert repositories if provided
+	var repos []dto.TaskRepositoryInput
+	if req.Repositories != nil {
+		for _, r := range req.Repositories {
+			repos = append(repos, dto.TaskRepositoryInput{
+				CheckoutOptions: r.CheckoutOptions,
+				RepositoryID:    r.RepositoryID,
+				BaseBranch:      r.BaseBranch,
+				CheckoutBranch:  r.CheckoutBranch,
+				BranchPolicyID:  r.BranchPolicyID,
+				PRNumber:        r.PRNumber,
+				LocalPath:       r.LocalPath,
+				Name:            r.Name,
+				DefaultBranch:   r.DefaultBranch,
+				GitHubURL:       r.GitHubURL,
+				RemoteURL:       r.RemoteURL,
+				Provider:        r.Provider,
+				ProviderHost:    r.ProviderHost,
+				ProviderScope:   r.ProviderScope,
+				ProviderRepoID:  r.ProviderRepoID,
+				ProviderOwner:   r.ProviderOwner,
+				ProviderName:    r.ProviderName,
+			})
+		}
+	}
+
+	// Trim strings like the controller did
+	var title *string
+	if req.Title != nil {
+		trimmed := strings.TrimSpace(*req.Title)
+		title = &trimmed
+	}
+	var description *string
+	if req.Description != nil {
+		trimmed := strings.TrimSpace(*req.Description)
+		description = &trimmed
+	}
+
+	task, err := h.service.UpdateTask(ctx, req.ID, &service.UpdateTaskRequest{
+		Title:          title,
+		Description:    description,
+		Priority:       req.Priority,
+		State:          req.State,
+		Repositories:   convertUpdateRepositories(req.Repositories != nil, repos),
+		Position:       req.Position,
+		Metadata:       req.Metadata,
+		ParentID:       req.ParentID,
+		AssigneeUserID: req.AssigneeUserID,
+	})
+	if err != nil {
+		h.logger.Error("failed to update task", zap.Error(err))
+		if code, ok := repositorySelectionWSCode(err); ok {
+			return ws.NewError(msg.ID, msg.Action, code, err.Error(), taskErrorDetails(err))
+		}
+		if isValidationError(err) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, err.Error(), nil)
+		}
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to update task", nil)
+	}
+	return ws.NewResponse(msg.ID, msg.Action, dto.FromTask(task))
+}
+
+func (h *TaskHandlers) wsDeleteTask(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req struct {
+		ID                     string `json:"id"`
+		ConfirmationID         string `json:"confirmation_id"`
+		Cascade                bool   `json:"cascade"`
+		DiscardWorktreeChanges bool   `json:"discard_worktree_changes"`
+	}
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.ID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "id is required", nil)
+	}
+
+	deleteCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), constants.TaskDeleteTimeout)
+	defer cancel()
+	err := h.service.WithTaskDeleteConfirmation(
+		deleteCtx, req.ConfirmationID, req.ID, req.Cascade, req.DiscardWorktreeChanges,
+		func() error {
+			options := service.DeleteTaskOptions{DiscardWorktreeChanges: req.DiscardWorktreeChanges}
+			if h.handoffSvc != nil {
+				_, err := h.handoffSvc.DeleteTaskTreeWithOptions(deleteCtx, req.ID, req.Cascade, options)
+				return err
+			}
+			return h.service.DeleteTaskWithOptions(deleteCtx, req.ID, options)
+		},
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, repoerrors.ErrTaskHierarchyConflict):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, err.Error(), nil)
+		case errors.Is(err, service.ErrTaskDeleteConfirmationRequired):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "current task deletion preview is required", nil)
+		case errors.Is(err, service.ErrTaskDeleteConfirmationIdentity):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeUnauthorized, "task deletion confirmation requires an authenticated user", nil)
+		case errors.Is(err, service.ErrTaskDeleteConfirmationExpired),
+			errors.Is(err, service.ErrTaskDeleteConfirmationStale),
+			errors.Is(err, service.ErrTaskDeleteConfirmationReplay),
+			errors.Is(err, service.ErrTaskDeleteConfirmationMismatch):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, "task deletion preview is no longer current", nil)
+		case errors.Is(err, service.ErrForbidden):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeNotFound, "Task not found", nil)
+		case errors.Is(err, repoerrors.ErrTaskNotFound):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeNotFound, "Task not found", nil)
+		case errors.Is(err, service.ErrKubernetesAdminRequired):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeForbidden, service.ErrKubernetesAdminRequired.Error(), nil)
+		case errors.Is(err, service.ErrActiveTaskSessions):
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "task is used by an active agent session", nil)
+		case isCascadePostCommitError(err):
+			h.logger.Warn("task deleted but post-commit housekeeping failed",
+				zap.String("task_id", req.ID), zap.Error(err))
+			return ws.NewResponse(msg.ID, msg.Action, map[string]interface{}{
+				responseKeySuccess:  false,
+				responseKeyPending:  true,
+				dependencyKeyTaskID: req.ID,
+			})
+		default:
+			h.logger.Error("failed to delete task", zap.Error(err))
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "failed to delete task", nil)
+		}
+	}
+	return ws.NewResponse(msg.ID, msg.Action, dto.SuccessResponse{Success: true})
+}
+
+func (h *TaskHandlers) wsArchiveTask(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	return wsHandleIDRequest(ctx, msg, h.logger, "failed to archive task",
+		func(ctx context.Context, id string) (any, error) {
+			// Route through HandoffService when wired (parity with the HTTP
+			// handler) so the archive gets a cascade stamp and group
+			// memberships are released — keeping WS-archived tasks fully
+			// unarchivable. cascade=false matches the WS payload, which has
+			// no cascade flag.
+			if h.handoffSvc != nil {
+				out, err := h.handoffSvc.ArchiveTaskTree(ctx, id, false)
+				if err != nil {
+					if !isCascadePostCommitError(err) {
+						return nil, err
+					}
+					h.logger.Warn("task archived but post-commit housekeeping failed",
+						zap.String("task_id", id), zap.Error(err))
+					return map[string]interface{}{
+						responseKeySuccess:  false,
+						responseKeyPending:  true,
+						dependencyKeyTaskID: id,
+					}, nil
+				}
+				response := map[string]interface{}{responseKeySuccess: true}
+				if out != nil && len(out.ArchivedTaskIDs) == 0 && len(out.SkippedTaskIDs) > 0 {
+					response["already_archived"] = true
+				}
+				return response, nil
+			}
+			if err := h.service.ArchiveTask(ctx, id); err != nil {
+				if errors.Is(err, service.ErrTaskAlreadyArchived) {
+					return map[string]interface{}{responseKeySuccess: true, "already_archived": true}, nil
+				}
+				if isCascadePostCommitError(err) {
+					h.logger.Warn("task archived but post-commit task projection failed",
+						zap.String("task_id", id), zap.Error(err))
+					return map[string]interface{}{
+						responseKeySuccess:  false,
+						responseKeyPending:  true,
+						dependencyKeyTaskID: id,
+					}, nil
+				}
+				return nil, err
+			}
+			return dto.SuccessResponse{Success: true}, nil
+		})
+}
+
+type wsMoveTaskRequest struct {
+	ID                 string                                     `json:"id"`
+	WorkflowID         string                                     `json:"workflow_id"`
+	WorkflowStepID     string                                     `json:"workflow_step_id"`
+	Position           int                                        `json:"position"`
+	EntryOptions       *workflowmove.EntryOptions                 `json:"entry_options,omitempty"`
+	WorkflowChange     *models.WorkflowChangeRequest              `json:"workflow_change,omitempty"`
+	CompletionOverride *service.TaskCompletionMoveOverrideRequest `json:"completion_override,omitempty"`
+	PoolRelease        *service.PoolReleaseConfirmation           `json:"pool_release,omitempty"`
+}
+
+func (h *TaskHandlers) wsMoveTask(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsMoveTaskRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.ID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "id is required", nil)
+	}
+	if req.WorkflowID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "workflow_id is required", nil)
+	}
+	if req.WorkflowStepID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "workflow_step_id is required", nil)
+	}
+
+	result, err := h.service.MoveTaskWithOptions(
+		ctx,
+		req.ID,
+		req.WorkflowID,
+		req.WorkflowStepID,
+		req.Position,
+		service.MoveTaskOptions{
+			AllowActivePrimarySession: true,
+			StepHistoryActor:          wfmodels.StepTransitionActorHuman,
+			EntryOptions:              req.EntryOptions,
+			WorkflowChange:            req.WorkflowChange,
+			CompletionOverride:        req.CompletionOverride,
+			PoolRelease:               req.PoolRelease,
+		},
+	)
+	if err != nil {
+		if _, status, code, ok := poolReleaseError(err); ok {
+			return ws.NewError(msg.ID, msg.Action, status, code, map[string]interface{}{errorDetailKeyErrorCode: code})
+		}
+		if errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) || errors.Is(err, repoerrors.ErrTaskCompletionCriteriaConflict) ||
+			errors.Is(err, repoerrors.ErrTaskCompletionHumanConfirmationRequired) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, "Task completion requirements changed or are not satisfied", map[string]interface{}{"error_code": "task_completion_gate_blocked"})
+		}
+		if code, msgText, ok := moveEntryOptionsWSError(err); ok {
+			return ws.NewError(msg.ID, msg.Action, code, msgText, nil)
+		}
+		h.logger.Error("failed to move task", zap.Error(err))
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to move task", nil)
+	}
+
+	response := dto.MoveTaskResponse{
+		Task:                  dto.FromTask(result.Task),
+		WorkflowEntryIdentity: result.WorkflowEntryIdentity,
+		MoveID:                result.MoveID,
+		EntryOptions:          result.EntryOptions,
+	}
+	if result.WorkflowStep != nil {
+		response.WorkflowStep = dto.FromWorkflowStep(result.WorkflowStep)
+	}
+	return ws.NewResponse(msg.ID, msg.Action, response)
+}
+
+type wsUpdateTaskStateRequest struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+// wsUpdateTaskRepositoryRequest is the body of task.repository.update. Today
+// it only mutates base_branch; future per-row fields can be added under
+// optional pointer types without breaking older clients.
+type wsUpdateTaskRepositoryRequest struct {
+	TaskID           string `json:"task_id"`
+	TaskRepositoryID string `json:"task_repository_id"`
+	BaseBranch       string `json:"base_branch"`
+}
+
+// wsUpdateTaskRepository handles task.repository.update. Mirrors the MCP
+// path through the same service method so both surfaces stay in sync.
+func (h *TaskHandlers) wsUpdateTaskRepository(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsUpdateTaskRepositoryRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.TaskID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "task_id is required", nil)
+	}
+	if req.TaskRepositoryID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "task_repository_id is required", nil)
+	}
+	taskRepo, err := h.service.UpdateRepositoryBaseBranch(ctx, service.UpdateRepositoryBaseBranchRequest{
+		TaskID:           req.TaskID,
+		TaskRepositoryID: req.TaskRepositoryID,
+		BaseBranch:       req.BaseBranch,
+	})
+	if err != nil {
+		h.logger.Error("failed to update task repository", zap.Error(err))
+		if errors.Is(err, service.ErrTaskRepositoryNotFound) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeNotFound, err.Error(), nil)
+		}
+		// Validation errors (required-field, invalid ref name) surface to
+		// the caller verbatim; opaque internal errors are reported as a
+		// generic 500-style message so DB or downstream-fault details
+		// don't leak across the WS boundary.
+		if isValidationError(err) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, err.Error(), nil)
+		}
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to update task repository", nil)
+	}
+	return ws.NewResponse(msg.ID, msg.Action, taskRepo)
+}
+
+func (h *TaskHandlers) wsUpdateTaskState(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsUpdateTaskStateRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+	if req.ID == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "id is required", nil)
+	}
+	if req.State == "" {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, "state is required", nil)
+	}
+
+	task, err := h.service.UpdateTaskState(ctx, req.ID, v1.TaskState(req.State))
+	if err != nil {
+		if errors.Is(err, repoerrors.ErrTaskCompletionGateBlocked) {
+			return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, "Task completion requirements are not satisfied", map[string]interface{}{"error_code": "task_completion_gate_blocked"})
+		}
+		h.logger.Error("failed to update task state", zap.Error(err))
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to update task state", nil)
+	}
+	return ws.NewResponse(msg.ID, msg.Action, dto.FromTask(task))
+}
+
+type wsUpdateTaskRunnerRequest struct {
+	ID                string `json:"id"`
+	ExecutorProfileID string `json:"executor_profile_id"`
+}
+
+// wsUpdateTaskRunner implements the task.runner action. The response DTO is
+// built through buildTaskDTOsWithSessionInfo, not the bare dto.FromTask, so
+// it carries the recomputed runner_editable/runner_ineligible_reason
+// alongside every other enriched field.
+func (h *TaskHandlers) wsUpdateTaskRunner(ctx context.Context, msg *ws.Message) (*ws.Message, error) {
+	var req wsUpdateTaskRunnerRequest
+	if err := msg.ParsePayload(&req); err != nil {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeBadRequest, "Invalid payload: "+err.Error(), nil)
+	}
+
+	task, err := h.service.SwitchTaskRunner(ctx, req.ID, req.ExecutorProfileID)
+	if err != nil {
+		return runnerSwitchWSError(msg, err, h.logger)
+	}
+
+	dtos, err := buildTaskDTOsWithSessionInfo(ctx, h.service, h.logger, h.foregroundActivity, h.taskParkedProjection, []*models.Task{task})
+	if err != nil {
+		h.logger.Error("failed to build task DTO after runner switch", zap.Error(err))
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to load updated task", nil)
+	}
+	return ws.NewResponse(msg.ID, msg.Action, dtos[0])
+}
+
+// runnerSwitchWSError maps SwitchTaskRunner's outcome vocabulary onto WS
+// error codes, attaching the machine-readable reason under
+// errorDetailKeyErrorCode so a client can present per-outcome copy without
+// parsing the human-readable message. evaluation_unavailable can wrap an
+// opaque internal error (a DB failure, a transaction abort), so its message
+// is a fixed generic string with the real error logged server-side instead
+// — the same sanitization wsUpdateTaskRepository applies to its own opaque
+// internal errors.
+func runnerSwitchWSError(msg *ws.Message, err error, log *logger.Logger) (*ws.Message, error) {
+	switch {
+	case errors.Is(err, service.ErrRunnerSwitchMalformed):
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, err.Error(), nil)
+	case errors.Is(err, repoerrors.ErrTaskNotFound):
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeNotFound, err.Error(), nil)
+	case errors.Is(err, service.ErrForbidden):
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeForbidden, err.Error(), nil)
+	case errors.Is(err, service.ErrExecutorProfileInvalid):
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeValidation, err.Error(), nil)
+	case errors.Is(err, repoerrors.ErrRunnerCompatibilityConflict):
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, err.Error(),
+			map[string]interface{}{errorDetailKeyErrorCode: models.RunnerConflictTargetCannotMaterializeRepository})
+	case errors.Is(err, repoerrors.ErrRunnerEvaluationUnavailable):
+		log.Warn("runner switch evaluation unavailable", zap.Error(err))
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeUnavailable, "Unable to evaluate the runner switch right now, try again", nil)
+	}
+	var mutabilityErr *repoerrors.ErrRunnerMutabilityConflict
+	if errors.As(err, &mutabilityErr) {
+		return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeConflict, err.Error(),
+			map[string]interface{}{errorDetailKeyErrorCode: mutabilityErr.Reason})
+	}
+	return ws.NewError(msg.ID, msg.Action, ws.ErrorCodeInternalError, "Failed to switch task runner", nil)
+}

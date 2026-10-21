@@ -1,0 +1,72 @@
+name: 单机验收插件校验
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  verify:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          path: plugin
+      - name: 读取固定宿主基线
+        id: sdk
+        run: |
+          $sdkRef=(Get-Content plugin/.kandev-sdk-ref -Raw).Trim()
+          if ($sdkRef -notmatch '^[a-f0-9]{40}$') { throw '宿主基线必须为完整提交 ID' }
+          "ref=$sdkRef" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: kdlbs/kandev
+          ref: ${{ steps.sdk.outputs.ref }}
+          path: kandev
+      - name: 应用本地宿主补丁
+        run: |
+          git -C kandev apply --check ../plugin/compat/kandev-v0.97.0-fleet.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C kandev apply ../plugin/compat/kandev-v0.97.0-fleet.patch
+      - name: 读取固定共享校验基线
+        id: checker
+        run: |
+          $checkerRef=(Get-Content plugin/.fleet-checker-ref -Raw).Trim()
+          if ($checkerRef -notmatch '^[a-f0-9]{40}$') { throw '共享校验基线必须为完整提交 ID' }
+          "ref=$checkerRef" >> $env:GITHUB_OUTPUT
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          repository: yiwang0w0/ai-fleet-kanban
+          ref: ${{ steps.checker.outputs.ref }}
+          path: board
+      - name: 应用共享校验补丁
+        run: |
+          git -C board apply --check ../plugin/compat/ai-fleet-kanban-v0.24.0-shared-gate.patch
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C board apply ../plugin/compat/ai-fleet-kanban-v0.24.0-shared-gate.patch
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16
+        with:
+          go-version-file: plugin/go.mod
+          cache-dependency-path: plugin/go.sum
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e
+        with:
+          node-version: 24
+      - name: 校验、测试及生成 Windows 包
+        working-directory: plugin
+        run: ./scripts/verify.ps1 -Package
+      - name: 共享校验回归
+        working-directory: board
+        run: |
+          node --test tests/deliverychecktest.mjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node tests/gatetest.mjs
+      - name: 宿主严格策略与协议回归
+        working-directory: kandev/apps/backend
+        run: go test -race ./pkg/pluginsdk ./internal/plugins ./internal/task/service ./internal/task/acceptance ./internal/common/config -run '^(TestCompletionGate|TestStrictCompletion|TestStrictAcceptance|TestChecker|TestConfigurationCatalog)' -count=1

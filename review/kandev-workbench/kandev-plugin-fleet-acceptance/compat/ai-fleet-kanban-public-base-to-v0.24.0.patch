@@ -1,0 +1,1161 @@
+diff --git a/INSTALL.md b/INSTALL.md
+index 0f0009f..c4a141a 100644
+--- a/INSTALL.md
++++ b/INSTALL.md
+@@ -81,7 +81,7 @@ node cli/open.mjs
+    **不要**替用户运行 `python cli/board.py bless`。
+ 2. 开始干活：在「全部任务」页上方的「自动拉取」一行，点 Claude 旁边的「启动」；然后在「目标」栏
+    写下要做的事，点「加入并拆解」。
+-3. 停止用 `node cli/stop.mjs`，再启动用 `node cli/start.mjs --background`，打开面板用 `node cli/open.mjs`。
++3. 停止用 `node cli/stop.mjs`，再启动用 `node cli/start.mjs --background`，打开面板用 `node cli/open.mjs`，看状态用 `node cli/status.mjs`。
+ 
+ ## 平时用
+ 
+@@ -92,6 +92,8 @@ node cli/open.mjs
+ | 打开面板；换了浏览器、清了浏览器数据、连接过期 | `node cli/open.mjs` |
+ | 让所有浏览器都重新连接（比如电脑借给过别人） | `node cli/open.mjs --forget-browsers` |
+ | 体检 | `node cli/doctor.mjs` |
++| 看看板现在怎么样、出了问题下一步做什么 | `node cli/status.mjs`（看板停了会打印上次的日志和重新启动的命令） |
++| 登录 Windows 后自动在后台启动（可选） | `node cli/autostart.mjs on`；关闭用 `off`，查看用 `node cli/autostart.mjs` |
+ | 更新看板 | `git pull`，然后在面板顶部的横幅里点「更新到新代码」，它会先列出改动 |
+ 
+ ## 改配置
+@@ -120,6 +122,8 @@ node cli/open.mjs
+ 
+ ## 出问题
+ 
++- 先运行 `node cli/status.mjs`：它说明看板服务在不在运行、哪里有问题、下一步做什么。
++- 面板首页显示「看板服务没有应答」：在这台电脑上运行 `node cli/start.mjs --background`。已有任务和结果都保留，面板会自己恢复。
+ - 后台启动说没起来：它会打印这次的日志；完整日志在 `core\.data\board.log`。
+ - 后台启动说已在运行，紧接着 `node cli/open.mjs` 却说看板没有在运行：你所在的工具在每条命令结束时会结束它
+   启动的所有进程。请用户自己开一个 PowerShell 窗口，进入看板目录运行 `node cli/start.mjs`，并让这个窗口一直开着。
+@@ -140,6 +144,7 @@ node cli/open.mjs
+ ## 不要做的事
+ 
+ - 不替用户确认版本（bless），也不启用用户没要求的执行器。
++- 不替用户开启登录后自动启动（`node cli/autostart.mjs on`）；用户要求时才开。
+ - 不替用户配置第三方转发（中转站）；用户已经配了的，把 doctor 标黄的那一行告诉用户。
+ - 不把 `core\.data\board_token` 的内容贴进聊天、网址或其他文件；把面板交给用户用 `node cli/open.mjs`，不用这个令牌。
+ - 不把看板装进要执行任务的项目里，也不把看板自己的目录当成 `--repo`（setup 会拒绝）。
+diff --git a/README.md b/README.md
+index 22733d2..4e365a7 100644
+--- a/README.md
++++ b/README.md
+@@ -100,8 +100,10 @@ npm run demo               # board up → demo chain → one mock worker round,
+ For real work, point it at your project and run it in the background:
+ `node cli/setup.mjs --repo <your project>` (add `--codex` for a Codex line),
+ `node cli/start.mjs --background`, `node cli/open.mjs` (the panel opens already connected),
+-`node cli/stop.mjs` — [`INSTALL.md`](INSTALL.md). (`npm run start:bg` / `open` / `stop` are the
+-same commands; a fresh Windows PowerShell refuses `npm.ps1` until scripts are allowed.)
++`node cli/stop.mjs`, `node cli/status.mjs` (is it running, what needs attention, what to do next) —
++[`INSTALL.md`](INSTALL.md). `node cli/autostart.mjs on` optionally starts it whenever you sign in to
++Windows. (`npm run start:bg` / `open` / `stop` / `status` are the same commands; a fresh Windows
++PowerShell refuses `npm.ps1` until scripts are allowed.)
+ 
+ (No `npm install` — `package.json` declares zero dependencies and exists for its
+ `scripts` table. `node cli/doctor.mjs` alone runs the preflight: everything
+diff --git a/cli/autostart.mjs b/cli/autostart.mjs
+new file mode 100644
+index 0000000..70eb313
+--- /dev/null
++++ b/cli/autostart.mjs
+@@ -0,0 +1,38 @@
++// `node cli/autostart.mjs [status|on|off|check]` (= npm run autostart) — optional: start the board in
++// the background whenever you sign in to Windows (core/autostart.mjs: one Task Scheduler task of your
++// own account, no administrator rights). Nothing changes until you say `on`.
++//   status (default)  on or off, and how the last sign-in start ended
++//   on / off          register / remove that task
++//   check             let Task Scheduler validate the definition without registering anything
++import { autostartName, autostartTaskXML, taskScheduler } from "../core/autostart.mjs";
++import { startupSID } from "../core/node-startup.mjs";
++
++const ALREADY_EXISTS = -2147024713, NOT_FOUND = -2147024894;   // 0x800700B7, 0x80070002
++process.exitCode = main();
++
++function main() {
++  const action = process.argv[2] || "status";
++  if (!["status", "on", "off", "check"].includes(action)) { console.error("用法: node cli/autostart.mjs [status|on|off|check]"); return 1; }
++  if (process.platform !== "win32") { console.error("登录后自动启动只支持 Windows。"); return 1; }
++  const name = autostartName();
++  let xml = "";
++  if (action === "on" || action === "check") {
++    try { xml = autostartTaskXML({ sid: startupSID() }); }
++    catch (e) { console.error(`读不到当前用户: ${e.message}`); return 1; }
++  }
++  const r = taskScheduler(action, { name, xml });
++  if (r.error) {
++    if (action === "on" && r.hresult === ALREADY_EXISTS) { console.log(`已经是开启的(任务计划程序里的「${name}」)。`); return 0; }
++    if (action === "off" && r.hresult === NOT_FOUND) { console.log("本来就没有开启。"); return 0; }
++    console.error(`任务计划程序没有接受: ${r.error}`);
++    return 1;
++  }
++  if (action === "check") { console.log("任务定义有效(只做了校验,没有注册)。开启: node cli/autostart.mjs on"); return 0; }
++  if (action === "on") { console.log(`已开启:以后登录 Windows 30 秒后,看板会在后台启动(任务计划程序里的「${name}」)。关闭: node cli/autostart.mjs off`); return 0; }
++  if (action === "off") { console.log("已关闭:登录后不再自动启动看板。正在运行的看板不受影响。"); return 0; }
++  if (!r.registered) { console.log("登录后自动启动:未开启。开启: node cli/autostart.mjs on"); return 0; }
++  if (!r.ours) { console.log(`任务计划程序里有一个同名任务「${name}」,但不是这个命令建的 —— 没有动它。`); return 1; }
++  const ran = r.last_run && !r.last_run.startsWith("1899") ? `上次在 ${r.last_run.replace("T", " ")} 运行,${r.last_result === 0 ? "成功" : "退出码 0x" + (r.last_result >>> 0).toString(16)}` : "还没有运行过";
++  console.log(`登录后自动启动:已开启${r.enabled ? "" : "(但任务被停用了:在任务计划程序里启用它,或者 off 再 on)"};${ran}。关闭: node cli/autostart.mjs off`);
++  return 0;
++}
+diff --git a/cli/open.mjs b/cli/open.mjs
+index cc6ce74..ec44b83 100644
+--- a/cli/open.mjs
++++ b/cli/open.mjs
+@@ -9,37 +9,47 @@
+ import { spawn } from "node:child_process";
+ import { boardUp, localBoard } from "../core/local-board.mjs";
+ 
+-const args = new Set(process.argv.slice(2));
+-const { url, token } = localBoard();
+-if (!(await boardUp(url))) { console.error(`看板没有在运行(${url})—— 先 node cli/start.mjs --background`); process.exit(1); }
+-const call = async (path, body) => {
+-  const r = await fetch(url + path, { method: "POST", signal: AbortSignal.timeout(10000),
+-    headers: { "X-Board-Token": token(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
+-  return { status: r.status, v: await r.json().catch(() => ({})) };
+-};
+-if (args.has("--forget-browsers")) {
++// ⭐ No process.exit() once the board has answered: on Windows, Node 24 aborts in libuv
++//   (Assertion failed … src\win\async.c) when it exits that way after two requests to a board
++//   that is still running — the command printed its result, then reported a crash instead of 0
++//   (measured 2026-10-14, Node v24.16.0: clitest ⑧ open/stop, 4 of 4). Setting exitCode lets
++//   the process end by itself, as quickly.
++process.exitCode = await main();
++
++async function main() {
++  const args = new Set(process.argv.slice(2));
++  const { url, token } = localBoard();
++  if (!(await boardUp(url))) { console.error(`看板没有在运行(${url})—— 先 node cli/start.mjs --background`); return 1; }
++  const call = async (path, body) => {
++    const r = await fetch(url + path, { method: "POST", signal: AbortSignal.timeout(10000),
++      headers: { "X-Board-Token": token(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
++    return { status: r.status, v: await r.json().catch(() => ({})) };
++  };
++  if (args.has("--forget-browsers")) {
++    try {
++      const { status, v } = await call("/api/pair/revoke", { all: true });
++      if (status !== 200) throw new Error(v.error || `看板返回 ${status}`);
++      console.log(`已撤销 ${v.revoked} 个浏览器的连接;要再用面板:node cli/open.mjs`);
++      return 0;
++    } catch (e) { console.error(`撤销失败: ${e.message}`); return 1; }
++  }
++  let code;
+   try {
+-    const { status, v } = await call("/api/pair/revoke", { all: true });
+-    if (status !== 200) throw new Error(v.error || `看板返回 ${status}`);
+-    console.log(`已撤销 ${v.revoked} 个浏览器的连接;要再用面板:node cli/open.mjs`);
+-    process.exit(0);
+-  } catch (e) { console.error(`撤销失败: ${e.message}`); process.exit(1); }
++    const { status, v } = await call("/api/pair/code", {});
++    if (status !== 201 || !/^\d{6}$/.test(String(v.code))) throw new Error(v.error || `看板返回 ${status}`);
++    code = v.code;
++  } catch (e) { console.error(`拿不到配对码: ${e.message}`); return 1; }
++  const link = `${url}/#pair=${code}`;
++  if (args.has("--print")) { console.log(link); return 0; }
++  // Only a plain http(s) address reaches the opener — nothing a shell or rundll32 could read
++  // as more than one argument.
++  const opened = /^https?:\/\/[A-Za-z0-9.:[\]-]+\/#pair=\d{6}$/.test(link) && openBrowser(link);
++  console.log(opened ? "已在浏览器里打开面板。没打开的话,复制这个地址(10 分钟内有效,只能用一次):"
++                     : "复制这个地址到浏览器(10 分钟内有效,只能用一次):");
++  console.log(`  ${link}`);
++  console.log(`或者打开 ${url} ,在连接页填配对码 ${code}。`);
++  return 0;
+ }
+-let code;
+-try {
+-  const { status, v } = await call("/api/pair/code", {});
+-  if (status !== 201 || !/^\d{6}$/.test(String(v.code))) throw new Error(v.error || `看板返回 ${status}`);
+-  code = v.code;
+-} catch (e) { console.error(`拿不到配对码: ${e.message}`); process.exit(1); }
+-const link = `${url}/#pair=${code}`;
+-if (args.has("--print")) { console.log(link); process.exit(0); }
+-// Only a plain http(s) address reaches the opener — nothing a shell or rundll32 could read
+-// as more than one argument.
+-const opened = /^https?:\/\/[A-Za-z0-9.:[\]-]+\/#pair=\d{6}$/.test(link) && openBrowser(link);
+-console.log(opened ? "已在浏览器里打开面板。没打开的话,复制这个地址(10 分钟内有效,只能用一次):"
+-                   : "复制这个地址到浏览器(10 分钟内有效,只能用一次):");
+-console.log(`  ${link}`);
+-console.log(`或者打开 ${url} ,在连接页填配对码 ${code}。`);
+ 
+ function openBrowser(target) {
+   const [cmd, cmdArgs] = process.platform === "win32" ? ["rundll32.exe", ["url.dll,FileProtocolHandler", target]]
+diff --git a/cli/status.mjs b/cli/status.mjs
+index dee075b..c892d74 100644
+--- a/cli/status.mjs
++++ b/cli/status.mjs
+@@ -1,104 +1,74 @@
+-// `node cli/status.mjs` — one command that answers "现在怎么了,怎么拉起来", for the
+-// moments the home page can't answer because the page itself is what's down.
+-//
+-// It distinguishes the two failures people confuse (交接说明 第 4 批): 这台电脑在不在
+-// (the machine is up — you are running this on it) and 看板服务正不正常 (the board
+-// answers /health or it does not). Everything else folds into one line per problem,
+-// each with the command that addresses it. Read-only: nothing here starts, stops or
+-// repairs — those stay with start/stop/open and the panel.
++// `node cli/status.mjs` (= npm run status) — one place to see whether the board on this machine is
++// running, what needs attention and what to do next. The words are the home page's own
++// (core/home-model.mjs): the same merged alerts, the same next steps. Read-only: it starts, stops
++// and repairs nothing — when the board is down it says so, shows the end of its log and names the
++// command that brings it back.
++//   exit code: 0 running, nothing marked red · 2 running, something red · 1 not running
++import { closeSync, existsSync, fstatSync, openSync, readSync } from "node:fs";
+ import { boardUp, localBoard } from "../core/local-board.mjs";
+-import { existsSync, readFileSync, statSync } from "node:fs";
++import { loadHomeModel } from "../core/home-model.mjs";
+ 
+-const { url, port, dataDir, logFile, token } = localBoard();
+-
+-const out = [];
+-let problems = 0;
++// Returns its exit code instead of calling process.exit(): see cli/open.mjs (Node 24 on Windows
++// aborts in libuv when exiting that way after requests to a running board).
++process.exitCode = await main();
+ 
+ async function main() {
+-  // ① The board service itself.
+-  const up = await boardUp(url);
+-  if (up) out.push(`✓ 看板服务正常(${url})`);
+-  else {
+-    problems++;
+-    const listening = existsSync(logFile) ? `日志: ${logFile}` : "没有找到运行日志";
+-    out.push(`✗ 看板服务没有应答(${port} 端口无人监听)—— 这台电脑是开着的,是看板停了。`);
+-    out.push(`  下一步: node cli/start.mjs --background   (${listening})`);
+-  }
+-
+-  // ② Authenticated reads — only meaningful when the board answers.
+-  if (up) {
+-    let tok = "";
+-    try { tok = token(); } catch (e) { tok = ""; out.push(`✗ 读不到操作员令牌: ${e.message}`); problems++; }
+-    const get = async (path) => {
+-      // Connection: close — the default keep-alive pool leaves an open handle, and
+-      // process.exit over a live undici socket trips a libuv assertion on Windows
+-      // (measured: exit=127 after a fully printed report). One-shot command, no pool.
+-      const r = await fetch(url + path, { headers: { "X-Board-Token": tok, Connection: "close" }, signal: AbortSignal.timeout(5000), cache: "no-store" });
+-      const v = await r.json().catch(() => ({}));
+-      if (!r.ok) throw Object.assign(Error(v.error || `HTTP ${r.status}`), { code: r.status });
+-      return v;
+-    };
+-    try {
+-      const counts = await get("/api/meta");
+-      const c = counts.counts;
+-      out.push(`✓ 数据可读: 未开始 ${c.not_started} · 进行中 ${c.in_progress} · 等待中 ${c.waiting} · 已完成 ${c.done}(任务与结果都在)`);
+-    } catch (e) {
+-      problems++;
+-      out.push(`✗ 数据读不了(${e.message})—— 多为令牌不对: 重新配对 node cli/open.mjs`);
+-    }
+-    try {
+-      const health = await get("/api/fleet/health");
+-      // One line per kind of problem, however many records are behind it — the same
+-      // folding the home page does; each carries the command that addresses it.
+-      const issues = health.issues || [];
+-      if (!issues.length) out.push("✓ 运行检查没有发现问题");
+-      else for (const i of issues) {
+-        problems++;
+-        const n = i.count > 1 ? `（${i.count} 项）` : "";
+-        out.push(`✗ ${HEALTH_WORDS[i.code] || i.code}${n} —— 下一步: ${NEXT_WORDS[i.next_action] || "看板运行日志"}`);
+-      }
+-    } catch (e) {
+-      problems++;
+-      out.push(`✗ 运行检查读不了(${e.message})`);
+-    }
+-  } else {
+-    // The data directory is the operator's reassurance that nothing was lost: its
+-    // database file is the tasks and results, untouched by the service being down.
+-    const db = existsSync(`${dataDir}\\board.db`) || existsSync(`${dataDir}/board.db`);
+-    out.push(db ? `  数据完好: ${dataDir}(任务与结果都在,重启后原样回来)`
+-                : `  还没有数据目录(${dataDir})—— 首次安装跑 node cli/setup.mjs`);
+-  }
++  const { url, dataDir, logFile, token } = localBoard();
++  if (!(await boardUp(url))) return notRunning(url, dataDir, logFile);
++  let key;
++  try { key = token(); }
++  catch (e) { console.log(`本机:电脑在线 · 看板服务正常(${url})`); console.error(`  读不到更多状态: ${e.message}`); return 2; }
++  const read = async (path) => {
++    const r = await fetch(url + path, { signal: AbortSignal.timeout(10000), headers: { "X-Board-Token": key } });
++    const v = await r.json().catch(() => ({}));
++    if (!r.ok) throw new Error(v.error || `读取失败(${r.status})`);
++    return v;
++  };
++  const [setup, workers, meta, fleet, health] = await Promise.allSettled(
++    ["/api/setup", "/api/workers", "/api/meta", "/api/fleet?limit=1", "/api/fleet/health"].map(read));
++  const ok = (r) => (r.status === "fulfilled" ? r.value : null), why = (r) => (r.status === "rejected" ? r.reason.message : null);
++  const M = loadHomeModel(), name = ok(meta)?.node?.display_name, version = ok(setup)?.version;
++  const s = M.homeStatus({ localName: name, nodes: ok(fleet)?.nodes || null, fleetError: why(fleet),
++                           health: ok(health), healthError: why(health), setup: ok(setup) });
++  console.log(`本机「${M.homeName(name, "本机")}」:电脑在线 · 看板服务正常(${url}${version ? ",版本 " + version : ""})`);
++  const lines = linesNow(ok(workers));
++  if (lines) console.log(`  执行线:${lines}`);
++  console.log(`  ${s.line}`);
++  for (const a of s.alerts) console.log(`  ${a.tone === "bad" ? "✗" : "!"} ${a.where}:${a.what} —— 下一步:${a.next}`);
++  return s.alerts.some((a) => a.tone === "bad") ? 2 : 0;
++}
+ 
+-  console.log(out.join("\n"));
+-  // ⚠ No process.exit()/reallyExit() here. This process has fetched over undici; both
+-  //   exits, over the pooled (or closing) socket, trip a libuv assertion on Windows and
+-  //   the crash code 127 overwrites ours (measured: exit()=127, reallyExit()=127,
+-  //   natural drain=0). Let the loop drain; exitCode carries the verdict.
+-  process.exitCode = problems ? 1 : 0;
++/** Each configured line once, by its label: running if any of its slots runs. */
++function linesNow(w) {
++  if (!w || !Array.isArray(w.lines) || !w.lines.length) return "";
++  const labels = w.line_labels || {}, workers = Array.isArray(w.workers) ? w.workers : [];
++  return w.lines.map((l) => (labels[l] || l) + " " + (workers.some((x) => x.line === l && x.running) ? "运行中" : "已停止")).join("、");
+ }
+ 
+-const HEALTH_WORDS = {
+-  BROKER_INTERRUPTED: "有一次执行分派中断", BROKER_PREPARED_STALE: "有执行分派长时间没有启动",
+-  CALL_BUDGET_OVERRUN: "调用额度记账超出上限", CALL_BUDGET_EXHAUSTED: "调用额度已用完",
+-  STORAGE_LOW: "磁盘空间不足", STORAGE_UNAVAILABLE: "读不到磁盘空间",
+-  DELIVERY_BLOCKED: "有跨机交付操作受阻", DELIVERY_RETRY_PENDING: "有跨机交付在等待重发",
+-  SCHEDULER_ATTENTION: "调度器的停止情况待核对", SCHEDULER_HEARTBEAT_STALE: "调度器心跳超时",
+-  NODE_ATTENTION: "节点运行器的停止情况待核对", NODE_HEARTBEAT_STALE: "节点运行器心跳超时",
+-  NODE_SYNC_RETRY: "同步正在重试", NODE_SYNC_PENDING: "同步有积压",
+-  NODE_SYNC_OBSERVATION_STALE: "同步状态长时间没有更新", NODE_COMPONENT_STOPPED: "节点组件已停止",
+-  NODE_COMPONENTS_MISSING: "节点组件没有上报", CLOCK_UNKNOWN: "时间记录对不上", STALE_EPOCH_RECORD: "有旧代次的遗留记录",
+-};
+-const NEXT_WORDS = {
+-  dispatch_stale_then_reconcile: "核对后在面板恢复这次分派", review_prepared_dispatch: "核对没有启动的分派",
+-  inspect_call_quota_ledger: "核对额度记账(mcp-admin)", review_explicit_call_budget: "决定是否追加额度",
+-  inspect_storage_before_new_work: "先腾出磁盘空间再派新任务", inspect_storage_observation: "检查数据盘",
+-  review_fleet_action: "在面板全局视图核对受阻操作", check_peer_then_resume_same_action: "检查对端电脑后重发原操作",
+-  review_scheduler_stop_evidence: "核对调度器的停止证明", review_node_stop_evidence: "核对节点运行器的停止证明",
+-  inspect_scheduler_owner: "检查调度器进程(node cli/node-runtime.mjs status)", inspect_node_runtime: "检查节点运行器(node cli/node-runtime.mjs status)",
+-  inspect_scheduler_lock: "检查调度器运行锁", inspect_node_lock: "检查节点运行锁",
+-  verify_stop_before_lock_recovery: "确认进程已停止,再恢复运行锁",
+-  inspect_node_sync_then_peer: "检查本机同步和对端", inspect_sync_backlog: "查看同步积压(面板全局视图)",
+-  check_local_clock: "核对两台电脑的系统时间", review_epoch_recovery: "核对代次恢复记录",
+-};
++function notRunning(url, dataDir, logFile) {
++  console.log(`本机:电脑在线 · 看板服务没有运行(${url} 没有应答)`);
++  const tail = logTail(logFile, 8);
++  if (tail.length) {
++    console.log(`  后台运行的日志最后 ${tail.length} 行(${logFile}):`);
++    for (const l of tail) console.log("    " + l);
++  } else console.log(`  没有后台运行的日志(${logFile})`);
++  console.log(`  已有的任务和结果都在 ${dataDir} 里,重新启动后照原样回来。`);
++  console.log("下一步:node cli/start.mjs --background");
++  return 1;
++}
+ 
+-main();
++/** The last `n` non-empty lines of the log, reading only its end (the log keeps every run). The
++ *  cut is by bytes, so a line split by it is dropped rather than shown half-decoded. */
++function logTail(file, n) {
++  if (!existsSync(file)) return [];
++  let fd;
++  try {
++    fd = openSync(file, "r");
++    const size = fstatSync(fd).size, len = Math.min(size, 64 * 1024), buf = Buffer.alloc(len);
++    readSync(fd, buf, 0, len, size - len);
++    const lines = buf.toString("utf8").split(/\r?\n/);
++    if (len < size) lines.shift();
++    return lines.map((l) => l.trimEnd()).filter(Boolean).slice(-n);
++  } catch { return []; }
++  finally { if (fd !== undefined) closeSync(fd); }
++}
+diff --git a/cli/stop.mjs b/cli/stop.mjs
+index 2e94961..4ba4580 100644
+--- a/cli/stop.mjs
++++ b/cli/stop.mjs
+@@ -4,23 +4,29 @@
+ // again later), so that needs --force — the same question the panel's restart asks.
+ import { boardUp, localBoard, sleep } from "../core/local-board.mjs";
+ 
+-const force = process.argv.includes("--force");
+-const { url, token } = localBoard();
+-if (!(await boardUp(url))) { console.log(`看板没有在运行(${url})`); process.exit(0); }
+-let r;
+-try {
+-  r = await fetch(url + "/api/setup/stop", { method: "POST", signal: AbortSignal.timeout(10000),
+-    headers: { "X-Board-Token": token(), "Content-Type": "application/json" }, body: JSON.stringify({ force }) });
+-} catch (e) { console.error(`停不了: ${e.message}`); process.exit(1); }
+-const v = await r.json().catch(() => ({}));
+-if (r.status === 409 && v.needs_force) {
+-  console.log(`${v.error}\n确定要停:node cli/stop.mjs --force`);
+-  process.exit(1);
+-}
+-if (r.status !== 202) { console.error(`停不了(${r.status}): ${v.error || "看板没有接受停止请求"}`); process.exit(1); }
+-for (let waited = 0; waited < 20_000; waited += 300) {
+-  await sleep(300);
+-  if (!(await boardUp(url, 800))) { console.log("看板已停止。再起: node cli/start.mjs --background"); process.exit(0); }
++// ⭐ Returns its exit code instead of calling process.exit(): see cli/open.mjs (Node 24 on
++//   Windows aborts in libuv when exiting that way after two requests to a running board).
++process.exitCode = await main();
++
++async function main() {
++  const force = process.argv.includes("--force");
++  const { url, token } = localBoard();
++  if (!(await boardUp(url))) { console.log(`看板没有在运行(${url})`); return 0; }
++  let r;
++  try {
++    r = await fetch(url + "/api/setup/stop", { method: "POST", signal: AbortSignal.timeout(10000),
++      headers: { "X-Board-Token": token(), "Content-Type": "application/json" }, body: JSON.stringify({ force }) });
++  } catch (e) { console.error(`停不了: ${e.message}`); return 1; }
++  const v = await r.json().catch(() => ({}));
++  if (r.status === 409 && v.needs_force) {
++    console.log(`${v.error}\n确定要停:node cli/stop.mjs --force`);
++    return 1;
++  }
++  if (r.status !== 202) { console.error(`停不了(${r.status}): ${v.error || "看板没有接受停止请求"}`); return 1; }
++  for (let waited = 0; waited < 20_000; waited += 300) {
++    await sleep(300);
++    if (!(await boardUp(url, 800))) { console.log("看板已停止。再起: node cli/start.mjs --background"); return 0; }
++  }
++  console.error(`看板说在停,但 20 秒后 ${url} 还在应答 —— 看日志: ${localBoard().logFile}`);
++  return 1;
+ }
+-console.error(`看板说在停,但 20 秒后 ${url} 还在应答 —— 看日志: ${localBoard().logFile}`);
+-process.exit(1);
+diff --git a/core/autostart.mjs b/core/autostart.mjs
+new file mode 100644
+index 0000000..d80bfae
+--- /dev/null
++++ b/core/autostart.mjs
+@@ -0,0 +1,52 @@
++// Optional sign-in start for the board on Windows (cli/autostart.mjs). One Task Scheduler task of
++// the operator's own account — no administrator rights, no service — that runs exactly
++// `node cli/start.mjs --background` from this folder 30 s after the operator signs in. With the board
++// already answering, start --background does nothing; the board keeps its tasks and results either
++// way. Same task shape as the node bundle (core/node-startup.mjs): logon trigger for this user,
++// interactive token, least privilege, never a second instance.
++import { spawnSync } from "node:child_process";
++import { createHash } from "node:crypto";
++import { join } from "node:path";
++import { CODE_ROOT } from "./env.mjs";
++
++export const POWERSHELL = join(process.env.SystemRoot || "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
++/** One task per board folder, so two clones never take each other's task. */
++export const autostartName = (root = CODE_ROOT) => "AiFleetBoard-" + createHash("sha256").update(root.toLowerCase()).digest("hex").slice(0, 8);
++const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]);
++const literal = (s) => "'" + String(s).replace(/'/g, "''") + "'";   // a PowerShell single-quoted string: nothing expands
++
++/** The task definition. PowerShell only hides the console window; the command it runs is fixed here. */
++export function autostartTaskXML({ sid, node = process.execPath, root = CODE_ROOT, powershell = POWERSHELL }) {
++  if (!/^S-1-5-\d+(?:-\d+)+$/.test(String(sid))) throw new Error("无法识别当前用户的 SID");
++  const command = "& " + literal(node) + " " + literal(join(root, "cli", "start.mjs")) + " --background";
++  const args = '-NoLogo -NoProfile -NonInteractive -WindowStyle Hidden -Command "' + command + '"';
++  return `<?xml version="1.0" encoding="UTF-16"?>
++<Task version="1.3" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
++ <RegistrationInfo><Description>ai-fleet-board-autostart/v1 node cli/start.mjs --background</Description></RegistrationInfo>
++ <Triggers><LogonTrigger><Enabled>true</Enabled><UserId>${esc(sid)}</UserId><Delay>PT30S</Delay></LogonTrigger></Triggers>
++ <Principals><Principal id="User"><UserId>${esc(sid)}</UserId><LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel></Principal></Principals>
++ <Settings><MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy><DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries><StopIfGoingOnBatteries>false</StopIfGoingOnBatteries><StartWhenAvailable>false</StartWhenAvailable><RunOnlyIfNetworkAvailable>false</RunOnlyIfNetworkAvailable><AllowStartOnDemand>true</AllowStartOnDemand><Enabled>true</Enabled><Hidden>false</Hidden><ExecutionTimeLimit>PT5M</ExecutionTimeLimit><Priority>7</Priority></Settings>
++ <Actions Context="User"><Exec><Command>${esc(powershell)}</Command><Arguments>${esc(args)}</Arguments><WorkingDirectory>${esc(root)}</WorkingDirectory></Exec></Actions>
++</Task>
++`;
++}
++
++// Task Scheduler through its COM interface, the way packaging/windows/node-startup.ps1 does it. The
++// name and the definition travel in environment variables, so nothing is quoted into the script.
++const SCRIPTS = {
++  status: "try{$t=$f.GetTask($env:AIFB_TASK)}catch{$t=$null};if($null -eq $t){$r=@{registered=$false}}else{$r=@{registered=$true;enabled=[bool]$t.Enabled;last_result=[int64]$t.LastTaskResult;last_run=$t.LastRunTime.ToString('s');ours=$t.Xml.Contains('ai-fleet-board-autostart/v1')}}",
++  check: "$null=$f.RegisterTask($env:AIFB_TASK,$env:AIFB_XML,1,$null,$null,3,$null);$r=@{validated=$true;registered=$false}",
++  on: "$null=$f.RegisterTask($env:AIFB_TASK,$env:AIFB_XML,2,$null,$null,3,$null);$r=@{registered=$true}",
++  off: "$f.DeleteTask($env:AIFB_TASK,0);$r=@{removed=$true}",
++};
++/** Runs one action; returns the parsed answer, or { error, hresult } when Task Scheduler refused. */
++export function taskScheduler(action, { name = autostartName(), xml = "" } = {}) {
++  if (!SCRIPTS[action]) throw new Error("unknown action " + action);
++  const script = "$ErrorActionPreference='Stop';[Console]::OutputEncoding=[Text.UTF8Encoding]::new($false);"
++    + "try{$s=New-Object -ComObject Schedule.Service;$s.Connect();$f=$s.GetFolder('" + "\\" + "');" + SCRIPTS[action]
++    + "}catch{$r=@{error=$_.Exception.Message;hresult=$_.Exception.HResult}};$r|ConvertTo-Json -Compress";
++  const p = spawnSync(POWERSHELL, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script],
++    { encoding: "utf8", windowsHide: true, timeout: 60000, env: { ...process.env, AIFB_TASK: name, AIFB_XML: xml } });
++  const line = String(p.stdout || "").trim().split(/\r?\n/).pop() || "";
++  try { return JSON.parse(line); } catch { return { error: (p.stderr || p.error?.message || "PowerShell 没有回答").trim().slice(0, 300), hresult: null }; }
++}
+diff --git a/core/federation/sync-client.mjs b/core/federation/sync-client.mjs
+index c6bd0a8..389776c 100644
+--- a/core/federation/sync-client.mjs
++++ b/core/federation/sync-client.mjs
+@@ -25,6 +25,11 @@ export function loadCredential(file,local,projectId,requiredScopes=["peer:handsh
+  assertCredentialEndpoint(c,serverEndpoint);
+  return c;
+ }
++// A failed connection says which side is down; the home page words it (core/panel.html homeNodeState):
++// a timeout, no route or no such host = that computer cannot be reached (off, asleep, off the network);
++// refused or reset = the computer answered but nothing is listening on the port — its board is down.
++const UNREACHABLE=new Set(["ETIMEDOUT","EHOSTUNREACH","ENETUNREACH","ENOTFOUND","EAI_AGAIN","UND_ERR_CONNECT_TIMEOUT"]),REFUSED=new Set(["ECONNREFUSED","ECONNRESET"]);
++export function connectionCode(e){const c=e?.cause?.code??e?.code;return e?.name==="TimeoutError"||UNREACHABLE.has(c)?"PEER_UNREACHABLE":REFUSED.has(c)?"PEER_REFUSED":null;}
+ export async function request(base,path,c,body,fetchImpl,signal,knownErrors=[]){
+  base=assertCredentialEndpoint(c,base);
+  const r=await fetchImpl(base+path,{method:"POST",redirect:"error",signal:signal?AbortSignal.any([signal,AbortSignal.timeout(10000)]):AbortSignal.timeout(10000),
+@@ -36,7 +41,10 @@ export async function request(base,path,c,body,fetchImpl,signal,knownErrors=[]){
+    if(bytes>MAX_BATCH_BYTES)throw new PeerError("BAD_RESPONSE","对端响应超限");chunks.push(value);}
+  }catch(e){await reader.cancel().catch(()=>{});throw e;}finally{reader.releaseLock();}
+  let data;try{data=JSON.parse(new TextDecoder("utf-8",{fatal:true}).decode(Buffer.concat(chunks)));}
+- catch{throw new PeerError("BAD_RESPONSE","对端响应不是有效 JSON");}
++ // A refusal that is not JSON (a proxy's 502 page when the board behind it is down) carries its HTTP
++ // status on the side: the delivery clients go on classifying BAD_RESPONSE exactly as before (blocked,
++ // not retried); syncOnce records the status, so the home page can say the computer itself answered.
++ catch{const e=new PeerError("BAD_RESPONSE","对端响应不是有效 JSON");if(!r.ok)e.http_status=r.status;throw e;}
+  if(!r.ok){const code=["SNAPSHOT_REQUIRED","SNAPSHOT_EXPIRED","CURSOR_AHEAD","EPOCH_CHANGED",...knownErrors].includes(data?.code)?data.code:"REMOTE_"+r.status;throw new PeerError(code,"对端拒绝同步请求",r.status);}
+  return data;
+ }
+@@ -116,7 +124,7 @@ export async function syncOnce(db,{url,credentialFile,projectId,fetchImpl=fetch,
+   return {state:more?"pending":"synced",applied,batches,snapshot_pages:snapshotPages,rebuilt,has_more:more,cursor:replicationCursor(db,c.server_node_id,c.server_epoch,projectId)};
+  }catch(e){
+   const failures=(previous?.failure_count??0)+1,retryAfter=now+Math.floor(performance.now()-started)+Math.min(30000,1000*2**Math.min(failures-1,5));
+-  const code=typeof e.code==="string"&&/^[A-Z0-9_]{1,64}$/.test(e.code)?e.code:"NETWORK_ERROR";
++  const code=connectionCode(e)??(e?.code==="BAD_RESPONSE"&&e.http_status>=400?"REMOTE_"+e.http_status:typeof e.code==="string"&&/^[A-Z0-9_]{1,64}$/.test(e.code)?e.code:"NETWORK_ERROR");
+   db.prepare("INSERT INTO federation_sync_attempts(origin_node_id,project_id,last_attempt_at,error_code,failure_count,retry_after) VALUES(?,?,?,?,?,?) ON CONFLICT(origin_node_id,project_id) DO UPDATE SET last_attempt_at=excluded.last_attempt_at,error_code=excluded.error_code,failure_count=excluded.failure_count,retry_after=excluded.retry_after")
+    .run(c.server_node_id,projectId,new Date(now).toISOString(),code,failures,retryAfter);
+   return {state:"error",error_code:code,retry_after:retryAfter,applied,batches,snapshot_pages:snapshotPages,rebuilt};
+diff --git a/core/home-model.mjs b/core/home-model.mjs
+new file mode 100644
+index 0000000..0ca6866
+--- /dev/null
++++ b/core/home-model.mjs
+@@ -0,0 +1,14 @@
++// The home page's words outside the browser. The panel keeps them in one pure block of
++// core/panel.html, between the home-model markers — no DOM, no globals, no clock; tests/hometest.mjs
++// runs it the same way. cli/status.mjs slices that block out, so the terminal says exactly what the
++// home page says (same alerts, same merging, same next steps) and there is one copy of the words.
++import { readFileSync } from "node:fs";
++import { join } from "node:path";
++import { CODE_ROOT } from "./env.mjs";
++
++const B0 = "// ── home-model(pure;tests/hometest.mjs)──", B1 = "// ── /home-model ──";
++export function loadHomeModel(file = join(CODE_ROOT, "core", "panel.html")) {
++  const src = readFileSync(file, "utf8"), a = src.indexOf(B0), b = src.indexOf(B1);
++  if (a < 0 || b < a) throw new Error(`${file} 里找不到首页模型(home-model 标记)`);
++  return new Function(src.slice(src.indexOf("\n", a) + 1, b) + ";return { homeStatus, homeName };")();
++}
+diff --git a/core/panel.html b/core/panel.html
+index 63e7e63..5707f6e 100644
+--- a/core/panel.html
++++ b/core/panel.html
+@@ -454,6 +454,9 @@
+   .hs-what{min-width:0;overflow-wrap:anywhere}
+   .hs-next{color:var(--dim);min-width:0;overflow-wrap:anywhere}
+   .hs-alert button{margin-left:auto}
++  .hs-alert button + button{margin-left:0}
++  .hs-cmd{font-family:var(--mono);font-size:12px;padding:0 4px;border:1px solid var(--line);border-radius:4px;background:var(--bg);overflow-wrap:anywhere}
++  .home.stale .home-cols,.home.stale .home-note{opacity:.55}
+   .home-cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);align-items:start}
+   @media (max-width:900px){ .home-cols{grid-template-columns:minmax(0,1fr)} }
+   .home-sec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
+@@ -2621,6 +2624,7 @@ async function loadTaskEvents(){
+ }
+ 
+ async function refresh(){
++  const started = Date.now();
+   try{
+     const [r, mres, wres, cres, eres, ures, qres, sres] = await Promise.all([
+       fetch("/api/tasks?archived=false").then((x) => x.json()),
+@@ -2632,6 +2636,10 @@ async function refresh(){
+       fetch("/api/requests?open=1").then((x) => x.json()).catch(() => ({ requests: [] })),
+       fetch("/api/setup").then((x) => x.json()).catch(() => null),
+     ]);
++    const wasDown = !!boardDown;   // 第 4 批: 这次取数成功 = 看板服务回来了
++    boardDown = null; lastGoodRead = Date.now();
++    // 读到了数据: 顶栏不再挂着之前的失败(有意的重启由 noteRestart 的提示负责)。
++    if (!restartPending) { if (liveOpen) live(true, "实时"); else if (wasDown) live(false, "已恢复，正在接回实时更新…"); }
+     renderQuick(qres.requests || []);
+     lastSetup = sres;
+     renderGuide(sres);
+@@ -2658,23 +2666,37 @@ async function refresh(){
+     byId.clear(); for (const t of tasks) byId.set(t.id, t);
+     render(); renderRig(); renderCtx(); homeAfterRefresh();
+     sideAfterRefresh();
+-    // 从停机态回来:清零并立刻重绘首页,别等下一条 SSE。
+-    if (boardDownStreak >= 2 && homeView !== "board") renderHomeViews();
+-    boardDownStreak = 0;
++    if (wasDown) loadHomeExtras(true);   // 断开期间的多机与运行检查结果都旧了
+   }catch(e){
+-    live(false, "取数失败");
+-    // ⭐ 第 4 批: 首页要分清「电脑在线」与「看板服务正常」。页面是缓存的,取数失败 =
+-    //   看板没有应答 —— 连续两次失败后(单次可能是瞬时抖动),首页状态区换成一条
+-    //   坏消息和恢复动作,而不是留着上一次的「运行正常」骗人。
+-    if (++boardDownStreak >= 2 && homeView !== "board") renderHomeViews();
++    // 第 4 批: 先问 /health 是不是看板服务本身断了。有意的重启由 noteRestart 的提示负责。
++    if (restartPending) return;
++    const p = await probeBoard();
++    if (lastGoodRead > started) return;   // 这次失败之后已经有一次读取成功了(比如看板刚回来): 过时的失败不报
++    if (!p) { live(false, "取数失败"); return; }
++    if (!boardDown) boardDown = { at: Date.now(), kind: p.kind, status: p.status };
++    else Object.assign(boardDown, { kind: p.kind, status: p.status });
++    live(false, downText());
++    try { renderHomeViews(); } catch (err) { console.error("home view", err); }
+   }
+ }
+-let boardDownStreak = 0;
+ 
+ function live(on, txt){
+   document.getElementById("dot").className = "dot" + (on ? "" : " off");
+   document.getElementById("livetxt").textContent = txt;
+ }
++// ── 第 4 批: 看板服务断开 ──
++// 取数失败时问一次 /health(匿名,不带令牌,所以用浏览器原生 fetch——面板里的 fetch 只放行 /api/):
++// 没有应答 = 服务断了; 有应答但出错 = 服务出错; 应答正常 = 只是这次取数失败。
++let boardDown = null;   // { at, kind: "unreachable" | "error", status }
++let liveOpen = false;   // 实时连接此刻是否接着(恢复时谁先到,顶栏就照谁说)
++let lastGoodRead = 0;   // 最近一次 refresh() 读取成功的时刻: 比它早开始的失败已经过时
++const HOME_LOCAL_PAGE = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(location.hostname);
++async function probeBoard(){
++  try { const r = await window.fetch("/health", { cache: "no-store", credentials: "omit" }); return r.ok ? null : { kind: "error", status: r.status }; }
++  catch { return { kind: "unreachable", status: null }; }
++}
++const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
++const downText = () => boardDown && boardDown.kind === "error" ? "看板服务出错" : "看板服务没有应答";
+ 
+ document.addEventListener("click", async (e) => {
+   // ── Create goal + decompose
+@@ -3185,13 +3207,21 @@ document.getElementById("line-add").addEventListener("submit", async (e) => {
+ // (1s redraw, zero server load)
+ const es = window.boardSession.events("/api/events");
+ es.onopen = () => {
++  liveOpen = true;
+   if (restartPending){
+     if (hasUnsavedInput()){ showRevBar(null, "看板已重启"); restartPending = null; live(true, "实时"); return; }
+     location.reload(); return;
+   }
+   live(true, "实时");
++  if (boardDown) refresh();   // 第 4 批: 服务回来了就马上取数,不等 15 秒的轮询
++};
++// 第 4 批: 实时连接断了先核实一次: 取数失败时 refresh() 会去问 /health,确认是不是看板服务本身停了。
++es.onerror = () => {
++  liveOpen = false;
++  if (boardDown) { live(false, downText()); return; }
++  live(false, "断线重连中");
++  if (!restartPending) refresh();
+ };
+-es.onerror = () => live(false, "断线重连中");
+ // ⭐ Event kinds are NOT enumerated here. Enumerated, every kind the server adds
+ //   later silently stops arriving (measured: 8 of 16 subscribed). The server sends
+ //   everything as `change`; the kind rides in data.type.
+@@ -3261,6 +3291,77 @@ function homeHealthWhat(code) {
+   const m = /^(SCHEDULER|NODE)_(LOCK_[A-Z_]+|OWNER_UNKNOWN)$/.exec(String(code));
+   return m ? (m[1] === "SCHEDULER" ? "调度器" : "节点运行器") + "运行锁异常" : "运行检查报告了问题";
+ }
++// 第 4 批: 同一个原因只出一条提示。一个家族(调度器 / 节点运行器 / 跨机同步 / 磁盘 / 分派 / 额度 /
++// 交付)的几条记录合成一条: 原因 + 症状 + 一个下一步(按 HOME_NEXT_FIRST 的先后挑)。
++const HOME_FAMILY = [
++  ["scheduler", /^SCHEDULER_/, "调度器"], ["node", /^NODE_(?!SYNC_)/, "节点运行器"], ["sync", /^NODE_SYNC_/, "跨机同步"],
++  ["storage", /^STORAGE_/, "磁盘"], ["broker", /^BROKER_/, "执行分派"], ["budget", /^CALL_BUDGET_/, "调用额度"],
++  ["delivery", /^DELIVERY_/, "跨机交付"],
++];
++const HOME_SYMPTOM = {
++  HEARTBEAT_STALE: "心跳超时", LOCK_MISSING: "没有运行锁", LOCK_ORPHAN: "运行锁的进程已不在",
++  LOCK_MISMATCH: "运行锁与记录不符", LOCK_UNREADABLE: "运行锁读不了", OWNER_UNKNOWN: "看不出进程还在不在",
++  ATTENTION: "停止情况待核对", COMPONENT_STOPPED: "有组件已停止", COMPONENTS_MISSING: "组件没有上报",
++};
++const HOME_NEXT_FIRST = ["verify_stop_before_lock_recovery", "review_scheduler_stop_evidence", "review_node_stop_evidence",
++  "inspect_scheduler_lock", "inspect_node_lock", "inspect_scheduler_owner", "inspect_node_runtime"];
++/** fleet-health 的 issues → 首页提示,每个家族一条。`skip` = 别处已经说过的代码(远端已报同步失败时,
++ *  本机的「同步正在重试 / 有积压」是同一件事)。只出现一条记录的家族沿用原来的字。 */
++function homeHealthAlerts(issues, { here = "本机", skip = [] } = {}) {
++  const groups = new Map(), out = [];
++  for (const i of issues || []) {
++    if (!i || typeof i.code !== "string" || skip.includes(i.code)) continue;
++    const fam = HOME_FAMILY.find((f) => f[1].test(i.code));
++    const key = fam ? fam[0] : "code:" + i.code + ":" + i.next_action;
++    if (!groups.has(key)) groups.set(key, { fam, items: [] });
++    groups.get(key).items.push(i);
++  }
++  for (const { fam, items } of groups.values()) {
++    const tone = items.some((i) => i.level === "problem") ? "bad" : "warn";
++    const actions = items.map((i) => i.next_action);
++    const next = HOME_HEALTH_NEXT[HOME_NEXT_FIRST.find((a) => actions.includes(a)) || actions[0]] || "检查本机看板的运行日志";
++    if (items.length === 1) {
++      out.push({ tone, where: here, what: homeHealthWhat(items[0].code) + (items[0].count > 1 ? "（" + items[0].count + " 项）" : ""), next, go: null });
++      continue;
++    }
++    const tails = items.map((i) => i.code.replace(/^(SCHEDULER|NODE)_/, ""));
++    const symptoms = [...new Set(items.map((i, k) => HOME_SYMPTOM[tails[k]] || homeHealthWhat(i.code)))];
++    const runner = fam[0] === "scheduler" || fam[0] === "node";
++    const cause = !runner ? fam[2] + "有 " + symptoms.length + " 个问题"
++      : tails.some((t) => ["HEARTBEAT_STALE", "LOCK_MISSING", "LOCK_ORPHAN"].includes(t)) ? fam[2] + "可能已经停了" : fam[2] + "状态待核对";
++    out.push({ tone, where: here, what: cause + "：" + symptoms.join("、"), next, go: null });
++  }
++  return out;
++}
++// 第 4 批: 远端连不上时分清「电脑不在线」和「电脑在线、看板服务没有应答」——依据同步客户端记下的
++// 连接错误码(core/federation/sync-client.mjs: PEER_UNREACHABLE / PEER_REFUSED / REMOTE_<HTTP 状态>)。
++const HOME_SERVICE_DOWN = ["bad", "电脑在线，但它的看板服务没有应答", "到这台电脑上运行 node cli/status.mjs，它会说明原因和下一步"];
++const HOME_PEER_REJECTED = ["bad", "对方不认本机的连接凭据", "在全局视图核对两台电脑的配对"];
++const HOME_PEER_ERROR = {
++  PEER_UNREACHABLE: ["bad", "连不上这台电脑（可能关机或断网）", "确认它已开机、联网"],
++  PEER_REFUSED: HOME_SERVICE_DOWN, REMOTE_502: HOME_SERVICE_DOWN, REMOTE_503: HOME_SERVICE_DOWN, REMOTE_504: HOME_SERVICE_DOWN,
++  REMOTE_401: HOME_PEER_REJECTED, REMOTE_403: HOME_PEER_REJECTED,
++};
++/** 一台远端电脑此刻的 [语气, 状况, 下一步]。同步失败时先看它最后一次的连接错误码。 */
++function homeNodeState(n) {
++  if (n && n.connection_state === "failed")
++    for (const p of n.projects || []) if (p && HOME_PEER_ERROR[p.error_code]) return HOME_PEER_ERROR[p.error_code];
++  return HOME_SYNC[n && n.connection_state] || ["warn", "状态未知", "在全局视图查看"];
++}
++/** 第 4 批: 看板服务本身没有应答时首页只说这一件事——别的提示都是断开前的旧数据。
++ *  down = { since: "14:05", kind: "unreachable" | "error", status, local }; local = 页面开在看板所在的
++ *  电脑上(地址是本机回环),所以「电脑在线」是确定的,问题只在看板服务。copy = 可一键复制的命令。 */
++function homeOutage(down, here) {
++  const since = down.since ? "（" + down.since + " 起）" : "", start = "node cli/start.mjs --background";
++  if (down.kind === "error")
++    return { tone: "bad", line: "看板服务出错，下面是出错前的内容", alerts: [{ tone: "bad", where: here, go: null, copy: null,
++      what: "看板服务出错" + (down.status ? "（HTTP " + down.status + "）" : "") + since,
++      next: "看数据目录里的 board.log 找原因；重启看板：先 node cli/stop.mjs，再 " + start }] };
++  const alert = down.local
++    ? { what: "电脑在线，看板服务没有应答" + since, next: "在这台电脑上重新启动看板（已有任务和结果都保留）：" + start }
++    : { what: "连不上「" + here + "」上的看板" + since, next: "电脑关着就先开机；开着就在它上面运行 " + start };
++  return { tone: "bad", line: "看板服务没有应答，下面是断开前的内容", alerts: [{ tone: "bad", where: here, go: null, copy: start, ...alert }] };
++}
+ /** Where one task stands for the person looking: which list, its state, the next step.
+  *  `t.hb` is hbClass(t) for this board's cards; `t.progress_blockers` is the server's own
+  *  stuckWhy — the same reasons pendingReview and claim use, so a card the machine will not
+@@ -3351,36 +3452,20 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
+   history.sort((a, b) => b.updated.localeCompare(a.updated));
+   return { mine, running, history };
+ }
+-/** One line about the computers, plus the alerts that line folds away when all is well.
+- *  `boardDown` = this very board is not answering (the page is stale by definition, so this
+- *  shape only appears from a reconnect attempt telling the truth about the last state). */
+-function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null, boardDown = false } = {}) {
++/** One line about the computers, plus the alerts that line folds away when all is well. */
++function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null, down = null } = {}) {
+   const here = homeName(localName, "本机"), alerts = [], remotes = (nodes || []).filter((n) => !n.local);
+-  // 交接说明 第 4 批: 「电脑在线」与「看板服务正常」是两回事。页面还在渲染只说明浏览器
+-  // 有缓存;看板没应答时不要假装读到了状态——一条坏消息,恢复动作就是重新连接。
+-  if (boardDown) {
+-    return { tone: "bad", line: "看板服务没有应答 —— 这台电脑开着,是看板停了",
+-             alerts: [{ tone: "bad", where: here, what: "看板服务没有应答",
+-                        next: "本机恢复: node cli/start.mjs --background;或按右边重试连接", go: "retry" }] };
+-  }
++  if (down) return homeOutage(down, here);
+   for (const n of remotes) {
+-    const s = HOME_SYNC[n.connection_state] || ["warn", "状态未知", "在全局视图查看"];
++    const s = homeNodeState(n);
+     if (s[0] !== "ok") alerts.push({ tone: s[0], where: homeName(n.display_name), what: s[1], next: s[2], go: "fleet" });
+   }
+-  if (fleetError) alerts.push({ tone: "warn", where: "多机视图", what: "暂时读不到", next: "稍后会自动重试", go: null });
+-  // 同类合并: 同 kind(码+下一步)的问题只说一次,数量并进来——三条「磁盘不足」是
+-  // 一件事,不是三件事(第 4 批: 同一故障合并成一条提示)。
+-  const healthFold = new Map();
+-  for (const i of (health && health.issues) || []) {
+-    const key = i.code + "|" + i.next_action;
+-    const prior = healthFold.get(key);
+-    if (prior) prior.count += i.count; else healthFold.set(key, { ...i, count: i.count || 1 });
+-  }
+-  for (const i of healthFold.values())
+-    alerts.push({ tone: i.level === "problem" ? "bad" : "warn", where: here,
+-                  what: homeHealthWhat(i.code) + (i.count > 1 ? "（" + i.count + " 项）" : ""),
+-                  next: HOME_HEALTH_NEXT[i.next_action] || "检查本机看板的运行日志", go: null });
+-  if (healthError) alerts.push({ tone: "warn", where: here, what: "运行检查暂时读不到", next: "稍后会自动重试", go: null });
++  const remoteTrouble = alerts.length > 0;
++  // 两项读取一起失败多半是同一个原因: 合成一条。
++  if (fleetError && healthError) alerts.push({ tone: "warn", where: here, what: "多机视图和运行检查暂时读不到", next: "稍后会自动重试", go: null });
++  else if (fleetError) alerts.push({ tone: "warn", where: "多机视图", what: "暂时读不到", next: "稍后会自动重试", go: null });
++  alerts.push(...homeHealthAlerts(health && health.issues, { here, skip: remoteTrouble ? ["NODE_SYNC_RETRY", "NODE_SYNC_PENDING"] : [] }));
++  if (healthError && !fleetError) alerts.push({ tone: "warn", where: here, what: "运行检查暂时读不到", next: "稍后会自动重试", go: null });
+   if (setup && setup.steps && !setup.complete) {
+     // A step the server can do in one request (generate the config, confirm the version,
+     // restart) gets its button right here; anything else is done in the guide on 全部任务.
+@@ -3696,30 +3781,37 @@ function renderHomeViews(){
+   if (homeView === "home"){
+     const s = homeStatus({ localName: homeLocalName(), nodes, fleetError: homeFleetError, health: homeHealth,
+                            healthError: homeHealthError, setup: lastSetup,
+-                           // 曾成功加载过(homeReady)之后连续两次取数失败 = 看板停了;
+-                           // 从未加载成功是「正在读取」,不是停机。
+-                           boardDown: homeReady && boardDownStreak >= 2 });
++                           down: boardDown && { since: hhmm(boardDown.at), kind: boardDown.kind, status: boardDown.status, local: HOME_LOCAL_PAGE } });
+     // The computers are known only once the fleet reads answered — until then say so rather
+-    // than print "no other computer" for a board that has one.
+-    const known = homeExtrasAt > 0;
++    // than print "no other computer" for a board that has one. A board that stopped answering is known.
++    const known = homeExtrasAt > 0 || !!boardDown;
++    document.getElementById("home-view").classList.toggle("stale", !!boardDown);
+     homeFill(document.getElementById("home-status"), JSON.stringify([known, s]), () => {
+       const line = homeEl("div", undefined, "hs-line");
+       line.append(homeEl("span", undefined, "dot" + (!known || s.tone === "ok" ? "" : s.tone === "bad" ? " off" : " warn")),
+                   homeEl("span", known ? s.line : "正在读取设备状态…", "hs-text"));
+       return [line, ...(known ? s.alerts : []).map((a) => {
+         const row = homeEl("div", undefined, "hs-alert"); row.dataset.tone = a.tone;
+-        row.append(homeEl("span", a.where, "hs-where"), homeEl("span", a.what, "hs-what"), homeEl("span", "下一步：" + a.next, "hs-next"));
++        // A command in the next step is technical content: monospace (docs/style-guide.md).
++        const nx = homeEl("span", "下一步：", "hs-next");
++        for (const part of a.next.split(/(node cli\/[\w-]+\.mjs(?: --?[\w-]+)*)/))
++          if (part) nx.append(part.startsWith("node cli/") ? homeEl("code", part, "hs-cmd") : part);
++        row.append(homeEl("span", a.where, "hs-where"), homeEl("span", a.what, "hs-what"), nx);
+         if (a.action){
+           const b = homeEl("button", a.action.label, "pri"); b.type = "button";
+           b.addEventListener("click", () => homeSetupAction(a.action, b));
+           row.append(b);
+         }
+         else if (a.go){
+-          const b = homeEl("button", a.go === "board" ? "去设置" : a.go === "retry" ? "重试连接" : "查看详情"); b.type = "button";
+-          b.addEventListener("click", () => {
+-            if (a.go === "board") setView("board");
+-            else if (a.go === "retry"){ b.disabled = true; b.textContent = "重试中…"; refresh().finally(() => loadHomeExtras(true)); }
+-            else fleetApi?.open();
++          const b = homeEl("button", a.go === "board" ? "去设置" : "查看详情"); b.type = "button";
++          b.addEventListener("click", () => { if (a.go === "board") setView("board"); else fleetApi?.open(); });
++          row.append(b);
++        }
++        if (a.copy){
++          const b = homeEl("button", "复制命令"); b.type = "button";
++          b.addEventListener("click", async () => {
++            try { await navigator.clipboard.writeText(a.copy); b.textContent = "已复制"; }
++            catch { b.textContent = "复制不了，请手动选中上面的命令"; }
+           });
+           row.append(b);
+         }
+diff --git a/docs/federation/PROGRESS.md b/docs/federation/PROGRESS.md
+index a970ff5..89ed38a 100644
+--- a/docs/federation/PROGRESS.md
++++ b/docs/federation/PROGRESS.md
+@@ -1194,8 +1194,8 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发
+ - 刷新保留：打开的任务写进地址栏 #task=…，审阅留言与新建表单存本标签页 sessionStorage（存取均包 try），刷新回填、提交后清除；新建表单未提交的标题也会阻止看板换版时自动刷新。
+ - 测试（Windows 本机）：hometest 12（新增 4 组，变异对照可红）、decisiontest 25、conflicttest 5、versiontest 26、gatetest 30、tltest 23、progressdiagnostictest 7、panelauth 11、servertest 198 项通过。临时看板实测新建→排队→执行中→待验收→侧栏结案与侧栏打回，服务端状态逐项核对；改前／改后截图已交操作者。
+ - 阻塞：无；第 4 批（启动与故障处理）继续。
+-- 2026-10-20 第 3 批独立验收（接手会话）：受影响 9 套件复跑与上批记录逐项一致；临时双板走完新建→侧栏→草稿刷新保留→交付物闸拦截假交付→干净证据两押结案，服务端状态逐项核对，改前／改后截图在 batch3-shots/。两押的武装态会被侧栏周期重渲染复位（真人节奏无感，记为低优先摩擦）。
+-- 2026-10-20 启动与故障处理（第 4 批，第一半）：首页分清「电脑在线」与「看板服务正常」——看板停掉后缓存页面不再假装「运行正常」，连续两次取数失败即换一条坏消息和恢复动作（node cli/start.mjs --background + 重试连接按钮），服务回来自动恢复；同类健康问题合并成一条（同码同下一步才合并，计数并进去）。
+-- 新增 `node cli/status.mjs`（= npm run status）：一条命令回答「现在怎么了、怎么拉起来」——服务应答/数据可读/健康检查各一行、每行带下一步命令，停机时明说数据目录原封未动；⚠ 本进程 fetch 过之后 process.exit/reallyExit 都会撞 Windows libuv 断言以 127 覆盖退出码（实测），故自然排空、exitCode 带结论。
+-- 测试（Windows 本机）：hometest 14（新增 2 组）、panelclient 8、fleetviewtest 14、decisiontest 25、conflicttest 5、servertest 198 通过。实测：杀掉看板 32 秒内首页换停机态，服务重启后页面自行回「实时」；status 对活板 exit=0、对停板 exit=1。改后截图在 batch4-shots/（停机态+恢复后）；改前形态即第 3 批 before-01（无停机区分）。第 4 批剩：开机自启可选入口与「保留任务不重派」的实测。
+-- 阻塞：无。
++- 2026-10-14 启动与故障处理（第 4 批）：看板服务停了，首页只剩一条「电脑在线，看板服务没有应答（几点起）」，给出启动命令（可一键复制，命令等宽显示），断开前的列表变淡；服务回来后自动恢复并重读多机与运行检查。健康记录按原因合并成一条（如「调度器可能已经停了：心跳超时、没有运行锁」，只给一个下一步）；远端同步失败按连接错误分清「连不上这台电脑（可能关机或断网）」与「电脑在线，但它的看板服务没有应答」。
++- 集中入口：新增 `node cli/status.mjs`（看板在不在跑、要注意什么、下一步；直接切首页那段代码，措辞与首页同源；停了时打印日志尾和启动命令）；可选的登录后自动启动 `node cli/autostart.mjs on|off|check`（本账户的任务计划程序任务，只执行 start --background）。恢复仍是 `node cli/start.mjs --background`，不新增任何自动重派；同步客户端只多记诊断码（PEER_UNREACHABLE／PEER_REFUSED／REMOTE_<状态>），交付客户端的重试判定不变。
++- 修红：真实 Windows（Node v24.16.0）上 open／stop 向运行中的看板发出两次请求后调用 process.exit()，会在 libuv 断言崩溃，clitest ⑧ 原有 4 项因此失败；改为返回退出码，并在源码层钉住。
++- 测试（Windows 本机）：hometest 16、clitest 82、synctest 31、partitiontest 1、servertest 198、decisiontest 25、conflicttest 5、versiontest 26、gatetest 30、tltest 23、progressdiagnostictest 7、panelauth 11、review-contracttest 4、peer-endpointtest 5、epochrecoverytest 28、snapshottest 23、sync-capacitytest 3、fleetviewtest 14、delegationtest 26、bindingtest 49、cancellationtest 38、resulttest 18、topologytest 36、artifacttransfertest 9 项通过（completiontest 单项约 90 秒，本机只跑了前 7 项，全量交给 CI）；4 处变异对照都能让对应测试变红。临时看板实测：强制结束看板 → 8 秒内首页只剩单条提示 → start --background 恢复，执行中的卡保持原运行号（未重派），旧运行号的迟到交付被拒（409），同一运行号不能交第二次。
++- 阻塞：无。是否开启登录后自动启动由操作者决定（本机只用任务计划程序做了校验）；第 5 批需要操作者给出 Zcode 版本、登录位置与调用预算。
+diff --git a/docs/交接说明.md b/docs/交接说明.md
+index 6690718..0682787 100644
+--- a/docs/交接说明.md
++++ b/docs/交接说明.md
+@@ -1,11 +1,11 @@
+ # 交接说明（2026-10-14）
+ 
+-首页减负和一句话安装已推送，围绕任务操作（第 3 批）已完成；接手的会话从第 4 批「启动与故障处理」开始，每批先截图再提交。
++第 1–3 批已推送（第 3 批已验收），第 4 批「启动与故障处理」已完成、待操作者验收；接手的会话从第 5 批「执行器设置页与 Zcode」开始，每批先截图再提交。
+ 
+ ## 现在在哪
+ 
+ - 分支 `claude/peaceful-pasteur-7cso5p`，基于 PR #2 的分支 `codex/fleet-federation-foundation`。工作区干净，全部已推送。
+-- 已完成：第 1 批首页减负（首页只列「待我处理」「正在执行」，已完成进「历史」，ID 收进「技术信息」）；第 2 批一句话安装（INSTALL.md 给 AI 照做、`node cli/setup.mjs --repo … [--codex]` 生成配置、后台起板、配对码自动连接、单机不显示多机界面、doctor 报模型请求去向）；第 3 批围绕任务操作（首页新建任务、任务侧栏、刷新后保留打开的任务与未提交输入）。细节见 PROGRESS.md 2026-10-08、2026-10-14 的几条。
++- 已完成：第 1 批首页减负（首页只列「待我处理」「正在执行」，已完成进「历史」，ID 收进「技术信息」）；第 2 批一句话安装（INSTALL.md 给 AI 照做、`node cli/setup.mjs --repo … [--codex]` 生成配置、后台起板、配对码自动连接、单机不显示多机界面、doctor 报模型请求去向）；第 3 批围绕任务操作（首页新建任务、任务侧栏、刷新后保留打开的任务与未提交输入）；第 4 批启动与故障处理（看板服务停了首页只出一条提示、健康提示按原因合并、远端分清电脑不在线与看板没应答、`node cli/status.mjs`、可选开机自启 `node cli/autostart.mjs`、修 open／stop 在 Windows 上退出时崩溃）。细节见 PROGRESS.md 2026-10-08、2026-10-14 的几条。
+ - 没做的两件验证：第 2 批的安装流程只在 Linux 容器里用假的 claude/codex 跑过，真实 Windows 还没跑；这个分支没跑过 CI（CI 只在 PR 和 main 上触发）。
+ 
+ ## 目标与边界
+@@ -20,7 +20,7 @@
+ 
+ ## 剩下的批次
+ 
+-### 第 3 批 围绕任务操作（已完成 2026-10-14，待操作者验收）
++### 第 3 批 围绕任务操作（已完成并验收 2026-10-14）
+ 
+ - 首页加「新建任务」：写标题和说明，选执行器（线），不填内部 ID。
+ - 任务详情改成侧栏：说明、结果、进展、操作放在一起；只突出一个明确的下一步；等待对端时说明在等什么。
+@@ -28,11 +28,12 @@
+ - 验收：分派、查看进度、审阅结果都能围绕同一个任务完成；简化后的界面仍保留原有权限和确认条件（两押按钮、`expected_version`、operator 令牌、人工闸）。
+ - 入口：`core/panel.html` 里的 fleet IIFE（`showTask`／`nextStep`／`taskActions`）、首页模块（`homeStep`／`homeLists`／`homeStatus`）、目标框（`goal-add` → `POST /api/goals` → `/decompose`）、`POST /api/tasks`。测试模式照 `tests/hometest.mjs`：切出纯逻辑块用 `new Function` 跑。
+ 
+-### 第 4 批 启动与故障处理
++### 第 4 批 启动与故障处理（已完成 2026-10-14，待操作者验收）
+ 
+ - 复用已有的 Windows 启动工具（`packaging/windows`、`core/node-startup.mjs`）集中提供启动、状态检查和恢复入口；开机自启可选。
+ - 区分「电脑在线」和「看板服务正常」；同一故障合并成一条提示，给出原因和下一步（首页 `homeStatus` 的 `HOME_HEALTH` 表是现成的落点）。
+ - 保留已有任务和结果，不自动重派或重跑模型。
++- 入口：首页 `homeStatus`／`homeHealthAlerts`／`homeOutage`（core/panel.html 的 home-model）；`cli/status.mjs` 经 core/home-model.mjs 切同一段代码，终端和首页说同样的话；开机自启 `cli/autostart.mjs` + core/autostart.mjs；远端连接错误码在 core/federation/sync-client.mjs 的 `connectionCode`，只改同步记录里的诊断码，交付客户端的重试／受阻判定不变。
+ - 验收：服务中断后能看清故障在哪并恢复；不产生重复的任务或结果；不需要 72 小时等待。
+ 
+ ### 第 5 批 执行器设置页与 Zcode
+@@ -44,6 +45,7 @@
+ 
+ ## 怎么验证
+ 
++- 看板停了、哪里不对：`node cli/status.mjs`（退出码 0 正常、2 有红色提示、1 没在运行）。
+ - Windows：`node cli/doctor.mjs`；受影响的测试直接跑 `node tests/<name>.mjs` 或 `node --test tests/<name>.test.mjs`；全量 `npm test` 交给 CI。
+ - 云端 Linux 容器：需要 Node 24（从 nodejs.org 下载并核对 SHASUMS256）、python3、git ≥ 2.45（容器只有 2.43 时，在 PATH 前面放一个去掉 `--no-lazy-fetch` 参数的 git 垫片）。已知在 Linux 上固定失败且与改动无关：panelauth 的 H3（磁盘观测只在 Windows 上工作）、versiontest 1 项、fleetactionstest 27 项（Windows 专属凭据文件）。
+ - 截图：用 Playwright 加 Chromium 起一块临时看板（`BOARD_DATA_DIR`、`BOARD_PORT` 指到临时目录和端口）；Linux 上把 `/api/fleet/health` 里的 `STORAGE_UNAVAILABLE` 过滤掉再截，否则首页多一条本容器才有的提醒。
+@@ -54,6 +56,7 @@
+ - 在真实 Windows 上按 README 顶部那句话让 AI 装一次，把 `setup`／`start`／`open` 的输出交给接手的会话：浏览器有没有自动打开、有没有标红的行。
+ - 决定要不要开 PR 到 `codex/fleet-federation-foundation`，让 Windows CI 跑一次全量回归。
+ - 开发计划里 M0 的几项仍在操作者一侧：G00 决策、型号核对、Zcode 版本与登录。
++- 登录后自动启动只在本机做过校验（任务计划程序只校验、不注册）。想用就 `node cli/autostart.mjs on`，注销再登录看看板是否自己起来；不要了用 `off`。
+ 
+ ## 不要做
+ 
+diff --git a/package.json b/package.json
+index f276261..06cf22b 100644
+--- a/package.json
++++ b/package.json
+@@ -14,6 +14,8 @@
+     "start": "node cli/start.mjs",
+     "start:bg": "node cli/start.mjs --background",
+     "stop": "node cli/stop.mjs",
++    "status": "node cli/status.mjs",
++    "autostart": "node cli/autostart.mjs",
+     "open": "node cli/open.mjs",
+     "reset": "node cli/reset.mjs",
+     "test": "node tests/selftest.mjs && node tests/progressdiagnostictest.mjs && node tests/decisiontest.mjs && node tests/gatetest.mjs && node tests/decomposetest.mjs && node tests/clitest.mjs && node tests/looptest.mjs && node tests/servertest.mjs && node --test tests/panelauth.test.mjs tests/panelclient.test.mjs tests/worker-runtime-boundary.test.mjs && node tests/reviewtest.mjs && node --test tests/legacy-boundariestest.mjs && node tests/sentrytest.mjs && node tests/tltest.mjs && node tests/hometest.mjs && node tests/identitytest.mjs && node tests/backuptest.mjs && node tests/runfencetest.mjs && node tests/versiontest.mjs && node tests/peertest.mjs && node --test tests/peer-endpointtest.mjs && node tests/synctest.mjs && node --test tests/sync-capacitytest.mjs && node tests/snapshottest.mjs && node tests/recoverytest.mjs && node tests/epochrecoverytest.mjs && node tests/mcptest.mjs && node tests/dispatchtest.mjs && node tests/outputtest.mjs && node tests/supervisortest.mjs && node tests/adaptertest.mjs && node tests/treetest.mjs && node tests/delegationtest.mjs && node tests/relationstest.mjs && node tests/topologytest.mjs && node tests/bindingtest.mjs && node tests/cancellationtest.mjs && node --test tests/contractrecoverytest.mjs tests/pendingrelationrecoverytest.mjs && node tests/resulttest.mjs && node tests/repositorytest.mjs && node tests/workspacetest.mjs && node tests/workspacefiletest.mjs && node tests/gitpackagetest.mjs && node tests/artifacttransfertest.mjs && node tests/appcontainertest.mjs && node tests/commandsupervisortest.mjs && node tests/verificationworkspacetest.mjs && node tests/integrationtest.mjs && node tests/completiontest.mjs && node tests/fleetviewtest.mjs && node tests/desktopcontexttest.mjs && node tests/desktop-packagetest.mjs && node tests/nodestartuptest.mjs && node tests/noderuntimetest.mjs && node --test tests/runtimelocktest.mjs && node tests/schedulertest.mjs && node tests/fleetevidencetest.mjs && node tests/mcpevidencetest.mjs && node tests/contextevidencetest.mjs && node tests/fleetactionstest.mjs && node tests/desktop-archivetest.mjs && node tests/review-contracttest.mjs",
+@@ -103,7 +105,6 @@
+     "contract-recovery": "node cli/contract-recovery.mjs",
+     "test:contract-recovery": "node --test tests/contractrecoverytest.mjs",
+     "pending-relation:recovery": "node cli/pending-relation-recovery.mjs",
+-    "test:pending-relation-recovery": "node --test tests/pendingrelationrecoverytest.mjs",
+-    "status": "node cli/status.mjs"
++    "test:pending-relation-recovery": "node --test tests/pendingrelationrecoverytest.mjs"
+   }
+ }
+diff --git a/tests/clitest.mjs b/tests/clitest.mjs
+index f006070..26b2440 100644
+--- a/tests/clitest.mjs
++++ b/tests/clitest.mjs
+@@ -305,6 +305,15 @@ console.log(NL + "[⑧ start:bg / open / stop]");
+     '  if (req.method === "POST" && req.url === "/api/setup/stop") {',
+     '    if (existsSync(join(D, "inflight")) && !JSON.parse(b || "{}").force) return send(res, 409, { error: "有 1 张卡正在跑", needs_force: true, in_progress: 1 });',
+     '    send(res, 202, { stopping: true }); setTimeout(() => process.exit(0), 50); return; }',
++    // What cli/status.mjs reads: a computer that cannot be reached and a scheduler that stopped (two records, one cause).
++    '  if (req.method === "GET" && req.url === "/api/meta") return send(res, 200, { node: { display_name: "台式机 A" } });',
++    '  if (req.method === "GET" && req.url === "/api/workers") return send(res, 200, { lines: ["engine"], line_labels: { engine: "引擎" }, workers: [{ line: "engine", running: true }] });',
++    '  if (req.method === "GET" && req.url === "/api/setup") return send(res, 200, { version: "stub-rev", complete: true, steps: [] });',
++    '  if (req.method === "GET" && req.url === "/api/fleet?limit=1") return send(res, 200, { nodes: [{ node_id: "n-a", display_name: "台式机 A", local: true, connection_state: "local" },',
++    '    { node_id: "n-b", display_name: "笔记本 B", local: false, connection_state: "failed", projects: [{ project_id: "p", error_code: "PEER_UNREACHABLE" }] }] });',
++    '  if (req.method === "GET" && req.url === "/api/fleet/health") return send(res, 200, { issues: [',
++    '    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", next_action: "inspect_scheduler_owner", count: 1 },',
++    '    { code: "SCHEDULER_LOCK_MISSING", level: "problem", next_action: "inspect_scheduler_owner", count: 1 }] });',
+     '  send(res, 404, {}); }); }).listen(Number(process.env.BOARD_PORT), "127.0.0.1");',
+   ].join(NL));
+   const env = { ...process.env, BOARD_SERVER_SCRIPT: stub, BOARD_PORT: String(port), BOARD_DATA_DIR: data,
+@@ -332,6 +341,12 @@ console.log(NL + "[⑧ start:bg / open / stop]");
+   ok("open with a wrong token stops with the board's refusal (no link)",
+      (() => { const d2 = join(TMP, "bg-data-2"); mkdirSync(d2); writeFileSync(join(d2, "board_token"), "wrong");
+               const r = cli("open.mjs", ["--print"], { BOARD_DATA_DIR: d2 }); return r.code === 1 && !/#pair=/.test(r.out); })());
++  const st = cli("status.mjs");
++  ok("⭐status with the board up: computer online, service fine, and the home page's own merged alerts with next steps (exit 2: something red)",
++     st.code === 2 && /电脑在线 · 看板服务正常/.test(st.out) && /执行线:引擎 运行中/.test(st.out)
++     && /笔记本 B:连不上这台电脑（可能关机或断网）/.test(st.out)
++     && /台式机 A:调度器可能已经停了：心跳超时、没有运行锁 —— 下一步:检查调度器进程/.test(st.out)
++     && st.out.split(NL).filter((l) => l.includes("台式机 A:")).length === 1, st.out.slice(-500));
+   writeFileSync(join(data, "inflight"), "");
+   const held = cli("stop.mjs");
+   ok("⭐stop with a card in flight: refuses, says how to force it, the board keeps running",
+@@ -340,6 +355,18 @@ console.log(NL + "[⑧ start:bg / open / stop]");
+   ok("⭐stop --force: the board stops and the command waits until it no longer answers",
+      stopped.code === 0 && /已停止/.test(stopped.out) && !(await up()), stopped.out.slice(-160));
+   ok("stop with nothing running says so and exits 0", (() => { const r = cli("stop.mjs"); return r.code === 0 && /没有在运行/.test(r.out); })());
++  const down = cli("status.mjs");
++  ok("⭐status with the board stopped: says so, shows the end of its log and the command that brings it back (exit 1)",
++     down.code === 1 && /电脑在线 · 看板服务没有运行/.test(down.out) && /stub boot supervised=1/.test(down.out)
++     && /下一步:node cli\/start\.mjs --background/.test(down.out), down.out.slice(-500));
++  // ⭐ On Windows (Node v24.16.0, 2026-10-14) the open/stop runs above printed their result and
++  //   then aborted in libuv (Assertion failed … src\win\async.c): process.exit() after two
++  //   requests to a running board. Pinned in the source too, so a Linux run — where it does not
++  //   abort — still catches the call coming back.
++  // (Comment lines are skipped: the files explain the rule in words.)
++  const code = (f) => readFileSync(join(ROOT, "cli", f), "utf8").split(NL).filter((l) => !l.trim().startsWith("//")).join(NL);
++  ok("open and stop return their exit code instead of calling process.exit()",
++     ["open.mjs", "stop.mjs"].every((f) => /process\.exitCode = await main\(\)/.test(code(f)) && !/process\.exit\(/.test(code(f))));
+   // The log already holds earlier runs in Chinese (3 bytes a character): the tail is cut by
+   // bytes, then decoded — cutting the decoded text at a byte offset lost this run's lines.
+   appendFileSync(join(data, "board.log"), "看板已启动,端口与数据目录都正常。\n".repeat(40));
+@@ -379,6 +406,34 @@ console.log(NL + "[⑨ doctor: 模型请求发往哪里]");
+   ok("nothing configured: says the CLIs use their default official endpoints", /PASS\s+模型请求走各 CLI 的默认官方地址/.test(doctor({})));
+ }
+ 
++// ⑩ autostart (optional): one Task Scheduler task of the operator's account that runs exactly
++//    `node cli/start.mjs --background`. Measured here without registering anything: the definition,
++//    then Task Scheduler's own validation (TASK_VALIDATE_ONLY) on Windows.
++console.log(NL + "[⑩ autostart: 登录后自动启动(可选)]");
++{
++  const { autostartTaskXML, autostartName, taskScheduler } = await import("../core/autostart.mjs");
++  const sid = "S-1-5-21-1000-2000-3000-1001";
++  const xml = autostartTaskXML({ sid, node: "C:\\Program Files\\nodejs\\node.exe", root: "D:\\o'neil\\ai-fleet-kanban" });
++  ok("⭐the task runs start --background from this folder, for this user only, hidden, never twice, without raised rights",
++     xml.includes("<UserId>" + sid + "</UserId><Delay>PT30S</Delay>") && xml.includes("<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>")
++     && xml.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") && xml.includes("-WindowStyle Hidden")
++     && xml.includes("start.mjs&apos; --background&quot;</Arguments>"), xml);
++  ok("a quote in the folder name stays inside the PowerShell string (doubled), and & is escaped for XML",
++     xml.includes("o&apos;&apos;neil") && xml.includes("&amp; &apos;C:\\Program Files\\nodejs\\node.exe&apos;"));
++  ok("one task per board folder: the name follows the folder", autostartName("C:\\a") !== autostartName("C:\\b") && /^AiFleetBoard-[0-9a-f]{8}$/.test(autostartName("C:\\a")));
++  let threw = false; try { autostartTaskXML({ sid: "nope" }); } catch { threw = true; }
++  ok("an unrecognized user id never reaches Task Scheduler", threw);
++  if (process.platform === "win32") {
++    const run = (args) => { const r = spawnSync(process.execPath, [join(ROOT, "cli", "autostart.mjs"), ...args], { encoding: "utf8", windowsHide: true, timeout: 120000 });
++                            return { code: r.status, out: (r.stdout || "") + (r.stderr || "") }; };
++    const before = run(["status"]), checked = run(["check"]), after = run(["status"]);
++    ok("⭐check: Task Scheduler accepts the definition, and nothing is registered by checking",
++       checked.code === 0 && /任务定义有效/.test(checked.out) && before.out === after.out, checked.out + before.out + after.out);
++    ok("Task Scheduler's validation is real: a broken definition is refused",
++       !!taskScheduler("check", { name: autostartName() + "-probe", xml: "<Task>bad</Task>" }).error);
++  }
++}
++
+ try { rmSync(TMP, { recursive: true, force: true }); } catch {}
+ console.log(`${NL}${"─".repeat(56)}${NL}result: ${pass} PASS / ${fail} FAIL`);
+ process.exit(fail ? 1 : 0);
+diff --git a/tests/hometest.mjs b/tests/hometest.mjs
+index b15d24c..e215240 100644
+--- a/tests/hometest.mjs
++++ b/tests/hometest.mjs
+@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
+ const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
+ assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
+ const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
+-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback};")();
++  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,homeHealthAlerts};")();
+ const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+ const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
+ const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
+@@ -254,37 +254,71 @@ test("side panel says what any card is doing, not only the two home lanes", () =
+   assert.ok(side.includes("!step0?.lane") && side.includes("sideFallback(t,"), "used only where homeStep has no words");
+ });
+ 
+-test("batch 4: the board being down is one bad line with a recovery action, not a stale 正常", () => {
+-  // 「电脑在线」≠「看板服务正常」: the page is a cached copy; when the board stops answering,
+-  // the home status says so and points at the one command that fixes it.
+-  const down = M.homeStatus({ localName: "台式机 A", boardDown: true });
+-  assert.equal(down.tone, "bad");
+-  assert.ok(down.line.includes("看板服务没有应答") && down.line.includes("电脑开着"), down.line);
+-  assert.equal(down.alerts.length, 1);
+-  assert.equal(down.alerts[0].go, "retry", "the recovery action is one reconnect button");
+-  assert.ok(down.alerts[0].next.includes("node cli/start.mjs --background"), down.alerts[0].next);
+-  // The marker is not set while reads are merely starting or flaked once.
+-  assert.ok(!src.includes("boardDown: boardDownStreak >= 2") || src.includes("homeReady && boardDownStreak >= 2"),
+-    "从未加载成功是「正在读取」,连续两次失败才是停机");
++test("a board that stops answering is one alert with the cause and the command; nothing stale beside it", () => {
++  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
++  const before = { localName: "台式机 A", nodes: [local, { node_id: NODE_B, display_name: "笔记本 B", local: false, connection_state: "failed" }],
++    health: { issues: [{ code: "STORAGE_LOW", level: "problem", next_action: "inspect_storage_before_new_work", count: 1 }] },
++    setup: { complete: false, done: 3, total: 4, steps: [{ state: "todo", title: "定义你自己的线" }] } };
++  const down = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", status: null, local: true } });
++  assert.deepEqual([down.tone, down.line, down.alerts.length], ["bad", "看板服务没有应答，下面是断开前的内容", 1],
++    "the other alerts are from before it stopped: not shown beside it");
++  assert.deepEqual([down.alerts[0].where, down.alerts[0].what, down.alerts[0].copy],
++    ["台式机 A", "电脑在线，看板服务没有应答（14:05 起）", "node cli/start.mjs --background"]);
++  assert.match(down.alerts[0].next, /已有任务和结果都保留/);
++  const away = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", local: false } });
++  assert.equal(away.alerts[0].what, "连不上「台式机 A」上的看板（14:05 起）",
++    "opened from another device, a sleeping computer and a stopped board look the same: say both");
++  assert.match(away.alerts[0].next, /电脑关着就先开机/);
++  const err = M.homeStatus({ ...before, down: { since: "14:05", kind: "error", status: 500, local: true } });
++  assert.deepEqual([err.line, err.alerts[0].what, err.alerts[0].copy], ["看板服务出错，下面是出错前的内容", "看板服务出错（HTTP 500）（14:05 起）", null]);
++});
++
++test("one cause, one alert: a family's records merge into its cause, its symptoms and one next step", () => {
++  const i = (code, next_action, level = "problem", count = 1) => ({ code, level, next_action, count });
++  const dead = M.homeHealthAlerts([i("SCHEDULER_HEARTBEAT_STALE", "inspect_scheduler_owner"), i("SCHEDULER_LOCK_MISSING", "inspect_scheduler_owner")], { here: "台式机 A" });
++  assert.deepEqual(dead.map((a) => [a.tone, a.where, a.what, a.next]), [["bad", "台式机 A", "调度器可能已经停了：心跳超时、没有运行锁", "检查调度器进程"]]);
++  const first = M.homeHealthAlerts([i("SCHEDULER_HEARTBEAT_STALE", "inspect_scheduler_owner"), i("SCHEDULER_LOCK_ORPHAN", "verify_stop_before_lock_recovery")]);
++  assert.deepEqual([first.length, first[0].next], [1, "确认进程已停止，再恢复运行锁"], "the step to take first wins");
++  assert.equal(M.homeHealthAlerts([i("SCHEDULER_LOCK_MISMATCH", "inspect_scheduler_lock"), i("SCHEDULER_OWNER_UNKNOWN", "inspect_scheduler_owner", "notice")])[0].what,
++    "调度器状态待核对：运行锁与记录不符、看不出进程还在不在", "no sign that it stopped: say it needs checking, not that it stopped");
++  const apart = M.homeHealthAlerts([i("NODE_HEARTBEAT_STALE", "inspect_node_runtime"), i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer", "notice"),
++                                    i("STORAGE_LOW", "inspect_storage_before_new_work", "problem", 2)]);
++  assert.deepEqual(apart.map((a) => a.what), ["节点运行器心跳超时", "同步正在重试", "磁盘空间不足（2 项）"],
++    "different causes stay apart; a family with one record keeps the words it had");
++  assert.equal(M.homeHealthAlerts([i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer")], { skip: ["NODE_SYNC_RETRY"] }).length, 0);
++});
++
++test("a remote computer that cannot be reached is told apart from one whose board is down", () => {
++  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
++  const peer = (name, code) => ({ node_id: NODE_B, display_name: name, local: false, connection_state: "failed", projects: [{ project_id: "p", error_code: code }] });
++  const s = M.homeStatus({ localName: "台式机 A", nodes: [local, peer("笔记本 B", "PEER_UNREACHABLE"), peer("台式机 C", "REMOTE_502"),
++                                                          peer("台式机 D", "PEER_REFUSED"), peer("台式机 E", "NETWORK_ERROR")],
++    health: { issues: [{ code: "NODE_SYNC_RETRY", level: "notice", next_action: "inspect_node_sync_then_peer", count: 1 }] } });
++  assert.deepEqual(s.alerts.map((a) => [a.where, a.what]), [
++    ["笔记本 B", "连不上这台电脑（可能关机或断网）"],
++    ["台式机 C", "电脑在线，但它的看板服务没有应答"],
++    ["台式机 D", "电脑在线，但它的看板服务没有应答"],
++    ["台式机 E", "同步失败"],
++  ], "and this computer's own 'sync retrying' is the same fault: not listed again");
++  assert.match(s.alerts[1].next, /node cli\/status\.mjs/);
++  assert.deepEqual(M.homeStatus({ nodes: [local], fleetError: "x", healthError: "y" }).alerts.map((a) => a.what), ["多机视图和运行检查暂时读不到"],
++    "two reads failing together: one alert");
+ });
+ 
+-test("batch 4: same-kind health problems fold into one alert with a count", () => {
+-  const three = { issues: [
+-    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
+-    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
+-    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
+-    { code: "STORAGE_LOW", level: "notice", count: 2, next_action: "inspect_storage_before_new_work" },
+-  ] };
+-  const s = M.homeStatus({ localName: "台式机 A", nodes: [], health: three });
+-  assert.equal(s.alerts.length, 2, "three stale heartbeats are one problem, not three");
+-  const hb = s.alerts.find((a) => a.what.includes("调度器心跳超时"));
+-  const disk = s.alerts.find((a) => a.what.includes("磁盘空间不足"));
+-  assert.ok(hb && hb.what.includes("（3 项）") && hb.tone === "bad", hb && hb.what);
+-  assert.ok(disk && disk.what.includes("（2 项）") && disk.tone === "warn", disk && disk.what);
+-  // Different codes stay separate; different next_action with the same code stay separate too.
+-  const mixed = { issues: [
+-    { code: "NODE_SYNC_RETRY", level: "notice", count: 1, next_action: "inspect_node_sync_then_peer" },
+-    { code: "NODE_SYNC_RETRY", level: "notice", count: 1, next_action: "check_peer_then_resume_same_action" },
+-  ] };
+-  assert.equal(M.homeStatus({ localName: "A", nodes: [], health: mixed }).alerts.length, 2);
++test("panel wiring: an outage is checked against /health, shown once, and ended by the first good read", () => {
++  // /health is anonymous; the panel's own fetch reaches only /api/ with the token, so the probe uses the browser's.
++  assert.ok(src.includes('await window.fetch("/health", { cache: "no-store", credentials: "omit" })'));
++  const r = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt){"));
++  assert.ok(r.includes("const p = await probeBoard();") && r.includes("if (restartPending) return;") && r.includes("boardDown = null;"),
++    "a failed read asks /health; a planned restart keeps its own message; a good read ends the outage");
++  assert.ok(r.includes("if (wasDown) loadHomeExtras(true);"), "after an outage the fleet and health reads are read again, not shown stale");
++  // Measured on the temp board: a read that failed during the outage asked /health only after the board
++  // was back, and left 「取数失败」 over a page that had already recovered.
++  assert.ok(r.includes("if (lastGoodRead > started) return;") && r.includes('if (liveOpen) live(true, "实时");'),
++    "a failure older than the last good read is not reported; a good read clears an old failure from the header");
++  const sse = src.slice(src.indexOf('const es = window.boardSession.events("/api/events");'), src.indexOf("// ⭐ Event kinds are NOT enumerated here."));
++  assert.ok(sse.includes("if (boardDown) refresh();") && sse.includes("if (!restartPending) refresh();"),
++    "the live stream coming back reads at once; the stream dropping checks at once");
++  assert.ok(src.includes('document.getElementById("home-view").classList.toggle("stale", !!boardDown);'), "the lists from before the outage are dimmed");
++  assert.ok(src.includes("navigator.clipboard.writeText(a.copy)"), "the start command is one click to copy");
+ });
+diff --git a/tests/partitiontest.mjs b/tests/partitiontest.mjs
+index b04d6d7..6de5b6e 100644
+--- a/tests/partitiontest.mjs
++++ b/tests/partitiontest.mjs
+@@ -63,7 +63,7 @@ test('three authenticated sources converge after staggered partitions, a lost co
+   for(const n of nodes)update(n,1);
+   shareTask(a.db,{id:a.ids[1],projectId:project,expectedVersion:store.get(a.db,a.ids[1]).aggregate_version,enabled:false});
+   const unavailable=[];
+-  for(const source of [b,c]){const result=await pull(route(source,a));assert.equal(result.state,'error');assert.equal(result.error_code,'NETWORK_ERROR');unavailable.push(source.alias);}
++  for(const source of [b,c]){const result=await pull(route(source,a));assert.equal(result.state,'error');assert.equal(result.error_code,'PEER_REFUSED');unavailable.push(source.alias);}
+   assert.equal(digest(listReplicas(b.db,{projectId:project})),cacheB);assert.equal(digest(listReplicas(c.db,{projectId:project})),cacheC);
+   // B returns first; both peers converge without using C as a relay or authority.
+   reopen(b);await start(b);await drain(route(b,a));await drain(route(a,b));verify(a,b);verify(b,a);
+diff --git a/tests/synctest.mjs b/tests/synctest.mjs
+index 75e3d75..1ba4546 100644
+--- a/tests/synctest.mjs
++++ b/tests/synctest.mjs
+@@ -12,7 +12,7 @@ import {fileURLToPath} from "node:url";
+ import {migratePeers,localIdentity,authenticate} from "../core/federation/peers.mjs";
+ 
+ import {migrateSync,shareTask,exportBatch,acknowledge,applyBatch,listReplicas,syncStatus,cursor,digest,canonical} from "../core/federation/sync-store.mjs";
+-import {syncOnce,endpoint} from "../core/federation/sync-client.mjs";
++import {syncOnce,endpoint,request} from "../core/federation/sync-client.mjs";
+ const require=createRequire(import.meta.url),store=require("../core/store.js");
+ const ROOT=fileURLToPath(new URL("../",import.meta.url)),TMP=mkdtempSync(join(tmpdir(),"fleet-sync-")),handles=[];
+ let counter=0;
+@@ -199,6 +199,7 @@ test("local execution continues during tunnel outage, then reconnect publishes t
+  store.report(f.a.db,{id,worker:"offline-local",runId:run.run_id,outcome:"done",evidence:"offline result"});
+  const offline=await syncOnce(f.b.db,{url,credentialFile:f.credentialFile,projectId:f.projectId});
+  assert.equal(offline.state,"error");assert.equal(store.get(f.a.db,id).status,"waiting");assert.equal(listReplicas(f.b.db)[0].status,"not_started");
++ assert.equal(offline.error_code,"PEER_REFUSED","a stopped board on a reachable computer is refused, not unreachable (real fetch, real closed port)");
+  const resumed=await listenPeerServer(f.a.db,{port});
+  try{
+   const result=await syncOnce(f.b.db,{url,credentialFile:f.credentialFile,projectId:f.projectId,now:offline.retry_after+1});
+@@ -206,6 +207,25 @@ test("local execution continues during tunnel outage, then reconnect publishes t
+   assert.equal(listReplicas(f.b.db)[0].run_id,run.run_id);assert.equal(store.list(f.b.db).tasks.length,0);
+  }finally{await new Promise(r=>{resumed.close(r);resumed.closeAllConnections();});}
+ });
++test("a failed connection says which side is down: unreachable, refused, or a proxy's error page",async()=>{
++ // The home page words these (core/panel.html homeNodeState): 「连不上这台电脑」 vs 「电脑在线,看板服务没有应答」.
++ const f=pair();let now=Date.now();
++ const attempt=async fetchImpl=>{const r=await syncOnce(f.b.db,{url:fixtureEndpoint(f.a.db),credentialFile:f.credentialFile,projectId:"demo",now,fetchImpl});now=(r.retry_after??now)+1;return r.error_code;};
++ // The shapes fetch (undici) rejects with: TypeError("fetch failed",{cause:{code}}); AbortSignal.timeout → TimeoutError.
++ const failed=code=>async()=>{throw new TypeError("fetch failed",{cause:Object.assign(new Error(code),{code})});};
++ assert.equal(await attempt(failed("ECONNREFUSED")),"PEER_REFUSED");
++ assert.equal(await attempt(failed("UND_ERR_CONNECT_TIMEOUT")),"PEER_UNREACHABLE");
++ assert.equal(await attempt(failed("EHOSTUNREACH")),"PEER_UNREACHABLE");
++ assert.equal(await attempt(async()=>{throw new DOMException("timed out","TimeoutError");}),"PEER_UNREACHABLE");
++ assert.equal(await attempt(async()=>{throw Error("offline");}),"NETWORK_ERROR","an unknown failure stays generic");
++ // A proxy in front of a stopped board (Tailscale Serve) answers 502 with a page, not JSON.
++ assert.equal(await attempt(async()=>new Response("<html>Bad Gateway</html>",{status:502,headers:{"content-type":"text/html"}})),"REMOTE_502");
++ assert.equal(await attempt(async()=>new Response("<html>ok</html>",{status:200})),"BAD_RESPONSE","a 200 that is not JSON is still a bad response");
++ // Only the sync record learns the status: request() still throws BAD_RESPONSE, so the delivery clients'
++ // retry-or-block decision for that page stays exactly what it was.
++ await assert.rejects(request(fixtureEndpoint(f.a.db),"/peer/v1/hello",f.credential,{},async()=>new Response("<html>Bad Gateway</html>",{status:502})),
++  e=>e.code==="BAD_RESPONSE"&&e.http_status===502);
++});
+ test("endpoint policy and credential binding reject before leaking credentials",async()=>{
+  for(const url of ["http://100.64.0.1","https://example.com","http://user:pass@127.0.0.1","http://127.0.0.1/path","http://127.0.0.1?token=x"])
+   assert.throws(()=>endpoint(url),{code:"BAD_ENDPOINT"});

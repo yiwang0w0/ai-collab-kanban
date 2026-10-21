@@ -1,0 +1,627 @@
+package engine
+
+import (
+	"fmt"
+
+	wfmodels "github.com/kandev/kandev/internal/workflow/models"
+)
+
+// Trigger identifies when a step event should be evaluated.
+type Trigger string
+
+const (
+	// Existing kanban-era triggers — DO NOT CHANGE.
+	TriggerOnEnter        Trigger = "on_enter"
+	TriggerOnTurnStart    Trigger = "on_turn_start"
+	TriggerOnTurnComplete Trigger = "on_turn_complete"
+	TriggerOnExit         Trigger = "on_exit"
+
+	// New triggers for Phase 2 of the task model unification (ADR-0004).
+	// Declared here so payloads and step compilation can reference them;
+	// they are NOT yet handled by Engine.HandleTrigger. Wiring lands once
+	// Phase 1 (agent runtime extraction) merges and the engine integration
+	// slice of Phase 2 begins.
+	TriggerOnComment           Trigger = "on_comment"
+	TriggerOnBlockerResolved   Trigger = "on_blocker_resolved"
+	TriggerOnChildrenCompleted Trigger = "on_children_completed"
+	TriggerOnApprovalResolved  Trigger = "on_approval_resolved"
+	TriggerOnHeartbeat         Trigger = "on_heartbeat"
+	TriggerOnBudgetAlert       Trigger = "on_budget_alert"
+	TriggerOnAgentError        Trigger = "on_agent_error"
+)
+
+// ActionKind identifies a typed workflow action.
+type ActionKind string
+
+const (
+	ActionMoveToNext        ActionKind = "move_to_next"
+	ActionMoveToPrevious    ActionKind = "move_to_previous"
+	ActionMoveToStep        ActionKind = "move_to_step"
+	ActionEnablePlanMode    ActionKind = "enable_plan_mode"
+	ActionDisablePlanMode   ActionKind = "disable_plan_mode"
+	ActionAutoStartAgent    ActionKind = "auto_start_agent"
+	ActionResetAgentContext ActionKind = "reset_agent_context"
+	ActionSetWorkflowData   ActionKind = "set_workflow_data"
+	ActionSetSessionMode    ActionKind = "set_session_mode"
+	ActionRunCodeReview     ActionKind = "run_code_review"
+
+	// New Phase 2 action kinds (ADR-0004). Defined and exposed via callbacks
+	// that intentionally return ErrActionNotYetWired — they will be wired
+	// into Engine.HandleTrigger and registered against real implementations
+	// as part of the Phase 2 engine-integration slice. Until then they are
+	// declared so that downstream code (workflow templates, tests) can
+	// reference the kind constants without behaviour changing.
+	ActionQueueRun                   ActionKind = "queue_run"
+	ActionClearDecisions             ActionKind = "clear_decisions"
+	ActionQueueRunForEachParticipant ActionKind = "queue_run_for_each_participant"
+
+	// ActionEnsureParticipantSeat guarantees a decision-required seat exists
+	// for the declared role somewhere in the task's workflow before the
+	// following queue_run_for_each_participant fan-out runs
+	// (REQ-OFFICE-REVIEW-SEATS-001). Always compiled — a missing, empty, or
+	// unrecognized role is detected and reported by
+	// EnsureParticipantSeatCallback at runtime, not skipped at compile time,
+	// because the config is operator-editable and survives template changes.
+	ActionEnsureParticipantSeat ActionKind = "ensure_participant_seat"
+
+	// Phase 8 (ADR-0004) cross-strategy delegation actions.
+	//
+	// ActionCreateChildTask creates a new task with parent_id == current
+	// task. Typical use: an Office agent emits a delegation signal that
+	// fires this action, which spawns a kanban subtask carrying its own
+	// workflow + first runnable step.
+	//
+	// ActionSwitchWorkflow swaps a task's workflow_id / workflow_step_id in
+	// place. Used to promote a kanban task to office (long conversation
+	// needed) or vice versa. Engine fires on_exit on the old step + on_enter
+	// on the new step.
+	ActionCreateChildTask ActionKind = "create_child_task"
+	ActionSwitchWorkflow  ActionKind = "switch_workflow"
+)
+
+// Action is the typed internal representation of workflow actions.
+type Action struct {
+	Kind             ActionKind
+	RequiresApproval bool
+
+	// DeclaredPosition is this action's 0-based index in the step's raw
+	// on_enter declaration, set by compileOnEnter. It differs from a
+	// position derived by counting compiled actions whenever an earlier
+	// declared action does not compile (e.g. configure_session, or
+	// set_session_mode with no target mode) — DispatchStepEntry's
+	// marker-bearing claim must use this value, not a loop index over the
+	// compiled slice, so it agrees with stepentry.BuildPendingAllocation's
+	// position (also counted over the raw declaration).
+	DeclaredPosition int
+
+	// Guard, when non-nil, gates a transition action on a condition that the
+	// engine evaluates before resolving the transition target. Today only
+	// wait_for_quorum is supported. Non-transition actions ignore Guard.
+	Guard *TransitionGuard
+
+	MoveToStep                 *MoveToStepAction
+	AutoStartAgent             *AutoStartAgentAction
+	SetWorkflowData            *SetWorkflowDataAction
+	SetSessionMode             *SetSessionModeAction
+	RunCodeReview              *RunCodeReviewAction
+	QueueRun                   *QueueRunAction
+	ClearDecisions             *ClearDecisionsAction
+	QueueRunForEachParticipant *QueueRunForEachParticipantAction
+	CreateChildTask            *CreateChildTaskAction
+	SwitchWorkflow             *SwitchWorkflowAction
+	EnsureParticipantSeat      *EnsureParticipantSeatAction
+}
+
+// TransitionGuard is the typed `if:` clause attached to a transition action.
+// At most one guard variant is set per Action; nil guards mean "always
+// permit the transition" (preserving today's kanban semantics).
+type TransitionGuard struct {
+	WaitForQuorum *WaitForQuorumGuard
+}
+
+// WaitForQuorumGuard gates a transition on the state of recorded decisions
+// for the (task, step) pair.
+//
+// Threshold values:
+//   - "all_approve"     — every required participant has decision == "approved".
+//   - "all_decide"      — every required participant has any non-empty decision.
+//   - "any_reject"      — at least one decision == "rejected".
+//   - "majority_approve" — strictly more than half of required participants approved.
+//   - "n_approve:<N>"   — at least N decisions == "approved".
+//
+// "Required participants" are the current participants of the step whose
+// role matches Role and whose decision_required flag is true. Participants
+// removed mid-flight drop out of the count (their stale decisions are
+// ignored for quorum purposes).
+type WaitForQuorumGuard struct {
+	Role      string
+	Threshold string
+}
+
+// MoveToStepAction defines target step transitions.
+type MoveToStepAction struct {
+	StepID string
+}
+
+// AutoStartAgentAction defines auto-start prompt behavior for a step.
+type AutoStartAgentAction struct {
+	PromptOverride *string
+	QueueIfBusy    bool
+}
+
+// SetWorkflowDataAction writes a key/value into the workflow data bag.
+type SetWorkflowDataAction struct {
+	Key   string
+	Value any
+}
+
+// SetSessionModeAction declares the agent session permission mode to apply when
+// the step is entered (e.g. "default", "acceptEdits"). Mode is read from the
+// action config's "mode" key by CompileStep. See issue #1183.
+type SetSessionModeAction struct {
+	Mode string
+}
+
+// RunCodeReviewAction starts a native code-review pass on step entry.
+// AgentProfileID is optional; empty means "use the configured code-review
+// utility agent". See docs/specs/agents/requirements/native-code-review.md.
+type RunCodeReviewAction struct {
+	AgentProfileID string
+}
+
+// QueueRunAction represents the Phase 2 "queue a run on a target task/agent"
+// action. The callback is QueueRunCallback.
+//
+// Targets: "primary" | "participant_role:<role>" | "agent_profile_id:<id>" |
+// "workspace.ceo_agent" (resolved at engine evaluation time, post-wire-up).
+//
+// TaskID: "this" (default — the trigger's task) | a literal task id |
+// "{coordination_task.id}" template.
+type QueueRunAction struct {
+	PoolMarked bool
+	Target     string
+	TaskID     string
+	Reason     string
+	Payload    map[string]any
+}
+
+// ClearDecisionsAction clears workflow_step_decisions rows for the trigger's
+// (task, step) pair. Used by Review.on_enter so quorum starts fresh after a
+// rejection round. Declared but not yet wired.
+type ClearDecisionsAction struct{}
+
+// QueueRunForEachParticipantAction fans out QueueRun against every step
+// participant matching the configured role. Declared but not yet wired.
+type QueueRunForEachParticipantAction struct {
+	Role    string
+	Reason  string
+	Payload map[string]any
+}
+
+// EnsureParticipantSeatAction declares the role that must hold a
+// decision-required seat somewhere in the task's workflow before fan-out
+// runs. Role is read from the action config's "role" key by CompileStep. An
+// empty or unrecognized Role is a runtime condition the callback reports and
+// skips, not a build-time compile failure.
+type EnsureParticipantSeatAction struct {
+	Role string
+}
+
+// CreateChildTaskAction defines a "spawn a child task" action. The new
+// task has parent_id == the trigger's task id, runs under the configured
+// workflow + step, and is assigned to the configured agent profile (when
+// non-empty).
+//
+// All fields except Title are optional:
+//   - WorkflowID: when empty, the engine adapter falls back to the parent
+//     task's workspace default workflow (typically the Kanban Default).
+//   - StepID: when empty, the adapter resolves the workflow's first
+//     runnable step.
+//   - AgentProfileID: when empty, the adapter inherits the parent task's
+//     assignee.
+type CreateChildTaskAction struct {
+	Title          string
+	Description    string
+	WorkflowID     string
+	StepID         string
+	AgentProfileID string
+}
+
+// SwitchWorkflowAction mutates a task's workflow_id and workflow_step_id
+// in place. The engine fires on_exit on the old step before the swap and
+// on_enter on the new step after.
+//
+// StepID is optional — when empty, the engine adapter resolves the new
+// workflow's first runnable step.
+type SwitchWorkflowAction struct {
+	WorkflowID string
+	StepID     string
+}
+
+// ParticipantRole, StageType and WorkflowStyle are defined in
+// internal/workflow/models. The engine surfaces small validators here so
+// callers (templates, engine integration code) can sanity-check
+// configuration values without pulling the model package directly.
+
+// ValidParticipantRole reports whether the supplied string is one of the
+// participant roles supported by the workflow_step_participants CHECK
+// constraint.
+func ValidParticipantRole(role string) bool {
+	switch wfmodels.ParticipantRole(role) {
+	case wfmodels.ParticipantRoleReviewer,
+		wfmodels.ParticipantRoleApprover,
+		wfmodels.ParticipantRoleWatcher,
+		wfmodels.ParticipantRoleCollaborator:
+		return true
+	}
+	return false
+}
+
+// ValidStageType reports whether the supplied string matches the schema's
+// CHECK constraint for workflow_steps.stage_type.
+func ValidStageType(stage string) bool {
+	switch wfmodels.StageType(stage) {
+	case wfmodels.StageTypeWork,
+		wfmodels.StageTypeReview,
+		wfmodels.StageTypeApproval,
+		wfmodels.StageTypeCustom:
+		return true
+	}
+	return false
+}
+
+// ValidWorkflowStyle reports whether the supplied string matches the schema's
+// CHECK constraint for workflows.style.
+func ValidWorkflowStyle(style string) bool {
+	switch wfmodels.WorkflowStyle(style) {
+	case wfmodels.WorkflowStyleKanban,
+		wfmodels.WorkflowStyleOffice,
+		wfmodels.WorkflowStyleCustom:
+		return true
+	}
+	return false
+}
+
+// StepSpec is the engine's compiled step shape.
+type StepSpec struct {
+	ID         string
+	WorkflowID string
+	Name       string
+	Position   int
+	Prompt     string
+	Events     map[Trigger][]Action
+}
+
+// CompileStep translates workflow models into typed step specs for the engine.
+func CompileStep(step *wfmodels.WorkflowStep) StepSpec {
+	events := map[Trigger][]Action{
+		TriggerOnEnter:        compileOnEnter(step),
+		TriggerOnTurnStart:    compileOnTurnStart(step),
+		TriggerOnTurnComplete: compileOnTurnComplete(step),
+		TriggerOnExit:         compileOnExit(step),
+		// Phase 2 (ADR-0004) event-driven triggers — empty slices when the
+		// step has no GenericAction entries for the trigger.
+		TriggerOnComment:           compileGenericActions(step.Events.OnComment),
+		TriggerOnBlockerResolved:   compileGenericActions(step.Events.OnBlockerResolved),
+		TriggerOnChildrenCompleted: compileGenericActions(step.Events.OnChildrenCompleted),
+		TriggerOnApprovalResolved:  compileGenericActions(step.Events.OnApprovalResolved),
+		TriggerOnHeartbeat:         compileGenericActions(step.Events.OnHeartbeat),
+		TriggerOnBudgetAlert:       compileGenericActions(step.Events.OnBudgetAlert),
+		TriggerOnAgentError:        compileGenericActions(step.Events.OnAgentError),
+	}
+	return StepSpec{
+		ID:         step.ID,
+		WorkflowID: step.WorkflowID,
+		Name:       step.Name,
+		Position:   step.Position,
+		Prompt:     step.Prompt,
+		Events:     events,
+	}
+}
+
+func compileOnEnter(step *wfmodels.WorkflowStep) []Action {
+	actions := make([]Action, 0, len(step.Events.OnEnter))
+	for i, action := range step.Events.OnEnter {
+		if compiled, ok := CompileOnEnterAction(action); ok {
+			compiled.DeclaredPosition = i
+			actions = append(actions, compiled)
+		}
+	}
+	return actions
+}
+
+// CompileOnEnterAction compiles a single on_enter declaration into its
+// engine Action, or (Action{}, false) when the declaration produces no
+// action (an unrecognised type, or a recognised type with config that
+// doesn't resolve to anything runnable — e.g. set_session_mode with no
+// target mode).
+//
+// Exported so callers outside the engine's own on_enter evaluation loop —
+// specifically internal/orchestrator's processOnEnter, which dispatches
+// clear_decisions/queue_run_for_each_participant directly via a step-entry
+// marker rather than through Engine.HandleTrigger — can reuse the exact
+// same per-kind config parsing instead of duplicating it. See
+// docs/specs/workflow-on-enter-action-dispatch/spec.md.
+func CompileOnEnterAction(action wfmodels.OnEnterAction) (Action, bool) {
+	switch action.Type {
+	case wfmodels.OnEnterEnablePlanMode:
+		return Action{Kind: ActionEnablePlanMode}, true
+	case wfmodels.OnEnterAutoStartAgent:
+		return Action{Kind: ActionAutoStartAgent, AutoStartAgent: &AutoStartAgentAction{QueueIfBusy: true}}, true
+	case wfmodels.OnEnterResetAgentContext:
+		return Action{Kind: ActionResetAgentContext}, true
+	case wfmodels.OnEnterSetSessionMode:
+		mode := readSessionMode(action.Config)
+		if mode == "" {
+			return Action{}, false // no target mode: nothing to run
+		}
+		return Action{Kind: ActionSetSessionMode, SetSessionMode: &SetSessionModeAction{Mode: mode}}, true
+	case wfmodels.OnEnterRunCodeReview:
+		return Action{
+			Kind:          ActionRunCodeReview,
+			RunCodeReview: &RunCodeReviewAction{AgentProfileID: readReviewAgentProfileID(action.Config)},
+		}, true
+	case wfmodels.OnEnterClearDecisions:
+		return Action{
+			Kind:           ActionClearDecisions,
+			ClearDecisions: &ClearDecisionsAction{},
+		}, true
+	case wfmodels.OnEnterQueueRunForEachParticipant:
+		return Action{
+			Kind:                       ActionQueueRunForEachParticipant,
+			QueueRunForEachParticipant: readQueueRunForEachParticipantConfig(action.Config),
+		}, true
+	case wfmodels.OnEnterQueueRun:
+		return Action{
+			Kind:     ActionQueueRun,
+			QueueRun: readQueueRunConfig(action.Config),
+		}, true
+	case wfmodels.OnEnterEnsureParticipantSeat:
+		// Carried across the CompileOnEnterAction refactor from #3043's
+		// open-coded switch. Without this case the compiler silently drops
+		// every ensure_participant_seat action, which is the whole point of
+		// that PR: nothing else creates reviewer/approver seats, so the slate
+		// stays empty and queue_run_for_each_participant has nobody to queue.
+		return Action{
+			Kind:                  ActionEnsureParticipantSeat,
+			EnsureParticipantSeat: readEnsureParticipantSeatConfig(action.Config),
+		}, true
+	default:
+		return Action{}, false
+	}
+}
+
+func compileOnTurnStart(step *wfmodels.WorkflowStep) []Action {
+	actions := make([]Action, 0, len(step.Events.OnTurnStart))
+	for _, action := range step.Events.OnTurnStart {
+		switch action.Type {
+		case wfmodels.OnTurnStartMoveToNext:
+			actions = append(actions, Action{Kind: ActionMoveToNext})
+		case wfmodels.OnTurnStartMoveToPrevious:
+			actions = append(actions, Action{Kind: ActionMoveToPrevious})
+		case wfmodels.OnTurnStartMoveToStep:
+			stepID, err := readStepID(action.Config)
+			if err != nil {
+				continue // skip malformed move_to_step actions
+			}
+			actions = append(actions, Action{Kind: ActionMoveToStep, MoveToStep: &MoveToStepAction{StepID: stepID}})
+		}
+	}
+	return actions
+}
+
+func compileOnTurnComplete(step *wfmodels.WorkflowStep) []Action {
+	actions := make([]Action, 0, len(step.Events.OnTurnComplete))
+	for _, action := range step.Events.OnTurnComplete {
+		ra := ConfigRequiresApproval(action.Config)
+		guard := ConfigTransitionGuard(action.Config)
+		switch action.Type {
+		case wfmodels.OnTurnCompleteMoveToNext:
+			actions = append(actions, Action{Kind: ActionMoveToNext, RequiresApproval: ra, Guard: guard})
+		case wfmodels.OnTurnCompleteMoveToPrevious:
+			actions = append(actions, Action{Kind: ActionMoveToPrevious, RequiresApproval: ra, Guard: guard})
+		case wfmodels.OnTurnCompleteMoveToStep:
+			stepID, err := readStepID(action.Config)
+			if err != nil {
+				continue // skip malformed move_to_step actions
+			}
+			actions = append(actions, Action{Kind: ActionMoveToStep, RequiresApproval: ra, Guard: guard, MoveToStep: &MoveToStepAction{StepID: stepID}})
+		case wfmodels.OnTurnCompleteDisablePlanMode:
+			actions = append(actions, Action{Kind: ActionDisablePlanMode})
+		}
+	}
+	return actions
+}
+
+func compileOnExit(step *wfmodels.WorkflowStep) []Action {
+	actions := make([]Action, 0, len(step.Events.OnExit))
+	for _, action := range step.Events.OnExit {
+		if action.Type == wfmodels.OnExitDisablePlanMode {
+			actions = append(actions, Action{Kind: ActionDisablePlanMode})
+		}
+	}
+	return actions
+}
+
+// compileGenericActions translates the persisted GenericAction list into the
+// engine's typed Action structs. Unknown action types are skipped so a future
+// action kind shipped via YAML doesn't crash older binaries.
+func compileGenericActions(actions []wfmodels.GenericAction) []Action {
+	out := make([]Action, 0, len(actions))
+	for _, a := range actions {
+		ra := ConfigRequiresApproval(a.Config)
+		guard := ConfigTransitionGuard(a.Config)
+		switch a.Type {
+		case wfmodels.GenericActionMoveToNext:
+			out = append(out, Action{Kind: ActionMoveToNext, RequiresApproval: ra, Guard: guard})
+		case wfmodels.GenericActionMoveToPrevious:
+			out = append(out, Action{Kind: ActionMoveToPrevious, RequiresApproval: ra, Guard: guard})
+		case wfmodels.GenericActionMoveToStep:
+			stepID, err := readStepID(a.Config)
+			if err != nil {
+				continue // skip malformed move_to_step actions
+			}
+			out = append(out, Action{
+				Kind:             ActionMoveToStep,
+				RequiresApproval: ra,
+				Guard:            guard,
+				MoveToStep:       &MoveToStepAction{StepID: stepID},
+			})
+		case wfmodels.GenericActionAutoStartAgent:
+			out = append(out, Action{Kind: ActionAutoStartAgent, AutoStartAgent: &AutoStartAgentAction{QueueIfBusy: true}})
+		case wfmodels.GenericActionQueueRun:
+			out = append(out, Action{
+				Kind:     ActionQueueRun,
+				QueueRun: readQueueRunConfig(a.Config),
+			})
+		case wfmodels.GenericActionClearDecisions:
+			out = append(out, Action{
+				Kind:           ActionClearDecisions,
+				ClearDecisions: &ClearDecisionsAction{},
+			})
+		case wfmodels.GenericActionQueueRunForEachParticipant:
+			out = append(out, Action{
+				Kind:                       ActionQueueRunForEachParticipant,
+				QueueRunForEachParticipant: readQueueRunForEachParticipantConfig(a.Config),
+			})
+		}
+	}
+	return out
+}
+
+// readQueueRunConfig reads a `queue_run` action's config map. Missing keys
+// fall back to engine defaults ("primary" target, "this" task id).
+func readQueueRunConfig(config map[string]any) *QueueRunAction {
+	if config == nil {
+		return &QueueRunAction{Target: TargetPrimary, TaskID: TaskIDThis}
+	}
+	target, _ := config["target"].(string)
+	if target == "" {
+		target = TargetPrimary
+	}
+	taskID, _ := config["task_id"].(string)
+	if taskID == "" {
+		taskID = TaskIDThis
+	}
+	reason, _ := config["reason"].(string)
+	payload, _ := config["payload"].(map[string]any)
+	_, poolMarked := config[wfmodels.PoolVersionConfigKey]
+	return &QueueRunAction{
+		PoolMarked: poolMarked,
+		Target:     target,
+		TaskID:     taskID,
+		Reason:     reason,
+		Payload:    payload,
+	}
+}
+
+// readQueueRunForEachParticipantConfig reads the role/reason/payload for a
+// queue_run_for_each_participant action.
+func readQueueRunForEachParticipantConfig(config map[string]any) *QueueRunForEachParticipantAction {
+	if config == nil {
+		return &QueueRunForEachParticipantAction{}
+	}
+	role, _ := config["role"].(string)
+	reason, _ := config["reason"].(string)
+	payload, _ := config["payload"].(map[string]any)
+	return &QueueRunForEachParticipantAction{
+		Role:    role,
+		Reason:  reason,
+		Payload: payload,
+	}
+}
+
+// readEnsureParticipantSeatConfig reads the role for an
+// ensure_participant_seat action. An empty or missing role is valid at
+// compile time — EnsureParticipantSeatCallback detects and reports it as a
+// runtime condition (AC-OFFICE-REVIEW-SEATS-001.11).
+func readEnsureParticipantSeatConfig(config map[string]any) *EnsureParticipantSeatAction {
+	if config == nil {
+		return &EnsureParticipantSeatAction{}
+	}
+	role, _ := config["role"].(string)
+	return &EnsureParticipantSeatAction{Role: role}
+}
+
+// readSessionMode reads the target mode for a set_session_mode action from its
+// config map. Returns "" when the config is missing or the mode key is unset.
+func readSessionMode(config map[string]any) string {
+	if config == nil {
+		return ""
+	}
+	mode, _ := config["mode"].(string)
+	return mode
+}
+
+// readReviewAgentProfileID reads the optional reviewing agent profile for a
+// run_code_review action. An empty result is valid and means "use the
+// configured code-review utility agent".
+func readReviewAgentProfileID(config map[string]any) string {
+	if config == nil {
+		return ""
+	}
+	profileID, _ := config[wfmodels.ReviewAgentProfileConfigKey].(string)
+	return profileID
+}
+
+func readStepID(config map[string]any) (string, error) {
+	if config == nil {
+		return "", fmt.Errorf("missing move_to_step config")
+	}
+	stepID, _ := config["step_id"].(string)
+	if stepID == "" {
+		return "", fmt.Errorf("missing move_to_step step_id")
+	}
+	return stepID, nil
+}
+
+// ConfigRequiresApproval returns true if an action config has requires_approval set to true.
+func ConfigRequiresApproval(config map[string]any) bool {
+	if config == nil {
+		return false
+	}
+	ra, ok := config["requires_approval"].(bool)
+	return ok && ra
+}
+
+// ConfigTransitionGuard reads the `wait_for_quorum` guard from an action's
+// config map, if present. Returns nil when the config is missing, malformed,
+// or has no guard — preserving today's "always allow" semantics for kanban
+// steps that never set the key.
+//
+// Expected shape:
+//
+//	{
+//	    "if": {
+//	        "wait_for_quorum": {
+//	            "role":      "reviewer",
+//	            "threshold": "all_approve"
+//	        }
+//	    }
+//	}
+//
+// Legacy top-level `wait_for_quorum` is also accepted.
+func ConfigTransitionGuard(config map[string]any) *TransitionGuard {
+	if config == nil {
+		return nil
+	}
+	raw, ok := config["wait_for_quorum"].(map[string]any)
+	if !ok {
+		guard, ok := config["if"].(map[string]any)
+		if !ok {
+			return nil
+		}
+		raw, ok = guard["wait_for_quorum"].(map[string]any)
+		if !ok {
+			return nil
+		}
+	}
+	role, _ := raw["role"].(string)
+	threshold, _ := raw["threshold"].(string)
+	if role == "" || threshold == "" {
+		return nil
+	}
+	return &TransitionGuard{
+		WaitForQuorum: &WaitForQuorumGuard{Role: role, Threshold: threshold},
+	}
+}

@@ -1,0 +1,3 @@
+# 源码镜像固定为 LF；补丁保留原始字节，含空白上下文行。
+* text eol=lf
+*.patch -text -whitespace

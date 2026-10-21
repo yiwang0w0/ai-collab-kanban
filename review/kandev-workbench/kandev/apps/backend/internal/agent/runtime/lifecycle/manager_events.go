@@ -1,0 +1,1398 @@
+package lifecycle
+
+import (
+	"context"
+	"strings"
+	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.uber.org/zap"
+
+	agentctl "github.com/kandev/kandev/internal/agent/runtime/agentctl"
+	"github.com/kandev/kandev/internal/agentctl/acpcompat"
+	"github.com/kandev/kandev/internal/agentctl/tracing"
+	"github.com/kandev/kandev/internal/agentctl/types/streams"
+	"github.com/kandev/kandev/internal/events"
+	v1 "github.com/kandev/kandev/pkg/api/v1"
+)
+
+const (
+	toolStatusComplete = "complete"
+	toolStatusFailed   = "failed"
+	toolStatusError    = "error"
+)
+
+// handleMessageChunkEvent handles a "message_chunk" agent event, accumulating and flushing on newlines.
+//
+// ACP message chunks do not carry the lifecycle prompt generation, so each
+// publish below resolves its own execution.promptGenerationSnapshot()
+// immediately before publishing, rather than reusing one value captured at
+// function entry across every publish in the call. This handler never runs
+// while execution.promptLifecycleMu is held, so each snapshot is safe; a new
+// generation cannot begin on this execution until waitForPendingDispatchedPrompt
+// observes the prior generation's completion signal, which itself only fires
+// after this handler's own event stream has finished flushing that prior
+// generation — so no concurrent generation reset can interleave with a single
+// invocation of this handler in the ordinary dispatch flow.
+func (m *Manager) handleMessageChunkEvent(execution *AgentExecution, event agentctl.AgentEvent) {
+	if event.Role == "user" || event.Text == "" {
+		return
+	}
+	m.appendAssistantHistoryChunk(execution, event.Text)
+	if event.ProtocolMessageID != "" {
+		m.flushPendingLegacyMessage(execution, execution.promptGenerationSnapshot(), event.AttemptID)
+		m.publishProtocolMessage(execution, event.ProtocolMessageID, event.Text, event.ProviderDiagnosticCandidate, execution.promptGenerationSnapshot(), event.AttemptID)
+		return
+	}
+	m.flushMessageBufferOnDiagnosticChange(execution, event.ProviderDiagnosticCandidate, execution.promptGenerationSnapshot(), event.AttemptID)
+
+	execution.messageMu.Lock()
+	execution.messageBufferDiagnostic = event.ProviderDiagnosticCandidate
+	execution.messageBuffer.WriteString(event.Text)
+	bufferLenAfterWrite := execution.messageBuffer.Len()
+	m.logger.Debug("message_chunk written to buffer",
+		zap.String("execution_id", execution.ID),
+		zap.String("operation_id", event.OperationID),
+		zap.Int("text_length", len(event.Text)),
+		zap.Int("buffer_length_after", bufferLenAfterWrite))
+
+	bufContent := execution.messageBuffer.String()
+	lastNewline := strings.LastIndex(bufContent, "\n")
+	if lastNewline == -1 {
+		execution.messageMu.Unlock()
+		return
+	}
+	toFlush := bufContent[:lastNewline+1]
+	remainder := bufContent[lastNewline+1:]
+	execution.messageBuffer.Reset()
+	execution.messageBuffer.WriteString(remainder)
+	diagnostic := execution.messageBufferDiagnostic
+	execution.messageMu.Unlock()
+
+	if strings.TrimSpace(toFlush) != "" {
+		m.publishStreamingMessage(execution, toFlush, diagnostic, execution.promptGenerationSnapshot(), event.AttemptID)
+	}
+}
+
+// flushMessageBufferOnDiagnosticChange publishes any buffered ID-less
+// message content ahead of a chunk whose ProviderDiagnosticCandidate marker
+// differs from what is already buffered. Without this, a diagnostic chunk
+// concatenated with adjacent ordinary text (or vice versa) would publish one
+// merged segment carrying only one of the two markers.
+func (m *Manager) flushMessageBufferOnDiagnosticChange(execution *AgentExecution, diagnostic bool, promptGeneration uint64, attemptID string) {
+	execution.messageMu.Lock()
+	if execution.messageBuffer.Len() == 0 || execution.messageBufferDiagnostic == diagnostic {
+		execution.messageMu.Unlock()
+		return
+	}
+	pending := execution.messageBuffer.String()
+	pendingDiagnostic := execution.messageBufferDiagnostic
+	execution.messageBuffer.Reset()
+	execution.messageBufferDiagnostic = false
+	execution.currentMessageID = ""
+	execution.messageMu.Unlock()
+
+	if strings.TrimSpace(pending) != "" {
+		m.publishStreamingMessage(execution, pending, pendingDiagnostic, promptGeneration, attemptID)
+		execution.messageMu.Lock()
+		execution.currentMessageID = ""
+		execution.messageMu.Unlock()
+	}
+}
+
+// handleReasoningEvent handles a "reasoning" agent event, accumulating and
+// flushing on newlines. See handleMessageChunkEvent for why each publish
+// below resolves its own fresh promptGenerationSnapshot() rather than reusing
+// one value across the call.
+func (m *Manager) handleReasoningEvent(execution *AgentExecution, event agentctl.AgentEvent) {
+	if event.ReasoningText == "" {
+		return
+	}
+	if event.ProtocolMessageID != "" {
+		m.flushPendingLegacyThinking(execution, execution.promptGenerationSnapshot(), event.AttemptID)
+		m.publishProtocolThinking(execution, event.ProtocolMessageID, event.ReasoningText, execution.promptGenerationSnapshot(), event.AttemptID)
+		return
+	}
+	execution.messageMu.Lock()
+	execution.thinkingBuffer.WriteString(event.ReasoningText)
+
+	bufContent := execution.thinkingBuffer.String()
+	lastNewline := strings.LastIndex(bufContent, "\n")
+	if lastNewline == -1 {
+		execution.messageMu.Unlock()
+		return
+	}
+	toFlush := bufContent[:lastNewline+1]
+	remainder := bufContent[lastNewline+1:]
+	execution.thinkingBuffer.Reset()
+	execution.thinkingBuffer.WriteString(remainder)
+	execution.messageMu.Unlock()
+
+	if strings.TrimSpace(toFlush) != "" {
+		m.publishStreamingThinking(execution, toFlush, execution.promptGenerationSnapshot(), event.AttemptID)
+	}
+}
+
+// extractErrorMessage returns the best error message from an agent event.
+// Priority: Error field > Text field > default message.
+func extractErrorMessage(event *agentctl.AgentEvent) string {
+	if event.Error != "" {
+		return event.Error
+	}
+	if event.Text != "" {
+		return event.Text
+	}
+	return "agent error completion"
+}
+
+func isUninitializedStartupExecution(execution *AgentExecution) bool {
+	if execution == nil || execution.startupAttemptSnapshot() == 0 || execution.isSessionInitialized() {
+		return false
+	}
+	return execution.Status == v1.AgentStatusStarting || execution.Status == v1.AgentStatusRunning
+}
+
+func isUninitializedStartupFailure(execution *AgentExecution, event *agentctl.AgentEvent) bool {
+	return event != nil && event.PromptGeneration == 0 && isUninitializedStartupExecution(execution)
+}
+
+// handleCompleteEventMarkState marks the execution state after a complete event.
+// Its success path runs under the event's startup callback lease and must keep
+// using lease-free helpers through readiness publication.
+func (m *Manager) handleCompleteEventMarkState(
+	execution *AgentExecution,
+	event *agentctl.AgentEvent,
+	isError bool,
+	failureEvidence *PromptAttemptEvidence,
+) {
+	if isError {
+		// A process can exit while the startup owner is still waiting for ACP
+		// initialization. Leave that failure non-terminal so the startup path can
+		// classify it and perform its bounded managed-runtime recovery, if any.
+		if isUninitializedStartupFailure(execution, event) {
+			m.logger.Debug("deferring uninitialized startup failure to startup owner",
+				zap.String("execution_id", execution.ID))
+			return
+		}
+		errorMsg := extractErrorMessage(event)
+		// A turn aborted by backend graceful shutdown is not an agent failure.
+		// Redirect it to a benign stop so the session stays resumable and the UI
+		// shows no red error banner. MarkCompleted applies the same guard, but
+		// routing here keeps the misleading "marking as failed" WARN out of logs.
+		if m.IsShuttingDown() {
+			_ = m.markStoppedDuringShutdown(execution, 1, errorMsg, event.TurnID)
+			return
+		}
+		m.logger.Warn("error completion received, marking execution as failed",
+			zap.String("execution_id", execution.ID),
+			zap.String("task_id", execution.TaskID),
+			zap.String("error", errorMsg),
+			zap.String("event_error", event.Error),
+			zap.String("event_text", event.Text),
+			zap.Any("event_data", event.Data),
+			zap.String("agent_command", execution.AgentCommand),
+			zap.String("acp_session_id", execution.ACPSessionID))
+		if err := m.markCompletedWithTurnIDAndAttempt(execution.ID, 1, errorMsg, event.TurnID, failureEvidence, event.AttemptID); err != nil {
+			m.logger.Error("failed to mark execution as failed after error completion",
+				zap.String("execution_id", execution.ID),
+				zap.Error(err))
+		}
+		return
+	}
+	// Empty wakeup turn fallback: if the wakeup-driven turn produced no
+	// turn-content events (no message_chunk/tool_call/etc), recordActivity
+	// won't have flipped Ready → Running. MarkReady would then early-return
+	// on the Ready guard and silently drop AgentReady — same suppression
+	// the wakeup fix is designed to prevent.
+	//
+	// Publishing AgentReady alone is not enough: the orchestrator's
+	// handleAgentReady (`event_handlers_agent.go:205`) ignores AgentReady
+	// when session.State is not Running/Starting, and after the previous
+	// turn ended the session is WaitingForInput. We mirror what
+	// recordActivity does for the non-empty case — flip Ready → Running
+	// and publish AgentRunning first, so the orchestrator's session state
+	// catches up — then let MarkReady do its normal Running → Ready
+	// transition and publish AgentReady.
+	if execution.Status == v1.AgentStatusReady {
+		m.logger.Info("flipping Ready→Running for empty wakeup turn before publishing AgentReady",
+			zap.String("execution_id", execution.ID),
+			zap.String("session_id", execution.SessionID))
+		if err := m.UpdateStatus(execution.ID, v1.AgentStatusRunning); err != nil {
+			m.logger.Warn("failed to persist empty wakeup turn running status",
+				zap.String("execution_id", execution.ID),
+				zap.Error(err))
+		}
+		m.eventPublisher.PublishAgentEvent(context.Background(), events.AgentRunning, execution)
+	}
+	if err := m.markReadyEventForExecution(
+		context.Background(), execution, events.AgentReady, false, event.AttemptID,
+	); err != nil {
+		m.logger.Error("failed to mark execution as ready after complete",
+			zap.String("execution_id", execution.ID),
+			zap.Error(err))
+	}
+}
+
+func handleCompleteEventSignalLeased(execution *AgentExecution, event *agentctl.AgentEvent, isError bool) {
+	stopReason := "end_turn"
+	errorMsg := ""
+	if isError {
+		stopReason = toolStatusError
+		errorMsg = extractErrorMessage(event)
+	} else if event.Data != nil {
+		if sr, ok := event.Data["stop_reason"].(string); ok && sr != "" {
+			stopReason = sr
+		}
+	}
+	execution.signalPromptCompletionForStartupGenerationLeased(
+		execution.startupAttemptSnapshot(),
+		PromptCompletionSignal{
+			StopReason:               stopReason,
+			IsError:                  isError,
+			Error:                    errorMsg,
+			PromptFailureDisposition: event.PromptFailureDisposition,
+			PromptGeneration:         event.PromptGeneration,
+		},
+	)
+}
+
+type promptCompletionClaim struct {
+	execution      *AgentExecution
+	readyPayload   AgentEventPayload
+	runningPayload AgentEventPayload
+	publishRunning bool
+	locked         bool
+}
+
+func (m *Manager) claimPromptCompletion(
+	execution *AgentExecution,
+	event *agentctl.AgentEvent,
+	isError bool,
+) (promptCompletionClaim, bool) {
+	claim := promptCompletionClaim{}
+	if event.PromptGeneration == 0 {
+		if execution.dispatchedPromptPending.Load() {
+			m.logger.Debug("ignoring unnumbered completion while a dispatched prompt is pending",
+				zap.String("execution_id", execution.ID))
+			return claim, false
+		}
+		return claim, true
+	}
+
+	execution.promptLifecycleMu.Lock()
+	claim.locked = true
+	claimed := false
+	err := m.executionStore.WithLock(execution.ID, func(current *AgentExecution) {
+		if current != execution {
+			return
+		}
+		if current.recoveredPromptGenerationPending.CompareAndSwap(true, false) {
+			current.promptGeneration = event.PromptGeneration
+		}
+		if current.promptGeneration != event.PromptGeneration {
+			return
+		}
+		if current.promptCompletionGeneration == event.PromptGeneration {
+			return
+		}
+		current.promptCompletionGeneration = event.PromptGeneration
+		claimed = true
+		claim.execution = current
+		if isError {
+			return
+		}
+		if current.Status != v1.AgentStatusReady {
+			current.firstActivityOnce.Do(func() {
+				claim.publishRunning = true
+				claim.runningPayload = newAgentEventPayloadWithTurnID(current, event.TurnID)
+				claim.runningPayload.AttemptID = event.AttemptID
+			})
+		}
+		current.Status = v1.AgentStatusReady
+		claim.readyPayload = newAgentEventPayloadWithTurnID(current, event.TurnID)
+		claim.readyPayload.AttemptID = event.AttemptID
+	})
+	if err == nil && claimed {
+		return claim, true
+	}
+
+	execution.promptLifecycleMu.Unlock()
+	m.logger.Debug("ignoring completion for superseded prompt generation",
+		zap.String("execution_id", execution.ID),
+		zap.Uint64("event_prompt_generation", event.PromptGeneration))
+	return promptCompletionClaim{}, false
+}
+
+func completeEventResult(event *agentctl.AgentEvent) (bool, string) {
+	isError := false
+	if event.Data != nil {
+		isError, _ = event.Data["is_error"].(bool)
+	}
+	if isError {
+		return true, toolStatusError
+	}
+	if event.Data != nil {
+		if stopReason, ok := event.Data["stop_reason"].(string); ok && stopReason != "" {
+			return false, stopReason
+		}
+	}
+	return false, "end_turn"
+}
+
+func (m *Manager) finishPromptCompletion(
+	execution *AgentExecution,
+	event *agentctl.AgentEvent,
+	isError bool,
+	claim promptCompletionClaim,
+	failureEvidence *PromptAttemptEvidence,
+) {
+	if claim.locked && event.PromptGeneration != 0 && isError {
+		setProviderError(execution, event.ProviderError)
+		if payload, retained := m.retainPromptFailureRuntime(execution, event, failureEvidence); retained {
+			// Keep the prompt generation fenced through durable owner settlement,
+			// but do not hold the lifecycle lock across publication: explicit
+			// cancellation reads this generation while it owns the session guard.
+			m.persistExecutorRunning(context.Background(), execution)
+			execution.promptLifecycleMu.Unlock()
+			publishErr := m.eventPublisher.publishAgentEventPayload(context.Background(), events.AgentTurnFailed, payload)
+			execution.promptLifecycleMu.Lock()
+			ownsSettlement := execution.promptSettlementGeneration == event.PromptGeneration &&
+				execution.promptGeneration == event.PromptGeneration
+			var terminalPublication *promptErrorCompletionPublication
+			if publishErr != nil {
+				// A failed publication has no durable owner. Fall back to the
+				// established terminal path so the caller does not mistake an
+				// unsettled turn for a retained, acknowledged failure.
+				event.PromptFailureDisposition = ""
+				if ownsSettlement {
+					var terminalErr error
+					terminalPublication, terminalErr = m.preparePromptErrorCompletion(execution, event, failureEvidence)
+					if terminalErr != nil {
+						m.logger.Error("failed to apply terminal fallback after turn-failure publication error",
+							zap.String("execution_id", execution.ID), zap.Error(terminalErr))
+					} else if terminalPublication != nil {
+						execution.promptSettlementGeneration = 0
+						execution.promptSettlementAcknowledgedGeneration = 0
+						execution.promptSettlementWaiterReleasedGeneration = 0
+					}
+				}
+			}
+			handleCompleteEventSignalLeased(execution, event, isError)
+			if ownsSettlement {
+				if terminalPublication == nil {
+					execution.promptSettlementWaiterReleasedGeneration = event.PromptGeneration
+					if execution.promptSettlementAcknowledgedGeneration == event.PromptGeneration {
+						execution.promptSettlementGeneration = 0
+						execution.promptSettlementAcknowledgedGeneration = 0
+						execution.promptSettlementWaiterReleasedGeneration = 0
+					}
+				}
+				execution.dispatchedPromptPending.Store(false)
+			}
+			execution.promptLifecycleMu.Unlock()
+			if terminalPublication != nil {
+				m.finishPromptErrorCompletion(terminalPublication)
+			}
+			return
+		}
+		publication, err := m.preparePromptErrorCompletion(execution, event, failureEvidence)
+		if err != nil {
+			m.logger.Error("failed to mark execution as failed after error completion",
+				zap.String("execution_id", execution.ID),
+				zap.Error(err))
+		}
+
+		// Publish the terminal state before waking a waiter or releasing the
+		// dispatch barrier. Admission must observe FAILED/STOPPED after this
+		// generation's completion signal.
+		handleCompleteEventSignalLeased(execution, event, isError)
+		execution.dispatchedPromptPending.Store(false)
+		execution.promptLifecycleMu.Unlock()
+		if publication != nil {
+			m.finishPromptErrorCompletion(publication)
+		}
+		return
+	}
+
+	handleCompleteEventSignalLeased(execution, event, isError)
+	if claim.locked && event.PromptGeneration != 0 {
+		// Finalization and signal delivery are complete, so a later prompt can
+		// pass the dispatch barrier after this lifecycle lease ends.
+		execution.dispatchedPromptPending.Store(false)
+	}
+	if event.PromptGeneration == 0 || isError {
+		if isError {
+			setProviderError(execution, event.ProviderError)
+		}
+		m.handleCompleteEventMarkState(execution, event, isError, failureEvidence)
+		if claim.locked {
+			execution.promptLifecycleMu.Unlock()
+		}
+		return
+	}
+
+	m.persistExecutorRunning(context.Background(), claim.execution)
+	execution.promptLifecycleMu.Unlock()
+	if claim.publishRunning {
+		m.eventPublisher.publishAgentEventPayload(context.Background(), events.AgentRunning, claim.runningPayload)
+	}
+	m.eventPublisher.publishAgentEventPayload(context.Background(), events.AgentReady, claim.readyPayload)
+}
+
+const claudeACPAgentID = "claude-acp"
+const codexACPAgentID = "codex-acp"
+
+func (m *Manager) retainPromptFailureRuntime(
+	execution *AgentExecution,
+	event *agentctl.AgentEvent,
+	failureEvidence *PromptAttemptEvidence,
+) (AgentEventPayload, bool) {
+	if !validRetainedPromptFailureEvent(event) || m.IsShuttingDown() ||
+		!retainedPromptFailureExecutionEligible(execution) {
+		return AgentEventPayload{}, false
+	}
+
+	var payload AgentEventPayload
+	retained := false
+	err := m.executionStore.WithLock(execution.ID, func(current *AgentExecution) {
+		if !retainedPromptFailureExecutionMatches(current, execution, event.PromptGeneration) {
+			return
+		}
+
+		current.Status = v1.AgentStatusReady
+		current.ErrorMessage = ""
+		current.promptSettlementGeneration = event.PromptGeneration
+		payload = newAgentEventPayloadWithTurnIDAndEvidence(current, event.TurnID, failureEvidence)
+		payload.ErrorMessage = extractErrorMessage(event)
+		payload.PromptFailureDisposition = event.PromptFailureDisposition
+		if event.AttemptID != "" {
+			payload.AttemptID = event.AttemptID
+		}
+		retained = true
+	})
+	if err != nil || !retained {
+		return AgentEventPayload{}, false
+	}
+	return payload, true
+}
+
+func validRetainedPromptFailureEvent(event *agentctl.AgentEvent) bool {
+	return event != nil && event.PromptGeneration != 0 &&
+		event.PromptFailureDisposition == streams.PromptFailureDispositionRetainRuntime &&
+		event.PromptFailureDisposition.Valid()
+}
+
+func retainedPromptFailureExecutionEligible(execution *AgentExecution) bool {
+	if execution == nil {
+		return false
+	}
+	client, release := execution.AcquireAgentCtlClient()
+	if client == nil {
+		return false
+	}
+	defer release()
+	return execution.isSessionInitialized() && client.HasAgentStream() &&
+		execution.TaskScope == TaskLaunchScopeTask &&
+		!execution.IsPassthrough && execution.TaskID != "" && execution.SessionID != "" &&
+		execution.AgentProfileID != "" && retainedTurnTaskOwnerMatches(execution) &&
+		isRetainableACPAgent(execution.AgentID)
+}
+
+func retainedPromptFailureExecutionMatches(
+	current, expected *AgentExecution,
+	promptGeneration uint64,
+) bool {
+	if current == nil || current != expected || current.Status != v1.AgentStatusRunning ||
+		current.promptGeneration != promptGeneration || current.promptCompletionGeneration != promptGeneration {
+		return false
+	}
+	return retainedPromptFailureOwnerMatches(current, expected)
+}
+
+func retainedPromptFailureOwnerMatches(current, expected *AgentExecution) bool {
+	return current != nil && expected != nil && retainedTurnTaskOwnerMatches(current) &&
+		current.TaskScope == TaskLaunchScopeTask && current.TaskID == expected.TaskID &&
+		current.SessionID == expected.SessionID && current.AgentProfileID != "" &&
+		!current.IsPassthrough && current.ExitCode == nil && current.FinishedAt == nil
+}
+
+func retainedTurnTaskOwnerMatches(execution *AgentExecution) bool {
+	if execution == nil || executionOwnerKind(execution) != ExecutionOwnerTask ||
+		execution.Owner.Kind == ExecutionOwnerRun ||
+		(execution.Owner.Kind != "" && execution.Owner.Kind != ExecutionOwnerTask) {
+		return false
+	}
+	return (execution.Owner.TaskID == "" || execution.Owner.TaskID == execution.TaskID) &&
+		(execution.Owner.SessionID == "" || execution.Owner.SessionID == execution.SessionID)
+}
+
+func isRetainableACPAgent(agentID string) bool {
+	switch agentID {
+	case claudeACPAgentID, codexACPAgentID, acpcompat.CursorAgentID, "mock-agent":
+		return true
+	default:
+		return false
+	}
+}
+
+func setProviderError(execution *AgentExecution, providerError *streams.ProviderError) {
+	if execution == nil || providerError == nil || !providerError.Valid() {
+		return
+	}
+	copy := *providerError
+	if providerError.ResetAt != nil {
+		resetAt := *providerError.ResetAt
+		copy.ResetAt = &resetAt
+	}
+	execution.ProviderError = &copy
+}
+
+// handleCompleteEvent handles a "complete" agent event: flushes buffers, marks state, and signals SendPrompt.
+func (m *Manager) handleCompleteEvent(execution *AgentExecution, event *agentctl.AgentEvent) bool {
+	startupGeneration := execution.startupAttemptSnapshot()
+	handled := false
+	accepted := execution.withStartupAttempt(startupGeneration, func(attemptID string) {
+		event.AttemptID = attemptID
+		handled = m.handleCompleteEventLeased(execution, event)
+	})
+	return accepted && handled
+}
+
+// handleCompleteEventLeased processes a completion while its startup callback
+// lease is held by the event dispatcher. Direct test and legacy callers use
+// handleCompleteEvent, which acquires that lease before entering here.
+func (m *Manager) handleCompleteEventLeased(execution *AgentExecution, event *agentctl.AgentEvent) bool {
+	if event.TurnID == "" {
+		// Snapshot before publishing AgentReady. A queued successor may bind a
+		// new turn while the complete stream frame is still crossing the bus.
+		event.TurnID = execution.promptTurnIDSnapshot()
+	}
+	isError, stopReason := completeEventResult(event)
+	if isError && isUninitializedStartupFailure(execution, event) {
+		// The startup owner is waiting for this failed process to classify its
+		// stderr. Do not release startup activity or signal prompt completion;
+		// the closed child stream will return the ACP request error to that owner.
+		m.logger.Debug("deferring uninitialized startup error event to startup owner",
+			zap.String("execution_id", execution.ID))
+		return true
+	}
+	claim, claimed := m.claimPromptCompletion(execution, event, isError)
+	if !claimed {
+		return false
+	}
+	var failureEvidence *PromptAttemptEvidence
+	if isError {
+		evidence := execution.promptAttemptEvidenceSnapshot()
+		if event.ContinuationSafety != nil && event.ContinuationSafety.PromptGeneration == event.PromptGeneration {
+			snapshot := *event.ContinuationSafety
+			evidence.ContinuationSafety = &snapshot
+		}
+		failureEvidence = &evidence
+	}
+	m.finishExecutionWorkspaceActivity(execution, "turn_complete")
+
+	execution.markAgentActivity()
+
+	// Check buffer content BEFORE any processing
+	execution.messageMu.Lock()
+	bufferContentBeforeFlush := execution.messageBuffer.String()
+	currentMsgID := execution.currentMessageID
+	execution.messageMu.Unlock()
+
+	bufferPreview := bufferContentBeforeFlush
+	if len(bufferPreview) > 100 {
+		bufferPreview = bufferPreview[:100] + "..."
+	}
+
+	// Create a turn_end span on the session trace
+	_, turnSpan := tracing.TraceTurnEnd(execution.SessionTraceContext(), execution.ID, execution.SessionID)
+	turnSpan.SetAttributes(
+		attribute.String("stop_reason", stopReason),
+		attribute.Bool("is_error", isError),
+	)
+	turnSpan.End()
+
+	m.logger.Info("agent turn complete",
+		zap.String("execution_id", execution.ID),
+		zap.String("operation_id", event.OperationID),
+		zap.String("session_id", event.SessionID),
+		zap.String("current_msg_id", currentMsgID),
+		zap.Int("buffer_length", len(bufferContentBeforeFlush)),
+		zap.String("buffer_preview", bufferPreview),
+		zap.Bool("is_error", isError))
+
+	// Flush the message buffer to publish any remaining content as a streaming message.
+	// event.PromptGeneration is already the validated active generation from
+	// claimPromptCompletion (or 0 when unclaimed): reuse it here rather than
+	// calling execution.promptGenerationSnapshot(), which would deadlock
+	// against the promptLifecycleMu this function already holds when claimed.
+	flushedText := m.flushMessageBuffer(execution, event.PromptGeneration, event.AttemptID)
+	execution.messageMu.Lock()
+	execution.clearProtocolMessageCorrelationLocked()
+	execution.commitResponseAttemptLocked()
+	execution.messageMu.Unlock()
+	if flushedText != "" {
+		event.Text = flushedText
+	}
+	m.flushAssistantHistory(execution)
+
+	m.logger.Info("complete event processed",
+		zap.String("execution_id", execution.ID),
+		zap.String("operation_id", event.OperationID))
+
+	// Signal promptDoneCh BEFORE publishing agent.ready via MarkReady.
+	// MarkReady publishes agent.ready synchronously, which triggers handleAgentReady
+	// in the orchestrator. If handleAgentReady launches a follow-up prompt (queued
+	// message), the new SendPrompt drains promptDoneCh. If we signal AFTER MarkReady,
+	// the drain races with the first SendPrompt's receive and can steal the signal,
+	// leaving the first SendPrompt hung and the second prompt's completion event
+	// never reaching the event bus.
+	m.finishPromptCompletion(execution, event, isError, claim, failureEvidence)
+	return true
+}
+
+// handleToolCallEvent processes the "tool_call" agent event: flushes the message buffer
+// and stores the tool call in session history.
+// Returns the (possibly updated) event.
+//
+// Subagent-internal tool calls (ParentToolCallID set) stream on the same session
+// concurrently with the parent agent's own text, so they must NOT flush the
+// buffer — flushing would split the parent's in-flight streaming message into
+// separate DB rows mid-sentence, breaking markdown that spans the boundary.
+func (m *Manager) handleToolCallEvent(execution *AgentExecution, event agentctl.AgentEvent, promptGeneration uint64) agentctl.AgentEvent {
+	if event.ParentToolCallID == "" {
+		execution.setActiveTool(activeTopLevelTool{
+			ToolCallID: event.ToolCallID,
+			Name:       event.ToolName,
+			Title:      event.ToolTitle,
+			Status:     event.ToolStatus,
+		})
+		// flushMessageBuffer publishes any remaining buffered content through
+		// the streaming path itself and always returns "".
+		m.flushMessageBuffer(execution, promptGeneration, event.AttemptID)
+		execution.messageMu.Lock()
+		execution.commitResponseAttemptLocked()
+		execution.messageMu.Unlock()
+	}
+	m.flushAssistantHistory(execution)
+	if m.historyManager != nil && execution.historyEnabled && execution.SessionID != "" {
+		if err := m.historyManager.AppendToolCall(execution.SessionID, event); err != nil {
+			m.logger.Warn("failed to store tool call to history", zap.Error(err))
+		}
+	}
+	m.logger.Debug("tool call started",
+		zap.String("execution_id", execution.ID),
+		zap.String("tool_call_id", event.ToolCallID),
+		zap.String("tool_name", event.ToolName))
+	return event
+}
+
+// handleToolUpdateEvent stores completed tool results in session history.
+func (m *Manager) handleToolUpdateEvent(execution *AgentExecution, event agentctl.AgentEvent) {
+	if event.ParentToolCallID == "" && isTerminalToolUpdate(event) {
+		m.flushStreamCoalescer(execution)
+		execution.clearActiveTool(event.ToolCallID)
+	}
+	if m.historyManager != nil && execution.historyEnabled && execution.SessionID != "" && event.ToolStatus == toolStatusComplete {
+		m.flushAssistantHistory(execution)
+		if err := m.historyManager.AppendToolResult(execution.SessionID, event); err != nil {
+			m.logger.Warn("failed to store tool result to history", zap.Error(err))
+		}
+	}
+}
+
+// handleErrorEvent processes a raw "error" as an error completion so generation
+// ownership remains held across validation, buffer flushing, and state mutation.
+// The raw error event is not published to the frontend stream; the agent failure
+// path (handleAgentFailed) sets session FAILED with the error message.
+func (m *Manager) handleErrorEvent(execution *AgentExecution, event agentctl.AgentEvent) bool {
+	data := make(map[string]any, len(event.Data)+1)
+	for key, value := range event.Data {
+		data[key] = value
+	}
+	data["is_error"] = true
+	event.Data = data
+	return m.handleCompleteEventLeased(execution, &event)
+}
+
+// handleContextWindowEvent processes the "context_window" agent event: logs and publishes it.
+// Returns true because no further stream publishing is needed.
+func (m *Manager) handleContextWindowEvent(execution *AgentExecution, event agentctl.AgentEvent) {
+	m.logger.Debug("context window update received",
+		zap.String("execution_id", execution.ID),
+		zap.Int64("size", event.ContextWindowSize),
+		zap.Int64("used", event.ContextWindowUsed),
+		zap.Float64("efficiency", event.ContextEfficiency))
+	m.eventPublisher.PublishContextWindow(
+		execution,
+		event.ContextWindowSize,
+		event.ContextWindowUsed,
+		event.ContextWindowRemaining,
+		event.ContextEfficiency,
+	)
+}
+
+// handleAvailableCommandsEvent processes the "available_commands" agent event.
+func (m *Manager) handleAvailableCommandsEvent(execution *AgentExecution, event agentctl.AgentEvent) {
+	if len(event.AvailableCommands) == 0 {
+		return
+	}
+	execution.SetAvailableCommands(event.AvailableCommands)
+	m.logger.Debug("stored available commands",
+		zap.String("execution_id", execution.ID),
+		zap.String("session_id", execution.SessionID),
+		zap.Int("command_count", len(event.AvailableCommands)))
+	m.eventPublisher.PublishAvailableCommands(execution, event.AvailableCommands)
+}
+
+// turnContentEventTypes is the set of agent event types that unambiguously
+// signal a real turn is in progress — assistant text, reasoning, tool work,
+// plan/permission updates. These are the only events that drive the
+// Ready → Running flip for wakeup-driven turns; boot/metadata events
+// (agent_capabilities, available_commands, session_mode/models/status,
+// context_window, etc.) can arrive *after* MarkBootReady has put the
+// execution into Ready (e.g. claude-agent-acp emits available_commands
+// asynchronously ~50ms after session/new, well after dispatchInitialPrompt
+// has fired MarkBootReady for a no-prompt task) and must NOT be treated
+// as turn starts. Terminal events (complete/error) are excluded too —
+// they own their own status transitions via handleCompleteEvent and a
+// dedicated empty-turn fallback in handleCompleteEventMarkState.
+var turnContentEventTypes = map[string]struct{}{
+	"message_chunk":      {},
+	"reasoning":          {},
+	"tool_call":          {},
+	"tool_update":        {},
+	"plan":               {},
+	"agent_plan":         {},
+	"permission_request": {},
+}
+
+func isTerminalToolUpdate(event agentctl.AgentEvent) bool {
+	if event.Type != "tool_update" {
+		return false
+	}
+	switch event.ToolStatus {
+	case toolStatusComplete, "completed", "success", toolStatusError, toolStatusFailed, "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+// recordActivity updates the last-activity timestamp and, on the very first
+// event from an execution, publishes AgentRunning to transition STARTING → RUNNING.
+//
+// Wakeup-driven turns also flip Ready → Running here. The adapter's wakeup
+// scheduler fires synthetic prompts directly via Adapter.Prompt, bypassing
+// SessionManager.SendPrompt — so nothing on the lifecycle side flips the
+// execution back to Running for those turns. Without that flip, MarkReady's
+// duplicate-suppression guard (manager_interaction.go:896 — early-returns
+// when execution.Status is already Ready) silently drops the wakeup turn's
+// AgentReady event, the orchestrator never calls completeTurnForSession,
+// and workflow on_turn_complete + queued-message dispatch silently break.
+//
+// The flip is gated on `turnContentEventTypes` so post-boot metadata events
+// (available_commands_update arriving 50ms after MarkBootReady, etc.) don't
+// accidentally re-arm a freshly-booted no-prompt session as Running.
+func (m *Manager) recordActivity(execution *AgentExecution, event agentctl.AgentEvent) {
+	_, isTurnContent := turnContentEventTypes[event.Type]
+	isProviderDiagnostic := event.Type == "message_chunk" && event.ProviderDiagnosticCandidate
+	if isTurnContent {
+		execution.lastActivityAtMu.Lock()
+		execution.lastActivityAt = time.Now()
+		if isProviderDiagnostic {
+			execution.providerDiagnosticCandidate = true
+			if text := streams.SanitizeProviderMessage(event.Text); text != "" && execution.providerDiagnosticText == "" {
+				execution.providerDiagnosticText = text
+			}
+		} else {
+			execution.agentEventSincePrompt = true
+			execution.promptActivityEpoch++
+		}
+		execution.lastActivityAtMu.Unlock()
+	}
+
+	// Gate firstActivityOnce on `Status != Ready` so a delayed metadata
+	// event arriving after MarkBootReady can't accidentally fire
+	// AgentRunning. In practice the adapter always emits agent_capabilities
+	// during Initialize (before MarkBootReady), so firstActivityOnce fires
+	// while Status is still Running — this is defensive hardening.
+	if execution.Status != v1.AgentStatusReady {
+		execution.firstActivityOnce.Do(func() {
+			m.eventPublisher.PublishAgentEvent(context.Background(), events.AgentRunning, execution)
+		})
+		return
+	}
+	if m.executionStore == nil {
+		return
+	}
+	if isTerminalToolUpdate(event) {
+		return
+	}
+	if _, ok := turnContentEventTypes[event.Type]; !ok || isProviderDiagnostic {
+		return
+	}
+	if err := m.UpdateStatus(execution.ID, v1.AgentStatusRunning); err != nil {
+		m.logger.Warn("failed to persist wakeup-driven running status",
+			zap.String("execution_id", execution.ID),
+			zap.Error(err))
+		return
+	}
+	m.logger.Info("wakeup-driven turn detected; flipping execution back to Running",
+		zap.String("execution_id", execution.ID),
+		zap.String("session_id", execution.SessionID),
+		zap.String("trigger_event_type", event.Type))
+	m.eventPublisher.PublishAgentEvent(context.Background(), events.AgentRunning, execution)
+}
+
+// handleStreamDisconnect handles unexpected updates stream disconnections.
+// It proactively updates execution status and publishes an error event so the
+// orchestrator can transition the session state without waiting for a future prompt.
+func (m *Manager) handleStreamDisconnect(
+	execution *AgentExecution,
+	err error,
+	promptGeneration uint64,
+) {
+	m.handleStreamDisconnectWithAttempt(execution, err, promptGeneration, "")
+}
+
+func (m *Manager) handleStreamDisconnectWithAttempt(
+	execution *AgentExecution,
+	err error,
+	promptGeneration uint64,
+	attemptID string,
+) {
+	disconnectFields := []zap.Field{
+		zap.String("execution_id", execution.ID),
+		zap.String("session_id", execution.SessionID),
+		zap.Uint64("prompt_generation", promptGeneration),
+		zap.Error(err),
+	}
+	// A disconnect during graceful shutdown is expected: StopAllAgents stops the
+	// agent process, which drops the agentctl WebSocket. Logging it at WARN turns
+	// routine teardown into noise, so downgrade to DEBUG while shutting down. The
+	// failed-status/error-event handling below is unchanged either way.
+	if m.IsShuttingDown() {
+		m.logger.Debug("agent updates stream disconnected during shutdown", disconnectFields...)
+	} else {
+		m.logger.Warn("agent updates stream disconnected", disconnectFields...)
+	}
+
+	if promptGeneration != 0 {
+		execution.promptLifecycleMu.Lock()
+		defer execution.promptLifecycleMu.Unlock()
+
+		var claimed bool
+		var updated *AgentExecution
+		statusErr := m.executionStore.WithLock(execution.ID, func(current *AgentExecution) {
+			if current != execution || current.promptGeneration != promptGeneration {
+				return
+			}
+			current.Status = v1.AgentStatusFailed
+			updated = current
+			claimed = true
+		})
+		if statusErr != nil {
+			m.logger.Warn("failed to persist stream disconnect failed status",
+				zap.String("execution_id", execution.ID),
+				zap.Error(statusErr))
+			return
+		}
+		if !claimed {
+			m.logger.Debug("ignoring stream disconnect for superseded prompt generation",
+				zap.String("execution_id", execution.ID),
+				zap.Uint64("disconnect_prompt_generation", promptGeneration))
+			return
+		}
+
+		m.flushMessageBuffer(execution, promptGeneration, attemptID)
+		m.flushAssistantHistory(execution)
+		m.persistExecutorRunning(context.Background(), updated)
+		m.publishStreamDisconnectErrorWithAttempt(execution, err, attemptID)
+		return
+	}
+
+	// The stream callback may race with the caller starting another prompt
+	// after promptDoneCh is signaled. Drain the partial assistant transcript
+	// here as well as at prompt setup; the shared buffer lock makes either
+	// path the single owner and prevents a later reset from dropping it.
+	// This branch does not hold execution.promptLifecycleMu, so a fresh
+	// snapshot is safe.
+	m.flushMessageBuffer(execution, execution.promptGenerationSnapshot(), attemptID)
+	m.flushAssistantHistory(execution)
+
+	if err := m.UpdateStatus(execution.ID, v1.AgentStatusFailed); err != nil {
+		m.logger.Warn("failed to persist stream disconnect failed status",
+			zap.String("execution_id", execution.ID),
+			zap.Error(err))
+	}
+
+	m.publishStreamDisconnectErrorWithAttempt(execution, err, attemptID)
+}
+
+func (m *Manager) handleStreamDisconnectWithStartupGeneration(
+	execution *AgentExecution,
+	err error,
+	promptGeneration uint64,
+	startupGeneration uint64,
+) {
+	accepted := execution.withStartupAttempt(startupGeneration, func(attemptID string) {
+		if !execution.signalPromptCompletionForStartupGenerationLeased(
+			startupGeneration,
+			PromptCompletionSignal{
+				IsError:          true,
+				Error:            "agent stream disconnected: " + err.Error(),
+				PromptGeneration: promptGeneration,
+			},
+		) {
+			return
+		}
+		// A startup stream can disconnect before ACP session initialization. The
+		// startup caller owns that failure and may still perform the bounded npm
+		// recovery, so do not publish an intermediate failed state here.
+		if promptGeneration == 0 && !execution.isSessionInitialized() {
+			m.logger.Debug("ignoring startup stream disconnect before ACP initialization",
+				zap.String("execution_id", execution.ID),
+				zap.Uint64("startup_generation", startupGeneration),
+				zap.Error(err))
+			return
+		}
+		m.handleStreamDisconnectWithAttempt(execution, err, promptGeneration, attemptID)
+	})
+	if !accepted {
+		m.logger.Debug("ignoring stale managed-runtime stream disconnect",
+			zap.String("execution_id", execution.ID),
+			zap.Uint64("stream_startup_generation", startupGeneration),
+			zap.Uint64("current_startup_generation", execution.startupAttemptSnapshot()))
+		return
+	}
+}
+
+func (m *Manager) publishStreamDisconnectError(execution *AgentExecution, err error) {
+	m.publishStreamDisconnectErrorWithAttempt(execution, err, "")
+}
+
+func (m *Manager) publishStreamDisconnectErrorWithAttempt(
+	execution *AgentExecution,
+	err error,
+	attemptID string,
+) {
+	m.eventPublisher.PublishAgentctlEvent(
+		WithResumeAttemptID(context.Background(), attemptID), events.AgentctlError, execution,
+		"agent stream disconnected: "+err.Error(),
+	)
+}
+
+// handlePromptHandoffEvent finalizes lifecycle's shared streaming-buffer and
+// completion-wait ownership at the same generation-bearing boundary where the
+// ACP adapter made one human successor eligible to inherit prompt ownership.
+// It does not mark the execution Ready: foreground/background activity and
+// coarse turn completion remain separate orchestrator/provider concerns.
+func (m *Manager) handlePromptHandoffEvent(
+	execution *AgentExecution,
+	event agentctl.AgentEvent,
+) {
+	handoff, _ := event.Data[streams.AgentEventDataPromptHandoff].(bool)
+	if !handoff || event.PromptGeneration == 0 {
+		return
+	}
+
+	execution.promptLifecycleMu.Lock()
+	defer execution.promptLifecycleMu.Unlock()
+
+	ownsGeneration := false
+	err := m.executionStore.WithLock(execution.ID, func(current *AgentExecution) {
+		ownsGeneration = current == execution &&
+			current.promptGeneration == event.PromptGeneration
+	})
+	if err != nil || !ownsGeneration {
+		m.logger.Debug("ignoring prompt handoff for superseded generation",
+			zap.String("execution_id", execution.ID),
+			zap.Uint64("event_prompt_generation", event.PromptGeneration))
+		return
+	}
+
+	m.flushMessageBuffer(execution, event.PromptGeneration, event.AttemptID)
+	execution.messageMu.Lock()
+	execution.clearProtocolMessageCorrelationLocked()
+	execution.commitResponseAttemptLocked()
+	execution.messageMu.Unlock()
+	m.flushAssistantHistory(execution)
+
+	execution.signalPromptCompletionForStartupGenerationLeased(
+		execution.startupAttemptSnapshot(),
+		PromptCompletionSignal{
+			StopReason:       streams.EventTypeForegroundIdle,
+			PromptGeneration: event.PromptGeneration,
+		},
+	)
+}
+
+// handleAgentEvent processes incoming agent events from the agent
+func (m *Manager) handleAgentEvent(execution *AgentExecution, event agentctl.AgentEvent) {
+	startupGeneration := execution.startupAttemptSnapshot()
+	execution.withStartupAttempt(startupGeneration, func(attemptID string) {
+		event.SessionSettingsSourceGeneration = startupGeneration
+		m.handleAgentEventWithAttempt(execution, event, attemptID)
+	})
+}
+
+func (m *Manager) handleAgentEventWithAttempt(
+	execution *AgentExecution,
+	event agentctl.AgentEvent,
+	attemptID string,
+) {
+	if event.SessionSettingsSourceGeneration == 0 {
+		event.SessionSettingsSourceGeneration = execution.startupAttemptSnapshot()
+	}
+	m.handleAgentEventAtContextResetBoundary(execution, event, true, attemptID)
+}
+
+// handleAgentEventAfterContextReset replays setup events after the lifecycle
+// manager has committed the replacement session while the exclusive reset
+// lease is still held. The event has already crossed the reset boundary and
+// must not be buffered again.
+func (m *Manager) handleAgentEventAfterContextReset(execution *AgentExecution, event agentctl.AgentEvent) {
+	startupGeneration := execution.startupAttemptSnapshot()
+	execution.withStartupAttempt(startupGeneration, func(attemptID string) {
+		if event.SessionSettingsSourceGeneration == 0 {
+			event.SessionSettingsSourceGeneration = startupGeneration
+		}
+		m.handleAgentEventAtContextResetBoundary(execution, event, false, attemptID)
+	})
+}
+
+func (m *Manager) handleAgentEventAtContextResetBoundary(
+	execution *AgentExecution,
+	event agentctl.AgentEvent,
+	enforceResetBoundary bool,
+	attemptID string,
+) {
+	if event.SessionSettingsSourceGeneration == 0 {
+		event.SessionSettingsSourceGeneration = execution.startupAttemptSnapshot()
+	}
+	m.handleAgentEventAtContextResetBoundaryInternal(execution, event, enforceResetBoundary, attemptID, false)
+}
+
+func (m *Manager) handleAgentEventAtContextResetBoundaryWithIdleSuspensionReplay(
+	execution *AgentExecution,
+	event agentctl.AgentEvent,
+	enforceResetBoundary bool,
+	attemptID string,
+) {
+	if event.SessionSettingsSourceGeneration == 0 {
+		event.SessionSettingsSourceGeneration = execution.startupAttemptSnapshot()
+	}
+	m.handleAgentEventAtContextResetBoundaryInternal(execution, event, enforceResetBoundary, attemptID, true)
+}
+
+//nolint:cyclop,funlen // ACP event types share lifecycle bookkeeping before publication.
+func (m *Manager) handleAgentEventAtContextResetBoundaryInternal(
+	execution *AgentExecution,
+	event agentctl.AgentEvent,
+	enforceResetBoundary bool,
+	attemptID string,
+	idleSuspensionReplay bool,
+) {
+	event.AttemptID = attemptID
+	if !idleSuspensionReplay && execution.bufferIdleSuspensionEvent(idleSuspensionEvent{
+		event: event, enforceResetBoundary: enforceResetBoundary, attemptID: attemptID,
+	}) {
+		m.logger.Debug("buffering agent event during idle suspension",
+			zap.String("execution_id", execution.ID),
+			zap.String("event_type", event.Type))
+		return
+	}
+	if !idleSuspensionReplay && execution.idleSuspensionAgentStopped.Load() {
+		m.logger.Debug("ignoring agent event after idle process stop",
+			zap.String("execution_id", execution.ID),
+			zap.String("event_type", event.Type))
+		return
+	}
+	// A terminal event that was already applied from a retained turn outcome
+	// can be redelivered when the live stream attaches. Drop that exact event
+	// instead of applying the completion a second time.
+	if execution.isRecoveryDuplicateEvent(&event) {
+		m.logger.Debug("dropping live event: already applied via retained turn outcome",
+			zap.String("execution_id", execution.ID),
+			zap.Int64("control_turn_id", event.ControlTurnID))
+		return
+	}
+	if enforceResetBoundary && execution.bufferOrDropContextResetEvent(event) {
+		m.logger.Debug("ignoring agent event at context reset boundary",
+			zap.String("execution_id", execution.ID),
+			zap.String("event_type", event.Type),
+			zap.String("session_id", event.SessionID))
+		return
+	}
+	if m.handleMCPAttachmentEvent(execution, &event, attemptID) {
+		return
+	}
+	if event.PromptGeneration == 0 || (event.Type != toolStatusComplete && event.Type != toolStatusError) {
+		m.recordActivity(execution, event)
+	}
+
+	m.logger.Debug("handleAgentEvent entry",
+		zap.String("execution_id", execution.ID),
+		zap.String("event_type", event.Type),
+		zap.String("operation_id", event.OperationID),
+		zap.Int("text_length", len(event.Text)))
+
+	m.publishWorkActivity(execution, event, attemptID)
+	if m.handleAgentEventWithoutPublication(execution, &event) {
+		return
+	}
+
+	event = m.handleAgentEventState(execution, event)
+	m.eventPublisher.publishAgentStreamEventWithAttempt(execution, event, attemptID)
+}
+
+func (m *Manager) handleMCPAttachmentEvent(
+	execution *AgentExecution,
+	event *agentctl.AgentEvent,
+	attemptID string,
+) bool {
+	if event.Type != streams.EventTypeMCPAttachment {
+		return false
+	}
+	if event.MCPAttachmentAttempt != nil {
+		if event.MCPAttachmentAttempt.ExecutionID != "" && event.MCPAttachmentAttempt.ExecutionID != execution.ID {
+			m.logger.Warn("dropping stale MCP attachment attempt",
+				zap.String("event_execution_id", event.MCPAttachmentAttempt.ExecutionID),
+				zap.String("live_execution_id", execution.ID))
+			return true
+		}
+		attempt := *event.MCPAttachmentAttempt
+		attempt.TaskID = execution.TaskID
+		attempt.SessionID = execution.SessionID
+		attempt.ExecutionID = execution.ID
+		attempt.AgentID = execution.AgentID
+		event.MCPAttachmentAttempt = &attempt
+	}
+	// Attachment diagnostics must not count as model activity or alter turn
+	// ownership. They flow directly to the orchestrator for persistence.
+	m.eventPublisher.publishAgentStreamEventWithAttempt(execution, *event, attemptID)
+	return true
+}
+
+func (m *Manager) handleAgentEventWithoutPublication(execution *AgentExecution, event *agentctl.AgentEvent) bool {
+	switch event.Type {
+	case "message_chunk":
+		m.handleMessageChunkEvent(execution, *event)
+		return true
+	case "reasoning":
+		m.handleReasoningEvent(execution, *event)
+		return true
+	case streams.EventTypeResponseAttemptReset:
+		return !m.handleResponseAttemptReset(execution, event)
+	case toolStatusError:
+		m.handleErrorEvent(execution, *event)
+		return true
+	case toolStatusComplete:
+		return !m.handleCompleteEventLeased(execution, event)
+	case "permission_request":
+		m.logger.Debug("permission request received",
+			zap.String("execution_id", execution.ID),
+			zap.String("pending_id", event.PendingID),
+			zap.String("title", event.PermissionTitle))
+		m.eventPublisher.PublishPermissionRequest(execution, *event)
+		return true
+	case "context_window":
+		m.handleContextWindowEvent(execution, *event)
+		return true
+	case "available_commands":
+		m.handleAvailableCommandsEvent(execution, *event)
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) handleAgentEventState(execution *AgentExecution, event agentctl.AgentEvent) agentctl.AgentEvent {
+	switch event.Type {
+	case streams.EventTypeUsageObservation:
+		if event.TurnID == "" {
+			if event.PromptGeneration != 0 {
+				event.TurnID = execution.promptTurnIDForGeneration(event.PromptGeneration)
+			} else {
+				event.TurnID = execution.promptTurnIDSnapshot()
+			}
+		}
+	case "tool_call":
+		// ACP tool_call events do not carry the lifecycle prompt generation
+		// either (same gap as message_chunk/reasoning). Neither this dispatch
+		// nor handleToolCallEvent holds execution.promptLifecycleMu, so a
+		// fresh snapshot is safe and is reused for the published event below.
+		promptGeneration := execution.promptGenerationSnapshot()
+		if event.PromptGeneration == 0 {
+			event.PromptGeneration = promptGeneration
+		}
+		return m.handleToolCallEvent(execution, event, promptGeneration)
+	case "tool_update":
+		if event.PromptGeneration == 0 {
+			event.PromptGeneration = execution.promptGenerationSnapshot()
+		}
+		m.handleToolUpdateEvent(execution, event)
+	case "plan":
+		m.logger.Debug("agent plan update", zap.String("execution_id", execution.ID))
+	case "agent_capabilities":
+		if len(event.AuthMethods) > 0 {
+			execution.SetAuthMethods(event.AuthMethods)
+		}
+	case "session_mode":
+		execution.SetModeState(&CachedModeState{
+			CurrentModeID:  event.CurrentModeID,
+			AvailableModes: event.AvailableModes,
+		})
+	case "session_models":
+		baselineCandidate, settled := execution.SetModelStateApplyingSettlement(&CachedModelState{
+			CurrentModelID: event.CurrentModelID,
+			Models:         event.SessionModels,
+			ConfigOptions:  event.ConfigOptions,
+			ConfigSource:   agentEventDataString(event.Data, "config_options_source"),
+			ConfigID:       agentEventDataString(event.Data, "config_options_config_id"),
+		})
+		if settled {
+			event.ConfigBaselineCandidate = baselineCandidate.ConfigOptions
+			if event.Data == nil {
+				event.Data = make(map[string]any)
+			}
+			event.Data["config_options_settled"] = true
+		}
+	case streams.EventTypeForegroundIdle:
+		m.handlePromptHandoffEvent(execution, event)
+	}
+	return event
+}
+
+func (m *Manager) handleResponseAttemptReset(
+	execution *AgentExecution,
+	event *agentctl.AgentEvent,
+) bool {
+	if event.PromptGeneration == 0 {
+		return false
+	}
+	execution.promptLifecycleMu.Lock()
+	defer execution.promptLifecycleMu.Unlock()
+
+	if !m.executionStore.ownsActivePromptGeneration(
+		execution.SessionID,
+		execution.ID,
+		event.PromptGeneration,
+	) {
+		return false
+	}
+	m.flushStreamCoalescer(execution)
+	execution.messageMu.Lock()
+	event.RetractedMessageIDs = execution.detachResponseAttemptLocked()
+	execution.messageMu.Unlock()
+	return true
+}
+
+func (m *Manager) handleAgentEventWithStartupGeneration(
+	execution *AgentExecution,
+	event agentctl.AgentEvent,
+	startupGeneration uint64,
+) {
+	accepted := execution.withStartupAttempt(startupGeneration, func(attemptID string) {
+		event.AttemptID = attemptID
+		event.SessionSettingsSourceGeneration = startupGeneration
+		if !execution.isSessionInitialized() && event.PromptGeneration == 0 && event.Type == toolStatusComplete {
+			m.logger.Debug("ignoring startup completion before ACP initialization",
+				zap.String("execution_id", execution.ID),
+				zap.Uint64("startup_generation", startupGeneration))
+			return
+		}
+		m.handleAgentEventWithAttempt(execution, event, attemptID)
+	})
+	if !accepted {
+		m.logger.Debug("ignoring stale managed-runtime agent event",
+			zap.String("execution_id", execution.ID),
+			zap.String("event_type", event.Type),
+			zap.Uint64("event_startup_generation", startupGeneration),
+			zap.Uint64("current_startup_generation", execution.startupAttemptSnapshot()))
+	}
+}
+
+func agentEventDataString(data map[string]any, key string) string {
+	value, _ := data[key].(string)
+	return value
+}
+
+// handleGitStatusUpdate processes git status updates from the workspace tracker
+func (m *Manager) handleGitStatusUpdate(execution *AgentExecution, update *agentctl.GitStatusUpdate) {
+	if execution == nil || update == nil || execution.SessionID == "" {
+		return
+	}
+	current, exists := m.executionStore.GetBySessionID(execution.SessionID)
+	if !exists || current != execution {
+		m.logger.Debug("dropping git status from retired execution",
+			zap.String("session_id", execution.SessionID),
+			zap.String("execution_id", execution.ID))
+		return
+	}
+	// Publish git status update to event bus for WebSocket streaming and persistence
+	m.eventPublisher.PublishGitStatus(execution, update)
+}
+
+// handleGitCommitCreated processes git commit events from the workspace tracker
+func (m *Manager) handleGitCommitCreated(execution *AgentExecution, commit *agentctl.GitCommitNotification) {
+	// Publish commit event to event bus for WebSocket streaming and orchestrator handling
+	m.eventPublisher.PublishGitCommit(execution, commit)
+}
+
+// handleGitResetDetected processes git reset events from the workspace tracker
+func (m *Manager) handleGitResetDetected(execution *AgentExecution, reset *agentctl.GitResetNotification) {
+	// Publish reset event to event bus for orchestrator handling (commit sync)
+	m.eventPublisher.PublishGitReset(execution, reset)
+}
+
+// handleBranchSwitch processes branch switch events from the workspace tracker
+func (m *Manager) handleBranchSwitch(execution *AgentExecution, branchSwitch *agentctl.GitBranchSwitchNotification) {
+	// Publish branch switch event to event bus for orchestrator handling (base commit update)
+	m.eventPublisher.PublishBranchSwitch(execution, branchSwitch)
+}
+
+// handleFileChangeNotification processes file change notifications from the workspace tracker
+func (m *Manager) handleFileChangeNotification(execution *AgentExecution, notification *agentctl.FileChangeNotification) {
+	m.eventPublisher.PublishFileChange(execution, notification)
+}
+
+// handleShellOutput processes shell output from the workspace stream
+func (m *Manager) handleShellOutput(execution *AgentExecution, data string) {
+	m.eventPublisher.PublishShellOutput(execution, data)
+}
+
+// handleProcessOutput processes script process output from the workspace stream
+func (m *Manager) handleProcessOutput(execution *AgentExecution, output *agentctl.ProcessOutput) {
+	if output == nil {
+		return
+	}
+	m.logger.Debug("lifecycle received process output",
+		zap.String("session_id", output.SessionID),
+		zap.String("process_id", output.ProcessID),
+		zap.String("kind", string(output.Kind)),
+		zap.String("stream", output.Stream),
+		zap.Int("bytes", len(output.Data)),
+	)
+	m.eventPublisher.PublishProcessOutput(execution, output)
+}
+
+// handleProcessStatus processes script process status updates from the workspace stream
+func (m *Manager) handleProcessStatus(execution *AgentExecution, status *agentctl.ProcessStatusUpdate) {
+	if status == nil {
+		return
+	}
+	m.logger.Debug("lifecycle received process status",
+		zap.String("session_id", status.SessionID),
+		zap.String("process_id", status.ProcessID),
+		zap.String("status", string(status.Status)),
+	)
+	m.eventPublisher.PublishProcessStatus(execution, status)
+	m.releaseTerminalProcessActivity(status)
+}
+
+// handleShellExit processes shell exit events from the workspace stream
+func (m *Manager) handleShellExit(execution *AgentExecution, code int) {
+	m.eventPublisher.PublishShellExit(execution, code)
+}
