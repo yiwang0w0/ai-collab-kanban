@@ -28,6 +28,7 @@ import {readFleetProgress} from "./fleet-progress.mjs";
 import {openFleetActions,loadFleetActionsConfig} from "./fleet-actions.mjs";
 import {PeerError} from "./federation/protocol.mjs";
 import {writePrivateText} from "./private-json.mjs";
+import {taskExecutionView} from "./task-execution-view.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -295,6 +296,7 @@ const unnamedOf = (t) => {
 // file names, hashes and controlled download endpoints — never source paths.
 const taskOut = (t) => t ? {
   ...t,
+  execution_trace: taskExecutionView(db, t),
   progress_blockers: store.stuckWhy(db,t),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
   // ⭐ The panel's button captions come FROM the server-side criterion. If the panel

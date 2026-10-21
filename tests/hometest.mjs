@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -65,9 +65,9 @@ test("running cards name their executor and a silent one comes first with a warn
     card(3, { status: "in_progress", last_runtime: "zcode", hb: "stale" }),
   ] });
   assert.deepEqual(running.map((r) => [r.localId, r.state, r.tone, r.next]), [
-    [2, "Claude 执行中 · 心跳中断", "warn", "检查执行线"],
-    [1, "Codex 执行中", "", "等待完成"],
-    [3, "Zcode 执行中", "", "等待完成"],
+    [2, "Claude 已领取 · 开工待核实 · 心跳中断", "warn", "检查执行线"],
+    [1, "Codex 已领取 · 开工待核实", "", "等待执行回执"],
+    [3, "Zcode 已领取 · 开工待核实", "", "等待执行回执"],
   ]);
 });
 
@@ -92,7 +92,7 @@ test("other computers: cached copies are handled where they live, and never show
     { read_only: false, task_uid: "u9", owner_name: "台式机 A", subject: "本机副本", status: "waiting", waiting_for: "confirm", updated_at: at(5) },
   ];
   const lists = M.homeLists({ tasks: [], localName: "台式机 A", remote });
-  assert.deepEqual(lists.running.map((r) => [r.title, r.computer, r.state]), [["回放压测", "笔记本 B", "执行中"]]);
+  assert.deepEqual(lists.running.map((r) => [r.title, r.computer, r.state]), [["回放压测", "笔记本 B", "已领取 · 开工待核实"]]);
   assert.deepEqual(lists.mine.map((r) => [r.title, r.computer, r.next]), [["端口冲突", "另一台电脑", "到「另一台电脑」上处理"]],
     "a decision there is shown here but done there; its own reviewer may take a delivery; this board's rows come from its own list");
   assert.deepEqual(lists.history.map((r) => r.title), ["B 的预检"]);
@@ -251,7 +251,64 @@ test("side panel says what any card is doing, not only the two home lanes", () =
   assert.deepEqual(M.sideFallback({ ...base, status: "done" }, o), { state: "已完成", next: "无需操作" });
   assert.deepEqual(M.sideFallback({ ...base, status: "waiting", waiting_for: "dep" }, o), { state: "等待中 · 依赖完成", next: "等待依赖完成" });
   const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
-  assert.ok(side.includes("!step0?.lane") && side.includes("sideFallback(t,"), "used only where homeStep has no words");
+  assert.ok(side.includes("sideTaskStep(t, item)"), "侧栏使用同一状态与下一步计算");
+});
+
+test("领取、启动许可、进程与输出观察分开，不接受旧运行观察", () => {
+  const base = { status: "in_progress", run_id: "current", hb: "fresh" };
+  const step = (trace) => M.homeStep({ ...base, execution_trace: { run_id: "current", ...trace } });
+  assert.equal(step({}).state, "已领取 · 开工待核实");
+  assert.equal(step({ launch_requested_at: at(1) }).state, "已请求启动 · 开工待核实");
+  assert.equal(step({ process_state: "observed" }).state, "进程已启动 · 开工待核实");
+  assert.equal(step({ work_state: "activity_observed" }).state, "已领取 · 有输出记录");
+  assert.equal(step({ process_state: "not_started" }).next, "检查启动回执");
+  assert.equal(step({ run_id: "previous", process_state: "observed" }).state, "已领取 · 开工待核实");
+  assert.equal(M.homeStep({ ...base, attempts: 9, heartbeat_at: at(8), work_spans: [{ s: at(1) }] }).state, "已领取 · 开工待核实");
+  assert.equal(M.homeStep({ ...base, status: "waiting", waiting_for: "review", execution_trace: { process_state: "observed" } }).state, "待你验收");
+});
+
+test("侧栏关联复用父子与依赖，列表外任务不猜原因", () => {
+  const rows = [
+    { id: 1, subject: "目标", status: "waiting" },
+    { id: 2, subject: "当前", parent_id: 1, blocked_by: [4, 99, 4] },
+    { id: 3, subject: "子任务", parent_id: 2, status: "not_started" },
+    { id: 4, subject: "前置检查", status: "done" },
+  ];
+  const groups = M.sideRelations(rows[1], rows);
+  assert.deepEqual(groups.map((g) => [g.label, g.items.map((r) => r.id)]), [["父任务", [1]], ["子任务", [3]], ["前置依赖", [4, 99]]]);
+  assert.deepEqual(groups[2].items[1], { id: 99, title: "当前列表不可见", status: null, visible: false });
+  assert.deepEqual(M.sideRelations(null, rows), []);
+  const box = src.slice(src.indexOf("function sideRelationshipBox(t){"), src.indexOf("function renderSide(){"));
+  assert.ok(box.includes("openSide(") && box.includes("fleetApi.showTask(t.task_uid)"));
+  assert.ok(!box.includes("post(") && !box.includes("fetch("), "查看关联不能触发派发或写入");
+  assert.ok(src.includes("领取不等于模型已开工") && !src.includes("●启动 ■开工"));
+});
+
+test("暖色主题沿用原有色彩变量，浅深两种模式的常用文字保持可读", () => {
+  const roots = [...src.matchAll(/:root\{([^}]+)\}/g)].slice(0, 2);
+  assert.equal(roots.length, 2);
+  const luminance = (hex) => {
+    const rgb = hex.slice(1).match(/../g).map((c) => parseInt(c, 16) / 255)
+      .map((c) => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4);
+    return rgb[0] * .2126 + rgb[1] * .7152 + rgb[2] * .0722;
+  };
+  for (const root of roots) {
+    const tokens = Object.fromEntries([...root[1].matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})/g)].map((m) => [m[1], m[2]]));
+    const bg = tokens.bg.slice(1).match(/../g).map((c) => parseInt(c, 16));
+    assert.ok(bg[0] > bg[1] && bg[1] > bg[2], "底色为暖色，不借用其他工作台的冷灰底");
+    for (const name of ["fg", "dim", "dim2", "accent", "cc", "ok", "warn", "bad"]) {
+      const a = luminance(tokens[name]), b = luminance(tokens.panel2);
+      assert.ok((Math.max(a, b) + .05) / (Math.min(a, b) + .05) >= 4.5, name + " 小字号文字对比度不足");
+    }
+  }
+});
+
+test("推理强度初次渲染和拖动后共用中文展示，协议值不变", () => {
+  const start = src.indexOf("function effortName(value){"), end = src.indexOf("function renderCfg(){", start);
+  const name = new Function(src.slice(start, end) + ";return effortName;")();
+  assert.equal(name("high"), "高"); assert.equal(name("max"), "最高");
+  assert.ok(src.includes("esc(effortName(a.effort))") && src.includes("b.textContent = effortName(a.effort)"));
+  assert.ok(src.includes("a.effort = domOf(a)[Number(el.value)] || a.effort"), "写回的仍是允许域中的机器值");
 });
 
 test("batch 4: the board being down is one bad line with a recovery action, not a stale 正常", () => {
