@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -312,37 +312,64 @@ test("推理强度初次渲染和拖动后共用中文展示，协议值不变",
   assert.ok(src.includes("a.effort = domOf(a)[Number(el.value)] || a.effort"), "写回的仍是允许域中的机器值");
 });
 
-test("batch 4: the board being down is one bad line with a recovery action, not a stale 正常", () => {
-  // 「电脑在线」≠「看板服务正常」: the page is a cached copy; when the board stops answering,
-  // the home status says so and points at the one command that fixes it.
-  const down = M.homeStatus({ localName: "台式机 A", boardDown: true });
-  assert.equal(down.tone, "bad");
-  assert.ok(down.line.includes("看板服务没有应答") && down.line.includes("电脑开着"), down.line);
-  assert.equal(down.alerts.length, 1);
-  assert.equal(down.alerts[0].go, "retry", "the recovery action is one reconnect button");
-  assert.ok(down.alerts[0].next.includes("node cli/start.mjs --background"), down.alerts[0].next);
-  // The marker is not set while reads are merely starting or flaked once.
-  assert.ok(!src.includes("boardDown: boardDownStreak >= 2") || src.includes("homeReady && boardDownStreak >= 2"),
-    "从未加载成功是「正在读取」,连续两次失败才是停机");
+test("服务没有应答时只显示一条故障与恢复命令，不并列旧告警", () => {
+  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
+  const before = { localName: "台式机 A", nodes: [local, { node_id: NODE_B, display_name: "笔记本 B", local: false, connection_state: "failed" }],
+    health: { issues: [{ code: "STORAGE_LOW", level: "problem", next_action: "inspect_storage_before_new_work", count: 1 }] },
+    setup: { complete: false, done: 3, total: 4, steps: [{ state: "todo", title: "定义你自己的线" }] } };
+  const down = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", status: null, local: true } });
+  assert.deepEqual([down.tone, down.line, down.alerts.length], ["bad", "看板服务没有应答，下面是断开前的内容", 1],
+    "断开前的设备、磁盘与设置告警不能冒充现状");
+  assert.deepEqual([down.alerts[0].where, down.alerts[0].what, down.alerts[0].copy],
+    ["台式机 A", "电脑在线，看板服务没有应答（14:05 起）", "node cli/start.mjs --background"]);
+  assert.match(down.alerts[0].next, /已有任务和结果都保留/);
+  const away = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", local: false } });
+  assert.equal(away.alerts[0].what, "连不上「台式机 A」上的看板（14:05 起）", "远程页面不能把服务断开直接断言成电脑在线");
+  assert.match(away.alerts[0].next, /电脑关着就先开机/);
+  const err = M.homeStatus({ ...before, down: { since: "14:05", kind: "error", status: 500, local: true } });
+  assert.deepEqual([err.line, err.alerts[0].what, err.alerts[0].copy], ["看板服务出错，下面是出错前的内容", "看板服务出错（HTTP 500）（14:05 起）", null]);
 });
 
-test("batch 4: same-kind health problems fold into one alert with a count", () => {
-  const three = { issues: [
-    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
-    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
-    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", count: 1, next_action: "review_scheduler_stop_evidence" },
-    { code: "STORAGE_LOW", level: "notice", count: 2, next_action: "inspect_storage_before_new_work" },
-  ] };
-  const s = M.homeStatus({ localName: "台式机 A", nodes: [], health: three });
-  assert.equal(s.alerts.length, 2, "three stale heartbeats are one problem, not three");
-  const hb = s.alerts.find((a) => a.what.includes("调度器心跳超时"));
-  const disk = s.alerts.find((a) => a.what.includes("磁盘空间不足"));
-  assert.ok(hb && hb.what.includes("（3 项）") && hb.tone === "bad", hb && hb.what);
-  assert.ok(disk && disk.what.includes("（2 项）") && disk.tone === "warn", disk && disk.what);
-  // Different codes stay separate; different next_action with the same code stay separate too.
-  const mixed = { issues: [
-    { code: "NODE_SYNC_RETRY", level: "notice", count: 1, next_action: "inspect_node_sync_then_peer" },
-    { code: "NODE_SYNC_RETRY", level: "notice", count: 1, next_action: "check_peer_then_resume_same_action" },
-  ] };
-  assert.equal(M.homeStatus({ localName: "A", nodes: [], health: mixed }).alerts.length, 2);
+test("同一故障家族合并原因、症状和优先下一步，未知代码仍可显示", () => {
+  const i = (code, next_action, level = "problem", count = 1) => ({ code, level, next_action, count });
+  const dead = M.homeHealthAlerts([i("SCHEDULER_HEARTBEAT_STALE", "inspect_scheduler_owner"), i("SCHEDULER_LOCK_MISSING", "inspect_scheduler_owner")], { here: "台式机 A" });
+  assert.deepEqual(dead.map((a) => [a.tone, a.where, a.what, a.next]), [["bad", "台式机 A", "调度器可能已经停了：心跳超时、没有运行锁", "检查调度器进程"]]);
+  const first = M.homeHealthAlerts([i("SCHEDULER_HEARTBEAT_STALE", "inspect_scheduler_owner"), i("SCHEDULER_LOCK_ORPHAN", "verify_stop_before_lock_recovery")]);
+  assert.deepEqual([first.length, first[0].next], [1, "确认进程已停止，再恢复运行锁"]);
+  assert.equal(M.homeHealthAlerts([i("SCHEDULER_LOCK_MISMATCH", "inspect_scheduler_lock"), i("SCHEDULER_OWNER_UNKNOWN", "inspect_node_runtime", "notice")])[0].what,
+    "调度器状态待核对：运行锁与记录不符、看不出进程还在不在", "没有停止证据时不能断言已经停机");
+  const apart = M.homeHealthAlerts([i("NODE_HEARTBEAT_STALE", "inspect_node_runtime"), i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer", "notice"),
+                                    i("STORAGE_LOW", "inspect_storage_before_new_work", "problem", 2)]);
+  assert.deepEqual(apart.map((a) => a.what), ["节点运行器心跳超时", "同步正在重试", "磁盘空间不足（2 项）"]);
+  assert.equal(M.homeHealthAlerts([i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer")], { skip: ["NODE_SYNC_RETRY"] }).length, 0);
+  assert.deepEqual(M.homeHealthAlerts([i("FUTURE_ISSUE", "future"), i("FUTURE_ISSUE", "future")]).map((a) => a.what),
+    ["运行检查报告了问题（2 项）"], "未知家族的重复记录不导致整页渲染失败");
+});
+
+test("远端电脑连不上与电脑在线但看板没有应答分开说明", () => {
+  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
+  const peer = (name, code) => ({ node_id: NODE_B, display_name: name, local: false, connection_state: "failed", projects: [{ project_id: "p", error_code: code }] });
+  const s = M.homeStatus({ localName: "台式机 A", nodes: [local, peer("笔记本 B", "PEER_UNREACHABLE"), peer("台式机 C", "REMOTE_502"),
+                                                          peer("台式机 D", "PEER_REFUSED"), peer("台式机 E", "NETWORK_ERROR")],
+    health: { issues: [{ code: "NODE_SYNC_RETRY", level: "notice", next_action: "inspect_node_sync_then_peer", count: 1 }] } });
+  assert.deepEqual(s.alerts.map((a) => [a.where, a.what]), [
+    ["笔记本 B", "连不上这台电脑（可能关机或断网）"],
+    ["台式机 C", "电脑在线，但它的看板服务没有应答"],
+    ["台式机 D", "电脑在线，但它的看板服务没有应答"],
+    ["台式机 E", "同步失败"],
+  ], "同一次故障的本机同步重试不再单独提示");
+  assert.match(s.alerts[1].next, /node cli\/status\.mjs/);
+  assert.deepEqual(M.homeStatus({ nodes: [local], fleetError: "x", healthError: "y" }).alerts.map((a) => a.what), ["多机视图和运行检查暂时读不到"]);
+});
+
+test("页面经匿名健康探测确认故障，成功读取和实时重连都可恢复", () => {
+  assert.ok(src.includes('await window.fetch("/health", { cache: "no-store", credentials: "omit" })'));
+  const r = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt){"));
+  assert.ok(r.includes("const p = await probeBoard();") && r.includes("if (restartPending) return;") && r.includes("boardDown = null;"));
+  assert.ok(r.includes("if (wasDown) loadHomeExtras(true);"), "恢复后重新读取设备与运行检查，不展示断开前旧值");
+  assert.ok(r.includes("if (lastGoodRead > started) return;") && r.includes('if (liveOpen) live(true, "实时");'), "过时的失败不能覆盖新成功");
+  const sse = src.slice(src.indexOf('const es = window.boardSession.events("/api/events");'), src.indexOf("// ⭐ Event kinds are NOT enumerated here."));
+  assert.ok(sse.includes("if (boardDown) refresh();") && sse.includes("if (!restartPending) refresh();"));
+  assert.ok(src.includes('document.getElementById("home-view").classList.toggle("stale", !!boardDown);'));
+  assert.ok(src.includes("navigator.clipboard.writeText(a.copy)"));
 });

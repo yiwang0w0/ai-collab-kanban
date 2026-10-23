@@ -459,6 +459,9 @@
   .hs-what{min-width:0;overflow-wrap:anywhere}
   .hs-next{color:var(--dim);min-width:0;overflow-wrap:anywhere}
   .hs-alert button{margin-left:auto}
+  .hs-alert button + button{margin-left:0}
+  .hs-cmd{font-family:var(--mono);font-size:12px;padding:0 4px;border:1px solid var(--line);border-radius:4px;background:var(--bg);overflow-wrap:anywhere}
+  .home.stale .home-cols,.home.stale .home-note{opacity:.55}
   .home-cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);align-items:start}
   @media (max-width:900px){ .home-cols{grid-template-columns:minmax(0,1fr)} }
   .home-sec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
@@ -2652,6 +2655,7 @@ async function loadTaskEvents(){
 }
 
 async function refresh(){
+  const started = Date.now();
   try{
     const [r, mres, wres, cres, eres, ures, qres, sres] = await Promise.all([
       fetch("/api/tasks?archived=false").then((x) => x.json()),
@@ -2663,6 +2667,10 @@ async function refresh(){
       fetch("/api/requests?open=1").then((x) => x.json()).catch(() => ({ requests: [] })),
       fetch("/api/setup").then((x) => x.json()).catch(() => null),
     ]);
+    const wasDown = !!boardDown;
+    boardDown = null; lastGoodRead = Date.now();
+    // 取数成功后清除旧失败；主动重启仍沿用原有提示。
+    if (!restartPending) { if (liveOpen) live(true, "实时"); else if (wasDown) live(false, "已恢复，正在接回实时更新…"); }
     renderQuick(qres.requests || []);
     lastSetup = sres;
     renderGuide(sres);
@@ -2689,23 +2697,35 @@ async function refresh(){
     byId.clear(); for (const t of tasks) byId.set(t.id, t);
     render(); renderRig(); renderCtx(); homeAfterRefresh();
     sideAfterRefresh();
-    // 从停机态回来:清零并立刻重绘首页,别等下一条 SSE。
-    if (boardDownStreak >= 2 && homeView !== "board") renderHomeViews();
-    boardDownStreak = 0;
+    if (wasDown) loadHomeExtras(true);   // 断开前的多电脑与运行检查结果需要重新读取。
   }catch(e){
-    live(false, "取数失败");
-    // ⭐ 第 4 批: 首页要分清「电脑在线」与「看板服务正常」。页面是缓存的,取数失败 =
-    //   看板没有应答 —— 连续两次失败后(单次可能是瞬时抖动),首页状态区换成一条
-    //   坏消息和恢复动作,而不是留着上一次的「运行正常」骗人。
-    if (++boardDownStreak >= 2 && homeView !== "board") renderHomeViews();
+    // 取数失败先核实服务本身；主动重启由原有提示负责。
+    if (restartPending) return;
+    const p = await probeBoard();
+    if (lastGoodRead > started) return;   // 后开始的读取已成功，不再报告过时的失败。
+    if (!p) { live(false, "取数失败"); return; }
+    if (!boardDown) boardDown = { at: Date.now(), kind: p.kind, status: p.status };
+    else Object.assign(boardDown, { kind: p.kind, status: p.status });
+    live(false, downText());
+    try { renderHomeViews(); } catch (err) { console.error("首页显示失败", err); }
   }
 }
-let boardDownStreak = 0;
 
 function live(on, txt){
   document.getElementById("dot").className = "dot" + (on ? "" : " off");
   document.getElementById("livetxt").textContent = txt;
 }
+// 服务探测匿名访问 /health；不能使用仅允许 /api/ 且附带凭据的面板请求封装。
+let boardDown = null;   // { at, kind: "unreachable" | "error", status }
+let liveOpen = false;
+let lastGoodRead = 0;
+const HOME_LOCAL_PAGE = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(location.hostname);
+async function probeBoard(){
+  try { const r = await window.fetch("/health", { cache: "no-store", credentials: "omit" }); return r.ok ? null : { kind: "error", status: r.status }; }
+  catch { return { kind: "unreachable", status: null }; }
+}
+const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
+const downText = () => boardDown && boardDown.kind === "error" ? "看板服务出错" : "看板服务没有应答";
 
 document.addEventListener("click", async (e) => {
   // ── Create goal + decompose
@@ -3216,13 +3236,20 @@ document.getElementById("line-add").addEventListener("submit", async (e) => {
 // (1s redraw, zero server load)
 const es = window.boardSession.events("/api/events");
 es.onopen = () => {
+  liveOpen = true;
   if (restartPending){
     if (hasUnsavedInput()){ showRevBar(null, "看板已重启"); restartPending = null; live(true, "实时"); return; }
     location.reload(); return;
   }
   live(true, "实时");
+  if (boardDown) refresh();   // 恢复时立即读取，不等后续轮询。
 };
-es.onerror = () => live(false, "断线重连中");
+es.onerror = () => {
+  liveOpen = false;
+  if (boardDown) { live(false, downText()); return; }
+  live(false, "断线重连中");
+  if (!restartPending) refresh();
+};
 // ⭐ Event kinds are NOT enumerated here. Enumerated, every kind the server adds
 //   later silently stops arriving (measured: 8 of 16 subscribed). The server sends
 //   everything as `change`; the kind rides in data.type.
@@ -3291,6 +3318,72 @@ function homeHealthWhat(code) {
   if (HOME_HEALTH[code]) return HOME_HEALTH[code];
   const m = /^(SCHEDULER|NODE)_(LOCK_[A-Z_]+|OWNER_UNKNOWN)$/.exec(String(code));
   return m ? (m[1] === "SCHEDULER" ? "调度器" : "节点运行器") + "运行锁异常" : "运行检查报告了问题";
+}
+// 同一故障家族合成一条提示，依次说明可能原因、症状和优先处理的一步。
+const HOME_FAMILY = [
+  ["scheduler", /^SCHEDULER_/, "调度器"], ["node", /^NODE_(?!SYNC_)/, "节点运行器"], ["sync", /^NODE_SYNC_/, "跨机同步"],
+  ["storage", /^STORAGE_/, "磁盘"], ["broker", /^BROKER_/, "执行分派"], ["budget", /^CALL_BUDGET_/, "调用额度"],
+  ["delivery", /^DELIVERY_/, "跨机交付"],
+];
+const HOME_SYMPTOM = {
+  HEARTBEAT_STALE: "心跳超时", LOCK_MISSING: "没有运行锁", LOCK_ORPHAN: "运行锁的进程已不在",
+  LOCK_MISMATCH: "运行锁与记录不符", LOCK_UNREADABLE: "运行锁读不了", OWNER_UNKNOWN: "看不出进程还在不在",
+  ATTENTION: "停止情况待核对", COMPONENT_STOPPED: "有组件已停止", COMPONENTS_MISSING: "组件没有上报",
+};
+const HOME_NEXT_FIRST = ["verify_stop_before_lock_recovery", "review_scheduler_stop_evidence", "review_node_stop_evidence",
+  "inspect_scheduler_lock", "inspect_node_lock", "inspect_scheduler_owner", "inspect_node_runtime"];
+/** 运行检查问题按家族合并；skip 跳过远端状态已说明的本机同步重试与积压。 */
+function homeHealthAlerts(issues, { here = "本机", skip = [] } = {}) {
+  const groups = new Map(), out = [];
+  for (const i of issues || []) {
+    if (!i || typeof i.code !== "string" || skip.includes(i.code)) continue;
+    const fam = HOME_FAMILY.find((f) => f[1].test(i.code));
+    const key = fam ? fam[0] : "code:" + i.code + ":" + i.next_action;
+    if (!groups.has(key)) groups.set(key, { fam, items: [] });
+    groups.get(key).items.push(i);
+  }
+  for (const { fam, items } of groups.values()) {
+    const tone = items.some((i) => i.level === "problem") ? "bad" : "warn";
+    const actions = items.map((i) => i.next_action);
+    const next = HOME_HEALTH_NEXT[HOME_NEXT_FIRST.find((a) => actions.includes(a)) || actions[0]] || "检查本机看板的运行日志";
+    if (items.length === 1 || !fam) {
+      const count = items.reduce((sum, i) => sum + (i.count || 1), 0);
+      out.push({ tone, where: here, what: homeHealthWhat(items[0].code) + (count > 1 ? "（" + count + " 项）" : ""), next, go: null });
+      continue;
+    }
+    const tails = items.map((i) => i.code.replace(/^(SCHEDULER|NODE)_/, ""));
+    const symptoms = [...new Set(items.map((i, k) => HOME_SYMPTOM[tails[k]] || homeHealthWhat(i.code)))];
+    const runner = fam[0] === "scheduler" || fam[0] === "node";
+    const cause = !runner ? fam[2] + "有 " + symptoms.length + " 个问题"
+      : tails.some((t) => ["HEARTBEAT_STALE", "LOCK_MISSING", "LOCK_ORPHAN"].includes(t)) ? fam[2] + "可能已经停了" : fam[2] + "状态待核对";
+    out.push({ tone, where: here, what: cause + "：" + symptoms.join("、"), next, go: null });
+  }
+  return out;
+}
+// 同步客户端记录连接错误码；页面只据此区分电脑连不上与服务没有应答。
+const HOME_SERVICE_DOWN = ["bad", "电脑在线，但它的看板服务没有应答", "到这台电脑上运行 node cli/status.mjs，它会说明原因和下一步"];
+const HOME_PEER_REJECTED = ["bad", "对方不认本机的连接凭据", "在全局视图核对两台电脑的配对"];
+const HOME_PEER_ERROR = {
+  PEER_UNREACHABLE: ["bad", "连不上这台电脑（可能关机或断网）", "确认它已开机、联网"],
+  PEER_REFUSED: HOME_SERVICE_DOWN, REMOTE_502: HOME_SERVICE_DOWN, REMOTE_503: HOME_SERVICE_DOWN, REMOTE_504: HOME_SERVICE_DOWN,
+  REMOTE_401: HOME_PEER_REJECTED, REMOTE_403: HOME_PEER_REJECTED,
+};
+function homeNodeState(n) {
+  if (n && n.connection_state === "failed")
+    for (const p of n.projects || []) if (p && HOME_PEER_ERROR[p.error_code]) return HOME_PEER_ERROR[p.error_code];
+  return HOME_SYNC[n && n.connection_state] || ["warn", "状态未知", "在全局视图查看"];
+}
+/** 服务断开时只显示这一件事，其余均为断开前的数据；回环地址才可断言本机在线。 */
+function homeOutage(down, here) {
+  const since = down.since ? "（" + down.since + " 起）" : "", start = "node cli/start.mjs --background";
+  if (down.kind === "error")
+    return { tone: "bad", line: "看板服务出错，下面是出错前的内容", alerts: [{ tone: "bad", where: here, go: null, copy: null,
+      what: "看板服务出错" + (down.status ? "（HTTP " + down.status + "）" : "") + since,
+      next: "看数据目录里的 board.log 找原因；重启看板：先 node cli/stop.mjs，再 " + start }] };
+  const alert = down.local
+    ? { what: "电脑在线，看板服务没有应答" + since, next: "在这台电脑上重新启动看板（已有任务和结果都保留）：" + start }
+    : { what: "连不上「" + here + "」上的看板" + since, next: "电脑关着就先开机；开着就在它上面运行 " + start };
+  return { tone: "bad", line: "看板服务没有应答，下面是断开前的内容", alerts: [{ tone: "bad", where: here, go: null, copy: start, ...alert }] };
 }
 /** Where one task stands for the person looking: which list, its state, the next step.
  *  `t.hb` is hbClass(t) for this board's cards; `t.progress_blockers` is the server's own
@@ -3389,36 +3482,19 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
   history.sort((a, b) => b.updated.localeCompare(a.updated));
   return { mine, running, history };
 }
-/** One line about the computers, plus the alerts that line folds away when all is well.
- *  `boardDown` = this very board is not answering (the page is stale by definition, so this
- *  shape only appears from a reconnect attempt telling the truth about the last state). */
-function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null, boardDown = false } = {}) {
+/** 设备状态及待处理提示；服务断开时不并列展示断开前的旧告警。 */
+function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null, down = null } = {}) {
   const here = homeName(localName, "本机"), alerts = [], remotes = (nodes || []).filter((n) => !n.local);
-  // 交接说明 第 4 批: 「电脑在线」与「看板服务正常」是两回事。页面还在渲染只说明浏览器
-  // 有缓存;看板没应答时不要假装读到了状态——一条坏消息,恢复动作就是重新连接。
-  if (boardDown) {
-    return { tone: "bad", line: "看板服务没有应答 —— 这台电脑开着,是看板停了",
-             alerts: [{ tone: "bad", where: here, what: "看板服务没有应答",
-                        next: "本机恢复: node cli/start.mjs --background;或按右边重试连接", go: "retry" }] };
-  }
+  if (down) return homeOutage(down, here);
   for (const n of remotes) {
-    const s = HOME_SYNC[n.connection_state] || ["warn", "状态未知", "在全局视图查看"];
+    const s = homeNodeState(n);
     if (s[0] !== "ok") alerts.push({ tone: s[0], where: homeName(n.display_name), what: s[1], next: s[2], go: "fleet" });
   }
-  if (fleetError) alerts.push({ tone: "warn", where: "多机视图", what: "暂时读不到", next: "稍后会自动重试", go: null });
-  // 同类合并: 同 kind(码+下一步)的问题只说一次,数量并进来——三条「磁盘不足」是
-  // 一件事,不是三件事(第 4 批: 同一故障合并成一条提示)。
-  const healthFold = new Map();
-  for (const i of (health && health.issues) || []) {
-    const key = i.code + "|" + i.next_action;
-    const prior = healthFold.get(key);
-    if (prior) prior.count += i.count; else healthFold.set(key, { ...i, count: i.count || 1 });
-  }
-  for (const i of healthFold.values())
-    alerts.push({ tone: i.level === "problem" ? "bad" : "warn", where: here,
-                  what: homeHealthWhat(i.code) + (i.count > 1 ? "（" + i.count + " 项）" : ""),
-                  next: HOME_HEALTH_NEXT[i.next_action] || "检查本机看板的运行日志", go: null });
-  if (healthError) alerts.push({ tone: "warn", where: here, what: "运行检查暂时读不到", next: "稍后会自动重试", go: null });
+  const remoteTrouble = alerts.length > 0;
+  if (fleetError && healthError) alerts.push({ tone: "warn", where: here, what: "多机视图和运行检查暂时读不到", next: "稍后会自动重试", go: null });
+  else if (fleetError) alerts.push({ tone: "warn", where: "多机视图", what: "暂时读不到", next: "稍后会自动重试", go: null });
+  alerts.push(...homeHealthAlerts(health && health.issues, { here, skip: remoteTrouble ? ["NODE_SYNC_RETRY", "NODE_SYNC_PENDING"] : [] }));
+  if (healthError && !fleetError) alerts.push({ tone: "warn", where: here, what: "运行检查暂时读不到", next: "稍后会自动重试", go: null });
   if (setup && setup.steps && !setup.complete) {
     // A step the server can do in one request (generate the config, confirm the version,
     // restart) gets its button right here; anything else is done in the guide on 全部任务.
@@ -3822,19 +3898,20 @@ function renderHomeViews(){
   if (homeView === "home"){
     const s = homeStatus({ localName: homeLocalName(), nodes, fleetError: homeFleetError, health: homeHealth,
                            healthError: homeHealthError, setup: lastSetup,
-                           // 曾成功加载过(homeReady)之后连续两次取数失败 = 看板停了;
-                           // 从未加载成功是「正在读取」,不是停机。
-                           boardDown: homeReady && boardDownStreak >= 2 });
-    // The computers are known only once the fleet reads answered — until then say so rather
-    // than print "no other computer" for a board that has one.
-    const known = homeExtrasAt > 0;
+                           down: boardDown && { since: hhmm(boardDown.at), kind: boardDown.kind, status: boardDown.status, local: HOME_LOCAL_PAGE } });
+    // 设备列表未读到时不推断没有其他电脑；已确认服务断开则直接显示故障。
+    const known = homeExtrasAt > 0 || !!boardDown;
+    document.getElementById("home-view").classList.toggle("stale", !!boardDown);
     homeFill(document.getElementById("home-status"), JSON.stringify([known, s]), () => {
       const line = homeEl("div", undefined, "hs-line");
       line.append(homeEl("span", undefined, "dot" + (!known || s.tone === "ok" ? "" : s.tone === "bad" ? " off" : " warn")),
                   homeEl("span", known ? s.line : "正在读取设备状态…", "hs-text"));
       return [line, ...(known ? s.alerts : []).map((a) => {
         const row = homeEl("div", undefined, "hs-alert"); row.dataset.tone = a.tone;
-        row.append(homeEl("span", a.where, "hs-where"), homeEl("span", a.what, "hs-what"), homeEl("span", "下一步：" + a.next, "hs-next"));
+        const nx = homeEl("span", "下一步：", "hs-next");
+        for (const part of a.next.split(/(node cli\/[\w-]+\.mjs(?: --?[\w-]+)*)/))
+          if (part) nx.append(part.startsWith("node cli/") ? homeEl("code", part, "hs-cmd") : part);
+        row.append(homeEl("span", a.where, "hs-where"), homeEl("span", a.what, "hs-what"), nx);
         if (a.action){
           const b = homeEl("button", a.action.label, "pri"); b.type = "button";
           b.addEventListener("click", () => homeSetupAction(a.action, b));
@@ -3846,6 +3923,14 @@ function renderHomeViews(){
             if (a.go === "board") setView("board");
             else if (a.go === "retry"){ b.disabled = true; b.textContent = "重试中…"; refresh().finally(() => loadHomeExtras(true)); }
             else fleetApi?.open();
+          });
+          row.append(b);
+        }
+        if (a.copy){
+          const b = homeEl("button", "复制命令"); b.type = "button";
+          b.addEventListener("click", async () => {
+            try { await navigator.clipboard.writeText(a.copy); b.textContent = "已复制"; }
+            catch { b.textContent = "复制不了，请手动选中上面的命令"; }
           });
           row.append(b);
         }

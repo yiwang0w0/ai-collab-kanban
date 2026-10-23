@@ -104,6 +104,7 @@
     "test:contract-recovery": "node --test tests/contractrecoverytest.mjs",
     "pending-relation:recovery": "node cli/pending-relation-recovery.mjs",
     "test:pending-relation-recovery": "node --test tests/pendingrelationrecoverytest.mjs",
-    "status": "node cli/status.mjs"
+    "status": "node cli/status.mjs",
+    "autostart": "node cli/autostart.mjs"
   }
 }
