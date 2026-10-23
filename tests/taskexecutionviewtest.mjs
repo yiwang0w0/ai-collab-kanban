@@ -7,7 +7,7 @@ import {mkdtempSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {canonical,digest} from "../core/federation/sync-store.mjs";
-import {taskExecutionView} from "../core/task-execution-view.mjs";
+import {taskExecutionView,readLegacyProcessStart} from "../core/task-execution-view.mjs";
 const require=createRequire(import.meta.url),store=require("../core/store.js");
 const temporary=mkdtempSync(join(tmpdir(),"kanban-execution-view-")),handles=[];let serial=0;
 after(()=>{for(const db of handles)db.close();rmSync(temporary,{recursive:true,force:true});});
@@ -21,6 +21,11 @@ const release=(f,value)=>store.setReleased(f.db,{id:f.id,released:value,expected
 function claim(f){
  const result=store.claimById(f.db,{id:f.id,worker:"执行器甲",runtime:"claude",agentInstanceId:randomUUID()});
  assert.equal(result.ok,true,JSON.stringify(result));return result.task;
+}
+function processStart(f,extra={},time="2026-10-23T01:00:00.000Z",actor=f.get().worker){
+ const t=f.get(),run=store.runs(f.db,f.id).find(r=>r.run_id===t.run_id);
+ event(f,"process_started",{source:"worker_loop",run_id:run.run_id,task_uid:t.task_uid,owner_node_id:t.owner_node_id,
+  agent_instance_id:run.agent_instance_id,runtime:run.runtime,attempt:run.first_attempt,pid:123,model:"fixture-model",effort:"high",...extra},time,actor);
 }
 // 本专项只放置既有表的最小回执夹具；不启动监管器、CLI、服务或真实模型。
 function broker(f,{observation=true}={}){
@@ -57,6 +62,44 @@ test("旧 worker 的领取、心跳与工作区间都不能成为可信开工",(
  assert.ok(f.get().work_spans.length);assert.deepEqual(Object.keys(v),["run_id","released_at","claimed_at","launch_requested_at","process_started_at","last_activity_at","ended_at","process_state","work_state"]);
 });
 
+test("受管宿主的本轮进程记录显示首次观察，不冒充模型活动或任务验收",()=>{
+ const f=fixture(),t=claim(f);processStart(f);processStart(f,{pid:456},"2026-10-23T02:00:00.000Z");
+ const before=f.db.prepare("SELECT total_changes() AS n").get().n,v=f.view();
+ assert.equal(v.process_state,"observed");assert.equal(v.process_started_at,"2026-10-23T01:00:00.000Z");
+ assert.equal(v.work_state,"unverified");assert.equal(v.last_activity_at,null);assert.equal(v.launch_requested_at,null);
+ assert.equal(f.db.prepare("SELECT total_changes() AS n").get().n,before);
+ store.report(f.db,{id:f.id,worker:t.worker,runId:t.run_id,outcome:"done",evidence:"仅夹具结果"});
+ assert.equal(f.get().status,"waiting");assert.equal(f.view().process_state,"observed");assert.equal(f.view().work_state,"unverified");
+});
+
+test("多次尝试共用身份判据，但成功档位只取指定末次尝试而非失败首档",()=>{
+ const f=fixture(),t=claim(f);processStart(f,{model:"失败首档",effort:"low"});
+ store.bumpAttempt(f.db,{id:f.id,worker:t.worker,runId:t.run_id});
+ let run=store.runs(f.db,f.id).find(r=>r.run_id===t.run_id);
+ assert.equal(readLegacyProcessStart(f.db,run,{attempt:run.last_attempt}),null);
+ processStart(f,{attempt:run.last_attempt,model:"末次成功档",effort:"high"},"2026-10-23T02:00:00.000Z");
+ store.report(f.db,{id:f.id,worker:t.worker,runId:t.run_id,outcome:"done",evidence:"仅夹具结果"});
+ const first=readLegacyProcessStart(f.db,run),last=readLegacyProcessStart(f.db,run,{attempt:run.last_attempt});
+ assert.equal(first.detail.model,"失败首档");assert.equal(last.detail.model,"末次成功档");assert.ok(last.id>first.id);
+ assert.equal(f.view().process_started_at,first.at);assert.equal(f.view().work_state,"unverified");
+});
+
+test("身份、来源、尝试或进程字段不合的旧循环事件仍待核实",()=>{
+ for(const extra of [{run_id:randomUUID()},{task_uid:"其他任务"},{owner_node_id:randomUUID()},
+  {agent_instance_id:randomUUID()},{runtime:"codex"},{source:"model"},{pid:0},{pid:"123"},
+  {attempt:0},{attempt:999},{model:""},{effort:null}]){
+  const f=fixture();claim(f);processStart(f,extra);assert.equal(f.view().process_state,"unverified",JSON.stringify(extra));
+ }
+ for(const [time,actor] of [["非时间","执行器甲"],["2026-10-23T01:00:00.000Z","其他执行器"]]){
+  const f=fixture();claim(f);processStart(f,{},time,actor);assert.equal(f.view().process_started_at,null);
+ }
+});
+
+test("未归属运行时的手工领取不通过启动事件猜测运行时",()=>{
+ const f=fixture(),result=store.claimById(f.db,{id:f.id,worker:"执行器甲",agentInstanceId:randomUUID()});assert.equal(result.ok,true);
+ processStart(f,{runtime:"claude"});assert.equal(f.view().process_state,"unverified");
+});
+
 test("重新领取只绑定本轮运行，不继承旧运行时间或旧 broker 观察",()=>{
  const f=fixture(),first=claim(f);broker(f);store.releaseHeldBy(f.db,first.worker);const next=claim(f);
  const at="2026-10-21T02:00:00.000Z";event(f,"claim",{run_id:first.run_id,status:"in_progress"},"2030-01-01T00:00:00.000Z",first.worker);event(f,"claim",{run_id:next.run_id,status:"in_progress"},at,next.worker);
@@ -75,6 +118,14 @@ test("迁移导入运行不补造领取或开工，结束仍只读原运行记�
 test("Broker 消费启动许可但无观察时仍待核实",()=>{
  const f=fixture();claim(f);broker(f,{observation:false});
  const v=f.view();assert.equal(v.launch_requested_at,"2026-10-21T00:59:59.000Z");assert.equal(v.process_state,"unverified");assert.equal(v.process_started_at,null);assert.equal(v.work_state,"unverified");
+});
+
+test("Broker 缺少或损坏观察回执时不能由旧循环事件替代",()=>{
+ const f=fixture();claim(f);processStart(f);assert.equal(f.view().process_state,"observed");
+ const b=broker(f,{observation:false});assert.equal(f.view().process_state,"unverified");
+ b.save();assert.equal(f.view().process_started_at,b.observed.process.activity.started_at);
+ f.db.exec("UPDATE broker_execution_records SET observation_digest='bad'");
+ assert.equal(f.view().process_state,"unverified");assert.equal(f.view().process_started_at,null);
 });
 
 test("摘要和身份匹配的最终回执仅展示进程与有效协议活动",()=>{

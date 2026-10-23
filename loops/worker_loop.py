@@ -1365,6 +1365,47 @@ def cli_argv(prompt, sargs, model, effort):
     ]
 
 
+def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _call=None, _log=None):
+    """仅由宿主在 Popen 成功后报告进程观察；不是模型开工或任务成功声明。"""
+    c, out = _call or call, _log or log
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
+        out("  ⚠进程启动记录缺少有效 PID —— 启动情况仍待核实")
+        return False
+    try:
+        status, result = c("POST", f"/api/tasks/{t['id']}/process-started", {
+            "worker": worker, "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
+            "runtime": runtime, "attempt": attempt, "pid": pid, "model": model, "effort": effort,
+        }, timeout=5)
+        if status == 200:
+            return True
+        out(f"  ⚠进程已创建，但启动记录被拒 {status} {result.get('error', '')} —— 看板仍待核实，不重试")
+    except Exception as e:
+        out(f"  ⚠进程已创建，但启动记录未送达({e})—— 看板仍待核实，不重试")
+    return False
+
+
+def run_task_process(t, worker, attempt, runtime, model, effort, argv, env, *, input=None,
+                     _popen=None, _call=None, _log=None):
+    """保留 run 的管道/超时语义，只在进程创建成功后补一条宿主观察。"""
+    with (_popen or subprocess.Popen)(argv, stdin=subprocess.PIPE if input is not None else None,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                                     encoding="utf-8", errors="replace", env=env, cwd=REPO) as process:
+        started = time.monotonic()
+        record_process_started(t, worker, attempt, runtime, model, effort, process.pid,
+                               _call=_call, _log=_log)
+        try:
+            # 记录请求占用本次超时预算，不延长模型允许的运行时间。
+            stdout, stderr = process.communicate(input, timeout=max(0, TIMEOUT - (time.monotonic() - started)))
+        except subprocess.TimeoutExpired as e:
+            process.kill()
+            e.stdout, e.stderr = process.communicate()
+            raise
+        except BaseException:
+            process.kill()
+            raise
+        return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
 def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     """与主座席的 run_worker **返回同型** (rc, tail) —— handle() 不必知道座席。"""
     global LAST_ACCT
@@ -1379,9 +1420,7 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
     t0 = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     try:
-        w = subprocess.run(argv, input=prompt, capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", env=env,
-                           timeout=TIMEOUT, cwd=REPO)
+        w = run_task_process(t, worker, attempt, "codex", model, effort, argv, env, input=prompt)
     except subprocess.TimeoutExpired:
         LAST_ACCT = {"sid": None, "t0": t0, "usage": None}
         return -1, f"(codex 超时 {TIMEOUT}s 被杀)"
@@ -1473,8 +1512,76 @@ def probe_runtime(live=False):
     return 0 if v2["ok"] else 1
 
 
+def process_start_selftest(ok):
+    """替身进程覆盖创建、记录与收尾边界；绝不运行 CLI 或连接看板。"""
+    task = {"id": 7, "run_id": str(uuid.uuid4())}
+    for runtime, prompt in (("claude", None), ("codex", "仅夹具输入")):
+        order, sent, options = [], [], {}
+        class Process:
+            pid, returncode = 321, 17
+            def __enter__(self): return self
+            def __exit__(self, *args): return False
+            def communicate(self, input=None, timeout=None):
+                order.append("communicate"); options["input"], options["timeout"] = input, timeout
+                return "夹具输出", "夹具错误"
+            def kill(self): order.append("kill")
+        def popen(argv, **kwargs):
+            order.append("created"); options.update(kwargs); return Process()
+        def api(method, path, body, **kwargs):
+            order.append("recorded"); sent.append((method, path, body, kwargs)); return 200, {}
+        result = run_task_process(task, "夹具执行器", 2, runtime, "fixture-model", "high",
+                                  ["fixture-cli"], {}, input=prompt, _popen=popen, _call=api)
+        ok(f"进程记录/{runtime}:创建后记录、再等待，不把非零退出改成成功",
+           order == ["created", "recorded", "communicate"] and result.returncode == 17 and
+           result.stdout == "夹具输出" and result.stderr == "夹具错误")
+        ok(f"进程记录/{runtime}:原样绑定本轮运行、实例、尝试、模型与强度",
+           sent == [("POST", "/api/tasks/7/process-started", {
+               "worker": "夹具执行器", "run_id": task["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
+               "runtime": runtime, "attempt": 2, "pid": 321, "model": "fixture-model", "effort": "high",
+           }, {"timeout": 5})])
+        ok(f"进程记录/{runtime}:管道、输入与UTF-8保留，记录不增加超时预算",
+           options["stdin"] == (subprocess.PIPE if prompt is not None else None) and
+           options["stdout"] == subprocess.PIPE and options["stderr"] == subprocess.PIPE and
+           options["encoding"] == "utf-8" and options["errors"] == "replace" and
+           options["input"] == prompt and 0 <= options["timeout"] <= TIMEOUT)
+    sent, messages = [], []
+    def failed_spawn(*args, **kwargs): raise OSError("仅夹具启动失败")
+    try:
+        run_task_process(task, "夹具执行器", 1, "claude", "fixture-model", "high", [], {},
+                         _popen=failed_spawn, _call=lambda *a, **k: sent.append(a))
+        ok("进程记录:创建失败不写启动事实", False)
+    except OSError:
+        ok("进程记录:创建失败不写启动事实", sent == [])
+    for failure in ("rejected", "unreachable"):
+        def refused(*args, **kwargs):
+            sent.append(args)
+            if failure == "unreachable": raise RuntimeError("仅夹具断连")
+            return 409, {"error": "仅夹具过期运行"}
+        before = len(sent)
+        result = run_task_process(task, "夹具执行器", 1, "claude", "fixture-model", "high", [], {},
+                                  _popen=popen, _call=refused, _log=messages.append)
+        ok(f"进程记录:{failure}不重试、不误报spawn失败、不改变返回值",
+           len(sent) == before + 1 and result.returncode == 17 and "不重试" in messages[-1])
+    order = []
+    class TimedOut(Process):
+        def communicate(self, input=None, timeout=None):
+            order.append("drain" if timeout is None else "timeout")
+            if timeout is not None: raise subprocess.TimeoutExpired("fixture-cli", timeout)
+            return "结束输出", "结束错误"
+    try:
+        run_task_process(task, "夹具执行器", 1, "codex", "fixture-model", "high", [], {}, input="夹具",
+                         _popen=lambda *a, **k: TimedOut(), _call=lambda *a, **k: (200, {}))
+        ok("进程记录:超时仍kill并读完管道后抛回原超时", False)
+    except subprocess.TimeoutExpired as e:
+        ok("进程记录:超时仍kill并读完管道后抛回原超时",
+           order == ["timeout", "kill", "drain"] and e.stdout == "结束输出" and e.stderr == "结束错误")
+    before = len(sent)
+    ok("进程记录:无有效PID不构造事实", record_process_started(task, "夹具执行器", 1, "claude",
+       "fixture-model", "high", None, _call=refused, _log=messages.append) is False and len(sent) == before)
+
+
 def codex_selftest():
-    """纯函数的单体试验(板与 CLI 都不需要)。⭐夹具取自**实测输出**。"""
+    """无模型单体试验(板与 CLI 都不需要)。⭐协议夹具取自**实测输出**。"""
     import tempfile
     n_pass = n_fail = 0
 
@@ -1533,6 +1640,7 @@ def codex_selftest():
     bat = os.path.join(d, "codex.cmd"); io.open(bat, "w", encoding="utf-8").write("@echo off")
     ok("⭐⑯ 门: .cmd 因 BatBadBut 被拒", "BatBadBut" in (codex_gate(bat) or ""),
        str(codex_gate(bat))[:80])
+    process_start_selftest(ok)
     print(f"{chr(10)}结果: {n_pass} PASS / {n_fail} FAIL")
     return 0 if n_fail == 0 else 1
 
@@ -1586,8 +1694,7 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
         return -2, "(argv 超长:提示词 argv 超过 Windows 30000 字符预算,spawn 前拒发)"
     env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
     try:
-        w = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", env=env, timeout=TIMEOUT, cwd=REPO)
+        w = run_task_process(t, worker, attempt, "claude", model, effort, argv, env)
         return w.returncode, ((w.stdout or "") + (w.stderr or ""))[-1500:]
     except subprocess.TimeoutExpired:
         return -1, f"(worker 超时 {TIMEOUT}s 被杀)"

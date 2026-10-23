@@ -72,6 +72,53 @@ test('P4 unbound claims clear a previous trusted runtime stamp on a new run',asy
  const retry=await api(operator,'POST',`/api/tasks/${t.id}/resolve`,{verdict:'reject',resolved_by:'human',note:'Test next execution'});assert.equal(retry.status,200,JSON.stringify(retry.body));
  const r=await claim(shared,'audit-hand-runner','codex');assert.equal(r.status,200);assert.equal(r.body.task.id,t.id);assert.equal(r.body.task.last_runtime,null);assert.equal(evidence(r.body.task).ok,false);
 });
+test('设置只在显式读取时检查接入，探测和旧交付不冒充真实任务回传',async()=>{
+ const ordinary=await api(operator,'GET','/api/workers');
+ assert.ok(ordinary.body.runtimes.every(r=>!Object.hasOwn(r,'readiness')));
+ const inspected=await api(operator,'GET','/api/workers?readiness=1');assert.equal(inspected.status,200);
+ for(const runtime of inspected.body.runtimes){
+  assert.equal(runtime.readiness.enabled,true);assert.equal(runtime.readiness.command_configured,true);
+  assert.equal(runtime.readiness.installation,'available','夹具只证明命令文件存在，不证明它是可用模型');
+ }
+ assert.ok(inspected.body.workers.every(w=>w.runtime_verifications.length===0),'旧 report.done 没有宿主启动记录，仍待核实');
+ assert.equal(JSON.stringify(inspected.body).includes(TMP),false,'不返回私有命令路径');
+});
+test('受管启动记录绑定当前身份和尝试，只展示进程，不推进任务或冒充模型响应',async()=>{
+ const t=await card('alpha'),token=seats.get('alpha');
+ const claimed=await claim(token,'alpha','claude');assert.equal(claimed.body.task.id,t.id);
+ const task=claimed.body.task,runs=await api(operator,'GET',`/api/tasks/${t.id}/runs`),run=runs.body.runs.find(r=>r.run_id===task.run_id);
+ const body={worker:'alpha',run_id:task.run_id,agent_instance_id:run.agent_instance_id,runtime:'claude',attempt:task.attempts,pid:12345,model:'claude-opus-5',effort:'high'},path=`/api/tasks/${t.id}/process-started`;
+ for(const [unauthorized,status] of [[operator,403],[shared,409],[readFileSync(join(TMP,'review_token'),'utf8').trim(),403]])
+  assert.equal((await api(unauthorized,'POST',path,body)).status,status,'共享凭据借用受管名称仍按既有身份保护返回409');
+ assert.equal((await api(seats.get('beta'),'POST',path,body)).status,409);
+ for(const change of [{run_id:randomUUID()},{agent_instance_id:randomUUID()},{attempt:task.attempts+1},{runtime:'codex'}])
+  assert.equal((await api(token,'POST',path,{...body,...change})).status,409,JSON.stringify(change));
+ for(const change of [{pid:0},{pid:'12345'},{model:'未声明模型'},{effort:'未声明强度'}])
+  assert.equal((await api(token,'POST',path,{...body,...change})).status,400,JSON.stringify(change));
+ const before=(await api(operator,'GET',`/api/tasks/${t.id}`)).body.task;
+ const saved=await api(token,'POST',path,body);assert.equal(saved.status,200,JSON.stringify(saved.body));
+ assert.equal((await api(token,'POST',path,body)).status,200,'同一宿主观察重送不新增记录');
+ const after=(await api(operator,'GET',`/api/tasks/${t.id}`)).body.task;
+ assert.equal(after.status,before.status);assert.equal(after.attempts,before.attempts);assert.equal(after.lease_until,before.lease_until);assert.equal(after.aggregate_version,before.aggregate_version);
+ assert.equal(after.execution_trace.process_state,'observed');assert.equal(after.execution_trace.process_started_at,saved.body.recorded_at);
+ assert.equal(after.execution_trace.work_state,'unverified');assert.equal(after.execution_trace.last_activity_at,null);
+ const history=(await api(operator,'GET',`/api/task-events?task_id=${t.id}`)).body.events;
+ assert.equal(history.filter(e=>e.kind==='process_started').length,1);
+ assert.equal((await api(operator,'GET','/api/workers?readiness=1')).body.workers.find(w=>w.line==='alpha').runtime_verifications.length,0,'仅启动仍不能算结果回传');
+ assert.equal((await api(token,'POST',`/api/tasks/${t.id}/report`,{worker:'alpha',run_id:task.run_id,outcome:'done',evidence:'合成回传，不调用模型'})).status,200);
+ const verification=(await api(operator,'GET','/api/workers?readiness=1')).body.workers.find(w=>w.line==='alpha').runtime_verifications;
+ assert.deepEqual(verification,[{runtime:'claude',model:body.model,effort:body.effort,state:'result_returned',task_id:t.id,observed_at:saved.body.recorded_at,source:'worker_loop'}]);
+ assert.equal((await api(token,'POST',path,{...body,pid:12346})).status,409,'交付后的旧进程记录拒绝落盘');
+});
+test('最终尝试没有启动记录时，失败的早期档位不成为成功回传记录',async()=>{
+ const t=await card('beta'),token=seats.get('beta'),claimed=await claim(token,'beta','codex'),task=claimed.body.task;
+ const runs=(await api(operator,'GET',`/api/tasks/${t.id}/runs`)).body.runs,run=runs.find(r=>r.run_id===task.run_id);
+ const body={worker:'beta',run_id:task.run_id,agent_instance_id:run.agent_instance_id,runtime:'codex',attempt:task.attempts,pid:23456,model:'gpt-5.3-codex-spark',effort:'xhigh'};
+ assert.equal((await api(token,'POST',`/api/tasks/${t.id}/process-started`,body)).status,200);
+ assert.equal((await api(token,'POST',`/api/tasks/${t.id}/attempt`,{worker:'beta',run_id:task.run_id})).status,200);
+ assert.equal((await api(token,'POST',`/api/tasks/${t.id}/report`,{worker:'beta',run_id:task.run_id,outcome:'done',evidence:'最终尝试的合成结果'})).status,200);
+ assert.equal((await api(operator,'GET','/api/workers?readiness=1')).body.workers.find(w=>w.line==='beta').runtime_verifications.length,0);
+});
 test('P4 stopping a seat revokes its credential',async()=>{
  const token=seats.get('alpha');assert.ok(token);const r=await api(operator,'POST','/api/workers/alpha/stop',{});assert.equal(r.status,200);
  assert.equal((await claim(token,'alpha','codex')).status,401);

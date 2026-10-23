@@ -29,6 +29,7 @@ import {openFleetActions,loadFleetActionsConfig} from "./fleet-actions.mjs";
 import {PeerError} from "./federation/protocol.mjs";
 import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
+import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -2291,7 +2292,7 @@ const readSmallJson = (req, max = 1024) => new Promise((resolve) => {
 
 const WORKER_WRITES = (p) =>
   p === "/api/claim" || p === "/api/tasks" || p === "/api/pools/exhausted" ||
-  /^\/api\/tasks\/\d+\/(?:report|heartbeat|attempt)$/.test(p) ||
+  /^\/api\/tasks\/\d+\/(?:report|heartbeat|attempt|process-started)$/.test(p) ||
   /^\/api\/context\/[a-z0-9_-]+\/compact$/.test(p) ||
   /^\/api\/workers\/[a-z0-9_-]+\/forked$/.test(p);
 const REVIEW_WRITES = (p) =>
@@ -2827,15 +2828,21 @@ const server = http.createServer(async (req, res) => {
       return json(res, 201, { line: added, lines: LINES, line_hints: LINE_HINT, line_labels: LINE_LABEL, line_accept: LINE_ACCEPT,
                               line_roles: LINE_ROLE, impl_lines: IMPL_LINES });
     }
-    if (m === "GET" && p === "/api/workers")
-      return json(res, 200, { workers: SUPERVISED.map(workerInfo), lines: LINES,
+    if (m === "GET" && p === "/api/workers") {
+      const inspect = url.searchParams.get("readiness") === "1";
+      const listed = SUPERVISED.map(line => {
+        const info = workerInfo(line);
+        if(inspect)info.runtime_verifications=runtimeVerifications(db,Array.from({length:MAX_PARALLEL},(_,i)=>slotKey(line,i+1)));
+        return info;
+      });
+      return json(res, 200, { workers: listed, lines: LINES,
                               line_hints: LINE_HINT, line_labels: LINE_LABEL, line_accept: LINE_ACCEPT, routes: ROUTES,
                               // v0.22: id → identity (null = plain line); the implement subset the decomposer sees.
                               line_roles: LINE_ROLE, impl_lines: IMPL_LINES,
                               // v0.23: the review lines (pipeline targets) and the anti-affinity policy.
                               review_lines: REVIEW_LINES, review_anti_affinity: REVIEW_ANTI_AFFINITY,
                               models: MODELS, efforts: EFFORTS, weights: WEIGHTS,
-                              max_parallel: MAX_PARALLEL, runtimes: RUNTIMES,
+                              max_parallel: MAX_PARALLEL, runtimes: inspect ? RUNTIMES.map(r=>({...r,readiness:executorReadiness(r,{enabled:seatUnlocked(r)})})) : RUNTIMES,
                               decompose_models: DECOMPOSE_MODELS,
                               // Handoff targets as id/label/rules ONLY — their
                               // directories never go over the wire.
@@ -2851,6 +2858,7 @@ const server = http.createServer(async (req, res) => {
                               claim_misses: [...claimMiss.entries()]
                                 .map(([worker, v]) => ({ worker, ...v }))
                                 .sort((a, b) => b.n - a.n) });
+    }
     // Runtime REALITY CHECK. ⭐ Measured with the same env the server really spawns
     //   with (slotEnv shared). Passing from a desktop shell means nothing if the
     //   child's env/cwd/PATH differ. ⚠ Probes fire even on LOCKED seats (read-only,
@@ -2979,7 +2987,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|report|resolve|update|autoreview|pin|release|archive|reopen|runs))?$/);
+    const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|report|resolve|update|autoreview|pin|release|archive|reopen|runs))?$/);
     if (mt) {
       const id = Number(mt[1]);
       const action = mt[2];
@@ -3021,6 +3029,20 @@ const server = http.createServer(async (req, res) => {
       if (action === "heartbeat") {
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: b.lease_minutes });
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side
+      }
+      if (action === "process-started") {
+        // 仅受管宿主的独立凭据可记录；操作员、共享 worker 和模型文本不能代填观察。
+        if(boardRole!=="worker"||!req.workerSeat)
+          return json(res,403,{error:"进程启动记录仅接受本次受管执行器的独立凭据"});
+        if(b.runtime!==req.workerSeat.runtime)
+          throw store.err(store.ERR.CONFLICT,"启动记录的执行器与凭据不一致");
+        const seat=seatOf(b.runtime);
+        if(!seat?.models?.some(model=>model.id===b.model)||!effortsFor(b.runtime,b.model).includes(b.effort))
+          throw store.err(store.ERR.BAD_INPUT,"启动记录的模型或推理强度不在现有允许范围");
+        const r=store.recordProcessStarted(db,{id,worker:b.worker,runId:b.run_id,agentInstanceId:b.agent_instance_id,
+          runtime:b.runtime,attempt:b.attempt,pid:b.pid,model:b.model,effort:b.effort});
+        emit("task.process_started",{id});
+        return json(res,200,r);
       }
       if (action === "report") {
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });

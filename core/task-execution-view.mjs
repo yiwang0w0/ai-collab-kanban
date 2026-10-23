@@ -12,6 +12,20 @@ function object(text,expectedDigest=null){
  }catch{return null;}
 }
 
+/** 读取既有受管宿主记录，供任务追溯与设置状态共用同一身份判据。 */
+export function readLegacyProcessStart(db,run,{attempt=null}={}){
+ if(!run||run.imported||!Number.isSafeInteger(run.task_id)||!["claude","codex"].includes(run.runtime)||typeof run.agent_instance_id!=="string"||!exists(db,"task_events"))return null;
+ if(attempt!==null&&!Number.isSafeInteger(attempt))return null;
+ for(const event of db.prepare("SELECT id,at,actor,detail FROM task_events WHERE task_id=? AND kind='process_started' ORDER BY id").iterate(run.task_id)){
+  const detail=object(event.detail);
+  if(detail?.source!=="worker_loop"||detail.run_id!==run.run_id||detail.task_uid!==run.task_uid||detail.owner_node_id!==run.owner_node_id||event.actor!==run.worker||detail.agent_instance_id!==run.agent_instance_id||detail.runtime!==run.runtime)continue;
+  if(!Number.isSafeInteger(detail.pid)||detail.pid<=0||!Number.isSafeInteger(detail.attempt)||detail.attempt<run.first_attempt||detail.attempt>run.last_attempt||typeof detail.model!=="string"||!detail.model.trim()||typeof detail.effort!=="string"||!detail.effort.trim()||!at(event.at))continue;
+  if(attempt!==null&&detail.attempt!==attempt)continue;
+  return {id:event.id,at:event.at,detail};
+ }
+ return null;
+}
+
 /** 只读展示：领取、启动许可与进程观察各自保留含义，不授予执行或重派权限。 */
 export function taskExecutionView(db,t){
  const view={run_id:null,released_at:null,claimed_at:null,launch_requested_at:null,process_started_at:null,last_activity_at:null,ended_at:null,process_state:"unverified",work_state:"unverified"};
@@ -27,7 +41,7 @@ export function taskExecutionView(db,t){
   }
  }
  if(typeof t.run_id!=="string"||!exists(db,"task_runs"))return view;
- const run=db.prepare("SELECT run_id,task_id,task_uid,owner_node_id,worker,runtime,agent_instance_id,imported,state,ended_at FROM task_runs WHERE run_id=? AND task_id=? AND task_uid=? AND owner_node_id=?").get(t.run_id,t.id,t.task_uid,t.owner_node_id);
+ const run=db.prepare("SELECT run_id,task_id,task_uid,owner_node_id,worker,runtime,agent_instance_id,first_attempt,last_attempt,imported,state,ended_at FROM task_runs WHERE run_id=? AND task_id=? AND task_uid=? AND owner_node_id=?").get(t.run_id,t.id,t.task_uid,t.owner_node_id);
  if(!run)return view;
  view.run_id=run.run_id;
  if(run.state==="ended")view.ended_at=at(run.ended_at);
@@ -39,9 +53,18 @@ export function taskExecutionView(db,t){
    if(detail?.run_id===run.run_id&&detail.status==="in_progress"&&event.actor===run.worker){view.claimed_at=at(event.at);break;}
   }
  }
- if(!exists(db,"broker_dispatches"))return view;
+ const legacyProcessView=()=>{
+  // 仅采用受管 worker 宿主的本轮记录；领取、心跳和模型原文都不能代替它。
+  const started=readLegacyProcessStart(db,run);
+  if(started){view.process_state="observed";view.process_started_at=started.at;}
+  // 宿主创建 CLI 进程并不证明模型已响应，更不是任务完成或验收。
+  return view;
+ };
+ if(!exists(db,"broker_dispatches"))return legacyProcessView();
  const dispatch=db.prepare("SELECT dispatch_id,task_id,task_uid,node_id,run_id,worker,agent_instance_id,principal_id,launch_at,result_json,result_digest FROM broker_dispatches WHERE run_id=?").get(run.run_id);
- if(!dispatch||dispatch.task_id!==t.id||dispatch.task_uid!==t.task_uid||dispatch.node_id!==t.owner_node_id||dispatch.worker!==run.worker||dispatch.agent_instance_id!==run.agent_instance_id)return view;
+ if(!dispatch)return legacyProcessView();
+ // Broker 运行只信既有启动/观察回执；坏回执不能被 legacy 事件洗成已观察。
+ if(dispatch.task_id!==t.id||dispatch.task_uid!==t.task_uid||dispatch.node_id!==t.owner_node_id||dispatch.worker!==run.worker||dispatch.agent_instance_id!==run.agent_instance_id)return view;
  // launch_at 只证明一次性启动许可已消费，不证明进程创建成功。
  view.launch_requested_at=at(dispatch.launch_at);
  if(!view.launch_requested_at||!exists(db,"broker_execution_records"))return view;

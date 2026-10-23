@@ -318,6 +318,13 @@
   #cfg legend .ax{margin-left:8px;padding:0 6px;font-size:10px;color:var(--bad)}
   #cfg .duo{display:flex;gap:7px}
   #cfg .duo>span{flex:1;min-width:0}
+  #cfg .runtime-state{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-1) var(--sp-2);margin:var(--sp-2) 0 var(--sp-1);font-size:var(--fs-sm)}
+  #cfg .runtime-state dt{color:var(--dim);font-weight:400}
+  #cfg .runtime-state dd{margin:0;overflow-wrap:anywhere}
+  #cfg .runtime-next{margin:var(--sp-1) 0;color:var(--dim);font-size:var(--fs-sm)}
+  #cfg .runtime-check{display:flex;gap:var(--sp-1);flex-wrap:wrap}
+  #cfg .runtime-check button{font-size:var(--fs-sm);padding:var(--sp-1) var(--sp-2)}
+  #cfg .runtime-scope{margin:var(--sp-2) 0 0;color:var(--dim);font-size:var(--fs-sm)}
   #cfg #cfg-add{width:100%;margin-top:2px}
   .pick{position:fixed;z-index:9;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm);
         padding:6px;display:none;gap:4px;flex-direction:column;box-shadow:0 8px 24px rgba(0,0,0,.45)}
@@ -2321,6 +2328,35 @@ let cfgLine = null, cfgAgents = [], cfgLegacy = false, cfgSingle = false, cfgAnc
 // CAS revision: SAVE WITH THE REV YOU READ — without it, two panels doing
 // read-modify-write silently overwrite each other.
 let cfgRev = 0;
+const cfgProbes = new Map();
+let cfgReadiness = null, cfgReadinessRequest = 0;
+
+// ── runtime-readiness(pure;tests/panelcopytest.mjs) ──
+function runtimeReadiness(seat = {}, agent = {}, probe = null, verifications = []){
+  const readiness = seat.readiness || {};
+  const installation = readiness.installation === "available" || probe?.state === "passed"
+    ? "已检测" : readiness.installation === "unavailable" ? "未找到 CLI" : "待核实";
+  const configured = readiness.command_configured === true ? "已配置"
+    : readiness.command_configured === false ? "待配置" : "待核实";
+  const enabled = readiness.enabled ?? (typeof seat.disabled === "boolean" ? !seat.disabled : null);
+  const verification = (Array.isArray(verifications) ? verifications : []).find((v) =>
+    v?.state === "result_returned" && v.source === "worker_loop" &&
+    v.runtime === (agent.runtime || "claude") && v.model === agent.model && v.effort === agent.effort &&
+    Number.isSafeInteger(v.task_id) && v.task_id > 0);
+  const realTask = verification ? `已回传结果（任务 #${verification.task_id}）` : "待核实";
+  const next = probe?.state === "checking" ? "正在检查 CLI 与参数，不调用模型。"
+    : probe?.state === "failed" ? "接入检查未通过，查看诊断后修正本机配置。"
+    : readiness.command_configured === false ? "先在本机配置 CLI，再检查接入。"
+    : installation === "待核实" || installation === "未找到 CLI" ? "先检查接入，不会调用模型。"
+    : enabled === false ? "由操作者在本机确认启用；检查通过不会自动解禁。"
+    : !verification ? "真实任务前先确认工作目录与预算；接入检查不能替代真实任务。"
+    : "已有同配置的结果回传；不代表人工验收或当前登录有效。";
+  return { installation, configured, enabled: enabled === true ? "已启用" : enabled === false ? "未启用" : "待核实", realTask, next };
+}
+function runtimeProbeKey(line, agent){
+  return JSON.stringify([line, agent.runtime || "claude", agent.model, agent.effort]);
+}
+// ── /runtime-readiness ──
 
 function openCfg(anchor, line){
   const w = workers.find((x) => x.line === line) || {};
@@ -2334,6 +2370,32 @@ function openCfg(anchor, line){
     : st.agents.map((a) => ({ ...a }));
   cfgRev = Number(st.rev || 0);
   cfgAnchor = anchor;
+  cfgProbes.clear();  // 重新打开后只采用本次检查，不用旧探测覆盖新的安装事实。
+  cfgReadiness = { state: "loading", line };
+  renderCfg();
+  loadCfgReadiness(line, JSON.stringify(cfgAgents), ++cfgReadinessRequest);
+}
+
+async function loadCfgReadiness(line, signature, request){
+  try {
+    const response = await fetch("/api/workers?readiness=1");
+    const fresh = await response.json();
+    if (!response.ok) throw new Error(fresh.error || `HTTP ${response.status}`);
+    if (request !== cfgReadinessRequest || line !== cfgLine || !cfg.classList.contains("show")) return;
+    if (signature !== JSON.stringify(cfgAgents)) {
+      cfgReadiness = { state: "stale", line }; renderCfg(); return;
+    }
+    const runtimeFacts = fresh.runtimes || [];
+    const runtimeVerifications = (fresh.workers || []).find((w) => w.line === line)?.runtime_verifications || [];
+    // 只补展示事实，不覆盖模型值域、已编辑的智能体或 CAS 版本。
+    RUNTIMES = RUNTIMES.map((seat) => ({ ...seat, readiness: runtimeFacts.find((r) => r.id === seat.id)?.readiness }));
+    const worker = workers.find((w) => w.line === line);
+    if (worker) worker.runtime_verifications = runtimeVerifications;
+    cfgReadiness = { state: "loaded", line, runtimes: runtimeFacts, verifications: runtimeVerifications };
+  } catch (error) {
+    if (request !== cfgReadinessRequest || line !== cfgLine || !cfg.classList.contains("show")) return;
+    cfgReadiness = { state: "failed", line, error: copyError(error) };
+  }
   renderCfg();
 }
 
@@ -2356,6 +2418,11 @@ function renderCfg(){
   const blocks = cfgAgents.map((a, i) => {
     const dom = seatEfforts(a.runtime || "claude", a.model);
     const ei = Math.max(0, dom.indexOf(a.effort));
+    const seat = RUNTIMES.find((r2) => r2.id === (a.runtime || "claude")) || {};
+    const facts = cfgReadiness?.line === cfgLine && cfgReadiness.state === "loaded" ? cfgReadiness : null;
+    const runtime = facts ? { ...seat, readiness: facts.runtimes.find((r2) => r2.id === (a.runtime || "claude"))?.readiness } : seat;
+    const probe = cfgProbes.get(runtimeProbeKey(cfgLine, a));
+    const readiness = runtimeReadiness(runtime, a, probe, facts?.verifications || w.runtime_verifications);
     return `
     <fieldset class="agent">
       <legend>智能体 ${i + 1}<span class="sub">${i === 0 ? "持续会话·继承记忆" : "逐卡新会话"}</span>${i > 0 ? `<button class="ax" data-del="${i}" title="删除此智能体">✕</button>` : ""}</legend>
@@ -2379,10 +2446,23 @@ function renderCfg(){
         //   does nothing when pressed — the worst kind of UI.
         : `<div class="ends"><span>此模型固定单档(座席裁定)</span></div>`}
       <label class="chk" style="margin-top:5px"><input type="checkbox" data-i="${i}" data-k="window"${a.window ? " checked" : ""}> 用独立控制台窗口启动</label>
+      <dl class="runtime-state" aria-label="智能体 ${i + 1}的接入状态">
+        <dt>安装</dt><dd>${esc(readiness.installation)}</dd>
+        <dt>配置</dt><dd>${esc(readiness.configured)}</dd>
+        <dt>启用</dt><dd title="执行器许可，不代表执行线已经启动">${esc(readiness.enabled)}</dd>
+        <dt>真实任务</dt><dd>${esc(readiness.realTask)}</dd>
+      </dl>
+      <p class="runtime-next" role="status">${esc(readiness.next)}</p>
+      <div class="runtime-check"><button type="button" data-probe-i="${i}"${probe?.state === "checking" ? " disabled" : ""}>${probe?.state === "checking" ? "检查中…" : "检查接入（不调用模型）"}</button>${probe?.detail ? `<button type="button" data-probe-detail="${i}">查看诊断</button>` : ""}</div>
     </fieldset>`;
   }).join("");
   cfg.innerHTML = `
     <h4 style="color:${lineColor(cfgLine)}">${esc(lineLabel(cfgLine))}</h4>
+    <p class="runtime-scope">执行线：${w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止"}。执行器启用与执行线启动分开记录。</p>
+    <p class="runtime-scope">沿用本机已有执行器与模型配置；检查接入不领取任务、不验证登录，也不调用模型。</p>
+    ${cfgReadiness?.state === "loading" ? '<p class="runtime-scope" role="status">正在读取接入状态…</p>'
+      : cfgReadiness?.state === "stale" ? '<p class="runtime-scope" role="status">设置已改变；重新打开设置可读取最新接入状态。</p>'
+      : cfgReadiness?.state === "failed" ? `<p class="runtime-scope" role="status">接入状态暂未读到：${esc(cfgReadiness.error)}。重新打开设置可重试。</p>` : ""}
     ${blocks}
     ${cfgSingle ? `<div class="ends"><span>${esc(lineLabel(cfgLine))}仅配置一个智能体</span></div>` : `
     <button id="cfg-add"${cfgAgents.length >= (MAXP || 1) || cfgLegacy ? " disabled" : ""}>＋ 添加智能体</button>
@@ -2392,6 +2472,26 @@ function renderCfg(){
   cfg.style.left = Math.min(r.left - 90, innerWidth - 320) + "px";
   cfg.style.top = (r.bottom + 6) + "px";
   cfg.classList.add("show");
+}
+
+async function probeCfgAgent(index){
+  const agent = cfgAgents[index]; if (!agent || !cfgLine) return;
+  const line = cfgLine, snapshot = { ...agent }, key = runtimeProbeKey(line, snapshot);
+  if (cfgProbes.get(key)?.state === "checking") return;
+  cfgProbes.set(key, { state: "checking" }); renderCfg();
+  try {
+    const result = await post(`/api/workers/${line}/probe-runtime`, {
+      runtime: snapshot.runtime || "claude", model: snapshot.model, effort: snapshot.effort,
+      live: false, timeout_ms: 30_000,
+    });
+    const passed = result.ok === true && result.live === false;
+    cfgProbes.set(key, { state: passed ? "passed" : "failed",
+      detail: [passed ? "接入检查通过，未调用模型；登录与真实任务仍需另行验证。" : "接入检查未通过，不据此推断是否已安装。", result.out, result.err].filter(Boolean).join("\n") });
+  } catch (error) {
+    cfgProbes.set(key, { state: "failed", detail: "接入检查未完成：" + copyError(error) });
+  }
+  // 只更新仍在查看的设置；模型或执行器已切换时，旧检查不覆盖新状态。
+  if (cfgLine === line && cfg.classList.contains("show")) renderCfg();
 }
 
 /** Save = the whole agents[] submitted. On failure, roll back to the server's real
@@ -2473,6 +2573,15 @@ cfg.addEventListener("input", (e) => {
 });
 
 cfg.addEventListener("click", (e) => {
+  const probe = e.target.closest("button[data-probe-i]");
+  if (probe){ if (!probe.disabled) probeCfgAgent(Number(probe.dataset.probeI)); return; }
+  const diagnostic = e.target.closest("button[data-probe-detail]");
+  if (diagnostic){
+    const agent = cfgAgents[Number(diagnostic.dataset.probeDetail)];
+    const detail = agent && cfgProbes.get(runtimeProbeKey(cfgLine, agent))?.detail;
+    if (detail) openModal("执行器接入诊断（未调用模型）", detail);
+    return;
+  }
   const del = e.target.closest("button[data-del]");
   if (del){
     cfgAgents.splice(Number(del.dataset.del), 1);

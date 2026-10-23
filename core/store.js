@@ -1811,6 +1811,45 @@ function heartbeat(db, { id, worker, leaseMin = DEFAULT_LEASE_MIN, runId }) {
  *   outcome='wait' -> waiting/decision (own attempts exhausted; the reason goes in
  *                                       evidence)
  */
+/** 宿主已创建进程的事实记录；不续租、不推进状态，也不证明模型已响应。 */
+function recordProcessStarted(db, { id, worker, runId, agentInstanceId, runtime, attempt, pid, model, effort }) {
+  if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(attempt) || attempt <= 0 ||
+      !["claude", "codex"].includes(runtime) || typeof model !== "string" || !model.trim() || model.length > 160 ||
+      typeof effort !== "string" || !effort.trim() || effort.length > 32 ||
+      typeof agentInstanceId !== "string" || !UUID_RE.test(agentInstanceId))
+    throw err(ERR.BAD_INPUT, "启动记录需要有效的进程、尝试次数、执行器和智能体身份");
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT store_process_started");
+  try {
+    const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
+    if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
+    requireRun(t, runId);
+    const run = db.prepare("SELECT * FROM task_runs WHERE run_id=?").get(runId);
+    if (t.status !== "in_progress" || t.worker !== worker || t.archived_at || !(t.lease_until > Date.now()) ||
+        !run || run.state !== "running" || run.imported || run.worker !== worker || run.runtime !== runtime ||
+        run.agent_instance_id !== agentInstanceId || run.task_id !== t.id || run.task_uid !== t.task_uid ||
+        run.owner_node_id !== t.owner_node_id || attempt !== t.attempts || attempt !== run.last_attempt)
+      throw err(ERR.CONFLICT, "启动记录不属于当前有效租约、执行实例或尝试次数");
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='broker_dispatches'").get() &&
+        db.prepare("SELECT 1 FROM broker_dispatches WHERE run_id=?").get(runId))
+      throw err(ERR.CONFLICT, "受控分派仍使用原启动回执，不接受旧循环记录");
+    const detail = { source: "worker_loop", run_id: runId, task_uid: t.task_uid, owner_node_id: t.owner_node_id,
+      agent_instance_id: agentInstanceId, runtime, attempt, pid, model, effort };
+    let existing = null;
+    for (const e of db.prepare("SELECT id,at,detail FROM task_events WHERE task_id=? AND kind='process_started' ORDER BY id DESC").iterate(t.id)) {
+      const previous = JSON.parse(e.detail);
+      if (JSON.stringify(previous) === JSON.stringify(detail)) { existing = e; break; }
+    }
+    const eventId = existing?.id ?? appendEvent(db, { taskId: t.id, kind: "process_started", actor: worker, detail });
+    const recorded = existing || db.prepare("SELECT id,at FROM task_events WHERE id=?").get(eventId);
+    db.exec(own ? "COMMIT" : "RELEASE store_process_started");
+    return { id: t.id, run_id: runId, recorded_at: recorded.at };
+  } catch (e) {
+    try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO store_process_started; RELEASE store_process_started"); } catch {}
+    throw e;
+  }
+}
+
 function report(db, { id, worker, outcome, evidence = "", runId }) {
   if (!["done", "wait"].includes(outcome)) throw err(ERR.BAD_INPUT, "outcome 必须是 done 或 wait");
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
@@ -3102,7 +3141,7 @@ function openChildrenOnLines(db, parentId, lines) {
 module.exports = {
   UUID_RE, migrateLifecycle, resolveWithPreparation,
   localNode, renameNode, assertLocalIdentityInput, requireRun, runs, requireExpectedVersion, assertExpectedVersion,
-  open, migrate, add, claim, heartbeat, bumpAttempt, report, resolve, update, setReleased, archive,
+  open, migrate, add, claim, heartbeat, recordProcessStarted, bumpAttempt, report, resolve, update, setReleased, archive,
   addRequest, getRequest, listRequests, ackRequest, doneRequest, REQUEST_KINDS, REQUEST_STATUS,
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,
