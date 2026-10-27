@@ -1422,9 +1422,10 @@ def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _
 def run_task_process(t, worker, attempt, runtime, model, effort, argv, env, *, input=None,
                      _popen=None, _call=None, _log=None):
     """保留 run 的管道/超时语义，只在进程创建成功后补一条宿主观察。"""
+    process_options = ({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}) if PROFILE_MODE else {}
     with (_popen or subprocess.Popen)(argv, stdin=subprocess.PIPE if input is not None else None,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                                     encoding="utf-8", errors="replace", env=env, cwd=REPO) as process:
+                                     encoding="utf-8", errors="replace", env=env, cwd=REPO, **process_options) as process:
         started = time.monotonic()
         record_process_started(t, worker, attempt, runtime, model, effort, process.pid,
                                _call=_call, _log=_log)
@@ -1432,8 +1433,12 @@ def run_task_process(t, worker, attempt, runtime, model, effort, argv, env, *, i
             # 记录请求占用本次超时预算，不延长模型允许的运行时间。
             stdout, stderr = process.communicate(input, timeout=max(0, TIMEOUT - (time.monotonic() - started)))
         except subprocess.TimeoutExpired as e:
-            process.kill()
-            e.stdout, e.stderr = process.communicate()
+            if PROFILE_MODE:
+                stop_api_tree(process)
+                e.stdout, e.stderr = process.communicate(timeout=5)
+            else:
+                process.kill()
+                e.stdout, e.stderr = process.communicate()
             raise
         except BaseException:
             process.kill()
@@ -1529,7 +1534,8 @@ def stop_api_tree(process):
     if os.name == "nt":
         command = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32", "taskkill.exe")
         try:
-            subprocess.run([command, "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=8)
+            subprocess.run([command, "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=8,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
         except Exception:
             pass
     else:

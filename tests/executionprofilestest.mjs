@@ -92,7 +92,7 @@ test("金额控制边界明确：所有显式通道须有预算，GPT API 须确
  assert.throws(()=>load([{id:"gpt-api",provider_spend_limit_confirmed:"yes"}]),{code:"BAD_INPUT"});
  const profiles=apiProfiles(),confirmed=get(profiles,"gpt-api"),snapshot=executionProfileSnapshot(confirmed);
  assert.equal(snapshot.provider_spend_limit_confirmed,true);assert.equal(snapshot.budget_enforcement,"provider_spend_limit_required");assert.notEqual(snapshot.profile_digest,executionProfileSnapshot(waiting).profile_digest);
- const expected={"claude-cli":"cli_controls","codex-cli":"cli_controls","claude-api":"sdk_cost_turn_timeout","gpt-api":"provider_spend_limit_required"};
+ const expected={"claude-cli":"cli_controls","codex-cli":"cli_timeout_only","claude-api":"sdk_cost_turn_timeout","gpt-api":"provider_spend_limit_required"};
  for(const profile of profiles){assert.equal(executionProfileSnapshot(profile).budget_enforcement,expected[profile.id]);assert.equal(profileEnvironment(profile,{env:{...env,WORKER_RATE_MAX_WAITS:"24"},repoRoot,dataDir}).WORKER_RATE_MAX_WAITS,"0");}
  const irrelevant=get(load([{id:"claude-api",provider_spend_limit_confirmed:true}]),"claude-api");assert.equal(irrelevant.provider_spend_limit_confirmed,false);
 });

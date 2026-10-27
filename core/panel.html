@@ -3687,6 +3687,8 @@ function executionBudgetText(budget, enforcement = ""){
   if (!budget || !Number.isFinite(budget.max_cost_usd) || budget.max_cost_usd <= 0 || !Number.isFinite(budget.timeout_sec) || budget.timeout_sec <= 0 || !Number.isSafeInteger(budget.max_turns) || budget.max_turns <= 0)
     return "待你确认金额、时限和轮次；不能派发真实调用";
   const constraint = enforcement === "provider_spend_limit_required" ? "；金额须由供应商项目花费限制约束，本机不提供金额硬封顶" : "";
+  if (enforcement === "cli_timeout_only") return `金额参考 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 单次执行；内部轮次与金额上限无法强制，不能视为已满足 ${budget.max_turns} 轮授权`;
+  if (enforcement === "provider_spend_limit_required") return `金额预算 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 工具步骤预算 ${budget.max_turns}（不是模型请求次数${constraint}）`;
   return `金额预算 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 最多 ${budget.max_turns} 轮（实际扣费以供应商为准${constraint}）`;
 }
 function taskExecutionChoices(line, rows = []){

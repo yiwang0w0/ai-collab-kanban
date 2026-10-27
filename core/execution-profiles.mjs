@@ -4,7 +4,7 @@ import {detectClaude} from "./config-setup.mjs";
 
 const CHANNELS=Object.freeze({
  claude_cli:{runtime:"claude",auth_kind:"subscription",billing_kind:"claude_subscription",budget_enforcement:"cli_controls"},
- codex_cli:{runtime:"codex",auth_kind:"chatgpt",billing_kind:"chatgpt_subscription",budget_enforcement:"cli_controls"},
+ codex_cli:{runtime:"codex",auth_kind:"chatgpt",billing_kind:"chatgpt_subscription",budget_enforcement:"cli_timeout_only"},
  claude_agent_sdk:{runtime:"claude",auth_kind:"api_key",billing_kind:"anthropic_api",budget_enforcement:"sdk_cost_turn_timeout"},
  codex_sdk_api:{runtime:"codex",auth_kind:"api_key",billing_kind:"openai_api",budget_enforcement:"provider_spend_limit_required"},
 });
