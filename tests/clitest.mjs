@@ -26,12 +26,13 @@ const run = (script, args = [], env = {}) => {
 };
 const NL = String.fromCharCode(10);
 
-// ── ① package.json: zero deps, scripts point at files that exist ────────────
+// ── ① package.json：仅允许本轮固定的官方 SDK，脚本必须指向实际文件 ────────────
 console.log(NL + "[① package.json]");
 {
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
-  ok("no dependencies of any kind (zero-dependency is a deployment property)",
-     !pkg.dependencies && !pkg.devDependencies && !pkg.peerDependencies);
+  ok("开发执行器仅依赖固定的官方 Codex SDK，无额外开发或对等依赖",
+     JSON.stringify(pkg.dependencies) === JSON.stringify({ "@openai/codex-sdk": "0.164.0" }) &&
+     !pkg.devDependencies && !pkg.peerDependencies);
   ok("engines.node is declared", pkg.engines?.node === ">=24.0.0", pkg.engines?.node);
   ok("no \"type\":\"module\" (core/store.js is CommonJS; .mjs files are explicit)", pkg.type === undefined);
   const missingFiles = (scripts) => {
