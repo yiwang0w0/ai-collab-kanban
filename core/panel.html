@@ -453,6 +453,7 @@
   .home-new .row{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center}
   .home-new input,.home-new textarea{width:100%;box-sizing:border-box}
   .home-new .err{color:var(--bad);font-size:13px;margin:0}
+  .home-new .execution-preview{margin:0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
   .home-status{margin-bottom:var(--sp-3);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md)}
   .hs-line{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);min-width:0}
   .hs-line .dot{flex:none}
@@ -577,6 +578,9 @@
       <textarea id="home-new-desc" rows="3" placeholder="说明(可选):背景、要求、怎样算做完" aria-label="任务说明"></textarea>
       <div class="row"><label for="home-new-line">交给</label><select id="home-new-line"></select>
         <button type="submit" class="pri">创建</button><button type="button" id="home-new-cancel">取消</button></div>
+      <div class="row" id="home-new-execution" hidden><label for="home-new-profile">执行配置</label><select id="home-new-profile" aria-label="任务执行配置"></select>
+        <label for="home-new-model">模型</label><select id="home-new-model" aria-label="任务模型"></select></div>
+      <p class="execution-preview" id="home-new-preview" hidden></p>
       <p class="err" id="home-new-err" hidden></p>
     </form>
   </section>
@@ -2317,6 +2321,7 @@ function renderRig(){
 }
 
 let MODELS = [], EFFORTS = [], RUNTIMES = [], MAXP = 0;  // MAXP=0 ⇒ old server, no parallel
+let EXECUTION_PROFILES = [], CURRENT_WORKSPACE = null;
 const cfg = document.getElementById("cfg");
 
 /* Settings unit = the Agent (slot): each block is CLI + model + effort + own
@@ -2332,20 +2337,23 @@ const cfgProbes = new Map();
 let cfgReadiness = null, cfgReadinessRequest = 0;
 
 // ── runtime-readiness(pure;tests/panelcopytest.mjs) ──
-function runtimeReadiness(seat = {}, agent = {}, probe = null, verifications = []){
+function runtimeReadiness(seat = {}, agent = {}, probe = null, verifications = [], profile = null){
   const readiness = seat.readiness || {};
-  const installation = readiness.installation === "available" || probe?.state === "passed"
+  const api = profile && !["claude_cli", "codex_cli"].includes(profile.channel);
+  const installation = api ? probe?.state === "passed" ? "已检测" : "待核实" : readiness.installation === "available" || probe?.state === "passed"
     ? "已检测" : readiness.installation === "unavailable" ? "未找到 CLI" : "待核实";
-  const configured = readiness.command_configured === true ? "已配置"
+  const configured = profile ? profile.configured === true ? "已配置" : profile.configured === false ? "待配置" : "待核实" : readiness.command_configured === true ? "已配置"
     : readiness.command_configured === false ? "待配置" : "待核实";
-  const enabled = readiness.enabled ?? (typeof seat.disabled === "boolean" ? !seat.disabled : null);
+  const enabled = profile ? profile.enabled : readiness.enabled ?? (typeof seat.disabled === "boolean" ? !seat.disabled : null);
   const verification = (Array.isArray(verifications) ? verifications : []).find((v) =>
     v?.state === "result_returned" && v.source === "worker_loop" &&
     v.runtime === (agent.runtime || "claude") && v.model === agent.model && v.effort === agent.effort &&
+    (v.execution_profile_id || null) === (agent.execution_profile_id || null) &&
     Number.isSafeInteger(v.task_id) && v.task_id > 0);
   const realTask = verification ? `已回传结果（任务 #${verification.task_id}）` : "待核实";
-  const next = probe?.state === "checking" ? "正在检查 CLI 与参数，不调用模型。"
+  const next = probe?.state === "checking" ? "正在检查执行器与参数，不调用模型。"
     : probe?.state === "failed" ? "接入检查未通过，查看诊断后修正本机配置。"
+    : profile?.reason ? profile.reason
     : readiness.command_configured === false ? "先在本机配置 CLI，再检查接入。"
     : installation === "待核实" || installation === "未找到 CLI" ? "先检查接入，不会调用模型。"
     : enabled === false ? "由操作者在本机确认启用；检查通过不会自动解禁。"
@@ -2354,7 +2362,7 @@ function runtimeReadiness(seat = {}, agent = {}, probe = null, verifications = [
   return { installation, configured, enabled: enabled === true ? "已启用" : enabled === false ? "未启用" : "待核实", realTask, next };
 }
 function runtimeProbeKey(line, agent){
-  return JSON.stringify([line, agent.runtime || "claude", agent.model, agent.effort]);
+  return JSON.stringify([line, agent.runtime || "claude", agent.model, agent.effort, ...(agent.execution_profile_id ? [agent.execution_profile_id] : [])]);
 }
 // ── /runtime-readiness ──
 
@@ -2391,7 +2399,8 @@ async function loadCfgReadiness(line, signature, request){
     RUNTIMES = RUNTIMES.map((seat) => ({ ...seat, readiness: runtimeFacts.find((r) => r.id === seat.id)?.readiness }));
     const worker = workers.find((w) => w.line === line);
     if (worker) worker.runtime_verifications = runtimeVerifications;
-    cfgReadiness = { state: "loaded", line, runtimes: runtimeFacts, verifications: runtimeVerifications };
+    cfgReadiness = { state: "loaded", line, runtimes: runtimeFacts, verifications: runtimeVerifications,
+      profiles: fresh.execution_profiles || [], workspace: fresh.workspace || null };
   } catch (error) {
     if (request !== cfgReadinessRequest || line !== cfgLine || !cfg.classList.contains("show")) return;
     cfgReadiness = { state: "failed", line, error: copyError(error) };
@@ -2421,16 +2430,23 @@ function renderCfg(){
     const seat = RUNTIMES.find((r2) => r2.id === (a.runtime || "claude")) || {};
     const facts = cfgReadiness?.line === cfgLine && cfgReadiness.state === "loaded" ? cfgReadiness : null;
     const runtime = facts ? { ...seat, readiness: facts.runtimes.find((r2) => r2.id === (a.runtime || "claude"))?.readiness } : seat;
+    const profiles = facts?.profiles?.length ? facts.profiles : EXECUTION_PROFILES;
+    const profile = profiles.find((p) => p.id === a.execution_profile_id) || null;
+    const apiProfile = profile && !["claude_cli", "codex_cli"].includes(profile.channel);
     const probe = cfgProbes.get(runtimeProbeKey(cfgLine, a));
-    const readiness = runtimeReadiness(runtime, a, probe, facts?.verifications || w.runtime_verifications);
+    const readiness = runtimeReadiness(runtime, a, probe, facts?.verifications || w.runtime_verifications, profile);
     return `
     <fieldset class="agent">
-      <legend>智能体 ${i + 1}<span class="sub">${i === 0 ? "持续会话·继承记忆" : "逐卡新会话"}</span>${i > 0 ? `<button class="ax" data-del="${i}" title="删除此智能体">✕</button>` : ""}</legend>
+      <legend>智能体 ${i + 1}<span class="sub">${apiProfile ? "逐卡独立会话" : i === 0 ? "持续会话·继承记忆" : "逐卡新会话"}</span>${i > 0 ? `<button class="ax" data-del="${i}" title="删除此智能体">✕</button>` : ""}</legend>
+      ${profiles.length ? `<div class="cap">执行配置</div><select data-i="${i}" data-k="execution_profile_id" aria-label="智能体 ${i + 1}的执行配置">
+        <option value=""${!a.execution_profile_id ? " selected" : ""}>沿用现有 CLI（兼容配置）</option>
+        ${a.execution_profile_id && !profile ? `<option value="${esc(a.execution_profile_id)}" selected>原执行配置待核实</option>` : ""}
+        ${profiles.map((p) => `<option value="${esc(p.id)}"${p.id === a.execution_profile_id ? " selected" : ""}>${esc(p.label)}${p.enabled === false ? "（未启用）" : !p.ready ? "（待配置）" : ""}</option>`).join("")}</select>` : ""}
       <div class="duo">
-        <span><div class="cap">命令行程序（CLI）</div>
-      <select data-i="${i}" data-k="runtime" aria-label="命令行程序">
+        <span><div class="cap">${profile ? "执行器" : "命令行程序（CLI）"}</div>
+      <select data-i="${i}" data-k="runtime" aria-label="命令行程序"${profile ? " disabled" : ""}>
             ${(RUNTIMES.length ? RUNTIMES : [{ id: "claude", label: "Claude Code" }]).map((r2) =>
-              `<option value="${r2.id}"${(a.runtime || "claude") === r2.id ? " selected" : ""}${r2.disabled ? " disabled" : ""}>${esc(r2.label)}</option>`).join("")}
+              `<option value="${r2.id}"${(a.runtime || "claude") === r2.id ? " selected" : ""}${r2.disabled && !(apiProfile && profile.runtime === r2.id) ? " disabled" : ""}>${esc(apiProfile && profile.runtime === r2.id ? r2.id === "codex" ? "Codex 开发智能体" : "Claude 开发智能体" : r2.label)}</option>`).join("")}
           </select></span>
         <span><div class="cap">模型名称</div>
           <select data-i="${i}" data-k="model" aria-label="模型名称">
@@ -2447,6 +2463,7 @@ function renderCfg(){
         : `<div class="ends"><span>此模型固定单档(座席裁定)</span></div>`}
       <label class="chk" style="margin-top:5px"><input type="checkbox" data-i="${i}" data-k="window"${a.window ? " checked" : ""}> 用独立控制台窗口启动</label>
       <dl class="runtime-state" aria-label="智能体 ${i + 1}的接入状态">
+        ${profile ? `<dt>通道</dt><dd>${esc(executionChannelName(profile.channel))}</dd><dt>认证</dt><dd>${esc(executionAuthName(profile.auth_kind))}</dd><dt>计费</dt><dd>${esc(executionBillingName(profile.billing_kind))}</dd><dt>预算</dt><dd>${esc(executionBudgetText(profile.budget, profile.budget_enforcement))}</dd>` : ""}
         <dt>安装</dt><dd>${esc(readiness.installation)}</dd>
         <dt>配置</dt><dd>${esc(readiness.configured)}</dd>
         <dt>启用</dt><dd title="执行器许可，不代表执行线已经启动">${esc(readiness.enabled)}</dd>
@@ -2482,6 +2499,7 @@ async function probeCfgAgent(index){
   try {
     const result = await post(`/api/workers/${line}/probe-runtime`, {
       runtime: snapshot.runtime || "claude", model: snapshot.model, effort: snapshot.effort,
+      ...(snapshot.execution_profile_id ? { execution_profile_id: snapshot.execution_profile_id } : {}),
       live: false, timeout_ms: 30_000,
     });
     const passed = result.ok === true && result.live === false;
@@ -2545,7 +2563,18 @@ cfg.addEventListener("input", (e) => {
     const m = (seat.models || []).find((x) => x.id === ag.model);
     return (m && m.efforts) || seat.efforts || EFFORTS;
   };
-  if (k === "effort"){
+  if (k === "execution_profile_id") {
+    const profile = EXECUTION_PROFILES.find((p) => p.id === el.value);
+    if (el.value && !profile) return;
+    if (profile) {
+      a.execution_profile_id = profile.id; a.runtime = profile.runtime;
+      const seat = RUNTIMES.find((r2) => r2.id === profile.runtime), models = seat?.models || [];
+      if (!models.some((m) => m.id === a.model) && models.length) a.model = models[0].id;
+      const efforts = domOf(a); if (!efforts.includes(a.effort)) a.effort = efforts[efforts.length - 1];
+    } else delete a.execution_profile_id;
+    saveAgents().then((saved) => { if (saved) renderCfg(); });
+  }
+  else if (k === "effort"){
     a.effort = domOf(a)[Number(el.value)] || a.effort;
     const b = el.closest("fieldset").querySelector(".cap b"); if (b) b.textContent = effortName(a.effort);
     el.setAttribute("aria-valuetext", effortName(a.effort));
@@ -2799,6 +2828,7 @@ async function refresh(){
     workers = wres.workers; LINES = wres.lines; MODELS = wres.models; EFFORTS = wres.efforts;
     LINE_HINTS = wres.line_hints || {}; LINE_LABELS = wres.line_labels || {}; LINE_ROLES = wres.line_roles || {}; REVIEW_LINES = wres.review_lines || []; ROUTES = wres.routes || [];
     RUNTIMES = wres.runtimes || []; MAXP = wres.max_parallel || 0;
+    EXECUTION_PROFILES = wres.execution_profiles || []; CURRENT_WORKSPACE = wres.workspace || null;
     DECOMP = wres.decompose_models || [];
     if (r.server_now) skew = r.server_now - Date.now();
     tasks = r.tasks; taskEvents = eres; usageByCard = (ures && ures.cards) || {};
@@ -3053,7 +3083,7 @@ ${r.memo}`);
   //   without a second press disarms). No confirm() dialogs — dialogs train
   //   "confirm" into a reflex; the armed state at least demands a conscious second
   //   press, and disarming is the default direction (not pressing = nothing).
-  if ((a === "approve" || a === "reject" || a === "archive") && b.dataset.armed !== "1") {
+  if ((a === "approve" || a === "reject" || a === "archive" || a === "release") && b.dataset.armed !== "1") {
     const version=byId.get(Number(id))?.aggregate_version;
     if(!Number.isSafeInteger(version)||version<1){await refresh();alert("任务已变化，请刷新后核对再操作");return;}
     captureDraftVersion(id,b);
@@ -3063,7 +3093,7 @@ ${r.memo}`);
     b.classList.add("armed");
     const hasNote = ((noteBox(id, b) || {}).value || "").trim();
     const q = b.dataset.kind === "decide";
-    armSwap(b, a === "archive" ? "再按=确认归档"
+    armSwap(b, a === "release" ? "再按=确认按此配置放行" : a === "archive" ? "再按=确认归档"
               : a === "reject" ? "再按=确认否决"
               : hasNote ? (q ? "再按=同意并交回" : "再按=确认打回") : (q ? "再按=确认同意" : "再按=确认通过"));
     setTimeout(() => { if (b.dataset.armed === "1") {
@@ -3082,13 +3112,8 @@ ${r.memo}`);
       await post(`/api/tasks/${id}/resolve`, { verdict: a, note, resolved_by: "human" });
       verdictDraft.delete(Number(id));
     }
-    // ⚠ These two are UNREACHABLE from the UI (no data-a="release"/"hold" keys exist
-    //   in this file — release moved to the CLI when execution rights were
-    //   consolidated). ⭐ Deliberately kept: the dispatcher is generic data-a → POST
-    //   (removing them shortens nothing), and if the ruling changes someday the
-    //   road is ready. Kept SILENTLY they mislead the next grep into "the UI has
-    //   release" — hence this note.
-    else if (a === "release") await post(`/api/tasks/${id}/release`, { released: true });
+    // 仅显式执行配置的新卡提供放行按钮，沿用原放行接口与首次确认时的版本。
+    else if (a === "release") await post(`/api/tasks/${id}/release`, { released: true, expected_version: Number(b.dataset.version), confirm_execution_profile_digest: b.dataset.executionProfileDigest });
     else if (a === "hold")    await post(`/api/tasks/${id}/release`, { released: false });
     else if (a === "archive") await post(`/api/tasks/${id}/archive`, {expected_version:Number(b.dataset.version)});
     await refresh();
@@ -3648,11 +3673,40 @@ function sideFallback(t, { lineName = (l) => l, wfLabels = {} } = {}) {
 }
 /** 首页「新建任务」的请求体: 标题必填;只能交给已配置的非评审线(评审线审别人的活,不接新任务)。
  *  不带任何内部编号——编号由看板分配。 */
-function newTaskBody({ title = "", description = "", line = "" } = {}, { lines = [], reviewLines = [] } = {}) {
+// ── execution-profile-copy(pure;tests/panelcopytest.mjs) ──
+function executionChannelName(value){
+  return ({ __proto__: null, claude_cli: "Claude CLI", codex_cli: "Codex CLI", claude_agent_sdk: "Claude API（Agent SDK）", codex_sdk_api: "GPT API（Codex SDK）" })[value] || "通道待核实";
+}
+function executionAuthName(value){
+  return ({ __proto__: null, subscription: "订阅登录", claude_subscription: "Claude 订阅登录", chatgpt: "ChatGPT 登录", chatgpt_subscription: "ChatGPT 登录", api_key: "独立 API 凭据" })[value] || "认证方式待核实";
+}
+function executionBillingName(value){
+  return ({ __proto__: null, subscription: "订阅额度", claude_subscription: "Claude 订阅额度", chatgpt_subscription: "ChatGPT 订阅额度", api: "API 用量计费", api_usage: "API 用量计费", anthropic_api: "Claude API 余额（促销归属待账单确认）", openai_api: "OpenAI API 用量计费", api_credits: "API 余额（促销归属待账单确认）", promotional_unverified: "API 余额（促销归属待账单确认）" })[value] || "计费来源待核实";
+}
+function executionBudgetText(budget, enforcement = ""){
+  if (!budget || !Number.isFinite(budget.max_cost_usd) || budget.max_cost_usd <= 0 || !Number.isFinite(budget.timeout_sec) || budget.timeout_sec <= 0 || !Number.isSafeInteger(budget.max_turns) || budget.max_turns <= 0)
+    return "待你确认金额、时限和轮次；不能派发真实调用";
+  const constraint = enforcement === "provider_spend_limit_required" ? "；金额须由供应商项目花费限制约束，本机不提供金额硬封顶" : "";
+  return `金额预算 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 最多 ${budget.max_turns} 轮（实际扣费以供应商为准${constraint}）`;
+}
+function taskExecutionChoices(line, rows = []){
+  const choices = [], seen = new Set();
+  for (const a of rows.find((w) => w.line === line)?.settings?.agents || []) {
+    if (typeof a.runtime !== "string" || typeof a.model !== "string" || typeof a.effort !== "string") continue;
+    const choice = { execution_profile_id: a.execution_profile_id || "", runtime: a.runtime, model: a.model, effort: a.effort };
+    const key = JSON.stringify(choice); if (seen.has(key)) continue; seen.add(key); choices.push(choice);
+  }
+  return choices;
+}
+// ── /execution-profile-copy ──
+function newTaskBody({ title = "", description = "", line = "", execution_profile_id = "", model = "", effort = "" } = {}, { lines = [], reviewLines = [], choices = [] } = {}) {
   const subject = String(title).trim();
   if (!subject) return { error: "先写一个标题:要做什么。" };
   if (!lines.filter((l) => !reviewLines.includes(l)).includes(line)) return { error: "选一条执行线。" };
-  return { body: { subject, description: String(description).trim(), line } };
+  if (execution_profile_id && !choices.some((c) => c.execution_profile_id === execution_profile_id && c.model === model && c.effort === effort))
+    return { error: "选一组当前执行线已配置的执行配置和模型。" };
+  return { body: { subject, description: String(description).trim(), line,
+    ...(execution_profile_id ? { execution_profile_id, model, effort, released: false } : {}) } };
 }
 /** 只展示当前可见列表已有的关联，不把缺失卡猜成已归档或已完成。 */
 function sideRelations(t, rows = []) {
@@ -3783,24 +3837,41 @@ function updateSideLive(){
 function sideExecution(t){
   const section = homeEl("section", undefined, "side-sec");
   section.id = "task-side-execution";
-  section.dataset.signature = JSON.stringify([t.execution_trace, t.released, t.run_id]);
-  section.append(homeEl("h3", "派发与领取"));
+  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.released, t.run_id]);
+  section.append(homeEl("h3", t.execution_profile && t.status === "not_started" && !t.released ? "放行前核对执行配置" : "派发与领取"));
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
   const rows = [
     ["最近放行", trace.released_at ? localTime(trace.released_at) : t.released ? "时间未记录" : "尚未放行"],
     ["本轮领取", trace.claimed_at ? localTime(trace.claimed_at) : t.run_id ? "时间待核实" : "尚无领取记录"],
   ];
+  if (t.execution_profile) {
+    const p = t.execution_profile;
+    rows.unshift(["执行通道", executionChannelName(p.channel)], ["执行配置", p.label || p.execution_profile_id || "待核实"],
+      ["模型与强度", p.model ? p.model + " · " + effortName(p.effort) : "待核实"],
+      ["认证", executionAuthName(p.auth_kind)], ["计费", executionBillingName(p.billing_kind)],
+      ["工作目录", p.workspace?.path || "待核实"], ["权限", p.tools === "read-only" ? "只读" : p.tools === "write" ? "按项目授权修改；新增权限须另行确认" : "待核实；按原权限闸检查"], ["预算", executionBudgetText(p.budget, p.budget_enforcement)]);
+  }
   if (t.run_id) {
     rows.push(["启动请求", trace.launch_requested_at ? localTime(trace.launch_requested_at) : "尚无记录"]);
     rows.push(["进程观察", trace.process_state === "observed" ? (trace.process_started_at ? localTime(trace.process_started_at) : "已启动，时间未记录")
       : trace.process_state === "not_started" ? "未启动" : "待核实"]);
     if (trace.last_activity_at) rows.push(["最近输出观察", localTime(trace.last_activity_at)]);
+    if (trace.model_activity_at) rows.push(["最近模型活动", localTime(trace.model_activity_at)]);
     if (trace.ended_at) rows.push(["本轮结束", localTime(trace.ended_at)]);
     rows.push(["模型开工", "待核实；进程、心跳和输出不等于有效工作"]);
   }
   const dl = homeEl("dl", undefined, "side-trace");
   for (const [label, value] of rows) dl.append(homeEl("dt", label), homeEl("dd", value));
   section.append(dl);
+  if (t.execution_profile && t.status === "not_started" && !t.released) {
+    const release = homeEl("button", "放行此任务", "pri"); release.type = "button";
+    release.dataset.a = "release"; release.dataset.id = String(t.id); release.dataset.version = String(t.aggregate_version);
+    release.dataset.executionProfileDigest = t.execution_profile.profile_digest || "";
+    if (t.execution_profile.ready === false || !release.dataset.executionProfileDigest) release.disabled = true;
+    section.append(homeEl("p", "先核对以上目录、通道、权限与预算；按两次后才会放行。", "side-state"), release);
+    if (t.execution_profile.configuration_changed) section.append(homeEl("p", "执行配置已变化，请重新核对以上配置后再放行；第二次确认不会自动接受另一份配置。", "side-state"));
+    if (t.execution_profile.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
+  }
   return section;
 }
 function sideRelationshipBox(t){
@@ -3908,11 +3979,35 @@ function newLineOptions(){
   const sel = document.getElementById("home-new-line");
   const usable = LINES.filter((l) => !REVIEW_LINES.includes(l));
   const sig = JSON.stringify([usable, LINE_LABELS, LINE_HINTS]);
-  if (sel.dataset.sig === sig) return;
-  const keep = sel.value || loadDrafts().new?.line || "";
-  sel.replaceChildren(...usable.map((l) => { const o = homeEl("option", lineLabel(l) + (LINE_HINTS[l] ? " · " + LINE_HINTS[l] : "")); o.value = l; return o; }));
-  if (usable.includes(keep)) sel.value = keep;
-  sel.dataset.sig = sig;
+  if (sel.dataset.sig !== sig) {
+    const keep = sel.value || loadDrafts().new?.line || "";
+    sel.replaceChildren(...usable.map((l) => { const o = homeEl("option", lineLabel(l) + (LINE_HINTS[l] ? " · " + LINE_HINTS[l] : "")); o.value = l; return o; }));
+    if (usable.includes(keep)) sel.value = keep;
+    sel.dataset.sig = sig;
+  }
+  newExecutionOptions();
+}
+function newExecutionOptions(force = false){
+  const row = document.getElementById("home-new-execution"), preview = document.getElementById("home-new-preview");
+  const line = document.getElementById("home-new-line").value;
+  const choices = taskExecutionChoices(line, workers), profiles = document.getElementById("home-new-profile"), models = document.getElementById("home-new-model");
+  row.hidden = !EXECUTION_PROFILES.length; preview.hidden = row.hidden;
+  if (row.hidden) return;
+  const signature = JSON.stringify([line, choices, EXECUTION_PROFILES, CURRENT_WORKSPACE]);
+  if (!force && row.dataset.signature === signature) return;
+  const draft = loadDrafts().new || {}, keepProfile = profiles.value || draft.execution_profile_id || "", keepModel = models.value || draft.model || "";
+  const ids = [...new Set(choices.map((c) => c.execution_profile_id))];
+  profiles.replaceChildren(...ids.map((id) => { const p = EXECUTION_PROFILES.find((item) => item.id === id), option = homeEl("option", id ? p?.label || "原执行配置待核实" : "沿用现有 CLI（兼容配置）"); option.value = id; return option; }));
+  if (ids.includes(keepProfile)) profiles.value = keepProfile;
+  const selected = choices.filter((c) => c.execution_profile_id === profiles.value), modelIds = [...new Set(selected.map((c) => c.model))];
+  models.replaceChildren(...modelIds.map((model) => { const c = selected.find((item) => item.model === model), option = homeEl("option", model + " · " + effortName(c.effort)); option.value = model; return option; }));
+  if (modelIds.includes(keepModel)) models.value = keepModel;
+  const choice = selected.find((c) => c.model === models.value), profile = EXECUTION_PROFILES.find((p) => p.id === profiles.value);
+  const path = CURRENT_WORKSPACE?.path || "工作目录待核实";
+  preview.textContent = profile && choice
+    ? `${path} · ${executionChannelName(profile.channel)} · ${executionAuthName(profile.auth_kind)} · ${executionBillingName(profile.billing_kind)}。${executionBudgetText(profile.budget, profile.budget_enforcement)}。创建后先核对再放行。${profile.reason || ""}`
+    : "沿用当前执行线的 CLI 配置，按原任务流程创建；不更换认证或计费来源。";
+  row.dataset.signature = signature;
 }
 function newShow(on){
   document.getElementById("home-new-form").hidden = !on;
@@ -3922,7 +4017,9 @@ function newShow(on){
 function newSave(){
   persistDrafts({ new: { title: document.getElementById("home-new-title").value,
                          desc: document.getElementById("home-new-desc").value,
-                         line: document.getElementById("home-new-line").value } });
+                         line: document.getElementById("home-new-line").value,
+                         execution_profile_id: document.getElementById("home-new-profile").value,
+                         model: document.getElementById("home-new-model").value } });
 }
 function newRestore(){
   const d = loadDrafts().new;
@@ -3931,6 +4028,10 @@ function newRestore(){
   document.getElementById("home-new-desc").value = d.desc || "";
   newShow(true);
   if (d.line) document.getElementById("home-new-line").value = d.line;
+  if (d.execution_profile_id) document.getElementById("home-new-profile").value = d.execution_profile_id;
+  newExecutionOptions(true);
+  if (d.model) document.getElementById("home-new-model").value = d.model;
+  newExecutionOptions(true);
 }
 function newClear(){
   document.getElementById("home-new-form").reset();
@@ -3941,13 +4042,18 @@ function newClear(){
 document.getElementById("home-new-open").addEventListener("click", () => newShow(true));
 document.getElementById("home-new-cancel").addEventListener("click", newClear);
 document.getElementById("home-new-form").addEventListener("input", newSave);
+for (const name of ["home-new-line", "home-new-profile", "home-new-model"]) document.getElementById(name).addEventListener("change", () => { newExecutionOptions(true); newSave(); });
 document.getElementById("home-new-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const err = document.getElementById("home-new-err");
+  const choices = taskExecutionChoices(document.getElementById("home-new-line").value, workers);
+  const profileId = document.getElementById("home-new-profile").value, model = document.getElementById("home-new-model").value;
+  const selected = choices.find((c) => c.execution_profile_id === profileId && c.model === model);
   const r = newTaskBody({ title: document.getElementById("home-new-title").value,
                           description: document.getElementById("home-new-desc").value,
-                          line: document.getElementById("home-new-line").value },
-                        { lines: LINES, reviewLines: REVIEW_LINES });
+                          line: document.getElementById("home-new-line").value,
+                          execution_profile_id: profileId, model, effort: selected?.effort || "" },
+                        { lines: LINES, reviewLines: REVIEW_LINES, choices });
   if (r.error) { err.textContent = r.error; err.hidden = false; return; }
   const btn = e.target.querySelector("button[type=submit]"); btn.disabled = true;
   try {

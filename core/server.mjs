@@ -30,6 +30,8 @@ import {PeerError} from "./federation/protocol.mjs";
 import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
+import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
+import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -295,9 +297,10 @@ const unnamedOf = (t) => {
 
 // SQL repo paths resolve only inside the server. The browser-facing object carries
 // file names, hashes and controlled download endpoints — never source paths.
-const taskOut = (t) => t ? {
+const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t);return {
   ...t,
   execution_trace: taskExecutionView(db, t),
+  ...(profile ? {execution_profile:profile} : {}),
   progress_blockers: store.stuckWhy(db,t),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
   // ⭐ The panel's button captions come FROM the server-side criterion. If the panel
@@ -317,7 +320,7 @@ const taskOut = (t) => t ? {
   //   an author of unknown family (no last_runtime) is never held.
   review_hold: (REVIEW_ANTI_AFFINITY && t.status === "waiting" && t.waiting_for === "review"
                 && t.last_runtime && t.last_runtime === reviewSeatRuntime()) ? "same_family" : null,
-} : t;
+}; };
 
 const HOST = process.env.BOARD_HOST || "127.0.0.1";
 const PORT = Number(process.env.BOARD_PORT || CFG.port || 47824);
@@ -1008,6 +1011,29 @@ function refreshUsage() {
 const MAX_PARALLEL = Math.max(1, Number(CFG.max_parallel) || 3);
 const DEFAULT_AGENT = { ...CFG.default_agent };
 const DEFAULT_SET = { agents: [{ ...DEFAULT_AGENT }], rev: 0 };
+const EXECUTION_PROFILES = loadExecutionProfiles(CFG.execution_profiles,{dataDir:store.DATA_DIR});
+const profileOf = agent => getExecutionProfile(EXECUTION_PROFILES,agent?.execution_profile_id,agent?.runtime);
+const profileForAgent = (agent,line) => {
+  const p=profileOf(agent);if(!p)return null;
+  const base=executionProfileSnapshot(p),identity=directoryIdentity(REPO_ROOT);
+  const workspace={label:"当前项目",path:identity.root,device:identity.device,inode:identity.inode};
+  const tools=LINE_ROLE[line]?.tools||"write";
+  // 本人放行的目录身份与权限也是执行身份的一部分，重启或改配置不能沿用旧授权。
+  const profile_digest=createHash("sha256").update(JSON.stringify({profile_digest:base.profile_digest,workspace,tools})).digest("hex");
+  return {...base,model:agent.model,effort:agent.effort,workspace,tools,profile_digest};
+};
+const profileFacts = () => publicExecutionProfiles(EXECUTION_PROFILES,{runtimes:RUNTIMES,repoRoot:REPO_ROOT});
+function taskProfilePreview(task){
+  const fixed=store.taskExecutionProfile(db,task.id);if(!fixed)return null;
+  let shown=fixed,ready=true,reason="";
+  if(task.status==="not_started"&&!task.released){
+    const agent=settingsOf(task.line).agents.find(a=>a.execution_profile_id===fixed.execution_profile_id&&a.model===fixed.model&&a.effort===fixed.effort);
+    const fact=profileFacts().find(p=>p.id===fixed.execution_profile_id);
+    if(agent){shown=profileForAgent(agent,task.line);ready=!!fact?.ready;reason=fact?.reason||"执行配置不可用";}
+    else{ready=false;reason="执行线已更换配置，请核对任务原先选择的通道与模型";}
+  }
+  return {...shown,ready,reason,configuration_changed:shown.profile_digest!==fixed.profile_digest};
+}
 const DECOMPOSE_MODELS = CFG.decompose_models;
 // Natural language for GENERATED content (decomposed cards today; other generators
 // later). Empty = say nothing, and the generator mirrors the prompt's own language.
@@ -1094,13 +1120,15 @@ function failoverAgent(ag, runtime) {
   return { ...ag, runtime, model, effort };
 }
 function effectiveAgents(line, st = settingsOf(line)) {
-  if (bothPoolsDown()) return null;
   // Roles are single-seat but share the same runtime branches as ordinary lines:
   // only agents[0] is taken; failover, model mapping and gates run the same road.
   const single = ROLES.includes(line);
   const src = single ? [st.agents[0]] : st.agents;
   const mapOne = (ag) => {
     const rt = ag.runtime || RUNTIME_IDS[0];
+    const profile=profileOf(ag);
+    if(profile)return profile.auth_kind==="api_key"||!poolDown(rt)?ag:null;
+    if(bothPoolsDown())return null;
     if (!poolDown(rt)) return ag;
     const other = POOL_IDS.find((p) => p !== rt && !poolDown(p));
     if (!other) return null;
@@ -1193,7 +1221,8 @@ try { settings = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")); } catch {}
 // "the same fact in two places" and will drift.
 const agentOf = (src) => ({
   runtime: src?.runtime || DEFAULT_AGENT.runtime, model: src?.model || DEFAULT_AGENT.model,
-  effort: src?.effort || DEFAULT_AGENT.effort, window: !!src?.window });
+  effort: src?.effort || DEFAULT_AGENT.effort, window: !!src?.window,
+  ...(src?.execution_profile_id!==undefined?{execution_profile_id:src.execution_profile_id}:{}) });
 {
   let migrated = false;
   for (const [ln, e] of Object.entries(settings)) {
@@ -1549,9 +1578,11 @@ function setSettings(line, patch) {
     next.agents = patch.agents.map((a, i) => {
       const rt = seatOf(a?.runtime);
       if (!rt) throw store.err(store.ERR.BAD_INPUT, `智能体 ${i + 1}：未知运行时 ${a?.runtime}`);
+      const profile=profileOf(a);
+      if(profile&&ROLES.includes(line))throw store.err(store.ERR.BAD_INPUT,"执行配置适用于普通任务执行线；自动审阅职务保持原入口");
       // ⚠ A locked seat refuses with BAD_INPUT: unlocking is a separate human act;
       //   resending later does not pass ⇒ the caller may give up (4xx, not 409).
-      if (rt.disabled) throw store.err(store.ERR.BAD_INPUT,
+      if (rt.disabled && profile?.auth_kind!=="api_key") throw store.err(store.ERR.BAD_INPUT,
         `智能体 ${i + 1}：${rt.label} —— 未获解禁(${rt.release_env} 闸),保存拒绝`);
       // ⭐ Models AND rungs are judged by the SEAT's declaration (judging by the
       //   global tables would let a codex slot save a claude model and die with a
@@ -1562,7 +1593,8 @@ function setSettings(line, patch) {
       if (!dom.includes(a?.effort))
         throw store.err(store.ERR.BAD_INPUT,
           `智能体 ${i + 1}：${a?.model} 的强度必须是 ${dom.join("/")}(座席宣言值域)`);
-      return { runtime: a.runtime || RUNTIME_IDS[0], model: a.model, effort: a.effort, window: !!a.window };
+      return { runtime: a.runtime || RUNTIME_IDS[0], model: a.model, effort: a.effort, window: !!a.window,
+        ...(profile?{execution_profile_id:profile.id}:{}) };
     });
     next.rev = curRev + 1;
   }
@@ -1665,7 +1697,9 @@ function workerStart(line, route = store.DEFAULT_ROUTE, agentsOverride = null) {
   for (const k of missing) {
     const ag0 = agents[k - 1];
     const seat = seatOf(ag0.runtime);
-    if (seat?.cmd_env && !process.env[seat.cmd_env])
+    const profile=profileOf(ag0);
+    if(profile){const fact=profileFacts().find(p=>p.id===profile.id);if(!fact?.ready)throw store.err(store.ERR.CONFLICT,fact?.reason||"执行配置尚未就绪");}
+    if (profile?.auth_kind!=="api_key" && seat?.cmd_env && !process.env[seat.cmd_env])
       throw store.err(store.ERR.BAD_INPUT,
         `智能体 ${k} 使用 ${seat.id} 座席，但宿主没有配置 ${seat.cmd_env}（必须是绝对路径）—— 拒绝启动`);
     // window=true opens a cmd.exe console — a Windows-only affordance. On POSIX it
@@ -1685,8 +1719,8 @@ function workerStart(line, route = store.DEFAULT_ROUTE, agentsOverride = null) {
  *  cannot detect "passes on the desktop, dies under server start" (it would be
  *  measuring the room next door). */
 function slotEnv(line, k, ag, isReview) {
-  const lg = lineageOf(line);
-  return { ...process.env, PYTHONIOENCODING: "utf-8",
+  const profile=profileOf(ag),lg=profile?null:lineageOf(line);
+  const environment={ ...process.env, PYTHONIOENCODING: "utf-8",WORKER_NODE:process.execPath,
            // ⭐ Tell the child WHERE THIS BOARD IS. A child must never guess its
            //   parent's address: the loop's BOARD_URL default is the standard port, so
            //   a board on any other port used to spawn workers that talked to whatever
@@ -1701,6 +1735,10 @@ function slotEnv(line, k, ag, isReview) {
            // BOARD_GATED_SUBTREE was a measured cold-walkthrough trap).
            ...(CFG_GATED_SUBTREE ? { BOARD_GATED_SUBTREE: CFG_GATED_SUBTREE } : {}),
            BOARD_REPO: REPO_ROOT,
+           WORKER_PROTECTED_PATHS:JSON.stringify([store.DATA_DIR,CONFIG_FILE,
+             process.env.BOARD_VERIFY_REGISTRY||join(CODE_ROOT,"core","verify_registry.json"),
+             ...EXECUTION_PROFILES.map(p=>p.auth_home),process.env.BOARD_FLEET_ACTIONS_CONFIG,
+             process.env.BOARD_PROGRESS_CONFIG].filter(Boolean).map(p=>resolve(p))),
            WORKER_MODEL: ag.model, WORKER_EFFORT: ag.effort,
            WORKER_RUNTIME: ag.runtime || RUNTIME_IDS[0],
            REVIEWER_MODEL: ag.model, REVIEWER_EFFORT: ag.effort,
@@ -1727,6 +1765,10 @@ function slotEnv(line, k, ag, isReview) {
              // same session corrupt the transcript. Only the anchor is passed.
              ...(lg ? { WORKER_ANCHOR: lg.anchor } : {}),
            }) };
+  if(profile){delete environment.WORKER_SESSION;delete environment.WORKER_FORK_FROM;delete environment.WORKER_ANCHOR;}
+  const result=profileEnvironment(profile,{env:environment,repoRoot:REPO_ROOT,dataDir:store.DATA_DIR});
+  if(profile)result.WORKER_EXECUTION_PROFILE=JSON.stringify(profileForAgent(ag,line));
+  return result;
 }
 
 function startSlot(line, k, route, ag, untilArgs, isReview) {
@@ -1852,6 +1894,11 @@ function startSlot(line, k, route, ag, untilArgs, isReview) {
     //   port before the change: a pool failover stops the line with the intent kept,
     //   the tree kill returns non-zero, and the line was booked as a crash — the ladder
     //   climbed on an orderly, intentional stop.
+    if(ag.execution_profile_id){
+      setDesired(line,false);resetLadder(line);
+      w.log.push("[独立执行配置已停线；本轮未回报结果须本人核对，不自动重启或重新收费]");
+      emit("worker.changed",{line,running:false});return;
+    }
     if (stop?.reason === STOP_REASON.CRASH && stillWanted() && !shuttingDown &&
         !(BOARD_UNTIL_AT && Date.now() >= BOARD_UNTIL_AT)) {
       const lived = Date.now() - w.startedAt;
@@ -2060,7 +2107,7 @@ function workerInfo(line) {
   // whenever running, sticking after stop→start = a false alarm). Compared: the
   // settings snapshotted at start vs saved settings, process-relevant keys only;
   // a parallel-count mismatch counts as stale too.
-  const KEYS = ["model", "effort", "window", "runtime"];
+  const KEYS = ["model", "effort", "window", "runtime", "execution_profile_id"];
   const eff = effectiveAgents(line, st);
   const wantNow = eff?.length || 0;
   // Staleness compares SLOT AGAINST SLOT (changing only slot 2's model is caught).
@@ -2292,7 +2339,7 @@ const readSmallJson = (req, max = 1024) => new Promise((resolve) => {
 
 const WORKER_WRITES = (p) =>
   p === "/api/claim" || p === "/api/tasks" || p === "/api/pools/exhausted" ||
-  /^\/api\/tasks\/\d+\/(?:report|heartbeat|attempt|process-started)$/.test(p) ||
+  /^\/api\/tasks\/\d+\/(?:report|heartbeat|attempt|process-started|execution-event)$/.test(p) ||
   /^\/api\/context\/[a-z0-9_-]+\/compact$/.test(p) ||
   /^\/api\/workers\/[a-z0-9_-]+\/forked$/.test(p);
 const REVIEW_WRITES = (p) =>
@@ -2376,7 +2423,8 @@ function guardAuthentication(req, res) {
   }
   const tok = req.headers["x-board-token"];
   const bound = [...workers.entries()].find(([,w]) => w.workerToken && tok === w.workerToken);
-  req.workerSeat = bound ? { worker:bound[0], runtime:bound[1].settings.runtime } : null;
+  req.workerSeat = bound ? { worker:bound[0], runtime:bound[1].settings.runtime,
+    line:bound[1].line,executionProfile:profileForAgent(bound[1].settings,bound[1].line) } : null;
   const role = tok === BOARD_TOKEN || isPanelCredential(tok) ? "operator"
              : tok === WORKER_TOKEN || bound ? "worker"
              : tok === REVIEW_TOKEN ? "review" : null;
@@ -2413,17 +2461,18 @@ function stampedRuntime(req, role, workerName, selfReported) {
   if (seat && RUNTIME_IDS.includes(seat.runtime)) return seat.runtime;
   return RUNTIME_IDS.includes(selfReported) ? selfReported : null;
 }
-function claimIdentity(body, role) {
+function claimIdentity(body, role, seat=null) {
   if (role === "worker" && (body.worker_protocol_version !== WORKER_PROTOCOL_VERSION ||
       typeof body.agent_instance_id !== "string" ||
       !store.UUID_RE.test(body.agent_instance_id)))
     throw store.err(store.ERR.BAD_INPUT, "执行器协议需要版本 2 和 agent_instance_id；请先升级 worker，再领取任务");
-  return { agentInstanceId:body.agent_instance_id ?? null, runContextForTask: task => {
+  return { agentInstanceId:body.agent_instance_id ?? null, executionProfile:seat?.executionProfile??null, runContextForTask: task => {
     const roleId = task.line || body.line || body.worker;
     const role = LINE_ROLE[roleId] || {kind:"implement",tools:"write",charter:null,seat:null};
     return { role_id:roleId, role_kind:role.kind, tools:role.tools,
       charter:role.charter, charter_sha256:LINE_CHARTER_HASH[roleId] ?? null,
-      seat:role.seat, enforcement:"unattested", worker_protocol_version:body.worker_protocol_version ?? null };
+      seat:role.seat, enforcement:"unattested", worker_protocol_version:body.worker_protocol_version ?? null,
+      ...(seat?.executionProfile?{execution_profile:seat.executionProfile}:{}) };
   }};
 }
 
@@ -2676,6 +2725,15 @@ const server = http.createServer(async (req, res) => {
 
     if (m === "POST" && p === "/api/tasks") {
       const b = await readBody(req);
+      // 执行快照只从宿主的已声明配置生成，客户端不能夹带凭据或伪造快照。
+      delete b.executionProfile;
+      if(b.execution_profile_id!==undefined){
+        if(boardRole!=="operator")return json(res,403,{error:"任务执行配置只能由操作者选择"});
+        if(!b.line)throw store.err(store.ERR.BAD_INPUT,"选择执行配置时必须指定执行线");
+        const agent=settingsOf(b.line).agents.find(a=>a.execution_profile_id===b.execution_profile_id&&a.model===b.model&&a.effort===b.effort);
+        if(!agent)throw store.err(store.ERR.BAD_INPUT,"所选执行配置、模型和强度不属于该执行线");
+        b.executionProfile=profileForAgent(agent,b.line);b.released=0;b.maxAttempts=1;
+      }
       // Worker-token creation is for DERIVED cards only (the out-of-scope-work
       // channel): a parent is mandatory. A worker minting root goals would be a
       // worker re-scoping the board.
@@ -2774,6 +2832,7 @@ const server = http.createServer(async (req, res) => {
                               marker: bothPoolsDown() ? "pool_global_stop.json" : null });
     if (m === "POST" && p === "/api/pools/exhausted") {
       const b = await readBody(req);
+      if(req.workerSeat?.executionProfile)return json(res,403,{error:"独立执行配置不会触发共享池切换或额外付费探测"});
       if (!POOL_IDS.includes(b.runtime))
         return json(res, 400, { error: `runtime 必须是 ${POOL_IDS.join("/")}` });
       const observed = Date.parse(b.exhausted_at || "");
@@ -2836,6 +2895,7 @@ const server = http.createServer(async (req, res) => {
         return info;
       });
       return json(res, 200, { workers: listed, lines: LINES,
+                              execution_profiles:profileFacts(),workspace:{label:"当前项目",path:REPO_ROOT},
                               line_hints: LINE_HINT, line_labels: LINE_LABEL, line_accept: LINE_ACCEPT, routes: ROUTES,
                               // v0.22: id → identity (null = plain line); the implement subset the decomposer sees.
                               line_roles: LINE_ROLE, impl_lines: IMPL_LINES,
@@ -2876,6 +2936,10 @@ const server = http.createServer(async (req, res) => {
                    ...(b.runtime ? { runtime: b.runtime } : {}),
                    ...(b.model ? { model: b.model } : {}),
                    ...(b.effort ? { effort: b.effort } : {}) };
+      if(b.execution_profile_id!==undefined)ag.execution_profile_id=b.execution_profile_id;
+      const selectedProfile=profileOf(ag);
+      if(selectedProfile&&b.live)return json(res,403,{error:"执行配置的真实验证须使用有预算的新任务卡；接入检查不调用模型"});
+      if(selectedProfile){const fact=profileFacts().find(p=>p.id===selectedProfile.id);if(!fact?.ready)return json(res,200,{line:mpr[1],agent:ag,live:false,ok:false,code:3,out:fact?.reason||"执行配置尚未就绪",err:""});}
       const seat = seatOf(ag.runtime);
       if (!seat) return json(res, 400, { error: `未知运行时 ${ag.runtime}` });
       if (!(seat.models || []).some((x) => x.id === ag.model))
@@ -2931,9 +2995,10 @@ const server = http.createServer(async (req, res) => {
     // Empty queue = 204, not an error: the worker should sleep, not retry.
     if (m === "POST" && p === "/api/claim") {
       const b = await readBody(req);
+      if(req.workerSeat?.executionProfile&&b.line!==req.workerSeat.line)throw store.err(store.ERR.CONFLICT,"执行配置只能领取本执行线任务");
       // All pools down = global stop. During a single-pool switchover race, no new
       // card goes to a process of the exhausted runtime either.
-      if (bothPoolsDown() || (POOL_IDS.includes(b.runtime) && poolDown(b.runtime)))
+      if (req.workerSeat?.executionProfile?.auth_kind!=="api_key" && (bothPoolsDown() || (POOL_IDS.includes(b.runtime) && poolDown(b.runtime))))
         return json(res, 503, { error: bothPoolsDown() ? "全部池额度耗尽 —— 全局停止领卡"
                                                     : `${b.runtime} 池额度耗尽 —— 等 server 切换座席`,
                                 pools: poolState });
@@ -2942,7 +3007,7 @@ const server = http.createServer(async (req, res) => {
       // Runtime is credential-bound; a shared worker token cannot attest a family.
       // Reset on every server claim so an unknown new run cannot inherit an old badge.
       const rt = stampedRuntime(req, boardRole, b.worker, b.runtime);
-      const identity = claimIdentity(b, boardRole);
+      const identity = claimIdentity(b, boardRole,req.workerSeat);
       const got = store.claim(db, b.worker, b.lease_minutes || store.DEFAULT_LEASE_MIN,
                               { route: b.route, line: b.line, runtime: rt, resetRuntime:true, ...identity, ...fpContext() });
       noteClaim(b.worker, { route: b.route, line: b.line }, !!got);
@@ -2959,7 +3024,7 @@ const server = http.createServer(async (req, res) => {
         res.writeHead(204); return res.end();
       }
       emit("task.claimed", { id: got.id, worker: b.worker });
-      return json(res, 200, { task: got });
+      return json(res, 200, { task: taskOut(got) });
     }
 
     // Ruling attachments are sourced only from the structured package, and every
@@ -2987,7 +3052,7 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
-    const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|report|resolve|update|autoreview|pin|release|archive|reopen|runs))?$/);
+    const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs))?$/);
     if (mt) {
       const id = Number(mt[1]);
       const action = mt[2];
@@ -3009,7 +3074,7 @@ const server = http.createServer(async (req, res) => {
       if (action === "claim") {
         // ⭐ This endpoint claims THE GIVEN id (it used to call pick-a-card and
         //   occupy a different card). Refusals come back with the reason named.
-        const r = store.claimById(db, { id, worker: b.worker, expectedVersion:b.expected_version, ...claimIdentity(b, boardRole),
+        const r = store.claimById(db, { id, worker: b.worker, expectedVersion:b.expected_version, ...claimIdentity(b, boardRole,req.workerSeat),
                                         leaseMin: b.lease_minutes || store.DEFAULT_LEASE_MIN,
                                         // Operator-only direct claims remain an explicit trusted act.
                                         runtime: stampedRuntime(req, boardRole, b.worker, b.runtime), resetRuntime:true,
@@ -3040,9 +3105,16 @@ const server = http.createServer(async (req, res) => {
         if(!seat?.models?.some(model=>model.id===b.model)||!effortsFor(b.runtime,b.model).includes(b.effort))
           throw store.err(store.ERR.BAD_INPUT,"启动记录的模型或推理强度不在现有允许范围");
         const r=store.recordProcessStarted(db,{id,worker:b.worker,runId:b.run_id,agentInstanceId:b.agent_instance_id,
-          runtime:b.runtime,attempt:b.attempt,pid:b.pid,model:b.model,effort:b.effort});
+          runtime:b.runtime,attempt:b.attempt,pid:b.pid,model:b.model,effort:b.effort,executionProfile:req.workerSeat.executionProfile});
         emit("task.process_started",{id});
         return json(res,200,r);
+      }
+      if(action==="execution-event"){
+        if(boardRole!=="worker"||!req.workerSeat?.executionProfile)return json(res,403,{error:"SDK 观察仅接受本次受管执行配置的独立凭据"});
+        const profile=req.workerSeat.executionProfile;
+        if(b.execution_profile_id!==profile.execution_profile_id||b.profile_digest!==profile.profile_digest)throw store.err(store.ERR.CONFLICT,"SDK 事件的执行配置与凭据不一致");
+        const result=store.recordExecutionEvent(db,{id,worker:b.worker,runId:b.run_id,agentInstanceId:b.agent_instance_id,executionProfile:profile,eventId:b.event_id,kind:b.kind,model:b.model,effort:b.effort,requestId:b.request_id??null,sessionId:b.session_id??null,status:b.status??null,usage:b.usage??null,costUsd:b.cost_usd??null});
+        emit("task.execution_observed",{id});return json(res,200,result);
       }
       if (action === "report") {
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });
@@ -3258,9 +3330,16 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { task: store.get(db, id) });
       }
       if (action === "release") {
-        const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false });
+        const task=store.get(db,id),preview=task?taskProfilePreview(task):null;
+        let executionProfile=null;
+        if(preview&&b.released!==false&&!task.released){
+          if(!preview.ready)throw store.err(store.ERR.CONFLICT,preview.reason);
+          if(b.confirm_execution_profile_digest!==preview.profile_digest)throw store.err(store.ERR.CONFLICT,"执行配置已变化，请重新核对通道、工作目录和预算后放行");
+          const {ready,reason,configuration_changed,...fixed}=preview;executionProfile=fixed;
+        }
+        const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile });
         emit("task.released", r);
-        return json(res, 200, { task: store.get(db, id) });
+        return json(res, 200, { task: taskOut(store.get(db, id)) });
       }
       if (action === "reopen") {
         // ⚠ This road used to sail through (store.reopen writes the given line

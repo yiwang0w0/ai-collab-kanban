@@ -1170,11 +1170,39 @@ function add(db, args) {
     const t = db.prepare(
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(id);
     appendEvent(db, {
-      taskId: id, kind: "add", actor: args.actor || "system", detail: eventState(t),
+      taskId: id, kind: "add", actor: args.actor || "system", detail: eventState(t,
+        args.executionProfile ? { execution_profile: args.executionProfile } : {}),
     });
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_add");
     return id;
   } catch (e) { try { db.exec(ownsTransaction ? "ROLLBACK" : "ROLLBACK TO store_add; RELEASE store_add"); } catch {} throw e; }
+}
+
+/** 执行配置固定在原建卡事件中，旧卡没有该字段，保持原领取方式。 */
+function taskExecutionProfile(db, id) {
+  const event = db.prepare("SELECT detail FROM task_events WHERE task_id=? AND kind IN ('add','execution.configured') ORDER BY id DESC LIMIT 1").get(Number(id));
+  if (!event) return null;
+  let detail; try { detail = JSON.parse(event.detail); } catch { throw err(ERR.CONFLICT, "任务的原始执行配置记录不可读"); }
+  const profile = detail.execution_profile;
+  if (profile == null) return null;
+  if (typeof profile !== "object" || Array.isArray(profile) || typeof profile.execution_profile_id !== "string" ||
+      !/^[a-f0-9]{64}$/.test(profile.profile_digest || "") || typeof profile.model !== "string" || typeof profile.effort !== "string")
+    throw err(ERR.CONFLICT, "任务的执行配置快照不完整，拒绝猜测通道");
+  return profile;
+}
+
+function matchesExecutionProfile(db, task, profile) {
+  const expected = taskExecutionProfile(db, task.id);
+  if (!expected || !profile) return expected === null && profile == null;
+  // 目录绑定必须完整；旧显式快照不能靠两个 undefined 被当作同一工作仓。
+  const validWorkspace = value => value && typeof value === "object" && !Array.isArray(value) &&
+    typeof value.path === "string" && path.isAbsolute(value.path) && !value.path.includes("\0") &&
+    typeof value.device === "string" && /^\d+$/.test(value.device) &&
+    typeof value.inode === "string" && /^\d+$/.test(value.inode) && !/^0+$/.test(value.inode);
+  if (!validWorkspace(expected.workspace) || !validWorkspace(profile.workspace) ||
+      !["write", "read-only"].includes(expected.tools) || expected.tools !== profile.tools) return false;
+  return ["execution_profile_id", "profile_digest", "runtime", "model", "effort", "channel"].every(key => expected[key] === profile[key]) &&
+    ["path", "device", "inode"].every(key => expected.workspace[key] === profile.workspace[key]);
 }
 
 function addInner(db, {
@@ -1475,6 +1503,7 @@ function claim(db, worker, leaseMin = DEFAULT_LEASE_MIN, opts = {}) {
                    || a.id - b.id);
 
     const pick = cands.find((t) => {
+      if (!matchesExecutionProfile(db, t, opts.executionProfile)) return false;
       if(progressHolds(db,t,"claim").length)return false;
       if (t.lock_key && heldLocks.has(t.lock_key)) return false;  // lock held -> skip to next candidate
       if (unfinishedKids.has(Number(t.id))) return false;         // parent gate: children unfinished
@@ -1569,12 +1598,22 @@ function reapExpired(db) {
   } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
   return n;
 }
+/** 回收显式计费任务只解除持有，不自动授予下一次调用许可。 */
+function holdExplicitProfileRecovery(db, task, reason) {
+  if (!taskExecutionProfile(db, task.id)) return null;
+  const note = "本轮执行已中断，结果未知。已取消放行，请本人核对后重新放行。";
+  db.prepare("UPDATE tasks SET released=0, result=CASE WHEN result IS NULL OR result='' THEN ? ELSE result || ? END WHERE id=? AND status='not_started' AND worker IS NULL")
+    .run(note, "\n\n—— 当前运行状态 ——\n" + note, Number(task.id));
+  return { run_id: task.run_id, recovery_required: true, result_state: "unknown", recovery_reason: reason };
+}
+
 function reapExpiredInner(db) {
   // Read the victims BEFORE the update: the event has to carry who was holding the
   // card, and after the UPDATE that name is gone.
+  const cutoff = Date.now();
   const doomed = db.prepare(
-    `SELECT id, line, parent_id, status, kind, released, worker FROM tasks
-      WHERE status='in_progress' AND lease_until IS NOT NULL AND lease_until < ?`).all(Date.now());
+    `SELECT id, line, parent_id, status, kind, released, worker, run_id FROM tasks
+      WHERE status='in_progress' AND lease_until IS NOT NULL AND lease_until < ?`).all(cutoff);
   // ⭐ The dispatch fingerprint is CLEARED here. A reaped card never reported back,
   //   so "the last dispatch saw this same world and concluded nothing new" is not a
   //   claim we can make about it — the last dispatch may have died before reading
@@ -1584,12 +1623,13 @@ function reapExpiredInner(db) {
     `UPDATE tasks SET status='not_started', worker=NULL, lease_until=NULL, heartbeat_at=NULL,
                       dispatch_fp=NULL, dispatch_fp_at=NULL, updated_at=?
       WHERE status='in_progress' AND lease_until IS NOT NULL AND lease_until < ?`
-  ).run(now(), Date.now());
+  ).run(now(), cutoff);
   for (const t of doomed) {
+    const held = holdExplicitProfileRecovery(db, t, "lease_expired");
     appendEvent(db, {
       taskId: t.id, kind: "reap", actor: "lease-reaper",
-      detail: eventState({ ...t, status: "not_started" }, {
-        from_status: "in_progress", previous_worker: t.worker || null,
+      detail: eventState({ ...t, status: "not_started", ...(held ? { released: false } : {}) }, {
+        from_status: "in_progress", previous_worker: t.worker || null, ...(held || {}),
       }),
     });
   }
@@ -1605,7 +1645,7 @@ function reapExpiredInner(db) {
  * a bare "couldn't take it" hides whether it was release, deps, or a lock.
  */
 function claimById(db, { id, worker, leaseMin = DEFAULT_LEASE_MIN, runtime = null, resetRuntime = false,
-                         force = false, treeRev = null, extra = null, agentInstanceId = null, runContext = null, runContextForTask = null, expectedVersion }) {
+                         force = false, treeRev = null, extra = null, agentInstanceId = null, runContext = null, runContextForTask = null, executionProfile = null, expectedVersion }) {
   if (!worker) throw err(ERR.BAD_INPUT, "worker 不能为空");
   leaseMin = clampLease(leaseMin);   // see claim()
   const ownsTransaction = !db.isTransaction;
@@ -1619,6 +1659,7 @@ function claimById(db, { id, worker, leaseMin = DEFAULT_LEASE_MIN, runtime = nul
     //   endpoints 400).
     const no = (why, code = ERR.CONFLICT) => { db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_claim_by_id"); return { ok: false, why, code }; };
     if (!t) return no(`卡 #${id} 不存在`, ERR.NOT_FOUND);
+    if (!matchesExecutionProfile(db, t, executionProfile)) return no("任务绑定的执行通道、模型或配置版本与执行器不一致");
     const structuralHold=progressHolds(db,t,"claim").find(x=>x.code!=="HUMAN_GATE");
     if(structuralHold)return no(structuralHold.message,structuralHold.code==="TASK_TREE_HELD"?ERR.BAD_INPUT:ERR.CONFLICT);
     if (t.kind === "goal") return no(`#${id} 是目标,目标不能被认领`);
@@ -1737,7 +1778,7 @@ function releaseHeldBy(db, worker) {
   if (own) { db.exec("BEGIN IMMEDIATE"); } else { db.exec("SAVEPOINT release_held"); }
   try {
     const rows = db.prepare(
-      "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE status='in_progress' AND worker=?"
+      "SELECT id, line, parent_id, status, kind, released, run_id FROM tasks WHERE status='in_progress' AND worker=?"
     ).all(String(worker));
     if (!rows.length) {
       if (own) { db.exec("COMMIT"); } else { db.exec("RELEASE SAVEPOINT release_held"); }
@@ -1754,12 +1795,15 @@ function releaseHeldBy(db, worker) {
     // ⚠ Same `release` kind as a hold/release of the RELEASED flag; the two are told
     //   apart by detail.action / detail.from_status. Splitting them into two kinds
     //   would fork every reader, so the disambiguation lives in the detail.
-    for (const t of rows) appendEvent(db, {
-      taskId: t.id, kind: "release", actor: worker,
-      detail: eventState({ ...t, status: "not_started" }, {
-        action: "release_held", from_status: "in_progress",
-      }),
-    });
+    for (const t of rows) {
+      const held = holdExplicitProfileRecovery(db, t, "worker_stopped");
+      appendEvent(db, {
+        taskId: t.id, kind: "release", actor: worker,
+        detail: eventState({ ...t, status: "not_started", ...(held ? { released: false } : {}) }, {
+          action: "release_held", from_status: "in_progress", ...(held || {}),
+        }),
+      });
+    }
     if (own) { db.exec("COMMIT"); } else { db.exec("RELEASE SAVEPOINT release_held"); }
     return rows.map((r) => Number(r.id));
   } catch (e) {
@@ -1812,7 +1856,7 @@ function heartbeat(db, { id, worker, leaseMin = DEFAULT_LEASE_MIN, runId }) {
  *                                       evidence)
  */
 /** 宿主已创建进程的事实记录；不续租、不推进状态，也不证明模型已响应。 */
-function recordProcessStarted(db, { id, worker, runId, agentInstanceId, runtime, attempt, pid, model, effort }) {
+function recordProcessStarted(db, { id, worker, runId, agentInstanceId, runtime, attempt, pid, model, effort, executionProfile = null }) {
   if (!Number.isSafeInteger(pid) || pid <= 0 || !Number.isSafeInteger(attempt) || attempt <= 0 ||
       !["claude", "codex"].includes(runtime) || typeof model !== "string" || !model.trim() || model.length > 160 ||
       typeof effort !== "string" || !effort.trim() || effort.length > 32 ||
@@ -1833,8 +1877,12 @@ function recordProcessStarted(db, { id, worker, runId, agentInstanceId, runtime,
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='broker_dispatches'").get() &&
         db.prepare("SELECT 1 FROM broker_dispatches WHERE run_id=?").get(runId))
       throw err(ERR.CONFLICT, "受控分派仍使用原启动回执，不接受旧循环记录");
+    const bound = JSON.parse(run.policy_json).context?.execution_profile || null;
+    if (bound && (!executionProfile || !matchesExecutionProfile(db,t,{...executionProfile,model,effort})))
+      throw err(ERR.CONFLICT, "启动记录的执行配置与本轮快照不一致");
     const detail = { source: "worker_loop", run_id: runId, task_uid: t.task_uid, owner_node_id: t.owner_node_id,
-      agent_instance_id: agentInstanceId, runtime, attempt, pid, model, effort };
+      agent_instance_id: agentInstanceId, runtime, attempt, pid, model, effort,
+      ...(bound ? {execution_profile_id:bound.execution_profile_id,profile_digest:bound.profile_digest,channel:bound.channel} : {}) };
     let existing = null;
     for (const e of db.prepare("SELECT id,at,detail FROM task_events WHERE task_id=? AND kind='process_started' ORDER BY id DESC").iterate(t.id)) {
       const previous = JSON.parse(e.detail);
@@ -1850,11 +1898,42 @@ function recordProcessStarted(db, { id, worker, runId, agentInstanceId, runtime,
   }
 }
 
+/** SDK 宿主的结构化观察，复用不可变事件表，不改变任务流程。 */
+function recordExecutionEvent(db, {id,worker,runId,agentInstanceId,executionProfile,eventId,kind,model,effort,requestId=null,sessionId=null,status=null,usage=null,costUsd=null}) {
+  if (!UUID_RE.test(String(eventId)) || !["activity","terminal"].includes(kind)) throw err(ERR.BAD_INPUT,"SDK 事件标识或种类无效");
+  for (const value of [requestId,sessionId]) if(value!==null&&(typeof value!=="string"||!/^[A-Za-z0-9._:-]{1,200}$/.test(value))) throw err(ERR.BAD_INPUT,"SDK 请求或会话标识无效");
+  if(kind==="terminal"&&!["success","failed","timeout","cancelled"].includes(status))throw err(ERR.BAD_INPUT,"SDK 终态无效");
+  if(costUsd!==null&&(!Number.isFinite(costUsd)||costUsd<0))throw err(ERR.BAD_INPUT,"SDK 费用必须为非负数或未知");
+  if(usage!==null&&(typeof usage!=="object"||Array.isArray(usage)||Object.entries(usage).some(([key,value])=>!["input_tokens","output_tokens","cached_input_tokens","calls"].includes(key)||(value!==null&&(!Number.isSafeInteger(value)||value<0)))))throw err(ERR.BAD_INPUT,"SDK 用量字段无效");
+  const own=!db.isTransaction;db.exec(own?"BEGIN IMMEDIATE":"SAVEPOINT store_execution_event");
+  try{
+    const t=db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));if(!t)throw err(ERR.NOT_FOUND,"任务不存在");requireRun(t,runId);
+    const run=db.prepare("SELECT * FROM task_runs WHERE run_id=?").get(runId),bound=run?JSON.parse(run.policy_json).context?.execution_profile:null;
+    if(!run||run.imported||run.worker!==worker||run.agent_instance_id!==agentInstanceId||!bound||!matchesExecutionProfile(db,t,{...executionProfile,model,effort})||!["claude_agent_sdk","codex_sdk_api"].includes(bound.channel))throw err(ERR.CONFLICT,"SDK 事件不属于本轮执行配置或实例");
+    const detail={source:"agent_sdk",event_id:eventId,run_id:runId,agent_instance_id:agentInstanceId,execution_profile_id:bound.execution_profile_id,profile_digest:bound.profile_digest,channel:bound.channel,model,effort,request_id:requestId,session_id:sessionId,...(kind==="terminal"?{status,usage,cost_usd:costUsd}:{})};
+    const eventKind="execution."+kind;
+    for(const prior of db.prepare("SELECT at,kind,actor,detail FROM task_events WHERE task_id=? AND kind IN ('execution.activity','execution.terminal') ORDER BY id DESC").iterate(t.id)){
+      const previous=JSON.parse(prior.detail);if(previous.event_id!==eventId)continue;
+      if(prior.kind!==eventKind||prior.actor!==worker||JSON.stringify(previous)!==JSON.stringify(detail))throw err(ERR.CONFLICT,"SDK 事件标识已用于不同内容");
+      db.exec(own?"COMMIT":"RELEASE store_execution_event");return {id:t.id,run_id:runId,recorded_at:prior.at};
+    }
+    if(t.status!=="in_progress"||t.worker!==worker||t.archived_at||run.state!=="running"||!(t.lease_until>Date.now()))throw err(ERR.CONFLICT,"SDK 观察只接受当前有效运行");
+    const inserted=appendEvent(db,{taskId:t.id,kind:eventKind,actor:worker,detail}),saved=db.prepare("SELECT at FROM task_events WHERE id=?").get(inserted);
+    db.exec(own?"COMMIT":"RELEASE store_execution_event");return {id:t.id,run_id:runId,recorded_at:saved.at};
+  }catch(e){try{db.exec(own?"ROLLBACK":"ROLLBACK TO store_execution_event; RELEASE store_execution_event");}catch{}throw e;}
+}
+
 function report(db, { id, worker, outcome, evidence = "", runId }) {
   if (!["done", "wait"].includes(outcome)) throw err(ERR.BAD_INPUT, "outcome 必须是 done 或 wait");
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
   if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
-  if (t.status !== "in_progress") throw err(ERR.CONFLICT, `卡 #${id} 状态是 ${t.status},不是 in_progress,不能交付`);
+  if (t.status !== "in_progress") {
+    // 新配置通道的重复相同回报返回原结果，不追加历史、不重新验收；旧协议不变。
+    if (taskExecutionProfile(db,id) && t.run_id===runId && t.worker===String(worker) && t.result===String(evidence) && ["waiting","done"].includes(t.status)) {
+      for(const event of events(db,{taskId:id}).reverse())if(event.kind==="report"&&event.actor===worker&&event.detail.run_id===runId&&event.detail.outcome===outcome)return {id:Number(id),status:t.status,waiting_for:t.waiting_for};
+    }
+    throw err(ERR.CONFLICT, `卡 #${id} 状态是 ${t.status},不是 in_progress,不能交付`);
+  }
   if (t.worker !== String(worker)) throw err(ERR.CONFLICT, `卡 #${id} 的持有者是 ${t.worker},不是 ${worker}`);
   requireRun(t, runId);
   // ⭐ Span close and state transition share ONE transaction (measured concern: split
@@ -2797,7 +2876,7 @@ function setPinnedInner(db, { id, pinned }) {
 
 /** Release / hold (the old "backlog"). What moves is a COLUMN, not a status — no
  *  fifth state. */
-function setReleased(db, { id, released, actor = "human", expectedVersion }) {
+function setReleased(db, { id, released, actor = "human", expectedVersion, executionProfile = null }) {
   const ownsTransaction = !db.isTransaction;
   db.exec(ownsTransaction ? "BEGIN IMMEDIATE" : "SAVEPOINT store_set_released");
   try {
@@ -2806,6 +2885,12 @@ function setReleased(db, { id, released, actor = "human", expectedVersion }) {
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(Number(id));
     if (!before) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
     const value = released ? 1 : 0;
+    if (executionProfile) {
+      if (!value || before.released || before.status!=="not_started") throw err(ERR.CONFLICT,"只能在任务未放行且未开始时重新核对执行配置");
+      const requested=taskExecutionProfile(db,id);
+      if(!requested||["execution_profile_id","runtime","model","effort"].some(key=>requested[key]!==executionProfile[key]))throw err(ERR.CONFLICT,"放行不能悄悄改变所选通道或模型");
+      appendEvent(db,{taskId:id,kind:"execution.configured",actor,detail:{execution_profile:executionProfile}});
+    }
     db.prepare("UPDATE tasks SET released=?, updated_at=? WHERE id=?").run(value, now(), Number(id));
     // ⚠ Shares the `release` kind with returning an in-flight card; told apart by
     //   detail.action (see releaseHeldBy).
@@ -3141,7 +3226,7 @@ function openChildrenOnLines(db, parentId, lines) {
 module.exports = {
   UUID_RE, migrateLifecycle, resolveWithPreparation,
   localNode, renameNode, assertLocalIdentityInput, requireRun, runs, requireExpectedVersion, assertExpectedVersion,
-  open, migrate, add, claim, heartbeat, recordProcessStarted, bumpAttempt, report, resolve, update, setReleased, archive,
+  open, migrate, add, claim, heartbeat, recordProcessStarted, recordExecutionEvent, taskExecutionProfile, matchesExecutionProfile, bumpAttempt, report, resolve, update, setReleased, archive,
   addRequest, getRequest, listRequests, ackRequest, doneRequest, REQUEST_KINDS, REQUEST_STATUS,
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,

@@ -85,6 +85,8 @@ node cli/open.mjs
 
 ## 平时用
 
+需要 Claude Agent SDK／GPT API 开发通道时，继续按[四通道工作台](docs/四通道工作台.md)配置。API 使用独立认证与预算，不通过开启 Codex 订阅座席或重建看板数据接入。
+
 | 想做的事 | 命令 |
 |---|---|
 | 停止 | `node cli/stop.mjs`（有任务正在执行时会先拒绝；确定要停：`node cli/stop.mjs --force`） |

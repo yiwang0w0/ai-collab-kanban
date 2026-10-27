@@ -25,7 +25,7 @@
 ⭐无论哪种结局,loop 都继续去领下一张:waiting 停的只是那一条任务链,不是这个 worker。
 """
 import json, os, re, glob, shutil, subprocess, sys, threading, time, datetime
-import urllib.request, urllib.error, io, uuid, hashlib
+import urllib.request, urllib.error, io, uuid, hashlib, math, queue
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # ⭐两个"仓"要分开,它们在通用部署里**不是同一个**:
@@ -37,6 +37,7 @@ CODE_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(CODE_ROOT, "gates"))
 sys.path.insert(0, HERE)
 sys.path.insert(0, os.path.join(CODE_ROOT, "core"))
+sys.path.insert(0, os.path.join(CODE_ROOT, "runners"))
 # fleet.config.json 部署键回填 env 缺省(v0.3;env 已设者优先)。⚠必须先于
 # gates_lib 的 import —— DEFAULT_SUBTREE 在那一刻就照 env 快照了。
 import board_env
@@ -46,9 +47,10 @@ REPO = os.environ.get("BOARD_REPO", CODE_ROOT)
 import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,勿各自复写)
 import codex_runtime
 import context_lib
+from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
-from verify_lib import run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules, deny_path   # noqa: F401
+from verify_lib import run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules, deny_path, REGISTRY   # noqa: F401
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
 # clash, and ignoring it here would aim this client at the DEFAULT port's board.
@@ -177,6 +179,19 @@ EFFORT = os.environ.get("WORKER_EFFORT", "high")
 # Keep the seat credential in the trusted loop, out of all provider/verifier environments.
 _SUPERVISED_BOARD_TOKEN = os.environ.pop("WORKER_BOARD_TOKEN", "")
 RUNTIME = os.environ.get("WORKER_RUNTIME", "claude")
+# 显式执行配置固定本轮通道与认证；缺字段的旧 CLI 不改变既有行为。
+_PROFILE_RAW = os.environ.pop("WORKER_EXECUTION_PROFILE", "")
+PROFILE_ERROR = None
+try:
+    EXECUTION_PROFILE = json.loads(_PROFILE_RAW) if _PROFILE_RAW else None
+    if EXECUTION_PROFILE is not None and not isinstance(EXECUTION_PROFILE, dict):
+        raise ValueError()
+except Exception:
+    EXECUTION_PROFILE, PROFILE_ERROR = None, "执行配置无法解析，拒绝回退到旧 CLI"
+PROFILE_MODE = EXECUTION_PROFILE is not None
+API_MODE = PROFILE_MODE and EXECUTION_PROFILE.get("channel") in ("claude_agent_sdk", "codex_sdk_api")
+if PROFILE_MODE:
+    SESSION = FORK_FROM = ANCHOR = None  # 不继承另一认证通道的旧会话或锚点。
 # ── 线的身份(v0.22.0,fleet.config `lines[].role`,由 server 的 slotEnv 降下来)────────
 #   kind:implement(默认)= 干活;review = 只读、只核对、只判断,评审文本就是交付物。
 #   tools:write(默认)/ read-only —— **唯一被机器强制的部分**:Claude 座席进 argv
@@ -1023,6 +1038,9 @@ def prompt_selftest():
 def delivery_block(evidence_path):
     """【怎么交付】—— 按座席与工具档变形。codex 的只读沙箱写不了文件,证据改走最终回复,
     由循环落成证据文件(run_codex);其余三种组合照旧用 Write 工具写文件。"""
+    if API_MODE:
+        return ["", "【怎么交付】把实际修改、产物位置与未执行的检查作为最终中文回复，宿主会落盘并执行登记验证。",
+                "不要写工作仓以外的证据文件，不调用看板命令，不自行验收或派生新任务。", ""]
     if RUNTIME == "codex" and TOOL_PROFILE == "read-only":
         return [
             "",
@@ -1299,12 +1317,18 @@ def acct_attempt(t, worker, attempt, model, effort):
     # 第二座席没有 claude 的转录 ⇒ 用判定时从 turn.completed 取到的东西。
     #   ⚠ 落到「没有转录=零值+note」的话,那些卡的用量会**全部记成 0**,
     #     账本就会撒谎说"很便宜"(空洞的绿的数据版)。
-    u = LAST_ACCT.get("usage") or usage_of(LAST_ACCT["sid"], LAST_ACCT["t0"])
+    u = LAST_ACCT.get("usage") if API_MODE else LAST_ACCT.get("usage") or usage_of(LAST_ACCT["sid"], LAST_ACCT["t0"])
+    if API_MODE:
+        u = u or {"calls": None, "in": None, "cc": None, "cr": None, "out": None}
     row = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
            "card": t["id"], "attempt": attempt, "worker": worker,
            "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
            "model": model, "effort": effort,
            "sid": (LAST_ACCT["sid"] or "")[:8], **u}
+    if PROFILE_MODE:
+        row.update({"execution_profile_id": EXECUTION_PROFILE["execution_profile_id"], "channel": EXECUTION_PROFILE["channel"]})
+    if API_MODE:
+        row["cost_usd"] = LAST_ACCT.get("cost_usd")
     try:
         io.open(LEDGER, "a", encoding="utf-8").write(json.dumps(row, ensure_ascii=False) + chr(10))
     except Exception as e:
@@ -1313,6 +1337,12 @@ def acct_attempt(t, worker, attempt, model, effort):
 
 
 def fmt_acct(rows):
+    if API_MODE:
+        def total(key):
+            return "待核实" if any(r.get(key) is None for r in rows) else f"{sum(r[key] for r in rows):,}"
+        cost = "待核实" if any(r.get("cost_usd") is None for r in rows) else f"${sum(r['cost_usd'] for r in rows):.4f}（SDK 估算，不是账单）"
+        return ("—— 本卡 API 用量 ——" + chr(10) + f"调用 {total('calls')} · 输入 {total('in')} · 输出 {total('out')} 词元 · 费用 {cost}"
+                + chr(10) + "促销归属以供应商账单核对为准；未知用量不记为零。")
     tot = {k: sum(r.get(k, 0) for r in rows) for k in ("calls", "in", "cc", "cr", "out")}
     # 档位轨迹要进卡面。只有数字的话知道「烧了 3 次」,但看不出「是一边提档一边烧的」。
     traj = " → ".join(tier_label(r.get("model"), r.get("effort")) for r in rows) or "(无)"
@@ -1355,6 +1385,8 @@ def cli_argv(prompt, sargs, model, effort):
         #   --max-budget-usd 是 --print 专用,超帽 CLI 自断 → 既有的失败尾→指纹/park 承接。
         #   主循环在**领卡前**查过余额;此处再 min 一层,给同卡多次尝试之间兜底。
         *budget_args(),
+        *(["--max-turns", str(int(EXECUTION_PROFILE["budget"]["max_turns"]))]
+          if PROFILE_MODE and (EXECUTION_PROFILE.get("budget") or {}).get("max_turns") else []),
         "--permission-mode", "acceptEdits",
         # ⭐ 工具档(v0.22.0):只读身份 = 没有 Edit,且工作仓整个进 Edit deny(readonly_edit_rules,
         #   main() 算好放在 READONLY_RULES)。这是身份里唯一被机器强制的部分。
@@ -1372,10 +1404,13 @@ def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _
         out("  ⚠进程启动记录缺少有效 PID —— 启动情况仍待核实")
         return False
     try:
-        status, result = c("POST", f"/api/tasks/{t['id']}/process-started", {
+        body = {
             "worker": worker, "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
             "runtime": runtime, "attempt": attempt, "pid": pid, "model": model, "effort": effort,
-        }, timeout=5)
+        }
+        if PROFILE_MODE:
+            body["execution_profile_id"] = EXECUTION_PROFILE["execution_profile_id"]
+        status, result = c("POST", f"/api/tasks/{t['id']}/process-started", body, timeout=5)
         if status == 200:
             return True
         out(f"  ⚠进程已创建，但启动记录被拒 {status} {result.get('error', '')} —— 看板仍待核实，不重试")
@@ -1404,6 +1439,245 @@ def run_task_process(t, worker, attempt, runtime, model, effort, argv, env, *, i
             process.kill()
             raise
         return subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+
+
+def profile_gate(check_sdk=False):
+    """领卡前验证显式通道；不登录、不探测余额或发起模型调用。"""
+    if PROFILE_ERROR:
+        return PROFILE_ERROR
+    if not PROFILE_MODE:
+        return None
+    p = EXECUTION_PROFILE
+    channels = {"claude_cli": "claude", "codex_cli": "codex", "claude_agent_sdk": "claude", "codex_sdk_api": "codex"}
+    if channels.get(p.get("channel")) != RUNTIME or p.get("runtime") != RUNTIME or p.get("enabled") is not True:
+        return "执行配置未启用或与运行时不匹配，未领取任务"
+    if not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", str(p.get("execution_profile_id", ""))) or not re.fullmatch(r"[a-f0-9]{64}", str(p.get("profile_digest", ""))):
+        return "执行配置身份无效，未领取任务"
+    if p.get("model") != MODEL or p.get("effort") != EFFORT:
+        return "执行配置与本轮模型或推理强度不一致，未领取任务"
+    try:
+        assert_profile_workspace(p)
+        if API_MODE:
+            sdk_protected_paths()
+    except (RuntimeError, ValueError, OSError, subprocess.SubprocessError):
+        return "执行配置的工作仓身份、权限或控制路径保护不一致，未领取任务"
+    if API_MODE:
+        b = p.get("budget")
+        if not isinstance(b, dict) or any(not isinstance(b.get(k), (int, float)) or isinstance(b[k], bool) or not math.isfinite(b[k]) or b[k] <= 0 for k in ("timeout_sec", "max_turns", "max_cost_usd")):
+            return "API 通道需要明确时限、轮次及金额预算，未领取任务"
+        if int(b["max_turns"]) != b["max_turns"]:
+            return "API 轮次预算须为正整数，未领取任务"
+        key = "ANTHROPIC_API_KEY" if RUNTIME == "claude" else "OPENAI_API_KEY"
+        home = "CLAUDE_CONFIG_DIR" if RUNTIME == "claude" else "CODEX_HOME"
+        if not os.environ.get(key, "").strip() or not os.environ.get(home):
+            return "API 通道缺少独立凭据或认证目录，未领取任务"
+        if p["channel"] == "codex_sdk_api" and p.get("provider_spend_limit_confirmed") is not True:
+            return "GPT API 需先确认供应商项目金额上限；本地只控制时限和执行步数"
+        if check_sdk:
+            if RUNTIME == "claude":
+                try:
+                    import importlib.metadata
+                    if importlib.metadata.version("claude-agent-sdk") != "0.2.174":
+                        return "Claude Agent SDK 版本尚未核验（需要 0.2.174）"
+                except Exception:
+                    return "Claude Agent SDK 尚未安装"
+            elif not os.path.isfile(os.path.join(CODE_ROOT, "node_modules", "@openai", "codex-sdk", "package.json")):
+                return "官方 Codex SDK 尚未安装"
+    return None
+
+
+def assert_profile_workspace(profile):
+    workspace = profile.get("workspace")
+    if not isinstance(workspace, dict) or not isinstance(workspace.get("path"), str):
+        raise RuntimeError("执行配置缺少已批准工作仓身份，未调用模型")
+    path = os.path.normcase(os.path.realpath(REPO))
+    identity = workspace_identity(path)
+    if os.path.normcase(os.path.realpath(workspace["path"])) != os.path.normcase(identity["root"]) or any(workspace.get(key) != identity[key] for key in ("device", "inode")):
+        raise RuntimeError("已批准工作仓的目录或文件系统身份已变化，未调用模型")
+    if profile.get("tools") != TOOL_PROFILE:
+        raise RuntimeError("已批准工具权限与本轮配置不一致，未调用模型")
+
+
+def sdk_protected_paths():
+    """API 的证据由宿主落盘，故整 DATA 禁止访问，覆盖 verify_lib.PROTECTED 全部条目。"""
+    extra = json.loads(os.environ.get("WORKER_PROTECTED_PATHS", "[]"))
+    if not isinstance(extra, list) or len(extra) > 500 or any(not isinstance(path, str) or "\0" in path or not os.path.isabs(path) for path in extra):
+        raise ValueError("SDK_PROTECTED_PATHS_INVALID")
+    paths = [DATA, REGISTRY, os.environ.get("BOARD_CONFIG") or os.path.join(CODE_ROOT, "fleet.config.json"),
+             os.environ.get("WORKER_PROFILE_AUTH_HOME"), *extra]
+    return sorted({os.path.normcase(os.path.realpath(path)) for path in paths if path})
+
+
+def assert_task_profile(t, model, effort):
+    if not PROFILE_MODE:
+        return
+    p = t.get("execution_profile")
+    if not isinstance(p, dict) or any(p.get(k) != EXECUTION_PROFILE.get(k) for k in ("execution_profile_id", "profile_digest", "runtime", "channel")):
+        raise RuntimeError("任务与本轮执行配置不一致，未调用模型")
+    if p.get("model") != model or p.get("effort") != effort or EXECUTION_PROFILE.get("model") != model or EXECUTION_PROFILE.get("effort") != effort:
+        raise RuntimeError("任务与本轮模型或推理强度不一致，未调用模型")
+    assert_profile_workspace(EXECUTION_PROFILE)
+    assert_profile_workspace(p)
+    if p.get("workspace") != EXECUTION_PROFILE.get("workspace") or p.get("tools") != EXECUTION_PROFILE.get("tools"):
+        raise RuntimeError("任务与已批准工作仓或工具权限不一致，未调用模型")
+
+
+def stop_api_tree(process):
+    """仅终止本次创建的进程树，不按程序名批量停止其他执行器。"""
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        command = os.path.join(os.environ.get("SystemRoot", "C:/Windows"), "System32", "taskkill.exe")
+        try:
+            subprocess.run([command, "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=8)
+        except Exception:
+            pass
+    else:
+        import signal
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+    if process.poll() is None:
+        process.kill()
+
+
+def run_api_process(t, worker, attempt, model, effort, argv, environment):
+    """有界读取单次 SDK 事件；活动及时上报，终态在进程退出后才持久化。"""
+    items, terminal, terminal_count, protocol_error = queue.Queue(maxsize=256), None, 0, None
+    profile = EXECUTION_PROFILE
+    started = time.monotonic()
+    with subprocess.Popen(argv, cwd=REPO, env=environment, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                          stdin=subprocess.DEVNULL, text=True, encoding="utf-8", errors="strict",
+                          start_new_session=os.name != "nt") as process:
+        if not record_process_started(t, worker, attempt, RUNTIME, model, effort, process.pid):
+            stop_api_tree(process)
+            return {"status": "failed", "diagnostic": "SDK_START_RECORD_REJECTED", "report": None, "usage": None, "cost_usd": None}
+        def read_stream(stream, label):
+            count = 0
+            try:
+                while True:
+                    line = stream.readline(65537)
+                    if not line:
+                        break
+                    count += len(line.encode("utf-8"))
+                    if len(line) > 65536 or count > 4 * 1024 * 1024:
+                        items.put(("error", "SDK_OUTPUT_LIMIT")); break
+                    if label == "stdout":
+                        items.put(("line", line))
+            except Exception:
+                items.put(("error", "SDK_OUTPUT_INVALID"))
+            finally:
+                items.put((label + "_closed", None))
+        for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+            threading.Thread(target=read_stream, args=(stream, label), daemon=True).start()
+        closed, last_sent = set(), 0.0
+        try:
+            while len(closed) < 2 or process.poll() is None:
+                if time.monotonic() - started >= profile["budget"]["timeout_sec"]:
+                    protocol_error = "SDK_TIMEOUT"; stop_api_tree(process); break
+                try:
+                    kind, value = items.get(timeout=0.1)
+                except queue.Empty:
+                    continue
+                if kind.endswith("_closed"):
+                    closed.add(kind); continue
+                if kind == "error":
+                    protocol_error = value; stop_api_tree(process); break
+                try:
+                    item = json.loads(value)
+                    if not isinstance(item, dict) or item.get("format") != "kanban-agent-event/v1":
+                        raise ValueError()
+                    binding = {"task_id": t["id"], "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
+                               "execution_profile_id": profile["execution_profile_id"], "profile_digest": profile["profile_digest"], "model": model, "effort": effort}
+                    if any(item.get(k) != v for k, v in binding.items()) or str(uuid.UUID(str(item.get("event_id")))) != item["event_id"]:
+                        raise ValueError()
+                    if item.get("kind") == "terminal":
+                        terminal_count += 1
+                        if terminal_count != 1 or item.get("status") not in ("success", "failed", "timeout", "cancelled"):
+                            raise ValueError()
+                        terminal = item
+                    elif item.get("kind") == "activity":
+                        if time.monotonic() - last_sent >= 1:
+                            body = {k: item[k] for k in ("event_id", "run_id", "agent_instance_id", "execution_profile_id", "profile_digest", "model", "effort", "kind")}
+                            for key in ("request_id", "session_id"):
+                                if item.get(key) is not None:
+                                    body[key] = item[key]
+                            status, _ = call("POST", f"/api/tasks/{t['id']}/execution-event", {"worker": worker, **body}, timeout=5)
+                            if status != 200:
+                                raise ValueError()
+                            last_sent = time.monotonic()
+                    elif item.get("kind") != "started":
+                        raise ValueError()
+                except Exception:
+                    protocol_error = "SDK_EVENT_REJECTED"; stop_api_tree(process); break
+        except KeyboardInterrupt:
+            protocol_error = "SDK_CANCELLED"; stop_api_tree(process)
+        except BaseException:
+            stop_api_tree(process)
+            raise
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            stop_api_tree(process); protocol_error = protocol_error or "SDK_CLEANUP_UNCONFIRMED"
+        if protocol_error or terminal_count != 1 or not terminal or process.returncode != 0:
+            status = "timeout" if protocol_error == "SDK_TIMEOUT" else "cancelled" if protocol_error == "SDK_CANCELLED" else (terminal or {}).get("status") if not protocol_error and (terminal or {}).get("status") in ("failed", "timeout", "cancelled") else "failed"
+            terminal = {"status": status, "diagnostic": protocol_error or (terminal or {}).get("diagnostic", "SDK_TERMINAL_MISSING"), "report": None,
+                        "usage": (terminal or {}).get("usage"), "cost_usd": (terminal or {}).get("cost_usd")}
+        if terminal["status"] == "success" and (not isinstance(terminal.get("report"), str) or not terminal["report"].strip()):
+            terminal.update(status="failed", diagnostic="SDK_REPORT_MISSING", report=None)
+        # 只向看板回传有界元数据，SDK 最终原文留在原卡证据，不放进观察事件。
+        usage = terminal.get("usage")
+        usage = None if not isinstance(usage, dict) else {"input_tokens": usage.get("input_tokens"), "output_tokens": usage.get("output_tokens"),
+                 "cached_input_tokens": usage.get("cached_input_tokens", usage.get("cache_read_input_tokens")), "calls": usage.get("calls")}
+        body = {"worker": worker, "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
+                "execution_profile_id": profile["execution_profile_id"], "profile_digest": profile["profile_digest"],
+                "event_id": str(uuid.uuid4()), "kind": "terminal", "model": model, "effort": effort,
+                "status": terminal["status"], "usage": usage, "cost_usd": terminal.get("cost_usd")}
+        for key in ("request_id", "session_id"):
+            if terminal.get(key) is not None:
+                body[key] = terminal[key]
+        try:
+            status, _ = call("POST", f"/api/tasks/{t['id']}/execution-event", body, timeout=5)
+            if status != 200:
+                terminal.update(status="failed", diagnostic="SDK_TERMINAL_RECORD_REJECTED", report=None)
+        except Exception:
+            terminal.update(status="failed", diagnostic="SDK_TERMINAL_RECORD_UNCONFIRMED", report=None)
+        return terminal
+
+
+def run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
+    global LAST_ACCT
+    assert_task_profile(t, model, effort)
+    error = profile_gate(check_sdk=True)
+    if error:
+        return -2, error
+    directory = os.path.join(DATA, "agent_jobs", t["run_id"])
+    os.makedirs(directory, mode=0o700, exist_ok=False)
+    prompt_file, job_file = os.path.join(directory, "prompt.txt"), os.path.join(directory, "job.json")
+    with io.open(prompt_file, "x", encoding="utf-8") as target:
+        target.write(build_prompt(t, worker, evidence_path, prev_tail, attempt))
+    p = EXECUTION_PROFILE
+    job = {"format": "kanban-agent-job/v1", "task_id": t["id"], "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
+           "execution_profile_id": p["execution_profile_id"], "profile_digest": p["profile_digest"], "channel": p["channel"], "runtime": RUNTIME,
+           "cwd": os.path.realpath(REPO), "node_path": os.environ.get("WORKER_NODE"), "prompt_file": prompt_file, "model": model, "effort": effort,
+           "read_only": TOOL_PROFILE == "read-only", "tools": TOOL_PROFILE, "workspace": p["workspace"],
+           "protected_paths": sdk_protected_paths(), "budget": p["budget"]}
+    with io.open(job_file, "x", encoding="utf-8") as target:
+        json.dump(job, target, ensure_ascii=False, allow_nan=False)
+    runner = os.path.join(CODE_ROOT, "runners", "claude_agent.py" if RUNTIME == "claude" else "codex_agent.mjs")
+    command = sys.executable if RUNTIME == "claude" else os.environ.get("WORKER_NODE", "node")
+    env = provider_environment(os.environ, p["channel"])
+    terminal = run_api_process(t, worker, attempt, model, effort, [command, runner, "--job", job_file], env)
+    raw = terminal.get("usage") or {}
+    LAST_ACCT = {"sid": terminal.get("session_id"), "t0": None, "cost_usd": terminal.get("cost_usd"),
+                 "usage": {"calls": raw.get("calls"), "in": raw.get("input_tokens"), "out": raw.get("output_tokens"),
+                           "cc": raw.get("cache_creation_input_tokens", raw.get("cache_write_input_tokens")), "cr": raw.get("cached_input_tokens", raw.get("cache_read_input_tokens"))}}
+    if terminal["status"] != "success":
+        return -1, terminal.get("diagnostic", "SDK_EXECUTION_FAILED")
+    with io.open(evidence_path, "x", encoding="utf-8") as target:
+        target.write(terminal["report"])
+    return 0, "SDK 结果已回传；正式验证与人工验收仍由原流程处理"
 
 
 def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
@@ -1453,6 +1727,13 @@ def probe_runtime(live=False):
     ok = True
     print(f"[probe] runtime = {RUNTIME}", flush=True)
     print(f"[probe] model/effort = {MODEL} / {EFFORT}", flush=True)
+    if PROFILE_ERROR or API_MODE:
+        error = profile_gate(check_sdk=True)
+        if live:
+            print("[probe] API 实际调用只能通过有预算的新任务，不执行 live 探针", flush=True)
+            return 3
+        print("[probe] " + (error or "PASS（仅 SDK 安装与配置，未验证登录、模型或计费）"), flush=True)
+        return 1 if error else 0
     if RUNTIME not in RUNTIME_SEATS:
         print(f"[probe] ⛔ 不在座席表 {RUNTIME_SEATS} 里"); return 1
     if RUNTIME == "claude":
@@ -1665,6 +1946,9 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     ⭐座席分派就是**这一行**。handle() 不知道座席(返回同型)。
     ⚠ 提权阶梯由主座席的模型名构成 ⇒ 第二座席的槽 `slot_rung` 返回 None,
       自然落进「阶梯外=逐字沿用槽配置」这条既有分支(不需要改造,由试验钉住)。"""
+    assert_task_profile(t, model, effort)
+    if API_MODE:
+        return run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort)
     if RUNTIME == "codex":
         return run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort)
     # ⚠ --allowedTools 给了明示列表就会**把 MCP 工具全部关在外面**(实测:想调 MCP 工具时
@@ -1762,7 +2046,7 @@ def handle(t, worker):
             # ⭐档位在**这一处**定好,再把同一个东西发给日志、argv、账本三方。
             #   三方各读各的会出现「日志说 max 而 argv 是 high」,而且谁都看不见
             #   (观测不到的不一致必然在生产爆出来)。
-            a_model, a_effort, a_rung = tier_of(weight, attempt)
+            a_model, a_effort, a_rung = (MODEL, EFFORT, None) if PROFILE_MODE else tier_of(weight, attempt)
             # 分子是**本轮**的次数(与预算同口径)。证据文件名保持生涯累计 ——
             #   跨派发撞名会覆盖掉上一轮的证据(见开头 EVID 那段的坑)。
             #   两者不一致 = 这是被打回后重认领的卡,只在那时并记生涯侧。
@@ -1785,7 +2069,8 @@ def handle(t, worker):
             #   ⚠这不是"它免费"的意思 —— 那侧的节奏由各自池的闸承担,而那件事**尚未装**,
             #     所以要在 note 里明写(不静默地写 0)。
             _other_pool = (RUNTIME != "claude")
-            gates_lib.append_spend(DATA, f"worker:{worker}",
+            if not API_MODE:
+                gates_lib.append_spend(DATA, f"worker:{worker}",
                                    0.0 if _other_pool else gates_lib.usd_of(row_acct, a_model),
                                    card=t["id"], model=a_model,
                                    note=("另一个池(不占主座席美元账;实际 token 在 usage_ledger)"
@@ -1795,7 +2080,11 @@ def handle(t, worker):
             # ⭐燃料耗尽不是「失败」。既没产出、输出又自称限流的话,
             #   就不推进 attempts 而去等 —— 推进的话,到早上所有卡都会顶着
             #   「尝试用尽」的脸排在那里(不是因为难,是因为跑不了)。
-            if rc != 0 and not read_evidence(ev_path) and RATE_LIMIT_PAT.search(tail or ""):
+            if PROFILE_MODE and rc != 0:
+                LAST_FAIL_FP = "explicit-profile-failed"
+                deliver_run(tid, worker, "wait", "执行配置本次调用未完成；未重试、切换通道或追加模型调用。" + chr(10) + str(tail) + chr(10) + fmt_acct(acct), what="等待操作者处理")
+                return "wait"
+            if not PROFILE_MODE and rc != 0 and not read_evidence(ev_path) and RATE_LIMIT_PAT.search(tail or ""):
                 # 进单槽等待之前先报全局。server 单写共享档,切换不了的线就停。
                 report_exhausted(call, RUNTIME, tail or "", log=log)
                 rate_waits += 1
@@ -1829,7 +2118,7 @@ def handle(t, worker):
                 log(f"  验证 {vr['key']}: " + ("通过" if vr["ok"] else f"失败 rc={vr.get('rc')}"))
 
             if ev and (vr is None or vr["ok"]):
-                made, memo = harvest_spawned(t, worker)   # ⭐成功之后才收割
+                made, memo = ([], "") if PROFILE_MODE else harvest_spawned(t, worker)
                 if made and not any(isinstance(x, dict) for x in made):
                     ev += (chr(10) + chr(10) + "—— 本卡派生出的子任务卡 ——" + chr(10) +
                            "#" + " #".join(str(x) for x in made))
@@ -1844,6 +2133,10 @@ def handle(t, worker):
                 log(f"  #{tid} → 等待中/待验收")
                 return "done"
 
+            if PROFILE_MODE:
+                LAST_FAIL_FP = "explicit-profile-verification-failed"
+                deliver_run(tid, worker, "wait", "本次结果或登记验证未完成；保留输出，等待操作者处理，不追加模型调用。" + chr(10) + (ev or str(tail)) + chr(10) + fmt_acct(acct), what="等待操作者处理")
+                return "wait"
             if vr and not vr["ok"]:
                 tails.append(f"[第 {attempt} 次 验证 {vr['key']} 失败 rc={vr.get('rc')}]" + chr(10) +
                              (vr.get("out") or "")[-1500:])
@@ -2022,10 +2315,17 @@ def main():
     line = sys.argv[sys.argv.index("--as") + 1]
     # 并行槽: 身份(worker)与线(line)分离。槽 1 无 --worker,两者同名 = 与单槽一致。
     worker = arg_of("--worker", line)
+    if PROFILE_ERROR:
+        print("[worker] ⛔ " + PROFILE_ERROR, flush=True)
+        sys.exit(gates_lib.EXIT_REFUSED)
     # ⭐probe 在**门之前**(它是为了测量未解禁的座席,放门内就永远测不了)。
     #   只读: 不领卡、不写看板、不碰证据文件。
     if "--probe-runtime" in sys.argv:
         sys.exit(probe_runtime(live="--live" in sys.argv))
+    profile_error = profile_gate(check_sdk=True)
+    if profile_error:
+        print("[worker] ⛔ " + profile_error, flush=True)
+        sys.exit(gates_lib.EXIT_REFUSED)
     # 座席 allowlist(未知值落拒绝侧)
     if RUNTIME not in RUNTIME_SEATS:
         print(f"[worker] 运行时 {RUNTIME} 不在座席表 {'/'.join(RUNTIME_SEATS)} —— 拒绝启动", flush=True)
@@ -2041,20 +2341,20 @@ def main():
         print(chg, flush=True)
         sys.exit(gates_lib.EXIT_REFUSED)
     global READONLY_RULES
-    if TOOL_PROFILE == "read-only" and RUNTIME == "claude":
+    if TOOL_PROFILE == "read-only" and RUNTIME == "claude" and not API_MODE:
         READONLY_RULES = readonly_edit_rules(REPO, DATA)
         if READONLY_RULES is None:
             print(f"[worker] ⛔ 只读身份需要列出工作仓 HEAD 的条目来组 Edit deny,而 {REPO} 列不出来"
                   "(不是 git 仓 / git 不在 / 数据目录就是工作仓)—— 只读不能靠猜,拒绝启动", flush=True)
             sys.exit(gates_lib.EXIT_REFUSED)
     # ⭐解禁的门(宿主明示许可制)。实装在,但没许可 ⇒ **不领卡**。
-    if RUNTIME == "codex" and not CODEX_RELEASED:
+    if not API_MODE and RUNTIME == "codex" and not CODEX_RELEASED:
         print("[worker] codex 实装已就位,但**未获解禁**(宿主明示许可制)—— 拒绝领卡。"
               + chr(10) + "  解禁前能做的只有 --probe-runtime(只读)。", flush=True)
         sys.exit(gates_lib.EXIT_REFUSED)
     # 宿主配置的门。server 在启动请求时也会拒,但**这里也放一道** ——
     #   手动执行、试验等不经 server 的路径上,同一判据同样生效才是防御的本体。
-    if RUNTIME == "codex":
+    if not API_MODE and RUNTIME == "codex":
         g2 = codex_gate()
         if g2:
             print(g2, flush=True)
@@ -2064,7 +2364,7 @@ def main():
     #   那时请把这道门一起搬过去(不要造出绕过门的路径)。
     if CLI_NOTE:
         log("ℹ " + CLI_NOTE)
-    gate = cli_gate()
+    gate = None if API_MODE else cli_gate()
     if gate:
         print(gate, flush=True)
         sys.exit(gates_lib.EXIT_REFUSED)
@@ -2119,6 +2419,10 @@ def main():
         if cgate or sgate:
             print(cgate or sgate, flush=True)
             return
+        profile_error = profile_gate(check_sdk=True)
+        if profile_error:
+            print("[worker] ⛔ " + profile_error, flush=True)
+            return
         if dry:
             s, r = call("GET", f"/api/tasks?status=not_started&route={route}&line={line}")
             n = len([t for t in r.get("tasks", []) if t.get("released")])
@@ -2132,7 +2436,8 @@ def main():
         #   加上在链中途压缩的话,链内已经查明的事(文件:行、试过不行的路)会从摘要里掉,
         #   下一张卡**把同一个发现再做一遍**。⇒ 链还在就不压缩。
         try:
-            maybe_compact(chain_open=chain_has_open_cards())
+            if not PROFILE_MODE:
+                maybe_compact(chain_open=chain_has_open_cards())
         except Exception as e:
             log(f"  压缩时出了意外({type(e).__name__}: {e})—— 继续运行")
         if until and datetime.datetime.now() >= until:
@@ -2142,7 +2447,7 @@ def main():
         # ⭐全局预算前置查: 余额见底就不领新卡 —— 在途允许收尾,新开一律等窗口。
         #   显式报数(与用量纪律同形: 不许只说「还够/不够」)。默认此闸是关的。
         rem, spent, _n, cap = gates_lib.remaining_today(DATA)
-        if RUNTIME == "claude" and rem < 1.0:
+        if not API_MODE and RUNTIME == "claude" and rem < 1.0:
             log(f"⛔ 全局预算见底: 今日已花 ${spent:.2f} / ${cap:.2f},余 ${rem:.2f} < $1 "
                 f"—— 不领新卡,睡 {max(interval, 300)}s"
                 f"(账本 <data>/spend_ledger.jsonl,帽 env BOARD_GLOBAL_BUDGET_USD)")
@@ -2198,6 +2503,9 @@ def main():
             outcome = "wait"
         # ⭐无论哪种结局都继续下一张。waiting 停的是那条任务链,不是这个 worker。
         if once: return
+        if PROFILE_MODE and outcome != "done":
+            log("显式执行通道本次未完成，停止本线；不继续消耗下一张卡预算。")
+            return
         # …除非**连着好几张都没交成**。那多半不是卡的问题(见 PARK_STREAK_LIMIT)。
         if outcome == "done" or not LAST_FAIL_FP:
             # 交付成功 = 系统是活的;拿不到指纹 = 判不了,两者都不该累积。

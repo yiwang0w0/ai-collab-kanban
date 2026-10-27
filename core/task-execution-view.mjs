@@ -1,5 +1,6 @@
 import {digest} from "./federation/sync-store.mjs";
 import {launchReceipt,processObservation} from "./execution/receipts.mjs";
+import {createHash} from "node:crypto";
 
 const exists=(db,name)=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
 const at=value=>typeof value==="string"&&value.length<=40&&Number.isFinite(Date.parse(value))?value:null;
@@ -26,6 +27,22 @@ export function readLegacyProcessStart(db,run,{attempt=null}={}){
  return null;
 }
 
+/** SDK 输出活动只采用同一次受管运行的宿主观察，不从心跳或领取补造。 */
+export function readSdkObservation(db,run){
+ if(!run||run.imported||!exists(db,"task_events")||typeof run.policy_json!=="string")return null;
+ if(createHash("sha256").update(run.policy_json).digest("hex")!==run.policy_sha256)return null;
+ const profile=object(run.policy_json)?.context?.execution_profile;
+ if(!profile||!["claude_agent_sdk","codex_sdk_api"].includes(profile.channel))return null;
+ const result={profile,activity_at:null,terminal:null};
+ for(const event of db.prepare("SELECT id,at,kind,actor,detail FROM task_events WHERE task_id=? AND kind IN ('execution.activity','execution.terminal') ORDER BY id").iterate(run.task_id)){
+  const d=object(event.detail);
+  if(!at(event.at)||event.actor!==run.worker||d?.source!=="agent_sdk"||d.run_id!==run.run_id||d.agent_instance_id!==run.agent_instance_id||d.execution_profile_id!==profile.execution_profile_id||d.profile_digest!==profile.profile_digest||d.model!==profile.model||d.effort!==profile.effort)continue;
+  if(event.kind==="execution.activity")result.activity_at=event.at;
+  else result.terminal={...d,at:event.at};
+ }
+ return result;
+}
+
 /** 只读展示：领取、启动许可与进程观察各自保留含义，不授予执行或重派权限。 */
 export function taskExecutionView(db,t){
  const view={run_id:null,released_at:null,claimed_at:null,launch_requested_at:null,process_started_at:null,last_activity_at:null,ended_at:null,process_state:"unverified",work_state:"unverified"};
@@ -41,7 +58,7 @@ export function taskExecutionView(db,t){
   }
  }
  if(typeof t.run_id!=="string"||!exists(db,"task_runs"))return view;
- const run=db.prepare("SELECT run_id,task_id,task_uid,owner_node_id,worker,runtime,agent_instance_id,first_attempt,last_attempt,imported,state,ended_at FROM task_runs WHERE run_id=? AND task_id=? AND task_uid=? AND owner_node_id=?").get(t.run_id,t.id,t.task_uid,t.owner_node_id);
+ const run=db.prepare("SELECT run_id,task_id,task_uid,owner_node_id,worker,runtime,agent_instance_id,first_attempt,last_attempt,imported,state,ended_at,policy_json,policy_sha256 FROM task_runs WHERE run_id=? AND task_id=? AND task_uid=? AND owner_node_id=?").get(t.run_id,t.id,t.task_uid,t.owner_node_id);
  if(!run)return view;
  view.run_id=run.run_id;
  if(run.state==="ended")view.ended_at=at(run.ended_at);
@@ -57,6 +74,12 @@ export function taskExecutionView(db,t){
   // 仅采用受管 worker 宿主的本轮记录；领取、心跳和模型原文都不能代替它。
   const started=readLegacyProcessStart(db,run);
   if(started){view.process_state="observed";view.process_started_at=started.at;}
+  const sdk=readSdkObservation(db,run);
+  if(sdk){
+   view.model_activity_at=started?sdk.activity_at:null;
+   if(view.model_activity_at){view.last_activity_at=view.model_activity_at;view.work_state="activity_observed";}
+   view.sdk_status=sdk.terminal?.status??null;view.usage=sdk.terminal?.usage??null;view.cost_usd=sdk.terminal?.cost_usd??null;
+  }
   // 宿主创建 CLI 进程并不证明模型已响应，更不是任务完成或验收。
   return view;
  };

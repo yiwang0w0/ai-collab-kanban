@@ -1,7 +1,7 @@
 import {statSync} from "node:fs";
 import {isAbsolute} from "node:path";
 import {detectClaude,detectCodex,findOnPath} from "./config-setup.mjs";
-import {readLegacyProcessStart} from "./task-execution-view.mjs";
+import {readLegacyProcessStart,readSdkObservation} from "./task-execution-view.mjs";
 
 /** 只读检查现有命令落点，不运行 CLI，不读取登录凭据或发起模型调用。 */
 export function executorReadiness(seat,{env=process.env,enabled=true}={}){
@@ -26,7 +26,10 @@ export function runtimeVerifications(db,workerNames){
   if(hasBroker&&db.prepare("SELECT 1 FROM broker_dispatches WHERE run_id=?").get(run.run_id))continue;
   const started=readLegacyProcessStart(db,run,{attempt:run.last_attempt});
   if(!started)continue;
-  const key=JSON.stringify([run.runtime,started.detail.model,started.detail.effort]);
+  const profile=JSON.parse(run.policy_json).context?.execution_profile??null;
+  const sdk=readSdkObservation(db,run);
+  if(profile?.auth_kind==="api_key"&&sdk?.terminal?.status!=="success")continue;
+  const key=JSON.stringify([run.runtime,started.detail.model,started.detail.effort,profile?.execution_profile_id??null,profile?.profile_digest??null]);
   if(seen.has(key))continue;
   const task=db.prepare("SELECT task_uid,owner_node_id FROM tasks WHERE id=?").get(run.task_id);
   if(!task||task.task_uid!==run.task_uid||task.owner_node_id!==run.owner_node_id)continue;
@@ -37,7 +40,7 @@ export function runtimeVerifications(db,workerNames){
   }
   if(!returned)continue;
   seen.add(key);
-  result.push({runtime:run.runtime,model:started.detail.model,effort:started.detail.effort,state:"result_returned",task_id:run.task_id,observed_at:started.at,source:"worker_loop"});
+  result.push({runtime:run.runtime,model:started.detail.model,effort:started.detail.effort,state:"result_returned",task_id:run.task_id,observed_at:started.at,source:"worker_loop",...(profile?{execution_profile_id:profile.execution_profile_id,profile_digest:profile.profile_digest,channel:profile.channel}:{})});
  }
  return result;
 }

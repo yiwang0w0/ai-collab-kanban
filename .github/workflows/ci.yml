@@ -39,6 +39,11 @@ jobs:
         if: ${{ !cancelled() }}
         with:
           python-version: "3.12"
+      - name: install pinned SDK dependencies (no model calls)
+        if: ${{ !cancelled() }}
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          python -m pip install --disable-pip-version-check -r runners/requirements.txt
       - name: define hrun (FAIL lines become annotations)
         if: ${{ !cancelled() }}
         run: |
@@ -58,6 +63,9 @@ jobs:
       - name: selftest (store)
         if: ${{ !cancelled() }}
         run: bash hrun.sh node tests/selftest.mjs
+      - name: four channels (isolated contracts, no model calls)
+        if: ${{ !cancelled() }}
+        run: bash hrun.sh npm run test:channels
       - name: progressdiagnostictest (local blockers and audited parent rearm)
         if: ${{ !cancelled() }}
         run: bash hrun.sh node tests/progressdiagnostictest.mjs

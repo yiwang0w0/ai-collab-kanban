@@ -42,6 +42,7 @@ PROTECTED = (
     "board.log",
     "probe_conn", "probe_selfcheck_ok", "probes/**", # 探针的连接串与生产行(SECURITY:数据室不在这)
     "codex-*.txt",                                   # codex 座席的末消息转存
+    "auth/**", "agent_jobs/**",                     # 独立通道认证与宿主固定的 SDK 任务输入
     "*.tmp",                                         # 原子写的临时文件
 )
 # 模型的「出件箱」:worker 的证据与派生卡、审阅的判决、拆解的结果。不进 deny 表。

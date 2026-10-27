@@ -16,7 +16,9 @@ function panelSection(start, end) {
   return source.slice(a, b);
 }
 const readinessSource = panelSection("// ── runtime-readiness(pure;tests/panelcopytest.mjs) ──", "// ── /runtime-readiness ──");
+const profileSource = panelSection("// ── execution-profile-copy(pure;tests/panelcopytest.mjs) ──", "// ── /execution-profile-copy ──");
 const readiness = new Function(readinessSource + "\nreturn { runtimeReadiness, runtimeProbeKey };")();
+const profileCopy = new Function(profileSource + "\nreturn {executionChannelName,executionAuthName,executionBillingName,executionBudgetText,taskExecutionChoices};")();
 
 test("枚举按调用者语义域显示，未知值和原型键只使用中文兜底", () => {
   const delivery = Object.freeze({ accepted: "已接收", ready: "接收准备就绪" });
@@ -160,12 +162,12 @@ test("原设置弹层展示接入事实但保留原模型值域、权限禁用�
     RUNTIMES: [{ id: "codex", label: "Codex CLI", disabled: true,
       models: [{ id: "allowed-model", label: "允许的模型" }], efforts: ["high"],
       readiness: { installation: "available", command_configured: true, enabled: false } }],
-    MODELS: [], EFFORTS: ["high"], cfgAgents: agents, cfgProbes: new Map(), cfgLine: "work", cfgReadiness: null,
+    MODELS: [], EFFORTS: ["high"], EXECUTION_PROFILES: [], cfgAgents: agents, cfgProbes: new Map(), cfgLine: "work", cfgReadiness: null,
     cfgSingle: false, cfgLegacy: false, MAXP: 1, cfg, cfgAnchor: { getBoundingClientRect: () => ({ left: 400, bottom: 200 }) },
     innerWidth: 1280, esc: (value) => String(value), lineColor: () => "var(--cc)", lineLabel: () => "任务执行线",
     effortName: () => "高",
   });
-  vm.runInContext(readinessSource + "\n" + panelSection("function renderCfg(){", "async function probeCfgAgent("), context);
+  vm.runInContext(readinessSource + "\n" + profileSource + "\n" + panelSection("function renderCfg(){", "async function probeCfgAgent("), context);
   context.renderCfg();
   assert.match(cfg.innerHTML, /执行线：已停止/);
   assert.match(cfg.innerHTML, /<dt>启用<\/dt><dd[^>]*>未启用<\/dd>/);
@@ -278,4 +280,94 @@ test("旧配置的接入检查不覆盖新配置，失败诊断保留原始原�
   const failed = probeFixture(async () => { throw new Error("backend policy denied custom action"); });
   await failed.context.probeCfgAgent(0);
   assert.match([...failed.probes.values()][0].detail, /backend policy denied custom action/);
+});
+
+test("四通道文案区分订阅与 API 计费，不把促销或未知预算写成已验证", () => {
+  assert.equal(profileCopy.executionChannelName("claude_agent_sdk"), "Claude API（Agent SDK）");
+  assert.equal(profileCopy.executionChannelName("codex_sdk_api"), "GPT API（Codex SDK）");
+  assert.equal(profileCopy.executionAuthName("api_key"), "独立 API 凭据");
+  assert.match(profileCopy.executionBillingName("anthropic_api"), /促销归属待账单确认/);
+  for (const value of ["constructor", "toString", "unknown"])
+    assert.match(profileCopy.executionChannelName(value), /待核实/);
+  assert.match(profileCopy.executionBudgetText(null), /待你确认/);
+  assert.match(profileCopy.executionBudgetText({ max_cost_usd: 0, timeout_sec: 120, max_turns: 2 }), /不能派发/);
+  const budget = profileCopy.executionBudgetText({ max_cost_usd: 0.5, timeout_sec: 120, max_turns: 2 }, "provider_spend_limit_required");
+  assert.match(budget, /供应商项目花费限制/); assert.match(budget, /本机不提供金额硬封顶/);
+});
+
+test("新任务只选择当前执行线已配置组合，显式配置必须先核对再放行", () => {
+  const rows = [{ line: "work", settings: { agents: [
+    { runtime: "claude", model: "allowed", effort: "high", execution_profile_id: "claude-api" },
+    { runtime: "claude", model: "allowed", effort: "high", execution_profile_id: "claude-api" },
+    { runtime: "codex", model: "allowed-gpt", effort: "low", execution_profile_id: "gpt-api" },
+  ] } }, { line: "other", settings: { agents: [{ runtime: "codex", model: "foreign", effort: "low", execution_profile_id: "foreign" }] } }];
+  const choices = profileCopy.taskExecutionChoices("work", rows);
+  assert.equal(choices.length, 2); assert.ok(choices.every((c) => c.model !== "foreign"));
+  const build = new Function(profileSource + "\n" + panelSection("function newTaskBody(", "/** 只展示当前可见列表") + "\nreturn newTaskBody;")();
+  const cfg = { lines: ["work"], choices }, input = { title: " 样本 ", line: "work", execution_profile_id: "claude-api", model: "allowed", effort: "high" };
+  assert.deepEqual(build(input, cfg), { body: { subject: "样本", description: "", line: "work", execution_profile_id: "claude-api", model: "allowed", effort: "high", released: false } });
+  for (const mismatch of [{ execution_profile_id: "foreign" }, { model: "foreign" }, { effort: "max" }])
+    assert.match(build({ ...input, ...mismatch }, cfg).error, /当前执行线已配置/);
+  assert.deepEqual(build({ title: "旧卡", line: "work" }, cfg), { body: { subject: "旧卡", description: "", line: "work" } });
+});
+
+test("同名模型的 CLI 与 API 回传和探测互不冒认", async () => {
+  const api = { runtime: "claude", model: "same", effort: "high", execution_profile_id: "claude-api" };
+  const event = { ...api, task_id: 9, state: "result_returned", source: "worker_loop" };
+  assert.match(readiness.runtimeReadiness({}, api, null, [{ ...event, execution_profile_id: undefined }]).realTask, /待核实/);
+  assert.match(readiness.runtimeReadiness({}, { ...api, execution_profile_id: "claude-cli" }, null, [event]).realTask, /待核实/);
+  assert.equal(readiness.runtimeReadiness({}, api, null, [event]).realTask, "已回传结果（任务 #9）");
+  assert.notEqual(readiness.runtimeProbeKey("work", api), readiness.runtimeProbeKey("work", { ...api, execution_profile_id: "claude-cli" }));
+  const f = probeFixture(async () => ({ ok: true, live: false }));
+  f.context.cfgAgents[0].execution_profile_id = "gpt-api";
+  await f.context.probeCfgAgent(0);
+  assert.equal(f.calls[0].body.execution_profile_id, "gpt-api"); assert.equal(f.calls[0].body.live, false);
+});
+
+test("API 配置沿用原设置及模型声明，不受 CLI 订阅闸误禁也不解禁 CLI", () => {
+  const agent = { runtime: "codex", model: "declared", effort: "high", window: false, execution_profile_id: "gpt-api" };
+  const profile = { id: "gpt-api", label: "GPT API", runtime: "codex", channel: "codex_sdk_api", auth_kind: "api_key", billing_kind: "openai_api", enabled: false, configured: false, ready: false, budget: null, reason: "预算和凭据尚未准备" };
+  const context = vm.createContext({
+    workers: [{ line: "work", settings: { agents: [agent], rev: 3 } }], cfgLine: "work", cfgAgents: [agent], cfgReadiness: null, cfgProbes: new Map(),
+    EXECUTION_PROFILES: [profile], RUNTIMES: [{ id: "codex", label: "Codex CLI", disabled: true, models: [{ id: "declared", label: "允许模型" }], efforts: ["high"] }], MODELS: [], EFFORTS: ["high"],
+    cfgSingle: false, cfgLegacy: false, MAXP: 1, cfg: { innerHTML: "", style: {}, classList: { add() {} } }, cfgAnchor: { getBoundingClientRect: () => ({ left: 300, bottom: 200 }) }, innerWidth: 1280,
+    esc: String, lineColor: () => "var(--cc)", lineLabel: () => "试用线", effortName: () => "高",
+  });
+  vm.runInContext(readinessSource + "\n" + profileSource + "\n" + panelSection("function renderCfg(){", "async function probeCfgAgent("), context);
+  context.renderCfg();
+  assert.match(context.cfg.innerHTML, /value="gpt-api" selected/);
+  assert.match(context.cfg.innerHTML, /value="codex" selected>/, "API 不继承 CLI 订阅解禁状态");
+  assert.match(context.cfg.innerHTML, /value="declared" selected/);
+  assert.match(context.cfg.innerHTML, /预算和凭据尚未准备/);
+  assert.match(context.cfg.innerHTML, /待你确认金额、时限和轮次/);
+  assert.equal(context.RUNTIME_IDS, undefined); assert.equal(context.RUNTIMES[0].disabled, true);
+  assert.equal(agent.execution_profile_id, "gpt-api");
+});
+
+test("侧栏显示固定执行快照和模型活动，放行只复用原接口与两押版本保护", () => {
+  class Element {
+    constructor(tag, text) { this.tag = tag; this.text = text || ""; this.children = []; this.dataset = {}; }
+    append(...nodes) { this.children.push(...nodes); }
+    get textContent() { return this.text + this.children.map((n) => n.textContent).join(""); }
+  }
+  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高" });
+  vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t){", "function sideRelationshipBox(t){"), context);
+  const card = { id: 4, status: "not_started", released: false, aggregate_version: 7, execution_profile: {
+    execution_profile_id: "claude-api", profile_digest: "a".repeat(64), configuration_changed: true, label: "API 样本", channel: "claude_agent_sdk", auth_kind: "api_key", billing_kind: "anthropic_api", model: "allowed", effort: "high", tools: "write", budget: null, workspace: { path: "C:/隔离/中文 工作仓" },
+  } };
+  const section = context.sideExecution(card), button = section.children.find((n) => n.tag === "button");
+  assert.match(section.textContent, /C:\/隔离\/中文 工作仓/); assert.match(section.textContent, /Claude API（Agent SDK）/);
+  assert.match(section.textContent, /促销归属待账单确认/); assert.match(section.textContent, /待你确认/);
+  assert.match(section.textContent, /allowed · 高/);
+  assert.equal(button.dataset.a, "release"); assert.equal(button.dataset.version, "7");
+  assert.equal(button.dataset.executionProfileDigest, "a".repeat(64), "确认摘要来自正在显示的卡片，不从其他设置取值");
+  assert.match(section.textContent, /放行前核对执行配置/); assert.match(section.textContent, /第二次确认不会自动接受另一份配置/);
+  const withoutDigest = context.sideExecution({ ...card, execution_profile: { ...card.execution_profile, profile_digest: null } });
+  assert.equal(withoutDigest.children.find((n) => n.tag === "button").disabled, true, "缺少摘要不能放行");
+  assert.equal(context.sideExecution({ ...card, execution_profile: undefined }).children.some((n) => n.tag === "button"), false, "旧卡不新增放行路径");
+  const active = context.sideExecution({ ...card, status: "in_progress", run_id: "run", execution_trace: { run_id: "run", model_activity_at: "2026-10-27T00:00:00Z" } });
+  assert.match(active.textContent, /最近模型活动/); assert.match(active.textContent, /进程、心跳和输出不等于有效工作/);
+  assert.ok(source.includes('a === "archive" || a === "release") && b.dataset.armed !== "1"'));
+  assert.ok(source.includes('released: true, expected_version: Number(b.dataset.version)'));
+  assert.ok(source.includes('confirm_execution_profile_digest: b.dataset.executionProfileDigest'), "两押提交原按钮绑定的摘要，配置变化不静默确认");
 });
