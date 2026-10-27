@@ -13,9 +13,11 @@ import {setTimeout as delay} from "node:timers/promises";
 import {createRequire} from "node:module";
 import {DatabaseSync} from "node:sqlite";
 import {loadExecutionProfiles,getExecutionProfile,executionProfileSnapshot} from "../core/execution-profiles.mjs";
+import {directoryIdentity} from "../core/artifacts/git-workspace.mjs";
 import {fixtureVersion} from "./http-version-fixture.mjs";
 
-const ROOT=fileURLToPath(new URL("../",import.meta.url)),TMP=mkdtempSync(join(tmpdir(),"kanban-four-http-")),REPO=join(TMP,"工作仓"),CONTROL=join(TMP,"宿主控制.json");
+const ROOT=fileURLToPath(new URL("../",import.meta.url)),TMP=mkdtempSync(join(tmpdir(),"kanban-four-http-")),CONTROL=join(TMP,"宿主控制.json");
+let REPO=join(TMP,"工作仓");
 const PY=process.env.BOARD_PYTHON||process.env.PYTHON||"python",require=createRequire(import.meta.url),store=require("../core/store.js");
 const budget={timeout_sec:120,max_turns:4,max_cost_usd:0.5};
 const cases=[
@@ -40,6 +42,7 @@ const create=async row=>{
 
 before(async()=>{
  mkdirSync(REPO);
+ REPO=directoryIdentity(REPO).root;
  writeFileSync(CONTROL,"{}");
  callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
  await new Promise(r=>callback.listen(0,"127.0.0.1",r));

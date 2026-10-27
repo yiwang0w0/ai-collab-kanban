@@ -1,9 +1,9 @@
 // 官方 Codex SDK 的 API 单任务入口；模型循环由 SDK 提供，文件工具限定到本次工作仓。
-import {readFileSync,statSync,realpathSync} from 'node:fs';
+import {readFileSync,statSync} from 'node:fs';
 import {randomUUID} from 'node:crypto';
 import {dirname,isAbsolute,join,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {createWorkspaceTools} from './workspace_tools.mjs';
+import {createWorkspaceTools,canonicalWorkspacePath} from './workspace_tools.mjs';
 
 const nonnegative=value=>typeof value==='number'&&Number.isFinite(value)&&value>=0;
 export function validateJob(job){
@@ -13,14 +13,14 @@ export function validateJob(job){
  if(typeof job.model!=='string'||!job.model.trim()||!['minimal','low','medium','high','xhigh','max'].includes(job.effort)||typeof job.read_only!=='boolean'||!isAbsolute(job.cwd)||!statSync(job.cwd).isDirectory())throw Error('SDK_OPTIONS_INVALID');
  if(!job.budget||!['timeout_sec','max_turns','max_cost_usd'].every(k=>nonnegative(job.budget[k])&&job.budget[k]>0)||!Number.isSafeInteger(job.budget.max_turns))throw Error('SDK_BUDGET_REQUIRED');
  const stat=statSync(job.cwd,{bigint:true});
- if(!job.workspace||realpathSync(job.workspace.path)!==realpathSync(job.cwd)||job.workspace.device!==stat.dev.toString()||job.workspace.inode!==stat.ino.toString())throw Error('SDK_WORKSPACE_IDENTITY_CHANGED');
+ if(!job.workspace||canonicalWorkspacePath(job.workspace.path)!==canonicalWorkspacePath(job.cwd)||job.workspace.device!==stat.dev.toString()||job.workspace.inode!==stat.ino.toString())throw Error('SDK_WORKSPACE_IDENTITY_CHANGED');
  if(job.tools!==(job.read_only?'read-only':'write'))throw Error('SDK_PERMISSION_INVALID');
  if(!Array.isArray(job.protected_paths)||!job.protected_paths.length||job.protected_paths.length>512||job.protected_paths.some(path=>typeof path!=='string'||path.includes('\0')||!isAbsolute(path)))throw Error('SDK_PROTECTION_REQUIRED');
  return job;
 }
 export function loadJob(path){
- const source=realpathSync(path);if(statSync(source).size>1024*1024)throw Error('SDK_JOB_TOO_LARGE');
- const job=validateJob(JSON.parse(readFileSync(source,'utf8'))),prompt=realpathSync(job.prompt_file);
+ const source=canonicalWorkspacePath(path);if(statSync(source).size>1024*1024)throw Error('SDK_JOB_TOO_LARGE');
+ const job=validateJob(JSON.parse(readFileSync(source,'utf8'))),prompt=canonicalWorkspacePath(job.prompt_file);
  if(dirname(prompt)!==dirname(source)||statSync(prompt).size>256*1024)throw Error('SDK_PROMPT_PATH_INVALID');
  return {...job,prompt:readFileSync(prompt,'utf8'),jobPath:source};
 }

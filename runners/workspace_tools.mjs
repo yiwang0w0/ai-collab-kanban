@@ -1,7 +1,7 @@
 // SDK 专用本机文件桥：只操作已绑定的物理工作仓，没有看板权限、删除或 shell 工具。
-import {readFileSync,lstatSync,readdirSync,openSync,fstatSync,closeSync,writeSync,ftruncateSync,mkdirSync,constants} from 'node:fs';
+import {readFileSync,lstatSync,readdirSync,openSync,fstatSync,closeSync,writeSync,ftruncateSync,mkdirSync,realpathSync,constants} from 'node:fs';
 import {createHash} from 'node:crypto';
-import {join,dirname,relative,isAbsolute,resolve,sep} from 'node:path';
+import {join,dirname,basename,relative,isAbsolute,resolve,sep} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {artifactPath,MAX_FILE_BYTES} from '../core/artifacts/git-reader.mjs';
 import {directoryIdentity,verifyDirectory} from '../core/artifacts/git-workspace.mjs';
@@ -15,14 +15,23 @@ const schemas={
  edit_file:{description:'按摘要替换文件中的唯一一段文本，不允许删除文件。',properties:{path:{type:'string'},old_text:{type:'string'},new_text:{type:'string'},expected_sha256:{type:'string'}},required:['path','old_text','new_text','expected_sha256']},
 };
 
+export function canonicalWorkspacePath(path){
+ if(typeof path!=='string'||!isAbsolute(path)||path.includes('\0'))throw Error('WORKSPACE_PATH_UNSAFE');
+ let existing=resolve(path);const missing=[];
+ for(;;){
+  try{return join(realpathSync.native(existing),...missing);}
+  catch(error){if(error.code!=='ENOENT')throw error;const parent=dirname(existing);if(parent===existing)throw error;missing.unshift(basename(existing));existing=parent;}
+ }
+}
+
 export function createWorkspaceTools(job){
  const identity=directoryIdentity(job.cwd),root=identity.root;
  if(typeof job.read_only!=='boolean')throw Error('WORKSPACE_PERMISSION_INVALID');
- if(!job.workspace||resolve(job.workspace.path)!==root||job.workspace.device!==identity.device||job.workspace.inode!==identity.inode)throw Error('WORKSPACE_IDENTITY_CHANGED');
+ if(!job.workspace||canonicalWorkspacePath(job.workspace.path)!==root||job.workspace.device!==identity.device||job.workspace.inode!==identity.inode)throw Error('WORKSPACE_IDENTITY_CHANGED');
  if(job.tools!==(job.read_only?'read-only':'write'))throw Error('WORKSPACE_PERMISSION_INVALID');
  if(!Array.isArray(job.protected_paths)||!job.protected_paths.length||job.protected_paths.length>512||job.protected_paths.some(path=>typeof path!=='string'||path.includes('\0')||!isAbsolute(path)))throw Error('WORKSPACE_PROTECTION_REQUIRED');
- const controls=job.protected_paths.map(path=>resolve(path));
- const protectedPath=path=>controls.some(control=>{const rel=relative(control,path);return !rel||rel!=='..'&&!rel.startsWith('..'+sep)&&!isAbsolute(rel);});
+ const controls=job.protected_paths.map(canonicalWorkspacePath);
+ const protectedPath=path=>{const canonical=canonicalWorkspacePath(path);return controls.some(control=>{const rel=relative(control,canonical);return !rel||rel!=='..'&&!rel.startsWith('..'+sep)&&!isAbsolute(rel);});};
  function target(path,{directory=false,create=false}={}){
   verifyDirectory(identity);
   if(directory&&(path===undefined||path==='')){if(protectedPath(root))throw Error('WORKSPACE_CONTROL_PATH_DENIED');return root;}

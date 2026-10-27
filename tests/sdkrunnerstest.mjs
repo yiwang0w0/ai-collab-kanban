@@ -1,20 +1,20 @@
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,symlinkSync,existsSync} from 'node:fs';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,symlinkSync,existsSync,realpathSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join,resolve,relative,isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
-import {createWorkspaceTools,createWorkspaceMcp} from '../runners/workspace_tools.mjs';
-import {runJob,sdkOptions,loadJob} from '../runners/codex_agent.mjs';
+import {createWorkspaceTools,createWorkspaceMcp,canonicalWorkspacePath} from '../runners/workspace_tools.mjs';
+import {runJob,sdkOptions,loadJob,validateJob} from '../runners/codex_agent.mjs';
 import {directoryIdentity} from '../core/artifacts/git-workspace.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url)),directories=[];
 const py=process.env.BOARD_PYTHON||process.env.PYTHON||'python';
-after(()=>{for(const dir of directories){const rel=relative(resolve(tmpdir()),resolve(dir));assert.ok(rel&&!rel.startsWith('..')&&!isAbsolute(rel));rmSync(dir,{recursive:true,force:true});}});
+after(()=>{for(const dir of directories){const rel=relative(realpathSync.native(tmpdir()),realpathSync.native(dir));assert.ok(rel&&!rel.startsWith('..')&&!isAbsolute(rel));rmSync(dir,{recursive:true,force:true});}});
 function fixture(){
- const directory=mkdtempSync(join(tmpdir(),'kanban-sdk-'));directories.push(directory);
+ const directory=realpathSync.native(mkdtempSync(join(tmpdir(),'kanban-sdk-')));directories.push(directory);
  const cwd=join(directory,'工作 项目'),privateDir=join(directory,'本次 运行');mkdirSync(cwd);mkdirSync(privateDir);
  const prompt=join(privateDir,'首句.txt'),jobPath=join(privateDir,'job.json');writeFileSync(prompt,'只处理本次样本，回报实际修改。');
  const job={format:'kanban-agent-job/v1',task_id:7,run_id:randomUUID(),agent_instance_id:randomUUID(),execution_profile_id:'gpt-api',profile_digest:'1'.repeat(64),
@@ -86,6 +86,18 @@ test('两个SDK继承宿主控制路径快照，默认同仓的数据、任意�
  const result=python(`import sys,pathlib,json,os\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'runners')); sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nfrom agent_contract import read_job,tool_allowed,validate_job\nj=read_job(sys.argv[2])\nfor path in ['core/.data/accepted_rev','core/.data/worker_settings.json','core/.data/board.db','core/.data/board.db-wal','core/.data/spend_ledger.jsonl','core/.data/usage_ledger.jsonl','运营/自定义配置.json','运营/自定义登记.json','私人登录/登录信息.json']:\n for tool in ['Read','Write','Edit']:\n  assert not tool_allowed(j,tool,{'file_path':path}), (tool,path)\n assert not tool_allowed(j,'Grep',{'path':path,'pattern':'.'})\nassert not tool_allowed(j,'Glob',{'path':j['cwd'],'pattern':'**/*'})\nassert tool_allowed(j,'Read',{'file_path':'普通源码.txt'})\ntry: validate_job({**j,'protected_paths':[]}); raise AssertionError('missing protection accepted')\nexcept ValueError: pass\ntry: validate_job({**j,'workspace':{**j['workspace'],'inode':'0'}}); raise AssertionError('changed identity accepted')\nexcept ValueError: pass\nimport worker_loop as w\nextra=pathlib.Path(j['cwd'])/'另一个宿主配置.json'; os.environ['WORKER_PROTECTED_PATHS']=json.dumps([str(extra)]); paths=w.sdk_protected_paths()\nassert os.path.normcase(os.path.realpath(w.DATA)) in paths and os.path.normcase(os.path.realpath(w.REGISTRY)) in paths and os.path.normcase(str(extra)) in paths\nfrom verify_lib import PROTECTED\nfor name in PROTECTED:\n relative=name.replace('**','nested').replace('*','fixture'); assert not tool_allowed({**j,'protected_paths':paths},'Read',{'file_path':str(pathlib.Path(w.DATA)/relative)})\nprint('protected paths passed')`,[f.jobPath],f);
  assert.match(result,/protected paths passed/);
  assert.equal(readFileSync(join(data,'accepted_rev'),'utf8'),'固定控制数据');
+});
+test('目录别名与真实路径共用工作仓身份，保护未来文件时也规范已有父目录',()=>{
+ const f=fixture(),alias=join(f.directory,'工作仓别名');symlinkSync(f.cwd,alias,process.platform==='win32'?'junction':'dir');
+ mkdirSync(join(f.cwd,'运营'));writeFileSync(join(f.cwd,'运营','控制.json'),'固定控制数据');
+ const job={...f.job,cwd:alias,protected_paths:[join(alias,'运营','控制.json'),join(alias,'尚未创建','控制.json')]};
+ assert.equal(validateJob(job),job);assert.equal(canonicalWorkspacePath(join(alias,'尚未创建','控制.json')),join(f.cwd,'尚未创建','控制.json'));
+ const tools=createWorkspaceTools(job);
+ assert.throws(()=>tools.call('read_file',{path:'运营/控制.json'}),/CONTROL_PATH_DENIED/);
+ assert.throws(()=>tools.call('write_file',{path:'尚未创建/控制.json',content:'不得写入',expected_sha256:null}),/CONTROL_PATH_DENIED/);
+ assert.equal(existsSync(join(f.cwd,'尚未创建')),false);
+ assert.deepEqual(tools.call('list_files',{path:'运营'}).items,[]);
+ tools.call('write_file',{path:'普通源码.txt',content:'正常开发',expected_sha256:null});assert.equal(readFileSync(join(f.cwd,'普通源码.txt'),'utf8'),'正常开发');
 });
 test('Codex SDK使用独立API环境、隔离内层目录和唯一工作仓MCP，未知费用保持null',async()=>{
  const f=fixture(),events=[];let options,threadOptions;
