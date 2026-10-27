@@ -100,13 +100,14 @@ npm run demo               # board up → demo chain → one mock worker round, 
 For real work, point it at your project and run it in the background:
 `node cli/setup.mjs --repo <your project>` (add `--codex` for a Codex line),
 `node cli/start.mjs --background`, `node cli/open.mjs` (the panel opens already connected),
-`node cli/stop.mjs` — [`INSTALL.md`](INSTALL.md). (`npm run start:bg` / `open` / `stop` are the
-same commands; a fresh Windows PowerShell refuses `npm.ps1` until scripts are allowed.)
+`node cli/stop.mjs` — [`INSTALL.md`](INSTALL.md).
+日常状态检查用 `node cli/status.mjs`；登录后自动后台启动是可选功能，只有用户要求时才运行
+`node cli/autostart.mjs on`（关闭用 `off`，查看用 `status`，仅校验用 `check`）。
+Windows 的 PowerShell 可能拦截 `npm.ps1`，这时直接使用上述 `node cli/...` 命令。
 
-(No `npm install` — `package.json` declares zero dependencies and exists for its
-`scripts` table. `node cli/doctor.mjs` alone runs the preflight: everything
-measured, every red line carries its fix. `npm run reset -- --yes` wipes the
-board's runtime state to start over; it refuses while the board is running.)
+原 CLI 路径仍可直接运行；启用 API 开发通道时，先按[四通道工作台](docs/四通道工作台.md)安装固定的官方 SDK 依赖。
+API 默认禁用，独立凭据、预算与实际验收均未配置时不会自动调用。
+`node cli/doctor.mjs` 提供环境预检；`npm run reset -- --yes` 会清空运行数据，正在运行时拒绝，升级或切换通道不需要执行它。
 
 Then walk [`docs/QUICKSTART.md`](docs/QUICKSTART.md) — board up, demo seeded, a
 mock adapter (zero tokens) or your real local CLI through the full cycle:

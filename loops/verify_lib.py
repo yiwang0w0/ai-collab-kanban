@@ -33,6 +33,7 @@ REGISTRY = os.environ.get("BOARD_VERIFY_REGISTRY") or os.path.join(CODE_ROOT, "c
 #     所有 `join(DATA_DIR, "…")` 形的字面量,归不进去的直接红:这是防「忘了列」的结构,不是提醒。
 PROTECTED = (
     "board_token", "worker_token", "review_token",   # 三令牌(INCIDENT-12:读到令牌 = 拿到裁定权)
+    "panel_sessions.json",                           # 浏览器操作员会话授权记录，不是模型出件
     "board.db*",                                     # 状态本体(含 -wal / -shm)
     "accepted_rev", "restart_from",                  # 源码闸的记录 / 重启标记
     "worker_settings.json", "lineage.json",          # 座席设置;个人会话 id
@@ -41,6 +42,7 @@ PROTECTED = (
     "board.log",
     "probe_conn", "probe_selfcheck_ok", "probes/**", # 探针的连接串与生产行(SECURITY:数据室不在这)
     "codex-*.txt",                                   # codex 座席的末消息转存
+    "auth/**", "agent_jobs/**",                     # 独立通道认证与宿主固定的 SDK 任务输入
     "*.tmp",                                         # 原子写的临时文件
 )
 # 模型的「出件箱」:worker 的证据与派生卡、审阅的判决、拆解的结果。不进 deny 表。

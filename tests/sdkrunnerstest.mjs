@@ -1,0 +1,152 @@
+import test,{after} from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,symlinkSync,existsSync,realpathSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve,relative,isAbsolute} from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {randomUUID} from 'node:crypto';
+import {spawnSync} from 'node:child_process';
+import {createWorkspaceTools,createWorkspaceMcp,canonicalWorkspacePath} from '../runners/workspace_tools.mjs';
+import {runJob,sdkOptions,loadJob,validateJob} from '../runners/codex_agent.mjs';
+import {directoryIdentity} from '../core/artifacts/git-workspace.mjs';
+
+const root=fileURLToPath(new URL('../',import.meta.url)),directories=[];
+const py=process.env.BOARD_PYTHON||process.env.PYTHON||'python';
+after(()=>{for(const dir of directories){const rel=relative(realpathSync.native(tmpdir()),realpathSync.native(dir));assert.ok(rel&&!rel.startsWith('..')&&!isAbsolute(rel));rmSync(dir,{recursive:true,force:true});}});
+function fixture(){
+ const directory=realpathSync.native(mkdtempSync(join(tmpdir(),'kanban-sdk-')));directories.push(directory);
+ const cwd=join(directory,'工作 项目'),privateDir=join(directory,'本次 运行');mkdirSync(cwd);mkdirSync(privateDir);
+ const prompt=join(privateDir,'首句.txt'),jobPath=join(privateDir,'job.json');writeFileSync(prompt,'只处理本次样本，回报实际修改。');
+ const job={format:'kanban-agent-job/v1',task_id:7,run_id:randomUUID(),agent_instance_id:randomUUID(),execution_profile_id:'gpt-api',profile_digest:'1'.repeat(64),
+  channel:'codex_sdk_api',runtime:'codex',cwd,node_path:process.execPath,prompt_file:prompt,model:'gpt-fixture',effort:'high',read_only:false,tools:'write',
+  workspace:{path:directoryIdentity(cwd).root,device:directoryIdentity(cwd).device,inode:directoryIdentity(cwd).inode},protected_paths:[privateDir],budget:{timeout_sec:5,max_turns:4,max_cost_usd:0.5}};
+ writeFileSync(jobPath,JSON.stringify(job));return {directory,cwd,privateDir,jobPath,job:{...job,prompt:'夹具任务',jobPath}};
+}
+function python(script,args,f){
+ const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(?:BOARD_|WORKER_|REVIEWER_|REORG_|ANTHROPIC_|OPENAI_|CODEX_)/.test(key)));
+ const result=spawnSync(py,['-I','-B','-c',script,root,...args],{cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,env:{...environment,BOARD_DATA_DIR:f.privateDir,BOARD_REPO:f.cwd,WORKER_NODE:process.execPath,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'}});
+ assert.equal(result.status,0,result.stderr+'\n'+result.stdout);return result.stdout;
+}
+
+test('物理文件桥沿用相对路径合同，中文文件可读写编辑，CAS拒绝覆盖旧版本',()=>{
+ const f=fixture(),tools=createWorkspaceTools(f.job);
+ const made=tools.call('write_file',{path:'源码/中文.txt',content:'第一版\n',expected_sha256:null});
+ assert.equal(readFileSync(join(f.cwd,'源码','中文.txt'),'utf8'),'第一版\n');
+ const read=tools.call('read_file',{path:'源码/中文.txt'});assert.equal(read.sha256,made.sha256);assert.equal(read.text,'第一版\n');
+ const changed=tools.call('edit_file',{path:'源码/中文.txt',old_text:'第一版',new_text:'第二版',expected_sha256:read.sha256});
+ assert.notEqual(changed.sha256,read.sha256);
+ assert.throws(()=>tools.call('write_file',{path:'源码/中文.txt',content:'不得覆盖',expected_sha256:read.sha256}),/VERSION_CHANGED/);
+ assert.equal(readFileSync(join(f.cwd,'源码','中文.txt'),'utf8'),'第二版\n');
+ assert.deepEqual(tools.call('list_files').items,[{path:'源码',directory:true}]);
+});
+test('文件桥拒绝越界、凭据、Git目录、链接及未声明工具；只读身份不允许写',()=>{
+ const f=fixture(),tools=createWorkspaceTools(f.job);writeFileSync(join(f.cwd,'.env'),'仅夹具');mkdirSync(join(f.cwd,'.git'));
+ for(const path of ['../外部.txt','.env','.git/config','子目录/../../外部.txt','auth.json','auth/login.txt','agent_jobs/run/job.json','foo\\bar'])
+  assert.throws(()=>tools.call('write_file',{path,content:'禁止',expected_sha256:null}));
+ assert.throws(()=>tools.call('shell',{command:'echo not-allowed'}),/TOOL_INVALID/);
+ assert.throws(()=>tools.call('read_file',{path:'.env'}));assert.deepEqual(tools.call('list_files').items,[]);
+ const other=join(f.directory,'其他');mkdirSync(other);writeFileSync(join(other,'文件.txt'),'不读取');
+ symlinkSync(other,join(f.cwd,'链接'),process.platform==='win32'?'junction':'dir');
+ assert.throws(()=>tools.call('read_file',{path:'链接/文件.txt'}));
+ const readonly=createWorkspaceTools({...f.job,read_only:true,tools:'read-only'});assert.ok(readonly.list().every(t=>!['write_file','edit_file'].includes(t.name)));
+ assert.throws(()=>readonly.call('write_file',{path:'不能写.txt',content:'x',expected_sha256:null}),/READ_ONLY/);
+ assert.equal(existsSync(join(f.cwd,'不能写.txt')),false);
+});
+test('宿主SDK流及时记录活动，拒绝陈旧身份与重复终态，超时和取消不洗成成功',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,json,uuid,os,time\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nw.PROFILE_MODE=True; w.API_MODE=True; w.RUNTIME='claude'; w.log=lambda *a:None; w.record_process_started=lambda *a:True\nw.EXECUTION_PROFILE={'execution_profile_id':'claude-api','profile_digest':'1'*64,'budget':{'timeout_sec':2}}\nt={'id':9,'run_id':str(uuid.uuid4())}; sent=[]\nw.call=lambda method,path,body,**kw:(sent.append((time.monotonic(),body)) or (200,{}))\nbase={'format':'kanban-agent-event/v1','task_id':9,'run_id':t['run_id'],'agent_instance_id':w.AGENT_INSTANCE_ID,'execution_profile_id':'claude-api','profile_digest':'1'*64,'model':'fixture','effort':'high'}\ndef event(kind,**fields): return {**base,'kind':kind,'event_id':str(uuid.uuid4()),**fields}\nfolder=pathlib.Path(sys.argv[2]); script=folder/'fake.py'; payload=folder/'events.json'\nscript.write_text('import sys,json,time\\nspec=json.load(open(sys.argv[1],encoding="utf-8"))\\nfor item in spec["events"]:\\n print(json.dumps(item),flush=True)\\n time.sleep(spec.get("delay",0))\\ntime.sleep(spec.get("sleep",0))\\nsys.exit(spec.get("exit",0))\\n',encoding='utf-8')\ndef run(events,**extra):\n sent.clear(); payload.write_text(json.dumps({'events':events,**extra}),encoding='utf-8')\n return w.run_api_process(t,'fixture',1,'fixture','high',[sys.executable,'-I','-B',str(script),str(payload)],dict(os.environ))\nterminal=event('terminal',status='success',report='实际回报',usage=None,cost_usd=None)\nstarted=time.monotonic(); answer=run([event('activity'),terminal],delay=0.1)\nassert answer['status']=='success' and len(sent)==2 and sent[0][1]['kind']=='activity' and sent[1][1]['kind']=='terminal'\nassert sent[1][0]-sent[0][0]>=0.08 and sent[1][1]['usage'] is None and sent[1][1]['cost_usd'] is None\nassert run([event('activity',run_id=str(uuid.uuid4()))])['status']=='failed' and len(sent)==1\nassert run([terminal,terminal])['status']=='failed'\nassert run([event('terminal',status='cancelled',report=None,usage=None,cost_usd=None)],exit=1)['status']=='cancelled'\nw.EXECUTION_PROFILE['budget']['timeout_sec']=0.1\nanswer=run([terminal],sleep=1); assert answer['status']=='timeout' and answer['report'] is None and sent[-1][1]['status']=='timeout'\nprint('host stream passed')`,[f.privateDir],f);
+ assert.match(result,/host stream passed/);
+});
+test('显式CLI超时终止工具子树并及时收回输出，Windows后台启动，旧配置超时行为兼容',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,os,time,json,subprocess\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nfolder=pathlib.Path(sys.argv[2]); child=folder/'child.py'; parent=folder/'parent.py'\nchild.write_text('import time,sys,os\\nprint("child-ready:"+str(os.getpid()),flush=True)\\nprint("child-stderr",file=sys.stderr,flush=True)\\ntime.sleep(10)\\n',encoding='utf-8')\nparent.write_text('import subprocess,sys,os\\np=subprocess.Popen([sys.executable,"-I","-B",sys.argv[1]],stdout=sys.stdout,stderr=sys.stderr)\\nprint("parent-ready",flush=True)\\np.wait()\\n',encoding='utf-8')\nw.PROFILE_MODE=True; w.EXECUTION_PROFILE={'execution_profile_id':'codex-cli'}; w.TIMEOUT=1.2\noptions={}; helper=[]; real_popen=subprocess.Popen; real_run=subprocess.run\ndef popen(*args,**kwargs): options.update(kwargs); return real_popen(*args,**kwargs)\ndef helper_run(*args,**kwargs):\n result=real_run(*args,**kwargs); helper.append({**kwargs,'returncode':result.returncode,'stderr':result.stderr.decode(errors='replace') if isinstance(result.stderr,bytes) else result.stderr});\n if result.returncode: print('taskkill local result',result.returncode,helper[-1]['stderr'],file=sys.stderr,flush=True)\n return result\nw.subprocess.run=helper_run\ntask={'id':7,'run_id':'fixture-run'}; started=time.monotonic()\ntry:\n w.run_task_process(task,'fixture',1,'codex','fixture','high',[sys.executable,'-I','-B',str(parent),str(child)],dict(os.environ),_popen=popen,_call=lambda *a,**k:(200,{}),_log=lambda *a:None)\n raise AssertionError('timeout not raised')\nexcept subprocess.TimeoutExpired as error:\n assert 'parent-ready' in error.stdout and 'child-ready:' in error.stdout and 'child-stderr' in error.stderr, (error.stdout,error.stderr)\n assert time.monotonic()-started<8\n if os.name=='nt':\n  assert options['creationflags']&subprocess.CREATE_NO_WINDOW and helper and helper[0]['creationflags']&subprocess.CREATE_NO_WINDOW\n else: assert options['start_new_session'] is True\nw.subprocess.run=real_run\nw.PROFILE_MODE=False; calls=[]; legacy_options={}\nclass Legacy:\n pid=123; returncode=-1\n def __enter__(self): return self\n def __exit__(self,*a): pass\n def communicate(self,input=None,timeout=None):\n  calls.append(('communicate',timeout))\n  if timeout is not None: raise subprocess.TimeoutExpired('fixture',timeout)\n  return ('旧配置输出','旧配置错误')\n def kill(self): calls.append(('kill',None))\ndef legacy_popen(*a,**kw): legacy_options.update(kw); return Legacy()\ntry:\n w.run_task_process(task,'fixture',1,'codex','fixture','high',[],{},_popen=legacy_popen,_call=lambda *a,**k:(200,{}),_log=lambda *a:None)\n raise AssertionError('legacy timeout not raised')\nexcept subprocess.TimeoutExpired as error: assert error.stdout=='旧配置输出' and error.stderr=='旧配置错误'\nassert len(calls)==3 and calls[1][0]=='kill' and calls[2]==('communicate',None)\nassert 'creationflags' not in legacy_options and 'start_new_session' not in legacy_options\nprint('CLI timeout tree passed')`,[f.privateDir],f);
+ assert.match(result,/CLI timeout tree passed/);
+});
+test('文件桥 MCP 保留初始化与重复请求边界，没有shell或删除入口',()=>{
+ const f=fixture(),handle=createWorkspaceMcp(f.job);
+ assert.equal(handle({jsonrpc:'2.0',id:1,method:'tools/list'}).error.code,-32002);
+ assert.ok(handle({jsonrpc:'2.0',id:2,method:'initialize',params:{protocolVersion:'2025-06-18'}}).result);
+ handle({jsonrpc:'2.0',method:'notifications/initialized'});
+ const tools=handle({jsonrpc:'2.0',id:3,method:'tools/list'}).result.tools;
+ assert.deepEqual(tools.map(t=>t.name),['list_files','read_file','write_file','edit_file']);
+ assert.equal(handle({jsonrpc:'2.0',id:3,method:'tools/list'}).error.code,-32600);
+ const refused=handle({jsonrpc:'2.0',id:4,method:'tools/call',params:{name:'write_file',arguments:{path:'../不能写',content:'x',expected_sha256:null}}});assert.equal(refused.result.isError,true);
+});
+test('两个SDK继承宿主控制路径快照，默认同仓的数据、任意登记配置与认证目录均不可访问',()=>{
+ const f=fixture(),data=join(f.cwd,'core','.data'),config=join(f.cwd,'运营','自定义配置.json'),registry=join(f.cwd,'运营','自定义登记.json'),auth=join(f.cwd,'私人登录');
+ mkdirSync(data,{recursive:true});mkdirSync(join(f.cwd,'运营'));mkdirSync(auth);
+ for(const name of ['accepted_rev','worker_settings.json','board.db','board.db-wal','spend_ledger.jsonl','usage_ledger.jsonl'])writeFileSync(join(data,name),'固定控制数据');
+ writeFileSync(config,'固定配置');writeFileSync(registry,'固定登记簿');writeFileSync(join(auth,'登录信息.json'),'固定认证');writeFileSync(join(f.cwd,'普通源码.txt'),'可读源码');
+ const job={...f.job,protected_paths:[data,config,registry,auth]},tools=createWorkspaceTools(job);writeFileSync(f.jobPath,JSON.stringify(job));
+ for(const path of ['core/.data/accepted_rev','core/.data/worker_settings.json','core/.data/board.db','core/.data/board.db-wal','core/.data/spend_ledger.jsonl','core/.data/usage_ledger.jsonl','运营/自定义配置.json','运营/自定义登记.json','私人登录/登录信息.json']){
+  assert.throws(()=>tools.call('read_file',{path}),/CONTROL_PATH_DENIED/);
+  assert.throws(()=>tools.call('write_file',{path,content:'不得修改',expected_sha256:null}),/CONTROL_PATH_DENIED/);
+  assert.throws(()=>tools.call('edit_file',{path,old_text:'固定',new_text:'不得修改',expected_sha256:'0'.repeat(64)}),/CONTROL_PATH_DENIED/);
+ }
+ assert.deepEqual(tools.call('list_files',{path:'core'}).items,[]);assert.deepEqual(tools.call('list_files',{path:'运营'}).items,[]);
+ assert.throws(()=>tools.call('list_files',{path:'core/.data'}),/CONTROL_PATH_DENIED/);
+ assert.equal(tools.call('read_file',{path:'普通源码.txt'}).text,'可读源码');
+ assert.throws(()=>createWorkspaceTools({...job,protected_paths:undefined}),/PROTECTION_REQUIRED/);
+ assert.throws(()=>createWorkspaceTools({...job,workspace:{...job.workspace,inode:'0'}}),/IDENTITY_CHANGED/);
+ const result=python(`import sys,pathlib,json,os\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'runners')); sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nfrom agent_contract import read_job,tool_allowed,validate_job\nj=read_job(sys.argv[2])\nfor path in ['core/.data/accepted_rev','core/.data/worker_settings.json','core/.data/board.db','core/.data/board.db-wal','core/.data/spend_ledger.jsonl','core/.data/usage_ledger.jsonl','运营/自定义配置.json','运营/自定义登记.json','私人登录/登录信息.json']:\n for tool in ['Read','Write','Edit']:\n  assert not tool_allowed(j,tool,{'file_path':path}), (tool,path)\n assert not tool_allowed(j,'Grep',{'path':path,'pattern':'.'})\nassert not tool_allowed(j,'Glob',{'path':j['cwd'],'pattern':'**/*'})\nassert tool_allowed(j,'Read',{'file_path':'普通源码.txt'})\ntry: validate_job({**j,'protected_paths':[]}); raise AssertionError('missing protection accepted')\nexcept ValueError: pass\ntry: validate_job({**j,'workspace':{**j['workspace'],'inode':'0'}}); raise AssertionError('changed identity accepted')\nexcept ValueError: pass\nimport worker_loop as w\nextra=pathlib.Path(j['cwd'])/'另一个宿主配置.json'; os.environ['WORKER_PROTECTED_PATHS']=json.dumps([str(extra)]); paths=w.sdk_protected_paths()\nassert os.path.normcase(os.path.realpath(w.DATA)) in paths and os.path.normcase(os.path.realpath(w.REGISTRY)) in paths and os.path.normcase(str(extra)) in paths\nfrom verify_lib import PROTECTED\nfor name in PROTECTED:\n relative=name.replace('**','nested').replace('*','fixture'); assert not tool_allowed({**j,'protected_paths':paths},'Read',{'file_path':str(pathlib.Path(w.DATA)/relative)})\nprint('protected paths passed')`,[f.jobPath],f);
+ assert.match(result,/protected paths passed/);
+ assert.equal(readFileSync(join(data,'accepted_rev'),'utf8'),'固定控制数据');
+});
+test('目录别名与真实路径共用工作仓身份，保护未来文件时也规范已有父目录',()=>{
+ const f=fixture(),alias=join(f.directory,'工作仓别名');symlinkSync(f.cwd,alias,process.platform==='win32'?'junction':'dir');
+ mkdirSync(join(f.cwd,'运营'));writeFileSync(join(f.cwd,'运营','控制.json'),'固定控制数据');
+ const job={...f.job,cwd:alias,protected_paths:[join(alias,'运营','控制.json'),join(alias,'尚未创建','控制.json')]};
+ assert.equal(validateJob(job),job);assert.equal(canonicalWorkspacePath(join(alias,'尚未创建','控制.json')),join(f.cwd,'尚未创建','控制.json'));
+ const tools=createWorkspaceTools(job);
+ assert.throws(()=>tools.call('read_file',{path:'运营/控制.json'}),/CONTROL_PATH_DENIED/);
+ assert.throws(()=>tools.call('write_file',{path:'尚未创建/控制.json',content:'不得写入',expected_sha256:null}),/CONTROL_PATH_DENIED/);
+ assert.equal(existsSync(join(f.cwd,'尚未创建')),false);
+ assert.deepEqual(tools.call('list_files',{path:'运营'}).items,[]);
+ tools.call('write_file',{path:'普通源码.txt',content:'正常开发',expected_sha256:null});assert.equal(readFileSync(join(f.cwd,'普通源码.txt'),'utf8'),'正常开发');
+});
+test('Codex SDK使用独立API环境、隔离内层目录和唯一工作仓MCP，未知费用保持null',async()=>{
+ const f=fixture(),events=[];let options,threadOptions;
+ const env={OPENAI_API_KEY:'synthetic-api-value',CODEX_HOME:f.privateDir,BOARD_TOKEN:'synthetic-board-value',ANTHROPIC_API_KEY:'another-provider',PATH:process.env.PATH};
+ const fake=opts=>{options=opts;return {startThread:settings=>{threadOptions=settings;return {runStreamed:async()=>({events:(async function*(){
+  yield {type:'thread.started',thread_id:'fixture-thread'};
+  yield {type:'item.started',item:{type:'mcp_tool_call',id:'1'}};
+  createWorkspaceTools(f.job).call('write_file',{path:'GPT产物.txt',content:'实际夹具产物',expected_sha256:null});
+  yield {type:'item.completed',item:{type:'mcp_tool_call',server:'kanban_workspace',tool:'write_file',status:'completed'}};
+  yield {type:'item.completed',item:{type:'agent_message',text:'已修改 GPT产物.txt；验证由宿主执行。'}};
+  yield {type:'turn.completed',usage:{input_tokens:20,output_tokens:5,cached_input_tokens:0}};
+ })()})};}}};
+ assert.equal(await runJob(f.job,{createCodex:fake,emit:e=>events.push(e),environment:env}),true);
+ assert.equal(options.apiKey,env.OPENAI_API_KEY);assert.equal(options.env.BOARD_TOKEN,undefined);assert.equal(options.env.ANTHROPIC_API_KEY,undefined);assert.equal(options.env.OPENAI_API_KEY,undefined);
+ assert.equal(options.config.forced_login_method,'api');assert.equal(options.config.features.shell_tool,false);assert.equal(options.config.features.unified_exec,false);
+ assert.deepEqual(Object.keys(options.config.mcp_servers),['kanban_workspace']);
+ assert.equal(threadOptions.workingDirectory,f.privateDir);assert.equal(threadOptions.sandboxMode,'read-only');assert.equal(threadOptions.approvalPolicy,'never');
+ assert.equal(readFileSync(join(f.cwd,'GPT产物.txt'),'utf8'),'实际夹具产物');
+ assert.equal(events.at(-1).cost_usd,null);assert.equal(events.at(-1).usage.cache_write_input_tokens,null);assert.equal(events.at(-1).status,'success');
+ for(const e of events){assert.equal(e.run_id,f.job.run_id);assert.equal(e.execution_profile_id,'gpt-api');assert.match(e.event_id,/^[a-f0-9-]{36}$/);assert.ok(!JSON.stringify(e).includes(env.OPENAI_API_KEY));}
+});
+test('GPT SDK缺终态、失败、重复终态或超出步数均不变成功、不自动重跑',async()=>{
+ for(const stream of [[],[{type:'turn.failed'}],[{type:'item.completed',item:{type:'agent_message',text:'不能洗绿'}},{type:'turn.completed',usage:{}},{type:'turn.completed',usage:{}}],
+  [{type:'item.started',item:{type:'mcp_tool_call'}},{type:'item.started',item:{type:'mcp_tool_call'}}]]){
+  const f=fixture(),events=[];let starts=0;
+  const ok=await runJob({...f.job,budget:{...f.job.budget,max_turns:1}},{environment:{OPENAI_API_KEY:'synthetic-value',CODEX_HOME:f.privateDir},emit:e=>events.push(e),
+   createCodex:()=>({startThread:()=>{starts++;return {runStreamed:async()=>({events:(async function*(){yield*stream;})()})};}})});
+  assert.equal(ok,false);assert.equal(starts,1);assert.equal(events.at(-1).status,'failed');assert.equal(events.at(-1).report,null);
+ }
+});
+test('已取消或未配置凭据的GPT任务不会创建SDK客户端，UTF8提示从同目录文件读取',async()=>{
+ const f=fixture();assert.equal(loadJob(f.jobPath).prompt,'只处理本次样本，回报实际修改。');
+ assert.throws(()=>sdkOptions(f.job,{}),/CREDENTIAL_REQUIRED/);
+ let calls=0;const events=[],controller=new AbortController();controller.abort();
+ assert.equal(await runJob(f.job,{createCodex:()=>{calls++;},environment:{OPENAI_API_KEY:'synthetic',CODEX_HOME:f.privateDir},emit:e=>events.push(e),signal:controller.signal}),false);
+ assert.equal(calls,0);assert.equal(events.at(-1).status,'cancelled');
+});
+test('Claude SDK薄入口传递原生预算与权限钩子，凭据不外溢，未知用量不记零',()=>{
+ const f=fixture(),job={...f.job,channel:'claude_agent_sdk',runtime:'claude',execution_profile_id:'claude-api'};writeFileSync(f.jobPath,JSON.stringify(job));
+ const result=python(`import sys,json,asyncio,types,pathlib\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'runners'))\nimport claude_agent as r\nj=r.read_job(sys.argv[2]); events=[]; saved={}\nclass A: pass\nclass R:\n subtype='success'; is_error=False; result='已生成样本'; session_id='fixture-session'; uuid='fixture-request'; total_cost_usd=None; usage=None; permission_denials=[]\nasync def query(**kw):\n saved.update(kw); yield A(); yield R()\ndef options(**kw): saved['options']=kw; return kw\nsdk=types.SimpleNamespace(query=query,AssistantMessage=A,ResultMessage=R,ClaudeAgentOptions=options,HookMatcher=lambda **kw:kw,PermissionResultAllow=lambda **kw:kw,PermissionResultDeny=lambda **kw:kw)\nassert asyncio.run(r.run_job(j,events.append,sdk=sdk,environment={'ANTHROPIC_API_KEY':'synthetic','CLAUDE_CONFIG_DIR':'fixture-home','WORKER_BOARD_TOKEN':'not-forwarded','OPENAI_API_KEY':'other'}))\no=saved['options']; assert o['max_turns']==4 and o['max_budget_usd']==0.5 and o['permission_mode']=='dontAsk'; assert 'WORKER_BOARD_TOKEN' not in o['env'] and 'OPENAI_API_KEY' not in o['env']; assert 'Bash' not in o['tools']\nh=o['hooks']['PreToolUse'][0]['hooks'][0]\nassert asyncio.run(h({'tool_name':'Write','tool_input':{'file_path':'../outside'}},None,None))['hookSpecificOutput']['permissionDecision']=='deny'\nassert asyncio.run(h({'tool_name':'Write','tool_input':{'file_path':'样本.txt'}},None,None))=={}\nassert events[-1]['usage'] is None and events[-1]['cost_usd'] is None\nassert all(e['run_id']==j['run_id'] for e in events)\nprint('claude fake passed')`,[f.jobPath],f);
+ assert.match(result,/claude fake passed/);
+});
+test('原循环显式通道固定模型，不重试、不自动派生；API配置和任务身份不匹配先拒绝',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,types,uuid,os\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nw.log=lambda *a:None; w.PROFILE_MODE=True; w.API_MODE=True; w.RUNTIME='claude'; w.MODEL='claude-fixture'; w.EFFORT='high'\nidentity=w.workspace_identity(w.REPO); workspace={'path':identity['root'],'device':identity['device'],'inode':identity['inode']}\np={'execution_profile_id':'claude-api','profile_digest':'1'*64,'channel':'claude_agent_sdk','runtime':'claude','enabled':True,'model':w.MODEL,'effort':w.EFFORT,'workspace':workspace,'tools':w.TOOL_PROFILE,'budget':{'timeout_sec':5,'max_turns':4,'max_cost_usd':0.5}}; w.EXECUTION_PROFILE=p\nos.environ['ANTHROPIC_API_KEY']='synthetic'; os.environ['CLAUDE_CONFIG_DIR']='fixture'; assert w.profile_gate() is None\nt={'id':9,'run_id':str(uuid.uuid4()),'subject':'样本','attempts':1,'max_attempts':3,'execution_profile':{**p}}\nw.assert_task_profile(t,w.MODEL,w.EFFORT)\ntry: w.assert_task_profile({**t,'execution_profile':{**t['execution_profile'],'profile_digest':'2'*64}},w.MODEL,w.EFFORT); raise AssertionError('not refused')\nexcept RuntimeError: pass\ncalls=[]; sent=[]\nw.Heartbeat=lambda *a:types.SimpleNamespace(start=lambda:None,stop=types.SimpleNamespace(set=lambda:None),beats=0)\nw.tier_of=lambda *a:(_ for _ in ()).throw(AssertionError('不得爬梯'))\nw.run_worker=lambda *a:(calls.append(a) or (-1,'SDK_AUTH_FAILED'))\nw.acct_attempt=lambda *a:{'calls':None,'in':None,'out':None,'cc':None,'cr':None,'cost_usd':None}\nw.deliver=lambda *a,**kw:sent.append((a,kw)) or True\nw.harvest_spawned=lambda *a:(_ for _ in ()).throw(AssertionError('不得派生'))\nassert w.handle(t,'fixture')=='wait'; assert len(calls)==1 and len(sent)==1 and calls[0][-2:]==(w.MODEL,w.EFFORT)\np['budget']=None; assert '预算' in w.profile_gate()\nprint('worker explicit passed')`,[],f);
+ assert.match(result,/worker explicit passed/);
+});
