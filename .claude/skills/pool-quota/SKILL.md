@@ -29,7 +29,7 @@ python -c "import json,os,urllib.request; base=os.environ.get('BOARD_URL') or ('
 
 ## 额度紧张时的正确动作序列
 
-1. 先停新认领:面板「自动拉取」行按停止——**不要 kill 在途进程**
+1. 先停新认领:面板「设置」页「执行线与自动拉取」里按停止——**不要 kill 在途进程**
    (强杀 = 卡悬空 → 打回,attempts 白烧)。
 2. 在途的让它交付完,板上状态自然收敛。
 3. 池耗尽是**状态,不是故障**:worker 回报限流时 server 自动标记,到期自动探活恢复。

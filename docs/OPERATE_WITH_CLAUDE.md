@@ -166,7 +166,7 @@ detached 的(Windows 上非 detached 的子进程会随父进程一起被杀,实
 
 「等待中」堆的大多数东西有明摆着的判法,人再点一次头只是走过场。自动审阅替你
 过掉那些,把真正要人裁的留下来。开法:根 `fleet.config.json` 里
-`"roles": ["review"]`,重启 server,面板「自动拉取」行会出现 review 座席。
+`"roles": ["review"]`,重启 server,面板「设置」页的「执行线与自动拉取」里会出现 review 座席。
 
 它的纪律是结构给的,不是求出来的:每卡新会话(无惯性)、无 Edit/Bash(改不了
 码、跑不了命令)、先跑卡指名的 `verify_cmd`(红了不烧模型直接机械打回)、

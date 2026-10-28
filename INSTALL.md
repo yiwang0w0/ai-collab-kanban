@@ -79,8 +79,8 @@ node cli/open.mjs
 
 1. 面板首页会提示「确认当前版本」。请用户本人点，看一眼版本号后确认。看板只运行用户确认过的代码，
    **不要**替用户运行 `python cli/board.py bless`。
-2. 开始干活：在「全部任务」页上方的「自动拉取」一行，点 Claude 旁边的「启动」；然后在「目标」栏
-   写下要做的事，点「加入并拆解」。
+2. 开始干活：打开顶部的「设置」页，在「执行线与自动拉取」里 Claude 那一行点「启动」；然后回到「全部任务」页，
+   在「目标」栏写下要做的事，点「加入并拆解」。
 3. 停止用 `node cli/stop.mjs`，再启动用 `node cli/start.mjs --background`，打开面板用 `node cli/open.mjs`，看状态用 `node cli/status.mjs`。
 
 ## 平时用

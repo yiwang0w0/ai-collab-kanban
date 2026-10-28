@@ -12,7 +12,7 @@ description: 给看板添加或调整一条自动拉取线(worker line)。Add or
 
 任选其一——两者都由 server 校验、写入 `fleet.config.json`、当场重建线表:
 
-- 面板:「自动拉取」行下方的「加线」输入框,填线名(+一句用途)→ 加入。
+- 面板:「设置」页的「加线」表单,填命令行标识(+一句用途)→ 加入。
 - CLI:`python cli/board.py lines add <线名> --file hint.txt`(用途写在文件里;
   中文走 argv 在 Windows 会变 U+FFFD,本仓所有文本字段同此规则;不给 --file = 无用途)。
 
@@ -34,7 +34,7 @@ CLI 是 `lines add <线名> --kind review --read-only --charter docs/roles/astra
 ## 验证(两条都做)
 
 - `python cli/board.py lines status` → 新线出现(带 running/desired 两列);
-- 面板「自动拉取」行 → 新线出现,带启动按钮。
+- 面板「设置」页的「执行线与自动拉取」→ 新线出现,带启动按钮。
 
 ## 改用途 / 手写配置
 
