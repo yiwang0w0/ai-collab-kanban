@@ -1739,6 +1739,9 @@ function slotEnv(line, k, ag, isReview) {
              process.env.BOARD_VERIFY_REGISTRY||join(CODE_ROOT,"core","verify_registry.json"),
              ...EXECUTION_PROFILES.map(p=>p.auth_home),process.env.BOARD_FLEET_ACTIONS_CONFIG,
              process.env.BOARD_PROGRESS_CONFIG].filter(Boolean).map(p=>resolve(p))),
+           // 全部执行配置的认证目录（旧线、审阅线与显式配置都下传）：Claude CLI 座席据此为每个目录生成
+           // Read／Edit 拒绝规则。不用 WORKER_PROTECTED_PATHS：那份含整个数据目录，整目录拒绝会连证据写入一起挡掉。
+           WORKER_AUTH_HOMES:JSON.stringify(EXECUTION_PROFILES.map(p=>resolve(p.auth_home))),
            WORKER_MODEL: ag.model, WORKER_EFFORT: ag.effort,
            WORKER_RUNTIME: ag.runtime || RUNTIME_IDS[0],
            REVIEWER_MODEL: ag.model, REVIEWER_EFFORT: ag.effort,

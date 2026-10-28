@@ -68,6 +68,10 @@ from a named incident (see `docs/INCIDENTS.md`):
   浏览器使用可撤销、会过期的独立操作员凭据；`panel_sessions.json` 仅保存凭据摘要和签发时间，
   但修改该文件会影响授权，所以同样列入 Claude 路径级 `Read`／`Edit` 禁用清单。
   原子写临时文件由既有 `*.tmp` 规则覆盖；证据输出目录仍不受这些规则覆盖。
+  2026-10-28 在 Windows 上用真实 Claude Code 2.1.234（haiku，假数据）补测盘符形：`Read(C:/…/**)` 对 Read、Grep、Glob
+  都拒绝，数据目录的 `auth/**` 同样生效，未列入的对照文件照常可读。所有 Claude CLI 线（含旧线与审阅线）另按
+  `WORKER_AUTH_HOMES` 拒绝读写全部执行配置的认证目录。Codex CLI 0.149.0 的权限档有拒读条目，但 Windows 上只有需管理员
+  安装的提权沙箱后端能执行，未提权后端遇到拒读条目直接拒绝运行，所以 Codex 这边仍没有可用的路径拒绝。
 - **Card text is never a command line.** The worker refuses `.bat/.cmd` CLIs
   (CVE-2024-24576, "BatBadBut": cmd.exe re-parses arguments, so a card body
   could become an executable command line). The gate judges by extension on

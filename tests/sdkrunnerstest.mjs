@@ -179,10 +179,10 @@ test('登记验证命令看不到认证目录与供应商凭据：显式 Claude 
  // 探针只打印变量名与是否含认证目录标记，不打印值。
  const probe=`import os,json;w=[${watched}];print(json.dumps({'names':sorted(k for k in os.environ if k.upper() in w),'auth':sorted(k for k,v in os.environ.items() if '${marker}' in v),'keep':os.environ.get('KEEP_ORDINARY'),'python':bool(os.environ.get('PYTHON')),'repo':os.environ.get('BOARD_REPO')}))`;
  writeFileSync(registry,JSON.stringify({envprobe:['python','-c',probe]}));
- // 宿主环境按 server.slotEnv 的形状：WORKER_PROTECTED_PATHS 列出全部认证目录；旧配置经 profileEnvironment(null) 原样继承。
+ // 宿主环境按 server.slotEnv 的形状：WORKER_PROTECTED_PATHS、WORKER_AUTH_HOMES 列出全部认证目录；旧配置经 profileEnvironment(null) 只剔登记的凭据名。
  const host={PATH:process.env.PATH||process.env.Path||'',SystemRoot:process.env.SystemRoot||'',TEMP:process.env.TEMP||tmpdir(),TMP:process.env.TMP||tmpdir(),
   BOARD_DATA_DIR:dataDir,BOARD_REPO:f.cwd,BOARD_CONFIG:join(f.privateDir,'无配置.json'),BOARD_VERIFY_REGISTRY:registry,BOARD_CODEX_RELEASED:'1',BOARD_CODEX_CMD:process.execPath,
-  WORKER_PROTECTED_PATHS:JSON.stringify([dataDir,registry,...profiles.map(p=>p.auth_home)]),KEEP_ORDINARY:'保留',...secrets,
+  WORKER_PROTECTED_PATHS:JSON.stringify([dataDir,registry,...profiles.map(p=>p.auth_home)]),WORKER_AUTH_HOMES:JSON.stringify(profiles.map(p=>p.auth_home)),KEEP_ORDINARY:'保留',...secrets,
   CLAUDE_CONFIG_DIR:join(auth,'日常 claude'),CODEX_HOME:join(auth,'日常 codex')};
  for(const [id,runtime] of [['claude-cli','claude'],['codex-cli','codex'],[null,'claude']]){
   const label=id||'旧配置';
@@ -196,8 +196,9 @@ test('登记验证命令看不到认证目录与供应商凭据：显式 Claude 
   assert.equal(seen.keep,'保留',label+'：普通变量照常继承');assert.equal(seen.python,true,label+'：解释器映射照常传递');assert.equal(seen.repo,f.cwd,label+'：BOARD_ 变量照常继承');
  }
 });
-test('显式 Claude CLI 的文件工具拒绝读写本配置认证目录，旧配置的 deny 规则不变',()=>{
- const f=fixture(),auth=join(f.directory,'订阅 登录');
- const result=python(`import sys,pathlib,os\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nauth=sys.argv[2]\ndef denied(argv): return argv[argv.index('--disallowedTools')+1:]\nlegacy=denied(w.cli_argv('样本',[],'m','high'))\nassert legacy==w.cli_deny_rules(w.DATA), legacy[-2:]\nos.environ['WORKER_PROFILE_AUTH_HOME']=auth; w.PROFILE_MODE=True; w.EXECUTION_PROFILE={'execution_profile_id':'claude-cli','budget':{'timeout_sec':60,'max_turns':2,'max_cost_usd':0.5}}\nrules=denied(w.cli_argv('样本',[],'m','high'))\nhome=w.deny_path(auth)\nassert rules[:len(legacy)]==legacy and rules[len(legacy):]==['Read(%s/**)'%home,'Edit(%s/**)'%home], rules[len(legacy):]\nprint('auth deny passed')`,[auth],f);
+test('Claude CLI 的文件工具拒绝读写全部配置的认证目录：旧线与显式配置相同，本配置目录不重复',()=>{
+ // 兼容约定变更：旧线（无执行配置）也按 server 下传的 WORKER_AUTH_HOMES 拒绝其他配置的认证目录。
+ const f=fixture(),own=join(f.directory,'订阅 登录'),other=join(f.directory,'其他配置 认证');
+ const result=python(`import sys,pathlib,os,json\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nown,other=sys.argv[2],sys.argv[3]\ndef denied(argv): return argv[argv.index('--disallowedTools')+1:]\ndef want(*homes): return [r for h in homes for r in ('Read(%s/**)'%w.deny_path(h),'Edit(%s/**)'%w.deny_path(h))]\nbase=w.cli_deny_rules(w.DATA)\nassert denied(w.cli_argv('样本',[],'m','high'))==base, '无清单时只有数据目录规则'\nos.environ['WORKER_AUTH_HOMES']=json.dumps([own,other])\nlegacy=denied(w.cli_argv('样本',[],'m','high'))\nassert legacy==base+want(own,other), ('旧线', legacy[len(base):])\nos.environ['WORKER_PROFILE_AUTH_HOME']=own; w.PROFILE_MODE=True; w.EXECUTION_PROFILE={'execution_profile_id':'claude-cli','budget':{'timeout_sec':60,'max_turns':2,'max_cost_usd':0.5}}\nexplicit=denied(w.cli_argv('样本',[],'m','high'))\nassert explicit==base+want(own,other), ('显式配置', explicit[len(base):])\ndel os.environ['WORKER_AUTH_HOMES']\nassert denied(w.cli_argv('样本',[],'m','high'))==base+want(own), '手动起线没有清单也覆盖本配置'\nfor bad in ('{"x":1}','["相对"]','[" "]','不是 JSON'):\n    os.environ['WORKER_AUTH_HOMES']=bad\n    try:\n        w.auth_home_deny_rules(); raise SystemExit('坏清单应拒绝: '+bad)\n    except ValueError:\n        pass\nprint('auth deny passed')`,[own,other],f);
  assert.match(result,/auth deny passed/);
 });

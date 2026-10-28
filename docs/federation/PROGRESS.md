@@ -1227,3 +1227,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 每条附回归用例，修复前红、修复后绿；定向运行四通道专项 35、looptest 72、clitest 83 及受影响的存储／服务／循环自测，均无失败。阻塞：无，全量回归交 CI。
 - 2026-10-28 续修：登记验证命令在所有模式下剔除供应商凭据与认证目录路径（CLAUDE_CONFIG_DIR、CODEX_HOME 等）；显式 Claude CLI 的文件工具拒绝读写本配置认证目录；显式配置卡退回原线的裁定说明改为须本人重新核对放行。
 - 三条回归用例修复前红、修复后绿；定向运行四通道专项 38、looptest 72、clitest 83、legacy-boundaries 6、reviewtest 22、selftest 402 及循环两项自测，均无失败。阻塞：无；core/panel.html 内同类提示未在本批修改。
+- 2026-10-28 兼容约定变更（操作者决定）：无执行配置的旧线与审阅线剔除全部配置登记的凭据变量名（标准登录变量不动）；server 向所有执行线下传全部认证目录，Claude CLI 线（含旧线、审阅线）逐目录拒绝 Read／Edit；Codex CLI 0.149.0 的拒读条目在 Windows 只有需管理员安装的提权沙箱能执行，未接入，文档写明。
+- 回归用例修复前红、修复后绿；真实 Claude CLI 2.1.234（haiku、假数据）实测 Read／Grep／Glob 均被拒、对照可读、auth/** 生效；定向运行四通道专项 41、looptest 72、reviewtest 23、clitest 83、servertest 198、selftest 402、legacy-boundaries 6 及循环两项自测，均无失败。阻塞：无；拆解器 runCli 同类缺口未在本批修改。

@@ -81,6 +81,19 @@ test("自定义凭据变量名只按标准名注入本家 API，CLI 与另一 AP
  }
 });
 
+test("旧线与审阅线（无执行配置）剔除全部配置登记的凭据变量，其余环境与标准登录变量原样保留",()=>{
+ const profiles=load([{id:"claude-api",enabled:true,budget,credential_env:"CLAUDE_PROD_KEY"},{id:"gpt-api",enabled:true,budget,credential_env:"gpt_project_key",provider_spend_limit_confirmed:true}]);
+ // 旧 CLI 线可能靠用户环境里的标准变量登录：ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR、CODEX_HOME 等不按名称规则剔除。
+ // 只剔登记名：本配置里 gpt-api 改登记 gpt_project_key，KANBAN_OPENAI_API_KEY 不再是登记名，按旧线规则照常保留。
+ const kept={PATH:env.PATH,ANTHROPIC_API_KEY:"sk-ant-FAKE-LEGACY",CLAUDE_CONFIG_DIR:join(dataDir,"日常登录"),CODEX_HOME:join(dataDir,"日常 codex"),OTHER_API_KEY:"FAKE-OTHER",KANBAN_OPENAI_API_KEY:"sk-proj-FAKE-C",BOARD_REPO:repoRoot};
+ // 登记名大小写不敏感（Windows 环境变量名不分大小写）。
+ const host={...kept,claude_prod_key:"sk-ant-FAKE-A",GPT_PROJECT_KEY:"sk-proj-FAKE-B"};
+ assert.deepEqual(profileEnvironment(null,{env:host,repoRoot,dataDir,profiles}),kept);
+ const {KANBAN_OPENAI_API_KEY:_registeredByDefault,...unregistered}=kept;
+ assert.deepEqual(profileEnvironment(null,{env:{...kept,KANBAN_ANTHROPIC_API_KEY:"FAKE-D"},profiles:load()}),unregistered,"默认 API 配置登记的 KANBAN_* 名同样剔除");
+ assert.deepEqual(profileEnvironment(null,{env:host}),host,"不传配置时无登记名可剔除，环境原样");
+});
+
 test("认证目录只接受明确绝对路径，禁止通道之间或与工作仓重叠",()=>{
  assert.throws(()=>load([{id:"claude-api",auth_home:"相对目录"}]),{code:"BAD_INPUT"});
  assert.throws(()=>load([{id:"claude-api",auth_home:join(dataDir,"auth","claude-cli")}]),{code:"BAD_INPUT"});

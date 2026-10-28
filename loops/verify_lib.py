@@ -87,6 +87,42 @@ def cli_deny_rules(data_dir, registry=None):
     return rules
 
 
+AUTH_HOMES_ENV = "WORKER_AUTH_HOMES"
+
+
+def auth_home_deny_rules(env=None):
+    """全部执行配置认证目录的 Read／Edit 拒绝规则(Claude 座席,worker 与审阅共用)。
+
+    认证目录可自定义到数据目录之外,不在 PROTECTED 的 `auth/**` 里;同一系统用户下另一配置的登录文件
+    对本线文件工具同样可读,所以每条 Claude CLI 线(旧线、审阅线、显式配置)都按 server 下传的
+    WORKER_AUTH_HOMES(JSON 数组,全部配置)逐目录拒绝,另加本配置的 WORKER_PROFILE_AUTH_HOME
+    (手动起线时没有清单也覆盖自己)。默认位置 <data>/auth/<id> 与 `auth/**` 重复,重复无害,不另判断。
+    整目录 `/**` 拒绝不挡 <data>/evidence 的前提:认证目录不包含数据目录或工作仓。loadExecutionProfiles 只查配置
+    之间互不重叠,profileEnvironment 只查本配置与工作仓;其他配置的认证目录若包含它们,文件工具会被拒(响亮失败)。
+    清单无法解析 = ValueError,调用方拒绝启动(未知值落拒绝侧)。"""
+    env = os.environ if env is None else env
+    homes = []
+    raw = env.get(AUTH_HOMES_ENV)
+    if raw:
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = None
+        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() and os.path.isabs(item) for item in value):
+            raise ValueError(f"{AUTH_HOMES_ENV} 必须是认证目录绝对路径的 JSON 数组")
+        homes += value
+    if env.get("WORKER_PROFILE_AUTH_HOME"):
+        homes.append(env["WORKER_PROFILE_AUTH_HOME"])
+    rules, seen = [], set()
+    for home in homes:
+        path = deny_path(home).rstrip("/")
+        if path in seen:
+            continue
+        seen.add(path)
+        rules += [f"Read({path}/**)", f"Edit({path}/**)"]
+    return rules
+
+
 def readonly_edit_rules(repo, data_dir):
     """只读工具档(v0.22.0,`lines[].role.tools = "read-only"`)的 Edit deny 规则 —— Claude 座席的
     「不许改工作仓」是这组 argv,不是提示词。返回 None = 列不出仓库条目(不是 git 仓 / git 不在),
@@ -197,13 +233,13 @@ def verify_registry():
 # 验证命令运行的是模型刚写进工作仓的代码，从来不需要模型凭据或登录目录。下面三条名称规则与
 # core/execution-profiles.mjs 的 profileEnvironment 写法相同（改一处须同步另一处）：
 # 供应商凭据与登录目录指针（CLAUDE_CONFIG_DIR、CODEX_HOME）一律剔除；*_API_KEY 等后缀只放过循环自己的
-# BOARD_/WORKER_/REVIEWER_ 变量。WORKER_PROFILE_AUTH_HOME、WORKER_PROTECTED_PATHS 的值就是认证目录路径，
-# 只供循环自身使用（sdk_protected_paths），同样不交给验证命令。
+# BOARD_/WORKER_/REVIEWER_ 变量。WORKER_PROFILE_AUTH_HOME、WORKER_PROTECTED_PATHS、WORKER_AUTH_HOMES 的值就是
+# 认证目录路径，只供循环自身使用（sdk_protected_paths、auth_home_deny_rules），同样不交给验证命令。
 _PROVIDER_ENV = re.compile(r"^(?:ANTHROPIC_|OPENAI_|AZURE_OPENAI_|CLAUDE_CODE_(?:OAUTH_TOKEN|USE_)|CLAUDE_CONFIG_DIR$|"
                            r"CODEX_(?:API_KEY|HOME)$|KANBAN_.*(?:KEY|TOKEN)$)", re.I)
 _SECRET_SUFFIX = re.compile(r"(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN|_SECRET_KEY|_PASSWORD)$", re.I)
 _LOOP_PREFIX = re.compile(r"^(?:BOARD_|WORKER_|REVIEWER_)")
-_AUTH_POINTERS = frozenset(("WORKER_PROFILE_AUTH_HOME", "WORKER_PROTECTED_PATHS"))
+_AUTH_POINTERS = frozenset(("WORKER_PROFILE_AUTH_HOME", "WORKER_PROTECTED_PATHS", AUTH_HOMES_ENV))
 
 
 def verify_environment(env):

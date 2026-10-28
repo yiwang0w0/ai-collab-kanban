@@ -39,7 +39,7 @@ import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,�
 import codex_runtime
 import context_lib
 from pool_state import report_exhausted
-from verify_lib import run_verify, fmt_verify, verify_registry, cli_deny_rules
+from verify_lib import run_verify, fmt_verify, verify_registry, cli_deny_rules, auth_home_deny_rules
 
 BASE = os.environ.get("BOARD_URL") or (
     "http://127.0.0.1:" + os.environ["BOARD_PORT"] if os.environ.get("BOARD_PORT")
@@ -649,7 +649,8 @@ def review_one(t, vr=None):
                       "--allowedTools", "Read", "Glob", "Grep", "Write",
                       "--add-dir", REPO, "--add-dir", OUTDIR,
                       # ⭐ v0.17.0:令牌目录与登记簿对审阅模型不可读不可写(verify_lib.cli_deny_rules,实测有效)。
-                      "--disallowedTools", *cli_deny_rules(DATA)]
+                      #   全部执行配置的认证目录同样不可读不可写(verify_lib.auth_home_deny_rules)。
+                      "--disallowedTools", *cli_deny_rules(DATA), *auth_home_deny_rules()]
         # ⭐ 提示词走 argv(-p)的 Windows 32767 天花板:与 worker 侧/zcode 闸同一预算口径,
         #   超限响亮拒发而不是让 spawn 死于 WinError 206(外部审计 2026-10-05)。
         if argv and sum(len(a) * 2 + 3 for a in argv) + len(argv[0]) > 30000:
@@ -806,6 +807,11 @@ def main():
         print(f"[reviewer] 未知运行时 {RUNTIME} —— 拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     if RUNTIME == "codex" and not CODEX_RELEASED:
         print("[reviewer] Codex 未解禁 —— 拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
+    if RUNTIME == "claude":
+        try:
+            auth_home_deny_rules()
+        except ValueError as e:
+            print(f"[reviewer] ⛔ {e} —— 认证目录的拒绝规则组不出来,拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     if RUNTIME == "codex":
         cg = codex_runtime.gate(CODEX_CLI)
         if cg: print(cg, flush=True); sys.exit(gates_lib.EXIT_REFUSED)

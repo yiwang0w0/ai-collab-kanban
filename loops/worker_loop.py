@@ -50,7 +50,7 @@ import context_lib
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
-from verify_lib import run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules, deny_path, REGISTRY   # noqa: F401
+from verify_lib import run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules, deny_path, REGISTRY, auth_home_deny_rules   # noqa: F401
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
 # clash, and ignoring it here would aim this client at the DEFAULT port's board.
@@ -1396,9 +1396,9 @@ def cli_argv(prompt, sargs, model, effort):
         "--allowedTools", *(READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS),
         "--add-dir", REPO,
         "--disallowedTools", *cli_deny_rules(DATA),
-        # 显式配置的认证目录可自定义到数据目录之外(不在 PROTECTED 的 auth/** 里):文件工具同样不读不写。
-        *([f"{tool}({deny_path(os.environ['WORKER_PROFILE_AUTH_HOME'])}/**)" for tool in ("Read", "Edit")]
-          if PROFILE_MODE and os.environ.get("WORKER_PROFILE_AUTH_HOME") else []),
+        # 全部执行配置的认证目录(可自定义到数据目录之外,不在 PROTECTED 的 auth/** 里):旧线与显式配置
+        #   一样,文件工具对每个目录都不读不写(verify_lib.auth_home_deny_rules)。
+        *auth_home_deny_rules(),
         *((READONLY_RULES or []) if TOOL_PROFILE == "read-only" else []),
     ]
 
@@ -2353,6 +2353,12 @@ def main():
     if chg:
         print(chg, flush=True)
         sys.exit(gates_lib.EXIT_REFUSED)
+    if RUNTIME == "claude" and not API_MODE:
+        try:
+            auth_home_deny_rules()
+        except ValueError as e:
+            print(f"[worker] ⛔ {e} —— 认证目录的拒绝规则组不出来,拒绝启动", flush=True)
+            sys.exit(gates_lib.EXIT_REFUSED)
     global READONLY_RULES
     if TOOL_PROFILE == "read-only" and RUNTIME == "claude" and not API_MODE:
         READONLY_RULES = readonly_edit_rules(REPO, DATA)

@@ -22,7 +22,7 @@ import { fixtureVersion } from "./http-version-fixture.mjs";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 
@@ -132,11 +132,14 @@ try {
     return id;
   };
 
+  // 其他配置自定义到数据目录之外的认证目录(server 经 WORKER_AUTH_HOMES 下传全部配置的认证目录)。
+  const OTHER_AUTH = join(dirname(TMP), basename(TMP) + "-其他配置认证");
   const runReviewer = (verdict) => {
     try { rmSync(MARK, { force: true }); } catch {}
     const r = spawnSync(PY, [join(ROOT, "loops", "reviewer_loop.py"), "--once", "--interval", "1"], {
       env: { ...commonEnv,
              REVIEWER_CLI_ARGV: JSON.stringify(["python", STUB]),
+             WORKER_AUTH_HOMES: JSON.stringify([OTHER_AUTH]),
              REVIEW_STUB_JSON: JSON.stringify(verdict),
              REVIEW_STUB_MARK: MARK, REVIEW_STUB_ARGV: ARGVF,
              REVIEWER_PARALLEL: "1", REVIEWER_LIMIT: "6" },
@@ -168,6 +171,9 @@ try {
        i >= 0 && rules.includes(`Read(${dataFwd}/board_token)`) && rules.includes(`Edit(${dataFwd}/board_token)`)
        && rules.some((r) => /verify_registry\.json\)$/.test(r)), rules.slice(0, 2).join(" ") || "(no argv)");
     // (`review_token` legitimately shares the prefix — test the directory, not the substring.)
+    const authFwd = (process.platform === "win32" ? "" : "/") + OTHER_AUTH.replace(/\\/g, "/");
+    ok("R4d ⭐审阅的真 argv 同样拒绝其他配置的认证目录(Read+Edit 整目录,兼容约定变更:无执行配置的线也拒)",
+       rules.includes(`Read(${authFwd}/**)`) && rules.includes(`Edit(${authFwd}/**)`), rules.slice(-2).join(" ") || "(no argv)");
     ok("R4c 判决目录 <data>/review 不被任何规则盖住(否则审阅写不出判决文件)",
        rules.length > 0 && rules.every((r) => !r.includes(`${dataFwd}/review/`) && !r.endsWith(`${dataFwd}/review)`)
                                                && !r.endsWith(`${dataFwd}/**)`) && !r.endsWith(`${dataFwd}/*)`)));

@@ -107,7 +107,13 @@ export function publicExecutionProfiles(profiles,{env=process.env,runtimes=[],re
 
 /** 返回宿主 loop 环境；SDK 子进程仍须移除 BOARD／WORKER 身份秘密。profiles 传入全部配置，以剔除每个配置的凭据变量。 */
 export function profileEnvironment(profile,{env=process.env,repoRoot,dataDir,profiles=[]}={}){
- if(profile==null)return {...env};
+ // 旧线与审阅线（无执行配置）只剔除配置里登记的凭据变量名（含自定义名称）：这些是 API 通道专用的密钥，
+ // 不该进 CLI 子进程或验证命令。标准名（ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR 等）不按名称规则剔除，
+ // 旧 CLI 线可能本来就靠用户环境里的这些变量登录；配置把某个标准名登记成 credential_env 时，该名同样剔除。
+ if(profile==null){
+  const configured=new Set(profiles.map(item=>item?.credential_env?.toUpperCase()).filter(Boolean));
+  return Object.fromEntries(Object.entries(env).filter(([key])=>!configured.has(key.toUpperCase())));
+ }
  if(!profile.enabled)fail("所选执行配置尚未启用");
  if(repoRoot&&(inside(repoRoot,profile.auth_home)||inside(profile.auth_home,repoRoot)))fail("认证目录与工作仓必须分离");
  if(!completeBudget(profile.budget))fail("所选执行配置尚未确认金额上限、时限和轮次预算，未启动调用");
