@@ -1,6 +1,6 @@
-# AI Fleet Kanban
+# AI 协作看板
 
-[![CI](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml)
+[![CI](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml)
 
 **The acceptance-first kanban for mixed AI fleets.**
 
@@ -71,7 +71,7 @@ examples/  fleet config · verify registry · mock runtime adapter · demo seeds
 ## Try it
 
 ```
-git clone https://github.com/yiwang0w0/ai-fleet-kanban && cd ai-fleet-kanban
+git clone https://github.com/yiwang0w0/ai-collab-kanban && cd ai-collab-kanban
 npm run setup              # doctor → config → verify registry → prints the two steps that are yours
 python cli/board.py bless  # accept this tree — or press 「接受当前代码」 in the panel; both show you the diff first
 npm run demo               # board up → demo chain → one mock worker round, zero tokens → a card awaits your ruling

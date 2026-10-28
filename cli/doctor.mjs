@@ -23,7 +23,7 @@ const ok = (name, detail = "") => { pass++; console.log(`  PASS  ${name}${detail
 const wr = (name, detail = "") => { warn++; console.log(`  WARN  ${name}${detail ? " — " + detail : ""}`); };
 const no = (name, fix = "") => { fail++; console.log(`  FAIL  ${name}${fix ? "\n        修法: " + fix : ""}`); };
 
-console.log("[AI Fleet Kanban · doctor]\n");
+console.log("[AI 协作看板 · doctor]\n");
 
 // fleet.config 的部署键(port/repo/gated_subtree)回填 env 缺省(v0.3)。记住
 // 端口的来源 —— 收尾行照来源措辞,教操作者用他实际用的机制。
@@ -228,7 +228,7 @@ await new Promise((resolve) => {
   const exposed = [DATA, REG].filter(inside);
   if (exposed.length)
     wr(`令牌目录 / 登记簿在工作仓之内(${exposed.map((x) => relative(REPO_ROOT, x)).join(", ")})`,
-       "Claude 座席靠 --disallowedTools 路径规则封住(下一项核对它的写法);codex 座席只有提示词纪律。若要跑 codex 座席,把 BOARD_DATA_DIR 与 BOARD_VERIFY_REGISTRY 指到工作仓之外,或让舰队用独立的 OS 用户跑");
+       "Claude 座席靠 --disallowedTools 路径规则封住(下一项核对它的写法);codex 座席只有提示词纪律。若要跑 codex 座席,把 BOARD_DATA_DIR 与 BOARD_VERIFY_REGISTRY 指到工作仓之外,或让各座席用独立的 OS 用户跑");
   else ok("令牌目录与登记簿都在工作仓之外(Claude 座席另有 deny 规则兜底)");
   // ⑤d the SPELLING of those rules, as this deployment would actually emit them. Every
   // harness drives a stub and a stub enforces nothing; doctor cannot measure semantics

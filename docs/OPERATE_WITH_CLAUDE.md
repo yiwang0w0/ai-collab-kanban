@@ -5,7 +5,7 @@
 
 ## 一、把板交给它
 
-> 「clone ai-fleet-kanban,把看板服务起起来,给我面板地址。」
+> 「clone ai-collab-kanban,把看板服务起起来,给我面板地址。」
 
 你的 Claude 会跑 `npm start`(= `node cli/start.mjs`,面板按「更新」时它在原地重起看板)、确认 `/health`,然后给你
 `http://127.0.0.1:47824`。面板给你的眼睛看;你的 Claude 走 API。
@@ -137,7 +137,7 @@ detached 的(Windows 上非 detached 的子进程会随父进程一起被杀,实
 // core/verify_registry.json(照 examples/verify_registry.example.json 抄)
 "page-board-renders": ["node", "examples/verify_page.mjs",
   "--url", "http://127.0.0.1:47824",
-  "--expect", "AI 舰队看板",
+  "--expect", "AI 协作看板",
   "--expect-js", "document.querySelectorAll('.col').length >= 4",
   "--no-console-errors"]
 ```

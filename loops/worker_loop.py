@@ -30,8 +30,8 @@ import urllib.request, urllib.error, io, uuid, hashlib
 HERE = os.path.dirname(os.path.abspath(__file__))
 # ⭐两个"仓"要分开,它们在通用部署里**不是同一个**:
 #   CODE_ROOT = 看板自己的代码在哪(本文件的上一级)。import 与 revision 闸都量它
-#              —— 量的是"正在跑的治理代码",而不是舰队今天在改的项目。
-#   REPO      = 舰队作业的目标仓(cwd / git status / 提示词里的路径)。
+#              —— 量的是"正在跑的治理代码",而不是智能体今天在改的项目。
+#   REPO      = 智能体作业的目标仓(cwd / git status / 提示词里的路径)。
 #   ⚠ 按 BOARD_REPO 去 import 会在 BOARD_REPO 指向别处(试验的临时仓)时直接崩。
 CODE_ROOT = os.path.dirname(HERE)
 sys.path.insert(0, os.path.join(CODE_ROOT, "gates"))
@@ -205,7 +205,7 @@ CODEX_CLI = os.environ.get("BOARD_CODEX_CMD") or ""
 #   不持有模型名 —— 让卡片持有模型名,就等于「能写卡的人」=「能决定额度分配的人」,
 #   而且对应表会长在两处(卡片与此处),必然只有一处被改。
 # ⭐可配置:fleet.config.json 的 `ladder`(或 env WORKER_LADDER)= [{model, effort}, ...]。
-#   舰队的模型阵容因人而异,把某个订阅档位写死在代码里就是又一条"个人环境成正典"。
+#   各部署的模型阵容因人而异,把某个订阅档位写死在代码里就是又一条"个人环境成正典"。
 BUILTIN_LADDER = [
     ("claude-opus-5", "medium"),   # L1
     ("claude-opus-5", "high"),     # L2
@@ -2013,7 +2013,7 @@ def main():
         except RuntimeError as e:
             log(str(e)); time.sleep(min(interval, 30)); continue
 
-        # 503(池满/全局停)不要和 204(队列空)长同一张脸 —— 池塌了的舰队日志
+        # 503(池满/全局停)不要和 204(队列空)长同一张脸 —— 池塌了时各 worker 的日志
         #   如果显示"无可领的卡",就没人会去怀疑池(说不出理由的饥饿)。
         if s == 503:
             log("⛔ 池额度门(HTTP 503): " + str((r or {}).get("error") or "pool down")

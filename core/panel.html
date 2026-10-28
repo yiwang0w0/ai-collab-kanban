@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<title>AI 舰队看板</title>
+<title>AI 协作看板</title>
 <style>
   /* ── Design tokens — the ONE place values live (docs/style-guide.md). Semantic, not
      descriptive: paper / surface / hairline / ink; one ACCENT for "this needs you"; low-
@@ -386,7 +386,7 @@
 </head>
 <body>
 <header>
-  <h1>AI 舰队看板</h1>
+  <h1>AI 协作看板</h1>
   <span class="live"><span class="dot" id="dot"></span><span id="livetxt">连接中</span></span>
 </header>
 
@@ -1973,7 +1973,7 @@ function renderNow(){
   //   landing in waiting used to be silent unless the sentries were mounted
   //   (measured on a live deployment: delivered cards sat unheard) — the tab
   //   title now carries the waiting count, visible from any other tab.
-  document.title = c.waiting > 0 ? `(${c.waiting} 待裁)AI 舰队看板` : "AI 舰队看板";
+  document.title = c.waiting > 0 ? `(${c.waiting} 待裁)AI 协作看板` : "AI 协作看板";
   document.getElementById("f-when").textContent = "刷新于 " + new Date().toTimeString().slice(0,8);
 }
 const set = (id, v) => { document.getElementById(id).textContent = v == null ? "–" : v; };
