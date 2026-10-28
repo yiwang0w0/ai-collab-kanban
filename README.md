@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml)
 
-**The acceptance-first kanban for mixed AI fleets.**
+**The acceptance-first kanban for multi-agent AI collaboration.**
 
 Most agent boards solve *how to make a fleet of coding agents run*. This one solves the opposite problem, distilled from weeks of running a high-autonomy mixed fleet (Claude + Codex) against a production codebase: **how not to trust what they say they finished.**
 
