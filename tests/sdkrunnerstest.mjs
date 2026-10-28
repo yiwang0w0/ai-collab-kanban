@@ -25,7 +25,7 @@ function fixture(){
 }
 function python(script,args,f){
  const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(?:BOARD_|WORKER_|REVIEWER_|REORG_|ANTHROPIC_|OPENAI_|CODEX_)/.test(key)));
- const result=spawnSync(py,['-I','-B','-c',script,root,...args],{cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,env:{...environment,BOARD_DATA_DIR:f.privateDir,BOARD_REPO:f.cwd,WORKER_NODE:process.execPath,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'}});
+ const result=spawnSync(py,['-I','-B','-X','utf8','-c',script,root,...args],{cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,env:{...environment,BOARD_DATA_DIR:f.privateDir,BOARD_REPO:f.cwd,WORKER_NODE:process.execPath,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'}});
  assert.equal(result.status,0,result.stderr+'\n'+result.stdout);return result.stdout;
 }
 
