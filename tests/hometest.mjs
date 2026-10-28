@@ -233,12 +233,59 @@ test("side panel pins: the board's own buttons, the note beside the button, draf
   assert.ok(src.includes('p.set("task", uid)') && src.includes('window.addEventListener("hashchange", sideFromHash)'));
   assert.ok(src.includes("verdictDraft.set(Number(id), e.target.value);" + String.fromCharCode(10) + "  persistDrafts();"));
   assert.ok(src.includes("function loadDrafts(){ try {") && src.includes("sessionStorage.setItem(DRAFTS_KEY"));
-  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #home-new input")'),
+  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #line-add select, #home-new input")'),
     "an unsent new-task title holds the page against an automatic reload too");
   // Creating a task is a plain POST /api/tasks through the panel's post(): no release key, no internal id.
   const at = src.indexOf('getElementById("home-new-form").addEventListener("submit"');
   const sub = src.slice(at, at + 1400);
   assert.ok(at > 0 && sub.includes('await post("/api/tasks", r.body)') && !sub.includes("released"));
+});
+
+test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾选框按默认勾选态判,填了字才拦", () => {
+  const a = src.indexOf("const fieldChanged = "), b = src.indexOf("function showRevBar(", a);
+  assert.ok(a > 0 && b > a, "hasUnsavedInput block not found");
+  // 控件照面板里加线表单与新建任务表单的真实标记造:类型、默认勾选、默认选项都从标记读,不手写。
+  const block = (open, close) => { const i = src.indexOf(open), j = src.indexOf(close, i); assert.ok(i > 0 && j > i, open); return src.slice(i, j); };
+  const forms = { "line-add": block('<form class="line-add" id="line-add"', "</form>"), "home-new": block('<section class="home-new" id="home-new">', "</section>") };
+  const attr = (s, k) => (s.match(new RegExp(`\\s${k}="([^"]*)"`)) || [])[1];
+  const els = [];
+  for (const [scope, html] of Object.entries(forms)) {
+    for (const [, s] of html.matchAll(/<input\b([^>]*)>/g)) {
+      const type = attr(s, "type") || "text", checked = /\schecked\b/.test(s);
+      els.push({ scope, tagName: "INPUT", id: attr(s, "id"), type, value: type === "checkbox" ? "on" : (attr(s, "value") || ""), checked, defaultChecked: checked });
+    }
+    for (const [, s, body] of html.matchAll(/<select\b([^>]*)>([\s\S]*?)<\/select>/g)) {
+      const options = [...body.matchAll(/<option\b([^>]*)>/g)].map(([, o]) => ({ defaultSelected: /\sselected\b/.test(o) }));
+      els.push({ scope, tagName: "SELECT", id: attr(s, "id"), type: "select-one", value: "x", options,
+        selectedIndex: options.length ? Math.max(0, options.findIndex((o) => o.defaultSelected)) : -1 });
+    }
+    for (const [, s, body] of html.matchAll(/<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g))
+      els.push({ scope, tagName: "TEXTAREA", id: attr(s, "id"), type: "textarea", value: body });
+  }
+  const document = { querySelectorAll: (sel) => sel.split(",").flatMap((part) => {
+    part = part.trim();
+    if (part === "textarea") return els.filter((e) => e.tagName === "TEXTAREA");
+    const m = part.match(/^#(line-add|home-new) (input|select)$/);
+    assert.ok(m, "选择器多了没造过的部分:" + part);
+    return els.filter((e) => e.scope === m[1] && e.tagName === m[2].toUpperCase());
+  }) };
+  const hasUnsavedInput = new Function("document", src.slice(a, b) + "\nreturn hasUnsavedInput;")(document);
+  const el = (id) => { const e = els.find((x) => x.id === id); assert.ok(e, id); return e; };
+  assert.equal(el("line-add-ro").type, "checkbox"); assert.equal(el("line-add-auto").value, "on");
+  assert.equal(hasUnsavedInput(), false, "空表单:两个勾选框的 value 恒为 on,不算没保存的输入");
+  el("line-add-id").value = "   ";
+  assert.equal(hasUnsavedInput(), false, "只有空白不算");
+  for (const id of ["line-add-id", "line-add-label", "line-add-hint", "line-add-charter", "home-new-title", "home-new-desc"]) {
+    el(id).value = "docs";
+    assert.equal(hasUnsavedInput(), true, id + " 填了字");
+    el(id).value = "";
+  }
+  el("line-add-ro").checked = true;
+  assert.equal(hasUnsavedInput(), true, "勾上「只读」= 偏离默认");
+  el("line-add-ro").checked = false; el("line-add-kind").selectedIndex = 1;
+  assert.equal(hasUnsavedInput(), true, "身份改成评审 = 偏离默认");
+  el("line-add-kind").selectedIndex = 0; el("home-new-line").selectedIndex = 2;
+  assert.equal(hasUnsavedInput(), false, "新建任务的下拉由代码填值,不算");
 });
 
 test("side panel says what any card is doing, not only the two home lanes", () => {

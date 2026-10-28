@@ -3784,7 +3784,13 @@ async function postDecompose(url, body){
   }
 }
 // v0.19 (self-audit P2-6): an automatic reload would throw away what the operator is typing.
-const hasUnsavedInput = () => [...document.querySelectorAll("textarea, #line-add input, #home-new input")].some((el) => el.value && el.value.trim());
+// 只认操作者真改过的控件:文本框/多行有非空白字;勾选框与它的默认勾选态不同;加线的「身份」下拉不在默认项。
+//   ⚠ 勾选框的 value 恒为 "on",不能按 value 判——那样加线表单的「只读」「交付即完成」让这里永远为真,
+//   看板换版本后只弹「刷新页面」横幅、从不自动刷新。新建任务的三个下拉由代码按执行线填值,不是操作者输入,不算。
+const fieldChanged = (el) => el.type === "checkbox" || el.type === "radio" ? el.checked !== el.defaultChecked
+  : el.tagName === "SELECT" ? el.selectedIndex !== Math.max(0, [...el.options].findIndex((o) => o.defaultSelected))
+  : !!(el.value && el.value.trim());
+const hasUnsavedInput = () => [...document.querySelectorAll("textarea, #line-add input, #line-add select, #home-new input")].some(fieldChanged);
 function showRevBar(rev, why){
   const el = document.getElementById("rev-bar");
   if (!el) return;
