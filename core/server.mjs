@@ -2760,11 +2760,12 @@ const server = http.createServer(async (req, res) => {
     // ── goals
     if (m === "POST" && p === "/api/goals") {
       const b = await readBody(req);
-      // ⚠ This road spreads the whole body into store.add — route/line used to sail
-      //   through here while POST /api/tasks had the gate (two mouths of the same
-      //   store.add treated differently).
-      if (badRoutable(res, b)) return;
-      const id = store.add(db, { ...b, kind: "goal", released: 0 });
+      // ⭐ 白名单:目标卡只取 subject / description / parentId(面板只传这三项)。原先整个请求体展开进
+      //   store.add,客户端可以在建卡记录(add 事件)里写进伪造的执行配置快照、actor、尝试次数等;
+      //   未知字段一律不进 store.add。route/line/weight 也因此到不了这里,原先的 badRoutable 闸不再需要。
+      const fields = Object.fromEntries(["subject", "description", "parentId"]
+        .filter((key) => Object.hasOwn(b, key)).map((key) => [key, b[key]]));
+      const id = store.add(db, { ...fields, kind: "goal", released: 0 });
       emit("task.created", { id });
       return json(res, 201, { task: taskOut(store.get(db, id)) });
     }

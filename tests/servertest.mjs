@@ -1262,6 +1262,22 @@ try {
     const w0 = (await B0.api("GET", "/api/workers")).body;
     ok("S9b 反亲和未配置:/api/workers 报 null,卡面 review_hold 为 null(与 v0.22 一字不差)",
        w0.review_anti_affinity === null && JSON.stringify(w0.review_lines) === "[]");
+    // 2026-10-28:POST /api/goals 只取 subject/description/parentId。客户端夹带的执行配置快照、放行、kind、
+    //   actor、尝试次数等字段不进 store.add —— 否则建卡记录(add 事件)里会写进一份伪造的执行配置。
+    const forged = { execution_profile_id: "claude-api", profile_digest: "f".repeat(64), channel: "claude_agent_sdk",
+                     runtime: "claude", model: "forged-model", effort: "high", tools: "write",
+                     workspace: { path: "C:\\forged", device: "1", inode: "1" } };
+    const gf = await B0.api("POST", "/api/goals", { subject: "s-forged", description: "目标正文",
+      executionProfile: forged, execution_profile: forged, execution_profile_id: "claude-api", released: 1,
+      kind: "task", actor: "decompose(forced)", maxAttempts: 9 });
+    const tf = gf.body?.task;
+    const addf = ((await B0.api("GET", `/api/task-events?task_id=${tf?.id}`)).body?.events || []).find((e) => e.kind === "add");
+    const df = addf && typeof addf.detail === "object" ? addf.detail : (() => { try { return JSON.parse(addf?.detail || "{}"); } catch { return {}; } })();
+    ok("S11 ⭐目标卡夹带 executionProfile/execution_profile/released:1/kind/actor/maxAttempts:卡面与建卡事件都没有,released 仍为 0",
+       gf.status === 201 && tf?.kind === "goal" && Number(tf?.released) === 0 && tf?.execution_profile === undefined &&
+       Number(tf?.max_attempts) === 3 && !!addf && !("execution_profile" in df) && addf.actor === "system" &&
+       !/forged/.test(JSON.stringify(addf)) && tf?.subject === "s-forged" && tf?.description === "目标正文",
+       `HTTP ${gf.status} released=${tf?.released} max=${tf?.max_attempts} profile=${JSON.stringify(tf?.execution_profile)?.slice(0, 60)} actor=${addf?.actor} detail=${JSON.stringify(df).slice(0, 120)}`);
     B0.kill(); await sleep(300);
     writeFileSync(CFGS, JSON.stringify({ lines: [{ id: "engine" }], review: { anti_affinity: "bogus" } }), "utf8");
     const R = await mk({ env: { BOARD_CONFIG: CFGS } });
