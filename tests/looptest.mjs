@@ -34,16 +34,45 @@ const PY = process.env.PYTHON || "python";
 const WIN = process.platform === "win32";
 const LINE = "alpha";                       // built-in config's first line
 
+// ⭐ 这个 harness 会被当作 **verify 键**从另一条线的 loop 进程里跑起来(卡的 `verify_cmd=harness-loop`;
+//   `verify_lib.verify_environment` 明确把 BOARD_* / WORKER_* 原样传给验证命令)。继承下来的部署面 env
+//   会把「隔离板」悄悄变成「部署板的配置」—— 2026-10-28 实测的样子:继承的 `BOARD_CONFIG` 让隔离板加载了
+//   部署的 fleet.config.json(线表成了 claude-dev/codex-dev/coord),于是 ① 的
+//   `POST /api/tasks {line:"alpha"}` 被 `badRoutable` 以 400 拒掉,harness 死在 `body.task` 为 undefined:
+//     the harness itself fell over: TypeError: Cannot read properties of undefined (reading 'id')
+//   结果是 0 PASS / 1 FAIL —— 看起来像被测代码坏了,其实是 harness 不隔离。
+//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
+//     再逐项写回本 harness 自己的值。`BOARD_CONFIG` 指向一个**不存在**的文件 = 用内置缺省配置
+//     (alpha 线在那里),与 clitest / sdkrunnerstest / legacy-boundariestest 同一做法。
+const HOST_ENV = Object.fromEntries(Object.entries(process.env)
+  .filter(([k]) => !/^(?:BOARD|WORKER|REVIEWER)_/i.test(k)));
+const NO_CONFIG = join(TMP, "none.json");   // 故意不建:缺省 = 内置线表
+// BOARD_REPO 也要钉:⑭⑮ 断言 argv 里的 --add-dir 与写放行规则就是**这个仓**,继承别处的值会红。
+const BASE_ENV = { ...HOST_ENV, BOARD_CONFIG: NO_CONFIG, BOARD_REPO: ROOT };
+
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
   if (cond) { pass++; console.log(`  PASS  ${name}${detail ? " — " + detail : ""}`); }
   else { fail++; console.log(`  FAIL  ${name}${detail ? " — " + detail : ""}`); }
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// flag 后面紧跟的取值(到下一个 -- 开头的元素为止);同一 flag 出现多次时合并。
+// ⚠ --tools / --allowedTools / --disallowedTools 都是可变长的,只看「下一个元素」会漏。
+const valuesOf = (args, flag) => {
+  const out = [];
+  args.forEach((a, i) => {
+    if (a !== flag) return;
+    for (let j = i + 1; j < args.length && !String(args[j]).startsWith("--"); j++) out.push(args[j]);
+  });
+  return out;
+};
+// Windows: python 经 abspath/realpath 拼路径,盘符大小写可能与 Node 的不同 —— 那边比对不分大小写。
+const sameList = (a, b) => WIN ? JSON.stringify(a.map((s) => String(s).toLowerCase())) === JSON.stringify(b.map((s) => String(s).toLowerCase()))
+                               : JSON.stringify(a) === JSON.stringify(b);
 
 // ── isolated board ──────────────────────────────────────────────────────────
 const srv = spawn(process.execPath, [join(ROOT, "core", "server.mjs")], {
-  env: { ...process.env, BOARD_PORT: String(PORT), BOARD_DATA_DIR: TMP,
+  env: { ...BASE_ENV, BOARD_PORT: String(PORT), BOARD_DATA_DIR: TMP,
          BOARD_DB: join(TMP, "t.db"),
          BOARD_ALLOW_UNPINNED: "1",   // isolated harness only: revision-gate escape
          // Pool sweep in ISOLATED form. Default is a 5h window + a real CLI recheck:
@@ -137,6 +166,21 @@ try {
   }
   TOKEN = readFileSync(join(TMP, "board_token"), "utf8").trim();
 
+  // ⭐ 隔离前提自检。不自检的代价实测过(2026-10-28):继承的 BOARD_CONFIG 让隔离板加载了部署的
+  //   配置,线表里没有 alpha,① 的建卡被 badLine 以 400 拒掉,harness 死在 `body.task` 的
+  //   `Cannot read properties of undefined (reading 'id')` —— 看起来像被测代码坏了,白烧一次尝试。
+  //   一句话说清「板的线表是什么、它加载了哪份配置」,比十三处建卡各自防一遍便宜。
+  {
+    const probe = await api("GET", "/api/workers");
+    const lines = probe.body?.lines;
+    if (Array.isArray(lines) && !lines.includes(LINE))
+      throw new Error(`隔离板的线表里没有「${LINE}」(线表 = ${lines.join("/") || "(空)"})`
+        + " —— 多半是继承了部署的 BOARD_CONFIG;板启动行:"
+        + (srvOut.match(/^配置:.*$/m) || ["(没抓到)"])[0]);
+    if (!Array.isArray(lines))
+      console.log(`  (隔离前提没自检成 —— /api/workers status=${probe.status};不是通过,是没测)`);
+  }
+
   // ── stub CLI: writes nothing, exits non-zero ──────────────────────────────
   //   ⚠ Producing NO output is the point. If it wrote an evidence file the card
   //     would be done on attempt 1 and the retry path would never be entered.
@@ -198,7 +242,7 @@ try {
   // ── start the loop, isolated ──────────────────────────────────────────────
   console.log("\n[② start worker_loop.py against the isolated board]");
   loop = spawn(PY, [join(ROOT, "loops", "worker_loop.py"), "--as", LINE, "--interval", "1"], {
-    env: { ...process.env,
+    env: { ...BASE_ENV,
            BOARD_URL: BASE,
            BOARD_ALLOW_UNPINNED: "1",        // isolated harness only
            BOARD_DATA_DIR: TMP,              // ⭐ token AND evidence to the temp side
@@ -219,8 +263,8 @@ try {
            //   attempt outlives every wait below and turns into a WRONG red.
            WORKER_TIMEOUT_SEC: "20",
            // ⭐ Pin the slot config explicitly. Relying on defaults lets a stray
-           //   WORKER_EFFORT in the caller's shell shift the ladder start silently
-           //   (`...process.env` is spread first, so the parent's values come through).
+           //   WORKER_EFFORT shift the ladder start silently — BASE_ENV already drops the
+           //   whole WORKER_ family, and pinning here says what this harness means to use.
            WORKER_MODEL: "claude-opus-5", WORKER_EFFORT: "high",
            // Policy env too: the cap is "how high we are willing to go", separate from
            //   the ladder mechanism. 99 = no policy cap; worker_loop clamps with
@@ -446,7 +490,7 @@ try {
     const fin = (code) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, out }); };
     const p = spawn(PY, [join(ROOT, "loops", "worker_loop.py"), "--as", LINE,
                          "--interval", "1", ...(once ? ["--once"] : [])], {
-      env: { ...process.env, BOARD_URL: BASE, BOARD_DATA_DIR: TMP,
+      env: { ...BASE_ENV, BOARD_URL: BASE, BOARD_DATA_DIR: TMP,
              BOARD_ALLOW_UNPINNED: "1",
              WORKER_CLAUDE_CLI: "", WORKER_CLI_ARGV: "", WORKER_ALLOW_BATCH_CLI: "",
              WORKER_RUNTIME: "claude",
@@ -779,10 +823,12 @@ process.stdin.on("end", () => {
        `领到 ${(rb.out.match(/领到 #/g) || []).length} 张`);
   }
 
-  // ── ⑭ the Claude seat's argv carries path-scoped deny rules (v0.17.0) ────────
+  // ── ⑭ the Claude seat's argv carries the read/write boundary: path-scoped deny
+  //    rules (v0.17.0) plus the v0.24.0 lockdown (--tools whitelist + dontAsk +
+  //    --setting-sources "" + --strict-mcp-config + path-scoped write allows).
   //    A python stub stands in for the CLI (WORKER_CLI_ARGV), dumps its argv to a file
   //    and fails — so this is the REAL loop composing the REAL argv, not a unit test.
-  console.log("\n[⑭ Claude 座席的 argv 带 --disallowedTools(令牌目录 / 登记簿)]");
+  console.log("\n[⑭ Claude 座席的 argv:--tools 白名单 + dontAsk + 路径拒绝规则(令牌 / 登记簿)]");
   {
     const dump = join(TMP, "argvdump.py"), argvFile = join(TMP, "argv.json");
     writeFileSync(dump, ["import sys, json, io",
@@ -807,6 +853,27 @@ process.stdin.on("end", () => {
        rules.every((r) => !r.includes(`${dataFwd}/evidence/`) && !r.endsWith(`${dataFwd}/evidence)`)
                           && !r.endsWith(`${dataFwd}/**)`) && !r.endsWith(`${dataFwd}/*)`)));
     ok("规则里没有反斜杠(正斜杠绝对路径,两平台一致)", rules.length > 0 && rules.every((r) => !r.includes("\\")));
+    // ── v0.24.0:读写边界的 argv 形状(2026-10-28 spike 实测:不带路径的 `--allowedTools Read`
+    //    等于放行任意路径的读取;dontAsk 下 cwd 与 --add-dir 内的读不需要放行规则)。
+    const evid = join(TMP, "evidence");
+    const fwd = (p) => (WIN ? "" : "/") + p.replace(/\\/g, "/");
+    ok("⑭ ⭐可用工具由 --tools 白名单给出(Read/Write/Edit/Glob/Grep)",
+       sameList(valuesOf(argv, "--tools"), ["Read", "Write", "Edit", "Glob", "Grep"]), JSON.stringify(valuesOf(argv, "--tools")));
+    ok("⑭ ⭐权限模式是 dontAsk;argv 里没有 acceptEdits / plan / --dangerously-*",
+       sameList(valuesOf(argv, "--permission-mode"), ["dontAsk"]) && !argv.includes("acceptEdits")
+       && !argv.includes("plan") && !argv.some((a) => String(a).startsWith("--dangerously")),
+       JSON.stringify(valuesOf(argv, "--permission-mode")));
+    ok("⑭ ⭐--allowedTools 里没有任何不带路径的工具名(裸 Read 会放行任意路径的读取 —— spike P1 实测越界读成功)",
+       argv.length > 0 && valuesOf(argv, "--allowedTools").every((r) => /^(?:Read|Edit)\(.+\)$/.test(r)),
+       JSON.stringify(valuesOf(argv, "--allowedTools")));
+    ok("⑭ ⭐写放行只有工作仓与证据目录各一条 Edit(…/**)",
+       sameList(valuesOf(argv, "--allowedTools"), [`Edit(${fwd(ROOT)}/**)`, `Edit(${fwd(evid)}/**)`]),
+       JSON.stringify(valuesOf(argv, "--allowedTools")));
+    ok("⑭ ⭐读范围 = 工作仓 + 证据目录(证据目录在 split 部署里在仓外,不挂就交不出证据)",
+       sameList(valuesOf(argv, "--add-dir"), [ROOT, evid]), JSON.stringify(valuesOf(argv, "--add-dir")));
+    ok("⑭ ⭐不读用户/项目/本地设置(--setting-sources \"\"),不加载任何 MCP(--strict-mcp-config 且无 --mcp-config)",
+       sameList(valuesOf(argv, "--setting-sources"), [""]) && argv.includes("--strict-mcp-config") && !argv.includes("--mcp-config"),
+       JSON.stringify(valuesOf(argv, "--setting-sources")));
   }
 
   // ── ⑮ line identity (v0.22): the tools profile reaches the argv, the charter reaches
@@ -823,11 +890,17 @@ process.stdin.on("end", () => {
                                   WORKER_ROLE_KIND: "review", WORKER_TOOL_PROFILE: "read-only",
                                   WORKER_CHARTER: "examples/roles/astra.md" }, 60000);
     let argv = []; try { argv = JSON.parse(readFileSync(argvFile, "utf8")); } catch {}
-    const allowed = argv.slice(argv.indexOf("--allowedTools") + 1, argv.indexOf("--add-dir"));
+    const tools = valuesOf(argv, "--tools");
     const prompt = argv[argv.indexOf("-p") + 1] || "";
     const rootFwd = (WIN ? "" : "/") + ROOT.replace(/\\/g, "/");
-    ok("⑮ ⭐只读档:allowedTools 没有 Edit(Write 留给证据文件)",
-       argv.length > 0 && !allowed.includes("Edit") && allowed.includes("Write"), allowed.join(",") || "(argv 未落盘)");
+    const evidFwd = (WIN ? "" : "/") + join(TMP, "evidence").replace(/\\/g, "/");
+    ok("⑮ ⭐只读档:--tools 没有 Edit(Write 留给证据文件)",
+       argv.length > 0 && !tools.includes("Edit") && tools.includes("Write"), tools.join(",") || "(argv 未落盘)");
+    // v0.24.0:dontAsk 下写要显式放行 ⇒ 只读档「写不了工作仓」先由「没有放行规则」挡住,
+    //          下一条的 Edit deny 是纵深。此前只有 deny 一道。
+    ok("⑮ ⭐只读档:写放行只有证据目录一条,工作仓一条都没有(dontAsk ⇒ 仓里写不了)",
+       sameList(valuesOf(argv, "--allowedTools"), [`Edit(${evidFwd}/**)`]),
+       JSON.stringify(valuesOf(argv, "--allowedTools")));
     // Python spells the repo through realpath (drive-letter case may differ from Node's
     // on Windows) — compare case-insensitively there; POSIX stays exact.
     const sameRule = (r) => WIN ? r.toLowerCase() === `Edit(${rootFwd}/**)`.toLowerCase() : r === `Edit(${rootFwd}/**)`;

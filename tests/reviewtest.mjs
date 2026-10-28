@@ -82,11 +82,20 @@ const boards = [];
 // changes nothing for them, and §7 measures it with cards that name their runtime.
 const CFGR = join(TMP, "fleet.config.json");
 writeFileSync(CFGR, JSON.stringify({ review: { anti_affinity: "runtime" } }), "utf8");
+// ⭐ 与 looptest 同一道隔离:本 harness 也可能从**另一条线的 loop 进程**里跑起来(验证命令继承
+//   BOARD_* / WORKER_* —— 见 verify_lib.verify_environment),继承的部署面 env 会让隔离板加载部署配置、
+//   让审阅线按别人的 runtime / 模型 / 身份起跑。先把三族整族剔掉,再逐项写回本 harness 自己的值;
+//   BOARD_CONFIG 仍指向下面那份只声明反亲和的临时配置(没有 lines 键 = 内置线表,alpha 在那里)。
+const HOST_ENV = Object.fromEntries(Object.entries(process.env)
+  .filter(([k]) => !/^(?:BOARD|WORKER|REVIEWER)_/i.test(k)));
 const commonEnv = {
-  ...process.env, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8",
+  ...HOST_ENV, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8",
   BOARD_PORT: String(PORT), BOARD_URL: BASE, BOARD_DATA_DIR: TMP,
   BOARD_DB: join(TMP, "t.db"), BOARD_ALLOW_UNPINNED: "1",   // isolated harness only
   BOARD_VERIFY_REGISTRY: REGISTRY, BOARD_CONFIG: CFGR,
+  // 审阅座席与工作仓也要钉:§2b 断言 argv 里的 --add-dir 与写放行规则就是**这个仓**,
+  //   而 WORKER_RUNTIME 若继承成 codex,§2 会走 codex 分支、桩一次都不会被调到。
+  BOARD_REPO: ROOT, WORKER_RUNTIME: "claude",
 };
 
 try {
@@ -161,10 +170,24 @@ try {
      tA.verify_ok === true, `verify_ok=${JSON.stringify(tA.verify_ok)}`);
   ok("R4 stub 被调用过(判决确实出自模型路径)", existsSync(MARK), logA.slice(-200));
 
-  console.log(NL + "[§2b 审阅座席的 argv 也带 --disallowedTools(v0.17.0)]");
+  console.log(NL + "[§2b 审阅座席的 argv:--tools 白名单 + dontAsk + 拒绝规则(v0.17.0 / v0.24.0)]");
   {
     let av = []; try { av = JSON.parse(readFileSync(ARGVF, "utf8")); } catch {}
     const i = av.indexOf("--disallowedTools"); const rules = i >= 0 ? av.slice(i + 1) : [];
+    // flag 后面紧跟的取值(到下一个 -- 开头的元素为止);--tools / --allowedTools 都是可变长的。
+    const valuesOf = (args, flag) => {
+      const out = [];
+      args.forEach((a, k) => {
+        if (a !== flag) return;
+        for (let j = k + 1; j < args.length && !String(args[j]).startsWith("--"); j++) out.push(args[j]);
+      });
+      return out;
+    };
+    const WINP = process.platform === "win32";
+    const sameList = (a, b) => WINP
+      ? JSON.stringify(a.map((s) => String(s).toLowerCase())) === JSON.stringify(b.map((s) => String(s).toLowerCase()))
+      : JSON.stringify(a) === JSON.stringify(b);
+    const outFwd = (WINP ? "" : "/") + join(TMP, "review").replace(/\\/g, "/");
     // v0.21.2: per-file rules, `//`-absolute on POSIX (see looptest ⑭ for the measurement).
     const dataFwd = (process.platform === "win32" ? "" : "/") + TMP.replace(/\\/g, "/");
     ok("R4b ⭐审阅的真 argv 带 --disallowedTools,钉住令牌与登记簿(逐文件,Read+Edit)",
@@ -177,6 +200,24 @@ try {
     ok("R4c 判决目录 <data>/review 不被任何规则盖住(否则审阅写不出判决文件)",
        rules.length > 0 && rules.every((r) => !r.includes(`${dataFwd}/review/`) && !r.endsWith(`${dataFwd}/review)`)
                                                && !r.endsWith(`${dataFwd}/**)`) && !r.endsWith(`${dataFwd}/*)`)));
+    // ── v0.24.0:读写边界进 argv(2026-10-28 spike 实测:不带路径的 `--allowedTools Read`
+    //    等于放行任意路径的读取;dontAsk 下 cwd 与 --add-dir 内的读不需要放行规则)。
+    ok("R4e ⭐可用工具由 --tools 白名单给出(Read/Glob/Grep/Write,没有 Edit、没有 Bash)",
+       sameList(valuesOf(av, "--tools"), ["Read", "Glob", "Grep", "Write"]), JSON.stringify(valuesOf(av, "--tools")));
+    ok("R4f ⭐权限模式是 dontAsk;argv 里没有 acceptEdits / plan / --dangerously-*",
+       sameList(valuesOf(av, "--permission-mode"), ["dontAsk"]) && !av.includes("acceptEdits")
+       && !av.includes("plan") && !av.some((a) => String(a).startsWith("--dangerously")),
+       JSON.stringify(valuesOf(av, "--permission-mode")));
+    ok("R4g ⭐--allowedTools 里没有任何不带路径的工具名(裸 Read 会放行任意路径的读取 —— spike P1 实测越界读成功)",
+       av.length > 0 && valuesOf(av, "--allowedTools").every((r) => /^(?:Read|Edit)\(.+\)$/.test(r)),
+       JSON.stringify(valuesOf(av, "--allowedTools")));
+    ok("R4h ⭐写放行只有判决目录一条 Edit(…/**):「只写判决文件」从提示词约束变成结构约束",
+       sameList(valuesOf(av, "--allowedTools"), [`Edit(${outFwd}/**)`]), JSON.stringify(valuesOf(av, "--allowedTools")));
+    ok("R4i ⭐读范围 = 工作仓 + 判决目录(越界读靠 dontAsk 拒,不靠提示词)",
+       sameList(valuesOf(av, "--add-dir"), [ROOT, join(TMP, "review")]), JSON.stringify(valuesOf(av, "--add-dir")));
+    ok("R4j ⭐不读用户/项目/本地设置(--setting-sources \"\"),不加载任何 MCP(--strict-mcp-config 且无 --mcp-config)",
+       sameList(valuesOf(av, "--setting-sources"), [""]) && av.includes("--strict-mcp-config") && !av.includes("--mcp-config"),
+       JSON.stringify(valuesOf(av, "--setting-sources")));
   }
 
   console.log(NL + "[§3 机器产出闸:验收要机器、证据纯散文、模型说 approve → 机械降 escalate]");

@@ -87,6 +87,35 @@ def cli_deny_rules(data_dir, registry=None):
     return rules
 
 
+def cli_write_allow_rules(dirs):
+    """dontAsk 下「还能往哪写」的放行规则(`--allowedTools`),执行线与审阅线共用。
+
+    为什么需要:v0.24.0 两条 loop 从 `acceptEdits` + 不带路径的 `--allowedTools Read …` 换成
+    `--permission-mode dontAsk` + `--tools` 白名单(不带路径的 `Read` 放行规则 = 放行任意路径的
+    读取,2026-10-28 spike P1 实测越界读成功)。dontAsk 下 cwd 与 `--add-dir` 范围内的**读**不需要
+    放行规则(同日 spike P2/P4),但**写**要显式放行 —— 不给就连证据文件都写不出来。
+
+    为什么只产 `Edit(<abs>/**)` 一种:
+      · CLI 明说 `Write(path)` / `Glob(path)` 两种写法「不被文件权限检查匹配」,只认 `Edit(path)`
+        与 `Read(path)`;`Edit` 规则覆盖所有写文件工具(2026-09-28 实测,与 cli_deny_rules 同一结论)。
+        放行侧沿用同一写法与同一 deny_path 拼法(`//…` / 盘符形),不另造一套。
+      · 一条**不带路径**的 `Edit` / `Write` 会把写放行到任意路径 —— 正是本次要消灭的形,所以这里
+        只产带路径的规则,一个不带路径的工具名都不产。
+    拒绝规则(cli_deny_rules / auth_home_deny_rules)在 CLI 里胜过放行规则 ⇒ 令牌、登记簿、认证目录
+    即便落在放行目录之内也仍然写不得。
+    不是绝对路径就抛 ValueError(未知值落拒绝侧,调用方在启动门上拒绝启动)。"""
+    rules, seen = [], set()
+    for item in dirs:
+        if not (isinstance(item, str) and item.strip() and os.path.isabs(item)):
+            raise ValueError(f"写放行目录必须是绝对路径:{item!r}")
+        path = deny_path(item).rstrip("/")
+        if path in seen:
+            continue
+        seen.add(path)
+        rules.append(f"Edit({path}/**)")
+    return rules
+
+
 AUTH_HOMES_ENV = "WORKER_AUTH_HOMES"
 
 

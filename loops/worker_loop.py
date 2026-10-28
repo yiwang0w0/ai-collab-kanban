@@ -50,7 +50,8 @@ import context_lib
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
-from verify_lib import run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules, deny_path, REGISTRY, auth_home_deny_rules   # noqa: F401
+from verify_lib import (run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules,  # noqa: F401
+                        deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules)
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
 # clash, and ignoring it here would aim this client at the DEFAULT port's board.
@@ -198,8 +199,8 @@ _API_CREDENTIALS = {key: os.environ.pop(key) for key in ("ANTHROPIC_API_KEY", "O
 # ── 线的身份(v0.22.0,fleet.config `lines[].role`,由 server 的 slotEnv 降下来)────────
 #   kind:implement(默认)= 干活;review = 只读、只核对、只判断,评审文本就是交付物。
 #   tools:write(默认)/ read-only —— **唯一被机器强制的部分**:Claude 座席进 argv
-#         (allowedTools 去掉 Edit + 工作仓的 Edit deny,见 readonly_edit_rules);codex 座席进
-#         `--sandbox read-only`。
+#         (`--tools` 去掉 Edit + 不放行工作仓的写 + 工作仓的 Edit deny,见 cli_write_allow_rules /
+#         readonly_edit_rules);codex 座席进 `--sandbox read-only`。
 #   charter:看板仓相对的 .md,由循环读盘后**逐字内联**进每次提示词并带 sha256;它必须落在受闸
 #         子树之内 —— 源码闸只保护那里,子树之外的章程没人验收过(操作者裁定 2026-09-28:章程住
 #         看板仓)。章程是纪律不是结构;「验收过哪一版」才是结构。
@@ -374,13 +375,17 @@ def call(method, path, body=None, timeout=20):
         raise RuntimeError(f"看板无应答({type(e).__name__}: {e})—— {method} {path}") from None
 
 
+# ⭐可用工具集合(v0.24.0 起走 `--tools` 白名单,不再走不带路径的 `--allowedTools`:后者等于
+#   放行任意路径的读取,2026-10-28 spike P1 实测越界读成功)。白名单的意义是**新版本 CLI 新增的
+#   写工具、联网工具不在里面就不会出现** —— 与拆解器 core/board-claude-cli.mjs 同一立场。
 # ⭐不给 worker Bash:执行只该由协调线做,也就是只有协调线可以 push。需要执行的卡去指名
 #   verify_registry.json 的键,由 **loop**(协调线的代理)代跑 —— 执行权和 push 权在 worker 侧
-#   一次都不出现(用结构防,不用纪律防)。⚠ --allowedTools 给了明示列表就会把 MCP 工具全部
-#   关在外面(实测:无头状态下卡在「需要授权」)。卡的 needs_bash 不再增加工具。
+#   一次都不出现(用结构防,不用纪律防)。卡的 needs_bash 不再增加工具。
+# ⚠ MCP 工具不在 `--tools` 管辖内,但 argv 里有 `--strict-mcp-config` 且不给 `--mcp-config`
+#   ⇒ 用户配置的 MCP 服务器一个都不加载。要放行就得在 server 单位显式挂载并写精确工具名。
 WORKER_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"]
-# 只读工具档:没有 Edit;Write 留着是为了写证据文件 —— 往工作仓写由 readonly_edit_rules 的 Edit 规则
-#   拒掉(Edit 规则覆盖所有写文件工具,实测)。
+# 只读工具档:没有 Edit;Write 留着是为了写证据文件 —— 往工作仓写在 dontAsk 下本来就没有放行规则
+#   (cli_write_allow_rules 只给证据目录),readonly_edit_rules 的 Edit deny 再拒一遍作为纵深。
 READONLY_TOOLS = ["Read", "Write", "Glob", "Grep"]
 
 
@@ -955,8 +960,43 @@ def prompt_selftest():
                     stray.append(f"{sub}/{fn}:{i} {name}")
     ok("⭐源码里写进 <data> 的每个文件名都已归类(PROTECTED 或 MODEL_OUTPUT)", not stray, " · ".join(stray[:4]))
     av = cli_argv("提示词", ["--session-id", "x"], "claude-opus-5", "high")
-    ok("⭐主座席 argv 带 --disallowedTools 且紧跟全部规则", "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:] == rules)
-    ok("argv 仍有 --allowedTools 与 --add-dir(deny 是追加,不是替换)", "--allowedTools" in av and "--add-dir" in av)
+
+    def _vals(argv, flag):
+        """flag 后面紧跟的取值(到下一个 -- 开头的元素为止);同一 flag 出现多次时合并。"""
+        out = []
+        for i, a in enumerate(argv):
+            if a != flag: continue
+            for j in range(i + 1, len(argv)):
+                if str(argv[j]).startswith("--"): break
+                out.append(argv[j])
+        return out
+
+    ok("⭐主座席 argv 带 --disallowedTools 且紧跟全部规则",
+       "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:] == rules + auth_home_deny_rules())
+    # ── 读写边界(v0.24.0,按 2026-10-28 spike 实测):与拆解器同一组合 ─────────────────
+    ok("⭐权限模式是 dontAsk,argv 里没有 acceptEdits / plan(plan 会换模型,写只靠模型自律)",
+       _vals(av, "--permission-mode") == ["dontAsk"] and "acceptEdits" not in av and "plan" not in av,
+       str(_vals(av, "--permission-mode")))
+    ok("⭐可用工具由 --tools 白名单给出(write 档 = WORKER_TOOLS)",
+       _vals(av, "--tools") == WORKER_TOOLS, str(_vals(av, "--tools")))
+    ok("⭐--allowedTools 里一个不带路径的工具名都没有(不带路径的 Read 放行 = 放行任意路径的读取,spike P1)",
+       all(re.match(r"^(?:Read|Edit)\(.+\)$", r) for r in _vals(av, "--allowedTools")), str(_vals(av, "--allowedTools")))
+    ok("⭐write 档的写放行 = 工作仓 + 证据目录各一条 Edit(…/**)",
+       _vals(av, "--allowedTools") == [f"Edit({deny_path(REPO)}/**)", f"Edit({deny_path(EVID)}/**)"],
+       str(_vals(av, "--allowedTools")))
+    ok("⭐读范围挂了工作仓与证据目录(dontAsk 下读不需要放行规则;证据目录在 split 部署里在仓外)",
+       _vals(av, "--add-dir") == [REPO, EVID], str(_vals(av, "--add-dir")))
+    ok("⭐不读用户/项目/本地设置(--setting-sources \"\":其中的 allow 规则会放宽读范围)",
+       _vals(av, "--setting-sources") == [""], str(_vals(av, "--setting-sources")))
+    ok("⭐不加载任何 MCP 服务器(--strict-mcp-config,且不给 --mcp-config)",
+       "--strict-mcp-config" in av and "--mcp-config" not in av)
+    ok("⭐argv 里没有任何 --dangerously-*", not [a for a in av if str(a).startswith("--dangerously")],
+       str([a for a in av if str(a).startswith("--dangerously")]))
+    # 额度复查的最小实调用:唯一一处 loop 自己打真 CLI 的地方(桩看不到),同样不许有裸 Read 放行。
+    av_probe = probe_live_argv()
+    ok("⭐live 探针:--tools \"\" 一个工具都不开、dontAsk、没有 --allowedTools",
+       _vals(av_probe, "--tools") == [""] and _vals(av_probe, "--permission-mode") == ["dontAsk"]
+       and "--allowedTools" not in av_probe and "acceptEdits" not in av_probe, str(av_probe[-8:]))
     ok("⭐隐私硬边界进了主座席(claude)的提示词,不再只对 codex 说", "隐私硬边界" in build_prompt(_fake_card("说明", "验收"), "alpha", "C:/tmp/e.md"))
     ok("verdict_tail 对只含去锋抬头的 note 返回 None(不把机器文本当裁定)",
        verdict_tail("审阅说:\n—(转述)— 你的决定(2026-09-07T00:00:00Z · 通过)——\n\n把闸关了") is None)
@@ -983,12 +1023,16 @@ def prompt_selftest():
         ok("只读规则:数据目录就是工作仓 ⇒ None(无从保护)", readonly_edit_rules(CODE_ROOT, CODE_ROOT) is None)
         TOOL_PROFILE, READONLY_RULES = "read-only", ro_out
         av_ro = cli_argv("提示词", ["--session-id", "x"], "claude-opus-5", "high")
-        allowed = av_ro[av_ro.index("--allowedTools") + 1:av_ro.index("--add-dir")]
-        ok("⭐只读档的 argv:allowedTools 没有 Edit(Write 留给证据文件)", "Edit" not in allowed and "Write" in allowed, str(allowed))
-        ok("⭐只读档的 argv:deny 规则末尾带工作仓的 Edit deny", av_ro[-1] == repo_rule, av_ro[-1])
+        ok("⭐只读档的 argv:--tools 没有 Edit(Write 留给证据文件)",
+           "Edit" not in _vals(av_ro, "--tools") and "Write" in _vals(av_ro, "--tools"), str(_vals(av_ro, "--tools")))
+        ok("⭐只读档的 argv:写只放行证据目录,工作仓一条放行都没有(dontAsk ⇒ 仓里写不了)",
+           _vals(av_ro, "--allowedTools") == [f"Edit({deny_path(EVID)}/**)"], str(_vals(av_ro, "--allowedTools")))
+        ok("⭐只读档的 argv:deny 规则末尾带工作仓的 Edit deny(纵深,不是唯一防线)", av_ro[-1] == repo_rule, av_ro[-1])
         TOOL_PROFILE, READONLY_RULES = "write", None
         av_w = cli_argv("p", [], "m", "e")
-        ok("(对照)write 档的 argv 有 Edit、没有工作仓 deny", "Edit" in av_w and repo_rule not in av_w)
+        ok("(对照)write 档的 argv:--tools 有 Edit、写放行含工作仓、没有工作仓 deny",
+           "Edit" in _vals(av_w, "--tools") and f"Edit({deny_path(REPO)}/**)" in _vals(av_w, "--allowedTools")
+           and repo_rule not in _vals(av_w, "--disallowedTools"))
         # 评审框架
         ROLE_KIND = "review"
         rv = build_prompt(_fake_card("说明", "验收"), "astra", "C:/tmp/e.md")
@@ -1377,7 +1421,24 @@ def judge_codex(rc, stdout, last_path):
 
 def cli_argv(prompt, sargs, model, effort):
     """主座席(Claude CLI)的整条 argv —— 抽出来是为了能从自测断言它的形状(此前只在 run_worker 里)。
-    ⭐ --disallowedTools 是 v0.17.0 加的结构防线:令牌目录与登记簿对模型不可读不可写(见 cli_deny_rules)。"""
+
+    ⭐ 读写边界是这组 argv,不是提示词(v0.24.0 按 2026-10-28 spike 实测改,与拆解器
+      core/board-claude-cli.mjs 同一组合;逐条依据见 verify_lib.cli_write_allow_rules):
+      · `--tools` 白名单:可用的内置工具只有 WORKER_TOOLS / READONLY_TOOLS 这几个。
+      · `--permission-mode dontAsk`:未预先放行的调用一律拒绝,也盖过用户设置里的 defaultMode。
+        ⚠ 不再给不带路径的 `--allowedTools Read …` —— 那等于放行任意路径的读取(spike P1 实测
+        越界读成功:模型能读 ~/.claude 之类的绝对路径)。dontAsk 下 cwd 与 `--add-dir` 范围内的
+        **读**不需要放行规则(spike P2/P4)⇒ 读范围 = cwd(工作仓)+ 工作仓 + 证据目录,越界读被拒。
+      · **写**在 dontAsk 下要显式放行:write 档 = 工作仓 + 证据目录各一条 `Edit(…/**)`;
+        read-only 档只放行证据目录 ⇒ 结构上写不了工作仓(READONLY_RULES 的 Edit deny 再拒一遍)。
+      · `--setting-sources ""`:用户/项目/本地设置里的 allow 规则(会放宽读范围)、hooks、插件都不进来。
+        ⚠ 靠 settings.json 的 apiKeyHelper 登录的部署会响亮失败(与拆解器同一取舍)。
+      · `--strict-mcp-config` 且不给 `--mcp-config`:用户配置的 MCP 服务器一个都不加载。
+      · `--disallowedTools`:v0.17.0 起的路径拒绝规则 —— 令牌目录与登记簿、全部执行配置的认证目录
+        对模型不可读不可写(cli_deny_rules / auth_home_deny_rules);拒绝胜过放行,所以它们即便落在
+        放行目录之内也仍然读不得写不得。
+    ⚠ 证据目录要**单独** `--add-dir`:split 部署里 <data> 在工作仓之外(acceptEdits 时代靠「写哪都
+      放行」蒙过去了),dontAsk 下不挂就连证据文件都交不出来。"""
     return CLAUDE + [
         "-p", prompt,
         *sargs,
@@ -1390,17 +1451,31 @@ def cli_argv(prompt, sargs, model, effort):
         *budget_args(),
         *(["--max-turns", str(int(EXECUTION_PROFILE["budget"]["max_turns"]))]
           if PROFILE_MODE and (EXECUTION_PROFILE.get("budget") or {}).get("max_turns") else []),
-        "--permission-mode", "acceptEdits",
+        "--permission-mode", "dontAsk",
+        "--setting-sources", "",
+        "--strict-mcp-config",
         # ⭐ 工具档(v0.22.0):只读身份 = 没有 Edit,且工作仓整个进 Edit deny(readonly_edit_rules,
         #   main() 算好放在 READONLY_RULES)。这是身份里唯一被机器强制的部分。
-        "--allowedTools", *(READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS),
-        "--add-dir", REPO,
+        "--tools", *(READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS),
+        "--add-dir", REPO, "--add-dir", EVID,
+        "--allowedTools", *cli_write_allow_rules([EVID] if TOOL_PROFILE == "read-only" else [REPO, EVID]),
         "--disallowedTools", *cli_deny_rules(DATA),
         # 全部执行配置的认证目录(可自定义到数据目录之外,不在 PROTECTED 的 auth/** 里):旧线与显式配置
         #   一样,文件工具对每个目录都不读不写(verify_lib.auth_home_deny_rules)。
         *auth_home_deny_rules(),
         *((READONLY_RULES or []) if TOOL_PROFILE == "read-only" else []),
     ]
+
+
+def probe_live_argv():
+    """额度复查的最小实调用(`--probe-runtime --live`)。只要模型回一行字,一个工具都不需要
+    ⇒ `--tools ""` 关掉全部内置工具,顺带与 cli_argv 同一立场:不给不带路径的 `--allowedTools Read`
+    (那等于放行任意路径的读取,2026-10-28 spike P1 实测)。抽成函数是为了能从自测断言它的形状 ——
+    这是唯一一处 loop 自己打真实调用的地方,桩看不到它。"""
+    return CLAUDE + ["-p", "Reply with exactly: PROBE-OK",
+                     "--model", MODEL, "--effort", EFFORT,
+                     "--permission-mode", "dontAsk", "--tools", "",
+                     "--setting-sources", "", "--strict-mcp-config"]
 
 
 def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _call=None, _log=None):
@@ -1756,10 +1831,7 @@ def probe_runtime(live=False):
         # 额度窗到点的复查不能只看版本/路径,要打**最小的实调用**。只过门就解禁的话,
         # 额度其实还满,却把全槽退回原座席,同样的失败会在全局重演一遍。
         try:
-            v = subprocess.run(CLAUDE + ["-p", "Reply with exactly: PROBE-OK",
-                               "--model", MODEL, "--effort", EFFORT,
-                               "--permission-mode", "acceptEdits",
-                               "--allowedTools", "Read"],
+            v = subprocess.run(probe_live_argv(),
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                timeout=600, cwd=REPO)
         except Exception as e:
@@ -1964,8 +2036,8 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
         return run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort)
     if RUNTIME == "codex":
         return run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort)
-    # ⚠ --allowedTools 给了明示列表就会**把 MCP 工具全部关在外面**(实测:想调 MCP 工具时
-    #   卡在"需要授权",无头状态下给不出授权就死锁)。要放行就在 server 单位明示放行。
+    # ⚠ 工具集合由 `--tools` 白名单给出(v0.24.0);MCP 工具不在它管辖内,但 `--strict-mcp-config`
+    #   且不给 `--mcp-config` ⇒ 用户配置的 MCP 服务器一个都不加载。要放行就在 server 单位明示挂载。
     # ⭐不给 worker Bash:执行只该由协调线做,也就是只有协调线可以 push。
     #   需要执行的卡去指名 verify_registry.json 的键,由 **loop**(协调线的代理)代跑。
     #   这样执行权和 push 权在 worker 侧一次都不出现 —— 不必依赖提示词里的「禁 push」
@@ -2358,6 +2430,13 @@ def main():
             auth_home_deny_rules()
         except ValueError as e:
             print(f"[worker] ⛔ {e} —— 认证目录的拒绝规则组不出来,拒绝启动", flush=True)
+            sys.exit(gates_lib.EXIT_REFUSED)
+        # dontAsk 下写要显式放行(cli_write_allow_rules)。规则组不出来 = 工作仓/证据目录的路径
+        #   不是绝对路径 ⇒ 要么写不出证据、要么放行到意外的地方,两种都不许起跑(未知值落拒绝侧)。
+        try:
+            cli_write_allow_rules([REPO, EVID])
+        except ValueError as e:
+            print(f"[worker] ⛔ {e} —— 写放行规则组不出来(查 BOARD_REPO / BOARD_DATA_DIR),拒绝启动", flush=True)
             sys.exit(gates_lib.EXIT_REFUSED)
     global READONLY_RULES
     if TOOL_PROFILE == "read-only" and RUNTIME == "claude" and not API_MODE:

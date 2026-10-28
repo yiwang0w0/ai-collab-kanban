@@ -13,11 +13,13 @@
    不能靠"上一张我批了所以这张也批"的惯性。上下文不累积,也就不会被污染。
 
 2) **不给 Edit / Bash**——审阅者改不了现有代码,也跑不了命令。这两条是结构上的:
-   工具没放行就是没放行。
-   ⚠ 但 Write **是**放行的(判决文件得写得出来),而 Write 在 --add-dir 范围内哪都能写。
-   "只写判决文件"是**提示词约束,不是结构约束**。别把它当成保证。
-   真正兜底的是:审阅者改不了代码(无 Edit)、执行不了任何东西(无 Bash),
-   且它的判决只有经过 /resolve 才会变成状态——那一步在服务端,
+   工具不在 `--tools` 白名单里就不存在。
+   ⭐ Write 仍然放行(判决文件得写得出来),但 v0.24.0 起**写的范围也是结构约束**:
+   `--permission-mode dontAsk` 下没有放行规则就写不出去,而放行规则只有判决目录一条
+   (`cli_write_allow_rules([OUTDIR])`)⇒ 工作仓是只读的。此前这里是提示词约束,
+   注释原话是"别把它当成保证" —— 现在它是机器保证了(argv 形状由 reviewtest §2b 钉住;
+   真 CLI 的越界读/越界写实测记在卡 #1 的证据里)。
+   另外兜底的还是:它的判决只有经过 /resolve 才会变成状态——那一步在服务端,
    而它持有的 review_token **只能**以 resolved_by=auto 裁定(server 强制)。
 
 3) **不确定就升级**。判决只有三种:approve / reject / escalate。
@@ -39,7 +41,8 @@ import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,�
 import codex_runtime
 import context_lib
 from pool_state import report_exhausted
-from verify_lib import run_verify, fmt_verify, verify_registry, cli_deny_rules, auth_home_deny_rules
+from verify_lib import (run_verify, fmt_verify, verify_registry, cli_deny_rules, auth_home_deny_rules,
+                        cli_write_allow_rules)
 
 BASE = os.environ.get("BOARD_URL") or (
     "http://127.0.0.1:" + os.environ["BOARD_PORT"] if os.environ.get("BOARD_PORT")
@@ -48,6 +51,10 @@ REPO   = os.environ.get("BOARD_REPO", CODE_ROOT)
 LOADED_TREE, LOADED_TREE_ERROR = gates_lib.gated_tree(CODE_ROOT, gates_lib.DEFAULT_SUBTREE)
 DATA   = os.environ.get("BOARD_DATA_DIR") or os.path.join(CODE_ROOT, "core", ".data")
 OUTDIR = os.path.join(DATA, "review")
+# 审阅座席可用的全部内置工具(`--tools` 白名单,v0.24.0):读三件 + Write(判决文件)。没有 Edit、
+#   没有 Bash;新版本 CLI 新增的工具不在白名单里就不会出现。写的**范围**另由放行规则限住
+#   (cli_write_allow_rules([OUTDIR]):只有判决目录)。
+REVIEW_TOOLS = ["Read", "Glob", "Grep", "Write"]
 RUNTIME = os.environ.get("WORKER_RUNTIME", "claude")
 CODEX_CLI = os.environ.get("BOARD_CODEX_CMD") or ""
 CODEX_RELEASED = os.environ.get("BOARD_CODEX_RELEASED") == "1"
@@ -645,11 +652,23 @@ def review_one(t, vr=None):
         argv = cli + ["-p", prompt, "--model", MODEL, "--effort", EFFORT,
                       *(["--max-budget-usd", REVIEWER_BUDGET]
                         if REVIEWER_BUDGET not in ("0", "") else []),
-                      "--output-format", "json", "--permission-mode", "acceptEdits",
-                      "--allowedTools", "Read", "Glob", "Grep", "Write",
+                      "--output-format", "json",
+                      # ⭐ 读写边界(v0.24.0,按 2026-10-28 spike 实测改;与 worker 座席、拆解器同一组合,
+                      #   逐条依据见 verify_lib.cli_write_allow_rules 与 loops/worker_loop.py 的 cli_argv):
+                      #   dontAsk + --tools 白名单 —— 不再给不带路径的 `--allowedTools Read …`,那等于
+                      #   放行任意路径的读取(spike P1 实测越界读成功)。读范围 = cwd(工作仓)+ 下面两个
+                      #   --add-dir;越界读被拒,不靠提示词。
+                      "--permission-mode", "dontAsk",
+                      "--setting-sources", "",     # 用户/项目/本地设置里的 allow 规则与 hooks 不进来
+                      "--strict-mcp-config",       # 且不给 --mcp-config ⇒ 用户的 MCP 一个都不加载
+                      "--tools", *REVIEW_TOOLS,
                       "--add-dir", REPO, "--add-dir", OUTDIR,
+                      # ⭐ 写只放行判决目录:dontAsk 下没有放行规则就写不出去,所以「只写判决文件」
+                      #   从 v0.24.0 起是**结构约束**(此前只是提示词约束 —— 见本模块文件头第 2 条)。
+                      "--allowedTools", *cli_write_allow_rules([OUTDIR]),
                       # ⭐ v0.17.0:令牌目录与登记簿对审阅模型不可读不可写(verify_lib.cli_deny_rules,实测有效)。
                       #   全部执行配置的认证目录同样不可读不可写(verify_lib.auth_home_deny_rules)。
+                      #   拒绝胜过放行 ⇒ 它们落在判决目录的兄弟位置也仍然读不得写不得。
                       "--disallowedTools", *cli_deny_rules(DATA), *auth_home_deny_rules()]
         # ⭐ 提示词走 argv(-p)的 Windows 32767 天花板:与 worker 侧/zcode 闸同一预算口径,
         #   超限响亮拒发而不是让 spawn 死于 WinError 206(外部审计 2026-10-05)。
@@ -812,6 +831,11 @@ def main():
             auth_home_deny_rules()
         except ValueError as e:
             print(f"[reviewer] ⛔ {e} —— 认证目录的拒绝规则组不出来,拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
+        # dontAsk 下写要显式放行;判决目录的放行规则组不出来 = 判决写不出去,不许起跑。
+        try:
+            cli_write_allow_rules([OUTDIR])
+        except ValueError as e:
+            print(f"[reviewer] ⛔ {e} —— 判决目录的写放行规则组不出来(查 BOARD_DATA_DIR),拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     if RUNTIME == "codex":
         cg = codex_runtime.gate(CODEX_CLI)
         if cg: print(cg, flush=True); sys.exit(gates_lib.EXIT_REFUSED)
