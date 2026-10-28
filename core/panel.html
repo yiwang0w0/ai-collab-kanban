@@ -2,6 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>AI 舰队看板</title>
 <style>
   /* ── Design tokens — the ONE place values live (docs/style-guide.md). Semantic, not
@@ -18,6 +19,9 @@
     --fs-xl:18px; --fs-lg:14px; --fs-md:13px; --fs-sm:12px; --fs-xs:10.5px;
     --sp-1:4px; --sp-2:8px; --sp-3:12px; --sp-4:16px; --sp-5:24px;
     --r-sm:6px; --r-md:10px;
+    --ctl-h:32px; --ic:16px;
+    --ring:0 0 0 3px color-mix(in srgb,var(--accent) 30%,transparent);
+    --hover:color-mix(in srgb,var(--fg) 6%,var(--panel));
   }
   @media (prefers-color-scheme: dark){
     :root{ --bg:#1e1a16; --panel:#27211c; --panel2:#312920; --line:#574737;
@@ -36,9 +40,7 @@
 
   .task-find{display:flex;align-items:center;gap:7px;padding:8px 16px;border-bottom:1px solid var(--line)}
   .task-find label{color:var(--dim);font-size:11.5px;white-space:nowrap}
-  .task-find input{width:180px;max-width:42vw;background:var(--panel2);color:var(--fg);
-                   border:1px solid var(--line);border-radius:var(--r-sm);padding:5px 8px;font:12px inherit}
-  .task-find input:focus{outline:none;border-color:var(--cc);box-shadow:0 0 0 2px color-mix(in srgb,var(--cc) 18%,transparent)}
+  .task-find input{width:180px;max-width:42vw}
   .task-find .note{color:var(--dim);font-size:11px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .task-find .note.ok{color:var(--ok)}
   .task-find .note.bad{color:var(--bad)}
@@ -98,11 +100,9 @@
   .card.self{border-color:var(--ok)}
   .card.located{border-color:var(--l0);outline:2px solid color-mix(in srgb,var(--l0) 40%,transparent);outline-offset:1px}
   .goalbox{padding:8px;border-bottom:1px solid var(--line);display:flex;flex-direction:column;gap:6px}
-  .goalbox textarea{width:100%;min-height:52px;resize:vertical;background:var(--panel2);color:var(--fg);
-                    border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 7px;font:12px inherit}
+  .goalbox textarea{width:100%;min-height:52px}
   .goalbox .rowb{display:flex;gap:6px;align-items:center}
-  .goalbox select{flex:1;background:var(--panel2);color:var(--fg);border:1px solid var(--line);
-                  border-radius:var(--r-sm);padding:4px 6px;font:11px inherit}
+  .goalbox select{flex:1;min-width:0}
   .kids{margin-top:6px;color:var(--dim);font-size:10.5px}
   .subs{margin-top:7px;padding-top:6px;border-top:1px dashed var(--line);
         display:flex;flex-direction:column;gap:4px}
@@ -223,14 +223,8 @@
   .modal .hd .sp{margin-left:auto;display:flex;gap:6px}
   .modal .bd{padding:14px 16px;overflow:auto;white-space:pre-wrap;word-break:break-word;
              font:13.5px/1.75 var(--mono)}
-  .vin{width:100%;min-height:46px;resize:vertical;margin-top:7px;background:var(--bg);color:var(--fg);
-       border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 8px;font:11.5px/1.5 inherit}
-  .vin:focus{outline:none;border-color:var(--cc)}
+  .vin{width:100%;min-height:52px;margin-top:7px}
   .acts{margin-top:7px;display:flex;gap:6px;flex-wrap:wrap}
-  button{font:var(--fs-sm)/1 var(--font);padding:5px 10px;border-radius:var(--r-sm);cursor:pointer;
-         border:1px solid var(--line);background:transparent;color:var(--fg)}
-  button:hover{background:var(--line)}
-  button.pri{border-color:color-mix(in srgb,var(--accent) 60%,transparent);color:var(--accent)}
   /* Two-press buttons RESERVE their armed width at rest (em-sized to the longest
      armed caption), so arming changes color and words but never geometry — a
      deployment reported the arm-time growth itself as the defect, not only the
@@ -272,8 +266,6 @@
   #quick-list{flex-basis:100%;display:flex;flex-direction:column;gap:2px}
   #quick-list .rq{color:var(--dim)} #quick-list .rq.late{color:var(--warn)} #quick-list .rq.acked{color:var(--fg)}
   .line-add{display:flex;gap:6px;align-items:center;padding:4px 14px 8px;font-size:12px;flex-wrap:wrap}
-  .line-add input{width:11em}
-  .line-add input[type=checkbox]{width:auto;margin:0}
   .line-add label.chk{display:flex;gap:4px;align-items:center;color:var(--dim);font-size:var(--fs-sm);cursor:pointer}
   .line-add .note.ok{color:var(--ok)} .line-add .note.bad{color:var(--warn)}
   .tag.offrig{background:color-mix(in srgb,var(--warn) 18%,transparent);color:var(--warn);border:1px dashed var(--warn)}
@@ -284,7 +276,6 @@
      voids the whole declaration silently — measured, the badge rendered with no
      background or border at all while the rule sat in the stylesheet looking fine. */
   .tag.nopro{background:color-mix(in srgb,var(--dim) 14%,transparent);color:var(--dim);border:1px solid color-mix(in srgb,var(--dim) 45%,transparent)}
-  button.danger{border-color:color-mix(in srgb,var(--bad) 55%,transparent);color:var(--bad)}
 
   .rig{display:flex;gap:7px;flex-wrap:wrap;padding:9px 16px;border-bottom:1px solid var(--line);
        align-items:center}
@@ -295,8 +286,6 @@
   .wk .st{width:7px;height:7px;border-radius:50%;background:var(--dim2)}
   .wk.on .st{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 22%,transparent)}
   .wk .tail{color:var(--dim);font-size:10.5px;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .wk button{padding:2px 8px;border-radius:999px;font-size:10.5px}
-  .wk .gear{padding:2px 6px;border-radius:999px;font-size:11px;line-height:1}
   .cfg{position:fixed;z-index:10;background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);
        padding:12px 13px;display:none;min-width:264px;box-shadow:0 10px 30px rgba(0,0,0,.5)}
   .cfg.show{display:block}
@@ -304,14 +293,12 @@
   .cfg .row{margin-bottom:11px}
   .cfg .cap{color:var(--dim);font-size:11px;margin-bottom:5px;display:flex;justify-content:space-between}
   .cfg .cap b{color:var(--fg);font-weight:600}
-  .cfg select{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--line);
-              border-radius:var(--r-sm);padding:5px 7px;font:12px inherit}
-  .cfg input[type=range]{width:100%;accent-color:var(--cc)}
+  .cfg select{width:100%}
   .cfg .ends{display:flex;justify-content:space-between;color:var(--dim2);font-size:10.5px;margin-top:2px}
   .cfg label.chk{display:flex;align-items:center;gap:7px;color:var(--dim);font-size:11.5px;cursor:pointer}
   .cfg .note{color:var(--warn);font-size:10.5px;margin-top:8px;min-height:13px}
   button.armed{background:var(--accent)!important;color:#1a1a1a!important;border-color:var(--accent)!important;font-weight:700}
-  #cfg{width:302px;max-height:82vh;overflow-y:auto}
+  #cfg{width:auto}
   #cfg fieldset.agent{border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 9px 9px;margin:0 0 10px}
   #cfg fieldset.agent legend{font-size:11px;font-weight:600;padding:0 4px}
   #cfg legend .sub{color:var(--dim);font-weight:400;font-size:10px;margin-left:5px}
@@ -339,9 +326,7 @@
      for you. Layout constants live in the renderer, not here. ── */
   #tl-scroll{overflow:auto;max-height:72vh}
   #tl-bar{display:flex;align-items:center;gap:6px;padding-bottom:6px}
-  #tl-bar input{background:var(--panel2);color:var(--fg);border:1px solid var(--line);
-                border-radius:var(--r-sm);padding:2px 6px;font:var(--fs-sm) var(--font)}
-  #tl-bar button{padding:2px 8px}
+  #tl-bar{flex-wrap:wrap}
   #tl-note{color:var(--dim);font-size:var(--fs-xs);margin-left:4px}
   #tl-svg{display:block}
   .tl-ghead{cursor:pointer}
@@ -409,7 +394,7 @@
   .fleet-detail{width:min(800px,96vw)}.fleet-detail dl{display:grid;grid-template-columns:100px 1fr;gap:var(--sp-2)}.fleet-detail dd{margin:0;overflow-wrap:anywhere}.fleet-detail dt{color:var(--dim)}
   .fleet-edge,.fleet-trace{border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--sp-3);margin:var(--sp-3) 0;background:var(--panel)}
   .fleet-edge-path{display:flex;align-items:center;flex-wrap:wrap;gap:var(--sp-2)}.fleet-endpoint{white-space:normal;overflow-wrap:anywhere;text-align:left;max-width:100%}.fleet-endpoint small{display:block;color:var(--dim)}.fleet-arrow{font-size:24px;color:var(--accent)}.fleet-trace summary{cursor:pointer}.fleet-trace dl+dl{border-top:1px solid var(--line);padding-top:var(--sp-3)}
-  #fleet-action-body textarea{display:block;box-sizing:border-box;width:100%;font:var(--fs-md) var(--font);background:var(--panel2);color:var(--fg);border:1px solid var(--line);padding:var(--sp-2)}
+  #fleet-action-body textarea{display:block;width:100%}
   #fleet-actions button{white-space:normal}
   #fleet-progress progress{accent-color:var(--ok)}
   .fleet-detail pre{white-space:pre-wrap;overflow-wrap:anywhere;font:var(--fs-md)/1.6 var(--font);background:var(--panel);padding:var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm)}
@@ -417,10 +402,6 @@
      needs me, what is running. A card carries four things: title, computer, state, next
      step. Ids, hashes, receipts and protocol state live under 技术信息 in the detail. */
   header{flex-wrap:wrap;row-gap:var(--sp-2)}
-  .views{display:flex;gap:var(--sp-1)}
-  .views button{border-color:transparent;color:var(--dim)}
-  .views button[aria-current="page"]{border-color:var(--line);background:var(--panel2);color:var(--fg);font-weight:600}
-  @media (max-width:620px){ .views{order:5;flex-basis:100%} }
   .home{display:block;padding:var(--sp-3) var(--sp-4) var(--sp-5);max-width:1280px;margin:0 auto}
   .home[hidden]{display:none}
   /* 第 3 批: 任务侧栏 + 首页新建任务。无阴影、一个强调色只给「下一步」(style-guide)。 */
@@ -503,6 +484,309 @@
   .fleet-tech dt{color:var(--dim)}
   .fleet-tech dd{margin:0;font-family:var(--mono);color:var(--dim);overflow-wrap:anywhere}
   @media(max-width:520px){.fleet-filters label{width:100%;justify-content:space-between}.fleet-filters input,.fleet-filters select{max-width:68%}.fleet-dialog{padding:var(--sp-3)}.fleet-detail dl{grid-template-columns:1fr}.fleet-top h2{font-size:var(--fs-lg)}}
+  /* ══ 第 1 批界面改造(docs/style-guide.md §六):带图标导航、设置页、统一控件、卡片瘦身。
+     只用既有色彩变量与字号/间距/圆角阶;暖纸/暖褐不变。纯展示,不新增状态或权限。 ══ */
+  [hidden]{display:none!important}
+  .ic-sprite{position:absolute;width:0;height:0;overflow:hidden}
+  .ic{width:var(--ic);height:var(--ic);flex:none;fill:none;stroke:currentColor;stroke-width:1.8;
+      stroke-linecap:round;stroke-linejoin:round;vertical-align:-3px}
+
+  /* ── 按钮:默认(次)、.pri 主、.danger 危险、.ghost 无框、.icon-btn 纯图标。两押 armed 态仍是强调色实底,
+       所以 .pri 只用 12% 底色 + 描边 + 加粗,和 armed 一眼分得开。 */
+  button{display:inline-flex;align-items:center;justify-content:center;gap:var(--sp-1);min-height:var(--ctl-h);
+         padding:0 var(--sp-3);font:500 var(--fs-sm)/1.2 var(--font);border-radius:var(--r-sm);cursor:pointer;
+         border:1px solid var(--line);background:var(--panel);color:var(--fg);
+         transition:background-color .15s,border-color .15s,color .15s}
+  button:hover{background:var(--hover);border-color:var(--dim2)}
+  button.pri{background:color-mix(in srgb,var(--accent) 12%,var(--panel));border-color:color-mix(in srgb,var(--accent) 65%,transparent);
+             color:var(--accent);font-weight:600}
+  button.pri:hover{background:color-mix(in srgb,var(--accent) 20%,var(--panel));border-color:var(--accent)}
+  button.danger{border-color:color-mix(in srgb,var(--bad) 50%,transparent);color:var(--bad)}
+  button.danger:hover{background:color-mix(in srgb,var(--bad) 9%,var(--panel));border-color:var(--bad)}
+  button.ghost{border-color:transparent;background:transparent}
+  button.ghost:hover{background:var(--hover);border-color:var(--line)}
+  button.icon-btn{width:var(--ctl-h);padding:0}
+  button.handoff{border-color:var(--dim);color:var(--fg)}
+  button:disabled,button:disabled:hover{cursor:not-allowed;opacity:.45;background:var(--panel);border-color:var(--line)}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+  /* 两押按钮的图标住在 ::before 里:按下改文字(armSwap)不会把图标抹掉;写了留言后 approve 变成「打回」图标。 */
+  button[data-a="approve"]::before,button[data-a="reject"]::before{content:"";width:var(--ic);height:var(--ic);flex:none;background:currentColor;
+    -webkit-mask:var(--mi) center/contain no-repeat;mask:var(--mi) center/contain no-repeat}
+  button[data-a="approve"]{--mi:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m5 12.5 4.5 4.5L19 7.5'/%3E%3C/svg%3E")}
+  button[data-a="approve"].handoff{--mi:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M9 14 4 9l5-5'/%3E%3Cpath d='M4 9h10.5a5.5 5.5 0 0 1 0 11H11'/%3E%3C/svg%3E")}
+  button[data-a="reject"]{--mi:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 6l12 12M18 6 6 18'/%3E%3C/svg%3E")}
+
+  /* ── 输入、下拉、多行:同高、同圆角、同焦点环。:where() 零特异性,局部只需写宽度等布局。 */
+  :where(input:not([type=checkbox],[type=radio],[type=range],[type=hidden]),select,textarea){
+    min-height:var(--ctl-h);padding:5px 10px;max-width:100%;font:var(--fs-md)/1.4 var(--font);color:var(--fg);
+    background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm);
+    transition:border-color .15s,box-shadow .15s}
+  :where(textarea){min-height:64px;line-height:1.55;resize:vertical}
+  :where(input,textarea)::placeholder{color:var(--dim2);opacity:1}
+  :where(input:not([type=checkbox],[type=radio],[type=range]),select,textarea):hover{border-color:var(--dim2)}
+  :where(input:not([type=checkbox],[type=radio],[type=range]),select,textarea):focus{outline:none;border-color:var(--accent);box-shadow:var(--ring)}
+  :where(input,select,textarea):disabled{opacity:.55;cursor:not-allowed}
+  :where(select){appearance:none;-webkit-appearance:none;padding-right:28px;cursor:pointer;
+    background-image:linear-gradient(45deg,transparent 50%,var(--dim) 50%),linear-gradient(135deg,var(--dim) 50%,transparent 50%);
+    background-position:calc(100% - 15px) 52%,calc(100% - 10px) 52%;background-size:5px 5px;background-repeat:no-repeat}
+  select option{background:var(--panel);color:var(--fg)}
+  input[type=checkbox],input[type=radio]{appearance:none;-webkit-appearance:none;margin:0;width:var(--ic);height:var(--ic);flex:none;
+    display:inline-grid;place-content:center;border:1.5px solid var(--dim2);background:var(--panel);border-radius:4px;cursor:pointer;
+    vertical-align:-3px;transition:background-color .12s,border-color .12s}
+  input[type=radio]{border-radius:50%}
+  input[type=checkbox]::before{content:"";width:9px;height:9px;transform:scale(0);transition:transform .12s;background:var(--panel);
+    clip-path:polygon(14% 44%,0 65%,50% 100%,100% 16%,80% 0%,43% 62%)}
+  input[type=radio]::before{content:"";width:8px;height:8px;border-radius:50%;transform:scale(0);transition:transform .12s;background:var(--accent)}
+  input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
+  input[type=radio]:checked{border-color:var(--accent)}
+  input[type=checkbox]:checked::before,input[type=radio]:checked::before{transform:scale(1)}
+  input[type=checkbox]:hover,input[type=radio]:hover{border-color:var(--accent)}
+  input[type=range]{appearance:none;-webkit-appearance:none;width:100%;height:22px;margin:0;background:transparent;cursor:pointer}
+  input[type=range]::-webkit-slider-runnable-track{height:4px;border-radius:var(--r-sm);background:var(--line)}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;margin-top:-6px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--panel);box-shadow:0 0 0 1px var(--accent)}
+  input[type=range]::-moz-range-track{height:4px;border-radius:var(--r-sm);background:var(--line)}
+  input[type=range]::-moz-range-thumb{width:12px;height:12px;border-radius:50%;background:var(--accent);border:2px solid var(--panel)}
+  input[type=range]:focus-visible{outline:none}
+  input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 1px var(--accent),var(--ring)}
+  input[type=range]:focus-visible::-moz-range-thumb{box-shadow:var(--ring)}
+  label.chk{display:inline-flex;align-items:center;gap:var(--sp-2);cursor:pointer}
+
+  /* ── 页头与导航 */
+  header{position:sticky;top:0;z-index:20;background:var(--bg);align-items:center;gap:var(--sp-3);padding:var(--sp-2) var(--sp-4)}
+  h1{display:flex;align-items:center;gap:var(--sp-2);white-space:nowrap}
+  h1 .brand{width:20px;height:20px;color:var(--accent)}
+  .views{display:flex;gap:2px;padding:3px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel)}
+  .views button{border-color:transparent;background:transparent;color:var(--dim);min-height:30px;padding:0 var(--sp-3)}
+  .views button:hover{color:var(--fg);background:var(--panel2);border-color:transparent}
+  .views button[aria-current="page"]{background:var(--panel2);border-color:var(--line);color:var(--fg);font-weight:600}
+  .views button[aria-current="page"] .ic{color:var(--accent)}
+  .live{margin-left:auto}
+  @media (max-width:620px){
+    header{padding:var(--sp-2) var(--sp-3)}
+    .views{order:5;flex-basis:100%;display:grid;grid-template-columns:repeat(4,minmax(0,1fr))}
+    .views button{padding:0 var(--sp-1)}
+    #board-logout .btn-txt{display:none}
+    #board-logout{width:var(--ctl-h);padding:0}
+  }
+
+
+  /* ── 页面容器 */
+  .page{max-width:1080px}
+  .page-head{margin:var(--sp-2) 0 var(--sp-3)}
+  .page-head h2{margin:0;font-size:var(--fs-xl);font-weight:600}
+  .page-head p{margin:var(--sp-1) 0 0;color:var(--dim);font-size:var(--fs-sm)}
+
+  /* ── 设置页 */
+  .settings-view .guide{margin:0 0 var(--sp-3)}
+  .guide .gh{min-height:44px}
+  .guide .gh b,.guide .gh .gp:last-child{flex:none;white-space:nowrap}
+  .guide .gh .gp{min-width:0}
+  .guide .gs .de{overflow-wrap:anywhere}
+  .set-sec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);margin-bottom:var(--sp-3);min-width:0}
+  .set-h{padding:var(--sp-3) var(--sp-4);border-bottom:1px solid var(--line)}
+  .set-h h3{margin:0;display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-lg);font-weight:600}
+  .set-h h3 .ic{color:var(--dim)}
+  .set-h p{margin:var(--sp-1) 0 0;color:var(--dim);font-size:var(--fs-sm)}
+  .set-empty{margin:0;padding:var(--sp-3) var(--sp-4);color:var(--dim)}
+  .settings-view .rig{display:block;padding:0;border:0}
+  .settings-view .wk{display:grid;grid-template-columns:auto auto auto minmax(0,1fr) auto;align-items:center;column-gap:var(--sp-3);
+    row-gap:var(--sp-1);border:0;border-bottom:1px solid var(--line);border-radius:0;padding:var(--sp-2) var(--sp-4);font-size:var(--fs-md)}
+  .settings-view .wk:last-child{border-bottom:0}
+  .settings-view .wk.editing{background:color-mix(in srgb,var(--accent) 5%,var(--panel));box-shadow:inset 3px 0 0 var(--accent)}
+  .settings-view .wk .nm{font-size:var(--fs-md)}
+  .settings-view .wk .tail{max-width:none;font-size:var(--fs-sm)}
+  .wk-state{color:var(--dim);font-size:var(--fs-sm);white-space:nowrap}
+  .wk.on .wk-state{color:var(--ok)}
+  .wk-log{display:flex;flex-direction:column;min-width:0;color:var(--dim)}
+  .wk-log .tail{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .wk-acts{display:flex;gap:var(--sp-2);justify-content:flex-end}
+  .settings-view .wk.miss{display:block;color:var(--warn)}
+  .wk.miss .ic{margin-right:var(--sp-1)}
+  @media (max-width:620px){
+    .settings-view .wk{grid-template-columns:auto minmax(0,1fr) auto;padding:var(--sp-2) var(--sp-3)}
+    .settings-view .wk > .tail,.wk-state{grid-column:2}
+    .wk-log{grid-column:1/-1}
+    .wk-acts{grid-column:3;grid-row:1 / span 2}
+    .wk .tail:empty{display:none}
+  }
+  /* 执行器设置停靠在执行线列表下方(原来是看板上的小浮层)。 */
+  #cfg{position:static;display:none;min-width:0;max-height:none;overflow:visible;box-shadow:none;border:0;border-top:1px solid var(--line);
+       border-radius:0 0 var(--r-md) var(--r-md);background:var(--panel2);padding:var(--sp-3) var(--sp-4) var(--sp-4)}
+  #cfg.show{display:block}
+  .cfg-head{display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-1)}
+  .cfg-head h4{margin:0;flex:1;font-size:var(--fs-lg)}
+  #cfg .cfg-agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:var(--sp-3);margin-top:var(--sp-3)}
+  #cfg fieldset.agent{margin:0;padding:var(--sp-2) var(--sp-3) var(--sp-3);background:var(--panel);border-radius:var(--r-md);min-width:0}
+  #cfg fieldset.agent legend{font-size:var(--fs-sm)}
+  #cfg .cap{font-size:var(--fs-sm)}
+  #cfg .ends{font-size:var(--fs-sm)}
+  #cfg legend .sub{display:inline;padding:0}
+  #cfg legend .ax{min-height:24px;padding:0 var(--sp-2);margin-left:var(--sp-2)}
+  #cfg #cfg-add{width:auto;margin-top:var(--sp-3)}
+  #cfg .note{font-size:var(--fs-sm)}
+  .line-add{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(190px,100%),1fr));gap:var(--sp-3);padding:var(--sp-3) var(--sp-4) var(--sp-4);align-items:end;font-size:var(--fs-sm)}
+  .fld{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0}
+  .fld > span{color:var(--dim);font-size:var(--fs-sm)}
+  .fld > span em{font-style:normal;color:var(--accent);margin-left:var(--sp-1)}
+  .fld input:not([type=checkbox]),.fld select{width:100%}
+  .fld-checks{flex-direction:row;flex-wrap:wrap;gap:var(--sp-3);align-items:center;min-height:var(--ctl-h)}
+  .line-add label.chk{color:var(--fg);font-size:var(--fs-sm)}
+  .fld-foot{grid-column:1/-1;display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap}
+  .fld-foot .note{color:var(--dim)}
+  .quick{display:flex;flex-direction:column;align-items:stretch;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4) var(--sp-4)}
+  .quick-row{display:flex;flex-wrap:wrap;gap:var(--sp-2);align-items:center}
+  .quick-row select{width:auto}
+  .quick .note{color:var(--dim);font-size:var(--fs-sm)}
+  .settings-view .ctxwrap{padding:0}
+
+  /* ── 折叠条(最近会话、时间轴):一行,左侧箭头,展开才占地方 */
+  .ctx > h2{min-height:40px}
+  .ctx .fold-ic{color:var(--dim);transform:rotate(-90deg);transition:transform .15s}
+  .ctx.open .fold-ic{transform:none}
+  .ctx > h2:hover{background:var(--hover);border-radius:var(--r-md)}
+
+  /* ── 全部任务:一条工具条 + 看板列 */
+  .board-bar{display:flex;align-items:center;gap:var(--sp-3);flex-wrap:wrap;padding:var(--sp-2) var(--sp-4);border-bottom:1px solid var(--line)}
+  .board-bar .task-find{padding:0;border:0;flex-wrap:wrap}
+  .task-find label{font-size:var(--fs-sm)}
+  .task-find .note,.board-bar > .note{font-size:var(--fs-sm);color:var(--dim)}
+  .board-filter{position:relative;display:inline-flex;align-items:center;margin-left:auto}
+  .board-filter .ic{position:absolute;left:9px;color:var(--dim);pointer-events:none}
+  .board-filter input{width:220px;max-width:60vw;padding-left:30px}
+  #board-view > .ctxwrap{padding:var(--sp-2) var(--sp-4) 0}
+  .card.nomatch{display:none}
+  @media (max-width:620px){
+    .board-bar{padding:var(--sp-2) var(--sp-3)}
+    .board-filter{margin-left:0;flex:1 1 100%}
+    .board-filter input{width:100%;max-width:none}
+    .board-bar .task-find{width:100%}
+    .task-find label{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+    .task-find input{flex:1 1 0;width:auto;min-width:0}
+    .task-find button{flex:none}
+    .task-find .note{display:none}
+    .task-find .note.ok,.task-find .note.bad{display:block}
+  }
+
+  /* ── 看板卡:默认只露卡号、执行线、状态、标题和关键时间;其余进展开区 */
+  .card{padding:10px 12px;cursor:pointer}
+  .card:hover{border-color:var(--dim2)}
+  .card.rel{border-color:var(--cc)}
+  .card.self{border-color:var(--ok)}
+  .card-top{display:flex;align-items:center;gap:6px;min-width:0}
+  .card-top .badge{margin-left:auto}
+  .card .subj{margin:6px 0 0;font-size:var(--fs-lg);font-weight:600;line-height:1.45}
+  .card .meta{margin-top:6px;gap:4px 10px}
+  .badge{display:inline-flex;align-items:center;gap:4px;padding:1px 7px 1px 5px;border-radius:var(--r-sm);font-size:var(--fs-sm);
+         font-weight:500;line-height:1.5;white-space:nowrap;color:var(--dim);border:1px solid color-mix(in srgb,var(--dim) 35%,transparent);
+         background:color-mix(in srgb,var(--dim) 6%,transparent);min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .badge .ic{width:13px;height:13px;vertical-align:0}
+  .badge[data-tone="need"]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 50%,transparent);background:color-mix(in srgb,var(--accent) 9%,transparent)}
+  .badge[data-tone="run"]{color:var(--cc);border-color:color-mix(in srgb,var(--cc) 45%,transparent);background:color-mix(in srgb,var(--cc) 8%,transparent)}
+  .badge[data-tone="ok"]{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent);background:color-mix(in srgb,var(--ok) 8%,transparent)}
+  .badge[data-tone="warn"]{color:var(--warn);border-color:color-mix(in srgb,var(--warn) 50%,transparent);background:color-mix(in srgb,var(--warn) 9%,transparent)}
+  .card-more{margin-top:8px;border-top:1px dashed var(--line);cursor:auto}
+  .card-more > summary{display:flex;align-items:center;gap:4px;min-height:30px;list-style:none;cursor:pointer;
+                       color:var(--dim);font-size:var(--fs-sm);user-select:none;border-radius:var(--r-sm)}
+  .card-more > summary::-webkit-details-marker{display:none}
+  .card-more > summary:hover{color:var(--fg)}
+  .card-more > summary .ic{width:14px;height:14px;transform:rotate(-90deg);transition:transform .15s}
+  .card-more[open] > summary .ic{transform:none}
+  .card-more.need > summary{color:var(--accent);font-weight:600}
+  .more-body{padding-bottom:2px}
+  .more-body .tags{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center;margin-bottom:6px;font-size:var(--fs-sm)}
+  .more-body .tags:empty{display:none}
+  .more-body .acts{margin-top:8px}
+  @media (prefers-reduced-motion: reduce){ .card-more > summary .ic,.ctx .fold-ic{transition:none} }
+
+  /* ── 首页 */
+  .home{padding:var(--sp-4) var(--sp-4) var(--sp-5)}
+  .home-sec > h2{min-height:40px}
+  .home-sec > h2 .ic{color:var(--dim)}
+  .home-sec[data-lane="mine"] > h2 .ic{color:var(--accent)}
+  .home-sec[data-lane="running"] > h2 .ic{color:var(--cc)}
+  .home-sec[data-lane="done"] > h2 .ic{color:var(--ok)}
+  @media (min-width:901px){ .home-list{min-height:132px} }
+  .hcard{gap:6px;padding:10px 12px;cursor:pointer;align-items:stretch;justify-content:flex-start}
+  .hc-top{display:flex;align-items:flex-start;gap:var(--sp-2);min-width:0}
+  .hc-title{flex:1;min-width:0;font-size:var(--fs-lg);font-weight:600;line-height:1.45}
+  .hc-top .badge{flex:none;max-width:55%;white-space:normal;text-align:left}
+  .hcard[data-tone="warn"] .hc-st{color:var(--warn)}
+  .hc-meta{gap:2px var(--sp-3)}
+  .home-empty{display:flex;align-items:flex-start;gap:var(--sp-3);padding:var(--sp-4) var(--sp-3);color:var(--dim)}
+  .home-empty > .ic{width:22px;height:22px;color:var(--dim2)}
+  .home-empty b{display:block;color:var(--fg);font-weight:600;font-size:var(--fs-md)}
+  .home-empty span{display:block;font-size:var(--fs-sm);margin-top:2px}
+  .home-foot{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);margin-top:var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
+  .home-foot .hf-text{margin-right:auto}
+  .home-foot:empty{display:none}
+  .home-new{margin-bottom:var(--sp-3)}
+  .home-new form{display:block;padding:0}
+  .form-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
+  .fp-head{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);border-bottom:1px solid var(--line)}
+  .fp-head h2{flex:1;margin:0;font-size:var(--fs-lg);font-weight:600}
+  .fp-grid{display:grid;grid-template-columns:72px minmax(0,1fr);gap:var(--sp-2) var(--sp-3);align-items:center;padding:var(--sp-3) var(--sp-4) 0}
+  .fp-grid textarea{align-self:stretch}
+  .fp-l{color:var(--dim);font-size:var(--fs-sm);text-align:right}
+  .fp-grid > .fp-l:has(+ textarea){align-self:start;padding-top:7px}
+  .fp-pair{display:flex;flex-wrap:wrap;gap:var(--sp-2) var(--sp-3);align-items:center}
+  .fp-pair select{flex:1 1 180px}
+  .fp-grid #home-new-line{max-width:420px}
+  .home-new .execution-preview{margin:0}
+  .fp-foot{display:flex;align-items:center;justify-content:flex-end;gap:var(--sp-2);flex-wrap:wrap;padding:var(--sp-3) var(--sp-4);
+           margin-top:var(--sp-3);border-top:1px solid var(--line);background:var(--panel2)}
+  .fp-foot .err{margin:0 auto 0 0}
+  @media (max-width:620px){
+    .fp-grid{grid-template-columns:minmax(0,1fr);padding:var(--sp-3) var(--sp-3) 0}
+    .fp-l{text-align:left}
+    .fp-grid > .fp-l:has(+ textarea){padding-top:0}
+    .fp-grid > span.fp-l{display:none}
+    .fp-foot{padding:var(--sp-3)}
+    .fp-foot button{flex:1}
+    .home{padding:var(--sp-3) var(--sp-3) var(--sp-5)}
+  }
+
+  /* ── 任务侧栏:页头、派发步骤条 */
+  .side{box-shadow:-12px 0 32px rgba(0,0,0,.18)}
+  .side-head{align-items:center}
+  .side-head h2{font-size:var(--fs-xl);font-weight:600}
+  .side-next textarea{min-height:64px}
+  .side-acts button{min-width:6em}
+  .steps{list-style:none;margin:var(--sp-2) 0 var(--sp-3);padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}
+  .step{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:0 2px;text-align:center;min-width:0}
+  .step::before{content:"";position:absolute;top:9px;left:-50%;right:50%;height:2px;background:var(--line)}
+  .step:first-child::before{display:none}
+  .st-dot{position:relative;z-index:1;width:20px;height:20px;border-radius:50%;border:2px solid var(--line);background:var(--panel);
+          display:grid;place-items:center}
+  .st-name{font-size:var(--fs-sm);font-weight:600;color:var(--fg)}
+  .st-val{font-size:var(--fs-sm);color:var(--dim);overflow-wrap:anywhere;line-height:1.35}
+  .step.done .st-dot{background:var(--ok);border-color:var(--ok)}
+  .step.done .st-dot::after{content:"";width:9px;height:9px;background:var(--panel);clip-path:polygon(14% 44%,0 65%,50% 100%,100% 16%,80% 0%,43% 62%)}
+  .step.done::before,.step.done + .step::before{background:color-mix(in srgb,var(--ok) 60%,var(--line))}
+  .step.now .st-dot{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 16%,var(--panel))}
+  .step.now .st-val{color:var(--accent);font-weight:600}
+  .step.warn .st-dot{border-color:var(--warn)}
+  .step.warn .st-val{color:var(--warn)}
+  .step.unknown .st-dot{border-style:dashed;border-color:var(--dim2)}
+  .step.unknown .st-val,.step.todo .st-val{color:var(--dim2)}
+  .step.todo .st-name{color:var(--dim)}
+  .side-rec{margin-top:var(--sp-1);font-size:var(--fs-sm)}
+  .side-rec > summary{cursor:pointer;color:var(--dim);padding:var(--sp-1) 0}
+  .side-rec .side-trace{margin-top:var(--sp-2)}
+
+  /* ── 浮层(编辑、移线)沿用面板底色,控件随统一样式 */
+  .cfg#edit{width:280px;z-index:45}   /* 从侧栏打开时要压在侧栏(40)之上,仍低于弹窗(50) */
+  .pick{z-index:45}
+  .pick button{justify-content:flex-start}
+
+  /* ── 触摸:窄屏与粗指针上可点目标至少 40px(放在最后,压过上面的桌面尺寸) */
+  @media (max-width:620px),(pointer:coarse){
+    body{--ctl-h:40px}
+    .views button{min-height:40px}
+    .card-more > summary{min-height:40px}
+    .side-rec > summary,.side-sec > summary{padding:10px 0}
+    label.chk{min-height:40px}
+  }
 </style>
 </head>
 <body>
@@ -518,16 +802,38 @@
  <p id="board-pair-note" role="status">请勿把令牌填到网址里。</p>
 </main>
 <div id="board-shell" hidden>
+<!-- 第 1 批界面改造:内联 SVG 图标集(<use href="#i-…">,同文档引用,不外取)。按钮写「图标+文字」;
+     纯图标按钮必须带 aria-label 与 title。 -->
+<svg class="ic-sprite" width="0" height="0" aria-hidden="true" focusable="false">
+  <symbol id="i-home" viewBox="0 0 24 24"><path d="M3.5 10.5 12 3.5l8.5 7"/><path d="M5.5 9v11h4.5v-6h4v6h4.5V9"/></symbol>
+  <symbol id="i-board" viewBox="0 0 24 24"><rect x="3.5" y="4" width="4.5" height="16" rx="1"/><rect x="9.75" y="4" width="4.5" height="10" rx="1"/><rect x="16" y="4" width="4.5" height="13" rx="1"/></symbol>
+  <symbol id="i-history" viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1L3.5 8.5"/><path d="M3.5 3.5v5h5"/><path d="M12 7.5V12l3 2"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><path d="M4 7h9M17 7h3M4 12h3M11 12h9M4 17h11M19 17h1"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="17" r="2"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.4-4.4"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="M6 6l12 12M18 6 6 18"/></symbol>
+  <symbol id="i-chevron" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12.5 4.5 4.5L19 7.5"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></symbol>
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7.5 5v14l11-7z" fill="currentColor"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6.5" y="6.5" width="11" height="11" rx="1.5" fill="currentColor"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2.8v2.6M12 18.6v2.6M2.8 12h2.6M18.6 12h2.6M5.5 5.5l1.8 1.8M16.7 16.7l1.8 1.8M5.5 18.5l1.8-1.8M16.7 7.3l1.8-1.8"/><circle cx="12" cy="12" r="6.6"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 24 24"><path d="M12 4 2.8 19.5h18.4z"/><path d="M12 10v4.2M12 17.2v.1"/></symbol>
+  <symbol id="i-success" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.3 12.2 2.6 2.6 4.9-5.4"/></symbol>
+  <symbol id="i-wait" viewBox="0 0 24 24"><path d="M7 3.5h10M7 20.5h10"/><path d="M8 3.5c0 4.5 8 4.5 8 8.5s-8 4-8 8.5M16 3.5c0 4.5-8 4.5-8 8.5s8 4 8 8.5"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4.5H5.5v15H10"/><path d="M14 8l4 4-4 4M18 12H9"/></symbol>
+</svg>
 <header>
-  <h1>AI 舰队看板</h1>
+  <h1><svg class="ic brand" aria-hidden="true"><use href="#i-board"/></svg>AI 舰队看板</h1>
   <nav class="views" aria-label="页面">
-    <button type="button" data-view="home">首页</button>
-    <button type="button" data-view="board">全部任务</button>
-    <button type="button" data-view="history">历史</button>
+    <button type="button" data-view="home"><svg class="ic" aria-hidden="true"><use href="#i-home"/></svg><span>首页</span></button>
+    <button type="button" data-view="board"><svg class="ic" aria-hidden="true"><use href="#i-board"/></svg><span>全部任务</span></button>
+    <button type="button" data-view="history"><svg class="ic" aria-hidden="true"><use href="#i-history"/></svg><span>历史</span></button>
+    <button type="button" data-view="settings"><svg class="ic" aria-hidden="true"><use href="#i-settings"/></svg><span>设置</span></button>
   </nav>
   <button type="button" id="fleet-open" hidden>全局视图</button>
-  <button type="button" id="board-logout">退出连接</button>
   <span class="live"><span class="dot" id="dot"></span><span id="livetxt">连接中</span></span>
+  <button type="button" id="board-logout" class="ghost" title="退出连接（这台电脑不再记住授权）" aria-label="退出连接"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg><span class="btn-txt">退出连接</span></button>
 </header>
 
 <dialog id="fleet-dialog" class="fleet-dialog" aria-labelledby="fleet-title">
@@ -566,89 +872,11 @@
 <div class="upg" id="upg" hidden></div>
 
 <aside class="side" id="task-side" hidden data-task-scope aria-labelledby="task-side-title">
-  <div class="side-head"><h2 id="task-side-title"></h2><button type="button" id="task-side-close">关闭</button></div>
+  <div class="side-head"><h2 id="task-side-title"></h2><button type="button" id="task-side-close" title="关闭任务详情（Esc）"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg>关闭</button></div>
   <div class="side-body" id="task-side-body"></div>
 </aside>
-<main class="home" id="home-view" data-view-panel="home">
-  <section class="home-status" id="home-status" aria-live="polite"></section>
-  <section class="home-new" id="home-new">
-    <button type="button" id="home-new-open">＋ 新建任务</button>
-    <form id="home-new-form" hidden autocomplete="off">
-      <input id="home-new-title" placeholder="要做什么(标题)" aria-label="任务标题">
-      <textarea id="home-new-desc" rows="3" placeholder="说明(可选):背景、要求、怎样算做完" aria-label="任务说明"></textarea>
-      <div class="row"><label for="home-new-line">交给</label><select id="home-new-line"></select>
-        <button type="submit" class="pri">创建</button><button type="button" id="home-new-cancel">取消</button></div>
-      <div class="row" id="home-new-execution" hidden><label for="home-new-profile">执行配置</label><select id="home-new-profile" aria-label="任务执行配置"></select>
-        <label for="home-new-model">模型</label><select id="home-new-model" aria-label="任务模型"></select></div>
-      <p class="execution-preview" id="home-new-preview" hidden></p>
-      <p class="err" id="home-new-err" hidden></p>
-    </form>
-  </section>
-  <div class="home-cols">
-    <section class="home-sec" data-lane="mine" aria-labelledby="home-mine-h">
-      <h2 id="home-mine-h">待我处理 <span class="n" id="home-mine-n"></span></h2>
-      <div class="home-list" id="home-mine"></div>
-    </section>
-    <section class="home-sec" data-lane="running" aria-labelledby="home-running-h">
-      <h2 id="home-running-h">正在执行 <span class="n" id="home-running-n"></span></h2>
-      <div class="home-list" id="home-running"></div>
-    </section>
-  </div>
-  <p class="home-note" id="home-note" hidden></p>
-</main>
-<main class="home" id="history-view" data-view-panel="history" hidden>
-  <section class="home-sec" data-lane="done" aria-labelledby="history-h">
-    <h2 id="history-h">已完成 <span class="n" id="history-n"></span></h2>
-    <div class="home-list" id="history-list"></div>
-  </section>
-</main>
-
-<div id="board-view" data-view-panel="board" hidden>
-<form class="task-find" id="task-find" role="search">
-  <label for="task-find-id">按卡号定位</label>
-  <input id="task-find-id" type="search" inputmode="numeric" autocomplete="off"
-         placeholder="例如 215 或 #215" aria-describedby="task-find-note">
-  <button class="pri" type="submit">定位到栏顶</button>
-  <button type="button" id="task-find-clear" disabled>清除</button>
-  <span class="note" id="task-find-note" aria-live="polite">输入号码后,该卡会临时置于所属栏最上方</span>
-</form>
-
-<div class="guide" id="guide" hidden></div>
-<div class="rig" id="rig"></div>
-<!-- v0.4: add a line from the panel — static markup on purpose: #rig is
-     re-rendered on every refresh and would erase an in-progress entry. -->
-<form class="line-add" id="line-add" autocomplete="off">
-  <label for="line-add-id">加线</label>
-  <input id="line-add-label" placeholder="显示名称（可用中文）" aria-label="执行线显示名称" maxlength="24">
-  <input id="line-add-id" placeholder="命令行标识（小写字母、数字、- 或 _）" aria-label="执行线标识" maxlength="32" pattern="[a-z0-9][a-z0-9_-]{0,31}" required>
-  <input id="line-add-hint" placeholder="一句话说明用途（可选）" aria-label="执行线用途" maxlength="80">
-  <!-- v0.22: the line's identity. 实现 is the plain line; 评审 reads, checks and judges only
-       (its evidence is the review), and defaults to 只读. -->
-  <select id="line-add-kind" title="身份:实现线干活;评审线只读、只核对、只判断,评审文本就是它的交付物(默认只读)">
-    <option value="implement">实现</option><option value="review">评审</option>
-  </select>
-  <label class="chk" title="勾上=这条线的 执行器不能修改工作目录 —— 这是 命令参数与沙箱层面的限制,不是提示词请求;证据文件照常能写"><input type="checkbox" id="line-add-ro"> 只读</label>
-  <input id="line-add-charter" placeholder="章程(看板仓相对 .md,可选)" maxlength="120" title="逐字内联进这条线每次提示词的章程;文件住看板仓且必须在受闸子树内(改了要重新确认版本)">
-  <label class="chk" title="勾上=这条线交付的卡不用你点「通过」,交付即完成(交付物闸照常检查);要你决定的卡照样进等待中"><input type="checkbox" id="line-add-auto"> 交付即完成</label>
-  <button type="submit">加入</button>
-  <span class="note" id="line-add-note" aria-live="polite"></span>
-</form>
-<!-- v0.5: shortcut requests to the coordinator seat. A press writes a durable
-     row and wakes the seat through its SSE sentry; the seat acks/dones via
-     board.py and the list below shows the loop closing — or NOT closing. -->
-<div class="quick" id="quick">
-  <span class="lbl" title="这些按钮不是马上执行:它们在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没有 Claude 接着通知时,请求会一直等着(5 分钟后变黄提醒你)">请你的 Claude 代劳</span>
-  <button data-quick="propose-lines" title="点击=授权你的 Claude 只读检索你最近的会话(标题与相关片段,不外发),访谈后起草自动拉取线">根据我最近的对话起草线路</button>
-  <select id="quick-days" title="检索范围"><option value="7">近 7 天</option><option value="14" selected>近 14 天</option><option value="30">近 30 天</option></select>
-  <button data-quick="mount-sentries" title="让你的 Claude 持续接收板上的通知(卡交付了、你按了按钮、线出了问题)—— 接着通知的那个对话就是「协调席」">让 Claude 持续接收板上通知</button>
-  <button data-quick="install-worker-constraints" title="把执行器工作守则(examples/AGENTS.template.md)装进工作仓根目录并填好空,执行器启动时会读它">把执行器守则装进工作仓</button>
-  <button data-quick="enable-review" title="让 Claude 打开自动审阅(改配置 roles:[&quot;review&quot;],之后按横幅里的重启)">打开自动审阅</button>
-  <button data-quick="board-briefing" title="让 Claude 在对话里用几句话汇报板上现状">给我说说板上现状</button>
-  <span class="note" id="quick-note" aria-live="polite"></span>
-  <div id="quick-list"></div>
-</div>
+<!-- 浮层与弹窗住在各视图之外:首页侧栏里的「编辑」「展开方案」也要能显示出来。 -->
 <div class="pick" id="pick"></div>
-<div class="cfg" id="cfg"></div>
 <!-- The edit popup borrows class="cfg" WHOLESALE (no new visual language = zero new
      CSS); only the id differs so open/close is independent. -->
 <div class="cfg" id="edit"></div>
@@ -663,13 +891,132 @@
   <div class="bd" id="decision-modal-b"></div>
 </div></div>
 
-<div class="ctxwrap"><section class="ctx" id="ctx">
-  <h2>最近会话 <span class="n" id="ctx-sum"></span></h2>
-  <div class="body" id="ctx-body"></div>
-</section></div>
+<main class="home" id="home-view" data-view-panel="home">
+  <section class="home-status" id="home-status" aria-live="polite"></section>
+  <section class="home-new" id="home-new">
+    <button type="button" id="home-new-open" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>新建任务</button>
+    <form id="home-new-form" class="form-panel" hidden autocomplete="off" aria-labelledby="home-new-h">
+      <div class="fp-head"><h2 id="home-new-h">新建任务</h2>
+        <button type="button" class="icon-btn ghost" id="home-new-x" aria-label="取消新建任务" title="取消新建任务"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+      <div class="fp-grid">
+        <label class="fp-l" for="home-new-title">标题</label>
+        <input id="home-new-title" placeholder="要做什么(标题)" aria-label="任务标题">
+        <label class="fp-l" for="home-new-desc">说明</label>
+        <textarea id="home-new-desc" rows="3" placeholder="说明(可选):背景、要求、怎样算做完" aria-label="任务说明"></textarea>
+        <label class="fp-l" for="home-new-line">交给</label>
+        <select id="home-new-line"></select>
+      </div>
+      <div class="fp-grid" id="home-new-execution" hidden>
+        <label class="fp-l" for="home-new-profile">执行配置</label>
+        <div class="fp-pair"><select id="home-new-profile" aria-label="任务执行配置"></select>
+          <label class="fp-l" for="home-new-model">模型</label><select id="home-new-model" aria-label="任务模型"></select></div>
+        <span class="fp-l" aria-hidden="true"></span>
+        <p class="execution-preview" id="home-new-preview" hidden></p>
+      </div>
+      <div class="fp-foot"><p class="err" id="home-new-err" hidden></p>
+        <button type="button" id="home-new-cancel">取消</button>
+        <button type="submit" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>创建任务</button></div>
+    </form>
+  </section>
+  <div class="home-cols">
+    <section class="home-sec" data-lane="mine" aria-labelledby="home-mine-h">
+      <h2 id="home-mine-h"><svg class="ic" aria-hidden="true"><use href="#i-wait"/></svg>待我处理 <span class="n" id="home-mine-n"></span></h2>
+      <div class="home-list" id="home-mine"></div>
+    </section>
+    <section class="home-sec" data-lane="running" aria-labelledby="home-running-h">
+      <h2 id="home-running-h"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>正在执行 <span class="n" id="home-running-n"></span></h2>
+      <div class="home-list" id="home-running"></div>
+    </section>
+  </div>
+  <div class="home-foot" id="home-foot"></div>
+  <p class="home-note" id="home-note" hidden></p>
+</main>
+<main class="home" id="history-view" data-view-panel="history" hidden>
+  <section class="home-sec" data-lane="done" aria-labelledby="history-h">
+    <h2 id="history-h"><svg class="ic" aria-hidden="true"><use href="#i-success"/></svg>已完成 <span class="n" id="history-n"></span></h2>
+    <div class="home-list" id="history-list"></div>
+  </section>
+</main>
+
+<!-- 设置:上手引导、执行线(含齿轮里的执行器设置)、加线、请你的 Claude 代劳、最近会话。
+     「全部任务」只留按卡号定位、按标题筛选和看板列。 -->
+<main class="home page settings-view" id="settings-view" data-view-panel="settings" hidden>
+  <div class="page-head"><h2>设置</h2>
+    <p>看板怎么跑在这里调:上手引导、执行线、加线和请你的 Claude 代劳。任务本身在「全部任务」。</p></div>
+  <div class="guide" id="guide" hidden></div>
+  <section class="set-sec" aria-labelledby="set-lines-h">
+    <div class="set-h"><h3 id="set-lines-h"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>执行线与自动拉取</h3>
+      <p>启动后,这条线才会领取交给它、已放行的任务。齿轮里是执行器、模型、推理强度和智能体数量。</p></div>
+    <div class="rig" id="rig"></div>
+    <div class="cfg" id="cfg"></div>
+  </section>
+  <section class="set-sec" aria-labelledby="set-add-h">
+    <div class="set-h"><h3 id="set-add-h"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>加线</h3>
+      <p>写进本机配置文件;加好后在上面的执行线列表里启动。</p></div>
+    <!-- v0.4: add a line from the panel — static markup on purpose: #rig is
+         re-rendered on every refresh and would erase an in-progress entry. -->
+    <form class="line-add" id="line-add" autocomplete="off">
+      <label class="fld"><span>显示名称</span><input id="line-add-label" placeholder="可用中文" aria-label="执行线显示名称" maxlength="24"></label>
+      <label class="fld"><span>命令行标识 <em>必填</em></span><input id="line-add-id" placeholder="小写字母、数字、- 或 _" aria-label="执行线标识" maxlength="32" pattern="[a-z0-9][a-z0-9_-]{0,31}" required></label>
+      <label class="fld"><span>用途</span><input id="line-add-hint" placeholder="一句话说明(可选)" aria-label="执行线用途" maxlength="80"></label>
+      <!-- v0.22: the line's identity. 实现 is the plain line; 评审 reads, checks and judges only
+           (its evidence is the review), and defaults to 只读. -->
+      <label class="fld"><span>身份</span><select id="line-add-kind" title="身份:实现线干活;评审线只读、只核对、只判断,评审文本就是它的交付物(默认只读)">
+        <option value="implement">实现</option><option value="review">评审</option>
+      </select></label>
+      <label class="fld"><span>章程</span><input id="line-add-charter" placeholder="看板仓相对 .md(可选)" maxlength="120" title="逐字内联进这条线每次提示词的章程;文件住看板仓且必须在受闸子树内(改了要重新确认版本)"></label>
+      <div class="fld fld-checks">
+        <label class="chk" title="勾上=这条线的 执行器不能修改工作目录 —— 这是 命令参数与沙箱层面的限制,不是提示词请求;证据文件照常能写"><input type="checkbox" id="line-add-ro"> 只读</label>
+        <label class="chk" title="勾上=这条线交付的卡不用你点「通过」,交付即完成(交付物闸照常检查);要你决定的卡照样进等待中"><input type="checkbox" id="line-add-auto"> 交付即完成</label>
+      </div>
+      <div class="fld-foot"><button type="submit" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>加入</button>
+        <span class="note" id="line-add-note" aria-live="polite"></span></div>
+    </form>
+  </section>
+  <section class="set-sec" aria-labelledby="set-quick-h">
+    <div class="set-h"><h3 id="set-quick-h">请你的 Claude 代劳</h3>
+      <p>这些按钮不是马上执行:它们在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没人接手时请求会一直等着(5 分钟后变黄提醒你)。</p></div>
+    <!-- v0.5: shortcut requests to the coordinator seat. A press writes a durable
+         row and wakes the seat through its SSE sentry; the seat acks/dones via
+         board.py and the list below shows the loop closing — or NOT closing. -->
+    <div class="quick" id="quick">
+      <div class="quick-row">
+        <button data-quick="propose-lines" title="点击=授权你的 Claude 只读检索你最近的会话(标题与相关片段,不外发),访谈后起草自动拉取线">根据我最近的对话起草线路</button>
+        <select id="quick-days" title="检索范围" aria-label="检索范围"><option value="7">近 7 天</option><option value="14" selected>近 14 天</option><option value="30">近 30 天</option></select>
+      </div>
+      <div class="quick-row">
+        <button data-quick="mount-sentries" title="让你的 Claude 持续接收板上的通知(卡交付了、你按了按钮、线出了问题)—— 接着通知的那个对话就是「协调席」">让 Claude 持续接收板上通知</button>
+        <button data-quick="install-worker-constraints" title="把执行器工作守则(examples/AGENTS.template.md)装进工作仓根目录并填好空,执行器启动时会读它">把执行器守则装进工作仓</button>
+        <button data-quick="enable-review" title="让 Claude 打开自动审阅(改配置 roles:[&quot;review&quot;],之后按横幅里的重启)">打开自动审阅</button>
+        <button data-quick="board-briefing" title="让 Claude 在对话里用几句话汇报板上现状">给我说说板上现状</button>
+      </div>
+      <span class="note" id="quick-note" aria-live="polite"></span>
+      <div id="quick-list"></div>
+    </div>
+  </section>
+  <div class="ctxwrap"><section class="ctx" id="ctx">
+    <h2><svg class="ic fold-ic" aria-hidden="true"><use href="#i-chevron"/></svg>最近会话 <span class="n" id="ctx-sum"></span></h2>
+    <div class="body" id="ctx-body"></div>
+  </section></div>
+</main>
+
+<div id="board-view" data-view-panel="board" hidden>
+<div class="board-bar" id="board-bar">
+<form class="task-find" id="task-find" role="search">
+  <label for="task-find-id">按卡号定位</label>
+  <input id="task-find-id" type="search" inputmode="numeric" autocomplete="off"
+         placeholder="例如 215 或 #215" aria-describedby="task-find-note">
+  <button class="pri" type="submit">定位到栏顶</button>
+  <button type="button" id="task-find-clear" disabled>清除</button>
+  <span class="note" id="task-find-note" aria-live="polite">输入号码后,该卡会临时置于所属栏最上方</span>
+</form>
+<label class="board-filter"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+  <input id="board-filter" type="search" autocomplete="off" placeholder="按标题筛选" aria-label="按标题筛选卡片"></label>
+<span class="note" id="board-filter-note" aria-live="polite"></span>
+</div>
 
 <div class="ctxwrap"><section class="ctx" id="tl">
-  <h2>时间轴 <span class="n" id="tl-sum"></span></h2>
+  <h2><svg class="ic fold-ic" aria-hidden="true"><use href="#i-chevron"/></svg>时间轴 <span class="n" id="tl-sum"></span></h2>
   <div class="body" id="tl-body"><div id="tl-bar"><button id="tl-mode-lin">谱系</button><button id="tl-mode-load">负载</button><span style="width:6px"></span><button id="tl-prev" aria-label="上一天" title="上一天">◀</button><input type="date" id="tl-date" aria-label="时间轴日期"><button id="tl-next" aria-label="下一天" title="下一天">▶</button><button id="tl-fit" class="pri">聚焦活动</button><button id="tl-day">全天</button><span id="tl-note"></span></div><div id="tl-scroll"></div></div>
 </section></div>
 
@@ -899,9 +1246,18 @@ document.addEventListener("dblclick", (e) => {
 
 const byId = new Map();
 let focusId = null, relSet = new Set(), DECOMP = [];
+let boardFilter = "";             // 「按标题筛选」的小写关键词;只隐藏不匹配的卡,列计数仍是全量
+const cardOpen = new Set();      // 展开区开着的卡(本页显示状态,不进签名,刷新重建时照原样恢复)
+document.addEventListener("toggle", (e) => {
+  const d = e.target;
+  if (!(d instanceof HTMLDetailsElement) || !d.dataset.more) return;
+  if (d.open) cardOpen.add(Number(d.dataset.more)); else cardOpen.delete(Number(d.dataset.more));
+}, true);
 let locatedId = null, locateScrollPending = false;
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const now = () => Date.now() + skew;
+// 图标: 引用文档内的 SVG 图标集(#i-…)。只做装饰(aria-hidden),按钮的名字始终由文字或 aria-label 给出。
+const icon = (name) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
 
 const taskColumn = (t) => t.status === "done" ? "done" : (t.kind === "goal" ? "goal" : t.status);
 function setFindNote(text, tone=""){
@@ -929,6 +1285,13 @@ function locateByInput(){
 }
 document.getElementById("task-find").addEventListener("submit", (e) => { e.preventDefault(); locateByInput(); });
 document.getElementById("task-find-clear").addEventListener("click", () => clearLocated());
+// 按标题筛选:只在本页隐藏不匹配的卡(加 nomatch 类),不改列计数、不写任何状态。
+document.getElementById("board-filter").addEventListener("input", (e) => {
+  boardFilter = e.target.value.trim().toLowerCase();
+  const n = boardFilter ? tasks.filter((t) => String(t.subject || "").toLowerCase().includes(boardFilter)).length : 0;
+  document.getElementById("board-filter-note").textContent = boardFilter ? `筛选中:标题含「${e.target.value.trim()}」的 ${n} 张;列头计数仍是全部` : "";
+  render();
+});
 document.getElementById("task-find-id").addEventListener("keydown", (e) => {
   if (e.key === "Escape" && (locatedId != null || e.target.value)) { e.stopPropagation(); clearLocated(); }
 });
@@ -1026,11 +1389,47 @@ function progressTags(t) {
 function progressWaitLabel(t) {
   return t.waiting_for === "rearm" && t.progress_blockers?.length ? "重审受阻" : wfLabel(t.waiting_for);
 }
+/** 卡面状态徽标(图标+文字):卡片默认只露标题、执行线、状态和关键时间,其余收进展开区。
+ *  只换展示,不推断新状态——文字取自 meta 的标签和卡上已有字段。 */
+function cardStatus(t){
+  if (t.kind === "goal"){
+    const kids = tasks.filter((x) => x.parent_id === t.id);
+    return t.status === "done" ? { txt: "目标完成", tone: "ok", ic: "success" }
+      : { txt: kids.length ? `目标 · 子任务 ${kids.filter((k) => k.status === "done").length}/${kids.length}` : "目标", tone: "quiet", ic: "board" };
+  }
+  if (t.status === "in_progress") return { txt: colLabel("in_progress"), tone: "run", ic: "play" };
+  if (t.status === "done")
+    return { txt: t.resolved_by === "auto" ? "自动通过" : t.resolved_by === "cascade" ? "联动关闭" : t.resolved_by ? "手动通过" : colLabel("done"), tone: "ok", ic: "success" };
+  if (t.status === "waiting"){
+    const human = ["confirm", "decision", "review"].includes(t.waiting_for);
+    return { txt: progressWaitLabel(t), tone: human ? "need" : "quiet", ic: "wait" };
+  }
+  if (t.human_gate) return { txt: "待人工", tone: "warn", ic: "warn" };
+  if (!t.released && t.kind !== "goal") {
+    // Show the card's age in the staging area — an uplifted card once sat unnoticed
+    // for days.
+    const ageH = Math.floor((Date.now() - Date.parse(t.updated_at || t.created_at || 0)) / 3600000);
+    return { txt: "未放行" + (ageH >= 24 ? "·" + Math.floor(ageH / 24) + "天" : ""), tone: ageH >= 48 ? "warn" : "quiet", ic: "stop" };
+  }
+  return { txt: "排队中", tone: "quiet", ic: "wait" };
+}
+
 function cardParts(t){
   const lc = lineColor(t.line);
   const who = t.status === "in_progress" ? (t.worker || t.line) : t.line;
 
+  // ── 第一行:卡号 · 执行线 · 状态徽标(常显)
   let top = `<span class="id">#${t.id}</span>`;
+  const editable = t.status === "not_started" || t.status === "waiting";
+  top += `<span class="line-badge${editable ? "" : " ro"}" style="background:${lineColor(who)}"` +
+         (editable ? ` data-pick="${t.id}" title="点击改交给哪条线"` : "") + `>${esc(lineLabel(who))}</span>`;
+  const st = cardStatus(t);
+  // 『外部审计 2026-10-05』waiting_for 拼进 class 也必须过 esc —— 值域今日是服务端
+  // 封闭枚举,但这里是纵深加固:与同文件其余插值保持同一转义纪律,不依赖枚举不破。
+  top += `<span class="badge${t.status === "waiting" && t.waiting_for ? " wf " + esc(t.waiting_for) : ""}" data-tone="${st.tone}">${icon(st.ic)}${esc(st.txt)}</span>`;
+
+  // ── 展开区里的来历标签(不常显)
+  let tags = "";
   // ⭐ Badge semantics: unclaimed = executor family (route); once claimed = the
   //   ACTUAL runtime (last_runtime, stamped by the loop at claim). ⛔ route never
   //   becomes runtime-valued — cards must not nominate runtimes (rung/quota
@@ -1039,7 +1438,7 @@ function cardParts(t){
   const rtTxt = t.last_runtime
     ? (RT_BADGE[t.last_runtime] || String(t.last_runtime).toUpperCase())
     : routeLabel(t.route);
-  top += `<span class="tag" style="color:${t.last_runtime ? rtColor(t.last_runtime) : "var(--dim)"};border-color:color-mix(in srgb,${t.last_runtime ? rtColor(t.last_runtime) : "var(--dim)"} 45%,transparent)" title="${t.last_runtime
+  tags += `<span class="tag" style="color:${t.last_runtime ? rtColor(t.last_runtime) : "var(--dim)"};border-color:color-mix(in srgb,${t.last_runtime ? rtColor(t.last_runtime) : "var(--dim)"} 45%,transparent)" title="${t.last_runtime
     ? `执行器：${esc(routeLabel(t.last_runtime))}` : `执行路由：${esc(routeLabel(t.route))}（领取后显示实际执行器）`}">${esc(rtTxt)}</span>`;
   // Derived cards state their origin (chains like #8→#51→#83 are untraceable
   // without it). The chain is walked from the local full set; clicking lights the
@@ -1050,18 +1449,29 @@ function cardParts(t){
     if (t.parent_id != null && !chain.length) chain.push("#" + t.parent_id + "(已归档)");
     const pt = byId.get(t.parent_id);
     const pv = pt ? (pt.kind === "goal" ? "#c084fc" : lineColor(pt.line)) : "#5d6472";
-    top += `<span class="tag lineage" style="color:${pv}" title="派生链(染色=父卡的线) · 点卡可高亮全家">↳${chain.join("→")}</span>`;
+    tags += `<span class="tag lineage" style="color:${pv}" title="派生链(染色=父卡的线) · 点卡可高亮全家">↳${chain.join("→")}</span>`;
   }
-  const editable = t.status === "not_started" || t.status === "waiting";
-  top += `<span class="line-badge${editable ? "" : " ro"}" style="background:${lineColor(who)}"` +
-         (editable ? ` data-pick="${t.id}"` : "") + `>${esc(lineLabel(who))}</span>`;
   // Provenance badge: display/reference only (never routing). The full move audit
   // is in the card description.
   if (t.prev_line){
     const pc2 = lineColor(t.prev_line);
-    top += `<span class="line-badge ro" style="background:transparent;border:1px dashed ${pc2};color:${pc2};opacity:.8" title="来历: 由 ${esc(lineLabel(t.prev_line))} 线移来(移线审计见卡面描述)">←${esc(lineLabel(t.prev_line))}</span>`;
+    tags += `<span class="line-badge ro" style="background:transparent;border:1px dashed ${pc2};color:${pc2};opacity:.8" title="来历: 由 ${esc(lineLabel(t.prev_line))} 线移来(移线审计见卡面描述)">←${esc(lineLabel(t.prev_line))}</span>`;
   }
-  if (t.pinned_at) top += `<span class="tag pinned">置顶</span>`;
+  if (t.pinned_at) tags += `<span class="tag pinned">置顶</span>`;
+  if (t.lock_key) tags += `<span class="tag lock">🔒${esc(t.lock_key)}</span>`;
+  // ── Linked closure: the declaration is the FORECAST, cascade is the RESULT.
+  //   Both show — forecast alone leaves "why did it close" unreadable, result alone
+  //   leaves "why could it close".
+  if (t.oneof_key) tags += `<span class="tag oneof" title="同一个父下,这一组只要有一张走通(且通过机器验证),其余自动关闭">备选组·${esc(t.oneof_key)}</span>`;
+  if (t.proves_parent) tags += `<span class="tag oneof" title="本卡的验证通过即回答了父卡的问题 —— 父卡会跟着通过">验证父卡</span>`;
+  if (t.resolved_by === "cascade") tags += `<span class="tag casc" title="非人工裁定:同链另一张卡通过机器验证,本卡因此不再需要。理由见卡面裁定记录">联动关闭</span>`;
+  if (t.status === "done"){
+    if (t.resolved_by === "auto") tags += `<span class="tag auto">自动通过</span>`;
+    else if (t.resolved_by) tags += `<span class="tag manual">手动通过</span>`;
+  }
+
+  // ── 元信息(常显,淡色小字):关键时间与警示。警示仍常显——它们说明卡为什么不动。
+  let meta2 = [];
   // A card a human wrote on and handed back. Explains "approved yet sitting in
   // not_started". Criterion = last_verdict (this round's ruling): verdict now
   // belongs to closed cards only, so the old criterion would never show this badge
@@ -1069,30 +1479,12 @@ function cardParts(t){
   if ((t.last_verdict || t.verdict) && t.status === "not_started")
     // No approval/bounce vocabulary — a badge keeping deleted vocabulary breeds
     // "where is the bounce button". State only what happened.
-    top += `<span class="tag tocoord">你写了指示 · 回原线继续</span>`;
-  if (!t.released && t.kind !== "goal") {
-    // Show the card's age in the staging area — an uplifted card once sat unnoticed
-    // for days.
-    const ageH = Math.floor((Date.now() - Date.parse(t.updated_at || t.created_at || 0)) / 3600000);
-    top += `<span class="tag hold"${ageH >= 48 ? ' style="outline:1px solid var(--warn)"' : ""}>未放行${
-      ageH >= 24 ? "·" + Math.floor(ageH / 24) + "天" : ""}</span>`;
-  }
+    meta2.push(`<span class="tag tocoord">你写了指示 · 回原线继续</span>`);
   // ⭐ Human-gated: out of the queue, attempts unburned — the board must show WHO it
   //   is waiting for.
-  if (t.human_gate) top += `<span class="tag hold" title="人工闸保持生效，子任务完成也不会自动解除">待人工 · 不会自动送回</span>`;
-  if (t.lock_key) top += `<span class="tag lock">🔒${esc(t.lock_key)}</span>`;
-  // ── Linked closure: the declaration is the FORECAST, cascade is the RESULT.
-  //   Both show — forecast alone leaves "why did it close" unreadable, result alone
-  //   leaves "why could it close".
-  if (t.oneof_key) top += `<span class="tag oneof" title="同一个父下,这一组只要有一张走通(且通过机器验证),其余自动关闭">备选组·${esc(t.oneof_key)}</span>`;
-  if (t.proves_parent) top += `<span class="tag oneof" title="本卡的验证通过即回答了父卡的问题 —— 父卡会跟着通过">验证父卡</span>`;
-  if (t.resolved_by === "cascade") top += `<span class="tag casc" title="非人工裁定:同链另一张卡通过机器验证,本卡因此不再需要。理由见卡面裁定记录">联动关闭</span>`;
-  if (t.status === "waiting" && t.waiting_for)
-    // 『外部审计 2026-10-05』waiting_for 拼进 class 也必须过 esc —— 值域今日是服务端
-    // 封闭枚举,但这里是纵深加固:与同文件其余插值保持同一转义纪律,不依赖枚举不破。
-    top += `<span class="tag wf ${esc(t.waiting_for)}">${esc(progressWaitLabel(t))}</span>`;
-
-  let meta2 = [];
+  if (t.human_gate && t.status !== "not_started") meta2.push(`<span class="tag hold" title="人工闸保持生效，子任务完成也不会自动解除">待人工 · 不会自动送回</span>`);
+  else if (t.human_gate) meta2.push(`<span class="tag hold" title="人工闸保持生效，子任务完成也不会自动解除">不会自动送回</span>` +
+    (!t.released ? `<span class="tag hold">未放行</span>` : ""));
   if (t.progress_blockers?.length) meta2.push(progressTags(t));
   if (t.status === "in_progress"){
     meta2.push(`<span class="hb" data-live="hb"></span>`);
@@ -1122,27 +1514,32 @@ function cardParts(t){
     const since = String(t.no_progress.since || "").replace("T", " ").slice(0, 16);
     meta2.push(`<span class="tag nopro" title="自上次派发(${esc(since)})以来,这张卡的卡面、依赖、裁定意见、工作树都没有变化 —— 再派一次模型会看到一模一样的世界,得出一模一样的结论。给它新输入(补充卡面 / 写裁定意见 / 推进依赖 / 更新工作树)它就会自己恢复;确实要照跑,用点名认领的强制选项">⏸ 无进展</span>`);
   }
+  if (t.blocked_by && t.blocked_by.length) meta2.push(`<span>依赖 #${t.blocked_by.join(" #")}</span>`);
+  if (t.kind !== "goal"){
+    const kids = tasks.filter((x) => x.parent_id === t.id);
+    if (kids.length) meta2.push(`<span>子任务 ${kids.filter((k) => k.status === "done").length}/${kids.length}</span>`);
+  }
+  if (t.status === "done" && t.updated_at) meta2.push(`<span>${esc(localTime(t.updated_at))}</span>`);
+  else if (t.status === "waiting" && t.updated_at) meta2.push(`<span title="进入等待的时间">${esc(localTime(t.updated_at))}</span>`);
   // ⭐ What this card has actually burned, on its face. 输入+输出 is the money side;
   //   缓存读 rides cheap and is shown apart so a big number is readable as "warm
   //   cache", not "expensive card". Cards that never ran a model show nothing.
+  let usage = "";
   {
     const u = usageByCard[t.id];
     if (u && (u.in || u.out || u.cr || u.cc)) {
-      meta2.push(`<span class="tok" title="本卡累计模型用量（词元）
+      usage = `<span class="tok" title="本卡累计模型用量（词元）
 输入 ${u["in"]} · 输出 ${u.out} · 缓存读 ${u.cr} · 缓存写 ${u.cc} · 调用 ${u.calls} 次">` +
-        `词元 ${fmtTok(u["in"] + u.out)}` + (u.cr ? `<small>+缓存读${fmtTok(u.cr)}</small>` : ``) + `</span>`);
+        `词元 ${fmtTok(u["in"] + u.out)}` + (u.cr ? `<small>+缓存读${fmtTok(u.cr)}</small>` : ``) + `</span>`;
     }
   }
-  if (t.blocked_by && t.blocked_by.length) meta2.push(`<span>依赖 #${t.blocked_by.join(" #")}</span>`);
-  if (t.status === "done"){
-    if (t.resolved_by === "auto") meta2.push(`<span class="tag auto">自动通过</span>`);
-    else if (t.resolved_by) meta2.push(`<span class="tag manual">手动通过</span>`);
-    if (t.updated_at) meta2.push(`<span>${esc(localTime(t.updated_at))}</span>`);
-  }
 
-  let body = `<div class="top">${top}</div><div class="subj">${esc(t.subject)}</div>`;
+  let body = `<div class="card-top">${top}</div><div class="subj">${esc(t.subject)}</div>`;
   if (meta2.length) body += `<div class="meta">${meta2.join("")}</div>`;
-  if (t.status === "waiting") body += decisionPanel(t, true);
+
+  // ── 展开区:来历、证据、方案、留言与动作。data-stop:在展开区里点击不触发「打开侧栏」。
+  let more = `<div class="tags">${tags}${usage}</div>`;
+  if (t.status === "waiting") more += decisionPanel(t, true);
   // Folded text is too small to read — show a digest, DOUBLE-CLICK opens the full
   // text large.
   const ev = (k, label, text) =>
@@ -1150,8 +1547,8 @@ function cardParts(t){
        <div class="evh"><span>${label}</span><span class="hint">双击展开</span></div>
        <div class="evp">${esc(String(text).replace(/\s+/g, " ").slice(0, 160))}</div>
      </div>`;
-  if (t.result) body += ev("ev", "证据／原因", t.result);
-  if (t.verdict_note) body += ev("vn", t.decision_package ? "自动审阅原始记录" : "裁定记录", t.verdict_note);
+  if (t.result) more += ev("ev", "证据／原因", t.result);
+  if (t.verdict_note) more += ev("vn", t.decision_package ? "自动审阅原始记录" : "裁定记录", t.verdict_note);
 
   // ⛔ No "stuck" column exists. Both flavors of waiting are told apart by the
   //   waiting_for badge.
@@ -1176,8 +1573,8 @@ function cardParts(t){
     //   change the signature, replace innerHTML and throw the caret. Values are
     //   poured in afterwards.
     if (!t.decision_package?.options?.length){
-      body += `<textarea class="vin" data-vin="${t.id}" rows="2" placeholder="可选:补充给原智能体的一句指示"></textarea>`;
-      body += `<div class="hoh" data-hoh></div>`;
+      more += `<textarea class="vin" data-vin="${t.id}" rows="2" placeholder="可选:补充给原智能体的一句指示"></textarea>`;
+      more += `<div class="hoh" data-hoh></div>`;
     }
     // ⭐ Ruling: the human "bounce" button is GONE. The button chooses CLOSE OR NOT —
     //   write = hand back, empty = close. One button says it all. (The machine
@@ -1198,27 +1595,34 @@ function cardParts(t){
   }
   if (t.status === "done" || t.status === "waiting" || t.kind === "goal")
     acts += `<button class="danger" data-a="archive" data-id="${t.id}">归档</button>`;
-  if (acts) body += `<div class="acts">${acts}</div>`;
+  if (acts) more += `<div class="acts">${acts}</div>`;
 
   if (t.kind === "goal"){
     const kids = tasks.filter((x) => x.parent_id === t.id);
     const d = kids.filter((k) => k.status === "done").length;
-    body += `<div class="kids">子任务卡 ${d}/${kids.length} 完成</div>`;
+    more += `<div class="kids">子任务卡 ${d}/${kids.length} 完成</div>`;
   } else {
     // In-flight cards derive their own children (a worker splitting its card,
     // discoveries cut out mid-run). Without hanging them under the parent, the
     // board loses which stream they came from.
     const kids = tasks.filter((x) => x.parent_id === t.id);
     if (kids.length){
-      body += `<div class="subs"><div class="h">子任务卡 ${kids.filter((k) => k.status === "done").length}/${kids.length}</div>` +
+      more += `<div class="subs"><div class="h">子任务卡 ${kids.filter((k) => k.status === "done").length}/${kids.length}</div>` +
         kids.map((k) => `<div class="sub"><span class="sid">#${k.id}</span>` +
           `<span class="stt ${k.status}">${colLabel(k.status)}</span>` +
           `<span class="sj">${esc(k.subject)}</span></div>`).join("") + `</div>`;
     }
   }
+  // 等你处理的卡:展开区的入口用强调色写明「处理」;其余卡只写「更多」。点卡片本身 = 在侧栏打开。
+  const need = st.tone === "need";
+  const label = t.status === "waiting" ? (t.decision_package?.options?.length ? "展开方案" : "展开处理 · 留言 / 通过 / 编辑")
+    : acts ? "更多 · 操作与记录" : "更多 · 记录";
+  body += `<details class="card-more${need ? " need" : ""}" data-more="${t.id}" data-stop>` +
+          `<summary>${icon("chevron")}${label}</summary><div class="more-body">${more}</div></details>`;
   let cls = "card";
   if (focusId != null && relSet.has(t.id)) cls += (t.id === focusId ? " self" : " rel");
   if (t.id === locatedId) cls += " located";
+  if (boardFilter && !String(t.subject || "").toLowerCase().includes(boardFilter)) cls += " nomatch";
   return { html: body, cls };
 }
 
@@ -1423,6 +1827,9 @@ function upsert(t, wanted){
     // Drafts live OUTSIDE the signature; poured back only when the node is rebuilt.
     const vin = el.querySelector("[data-vin]");
     if (vin) vin.value = verdictDraft.get(t.id) || "";
+    // 展开区开合也在签名之外:重建后照原样打开;写了留言的卡自动展开,免得草稿被藏起来。
+    const more = el.querySelector("details[data-more]");
+    if (more) more.open = cardOpen.has(t.id) || !!(vin && vin.value.trim());
     syncHandoff(el);
   }
   if (fresh && !REDUCED.matches) el.classList.add("enter");
@@ -2284,9 +2691,10 @@ function liveWorkerNames(){
 }
 
 function renderRig(){
-  if (cfg.classList.contains("show")) return;   // don't redraw while settings are open (sliders vanish mid-drag)
+  // 设置页的执行线列表:每条线一行——状态点、名称、身份、运行状态、最近一行日志、齿轮、启动/停止。
+  // 执行器设置(#cfg)停靠在列表下方、是独立元素,这里重画不会打断正在拖动的滑块。
   const rig = document.getElementById("rig");
-  rig.innerHTML = `<span class="lbl">自动拉取</span>` + workers.map((w) => {
+  rig.innerHTML = (workers.length ? "" : `<p class="set-empty">还没有执行线。用下面的「加线」加一条,或在本机配置文件里写好后重启看板。</p>`) + workers.map((w) => {
     const label = lineLabel(w.line);
     const slots = (w.slots || []).filter((sl) => sl.running);
     const xN = slots.length > 1 ? `×${slots.length}` : "";
@@ -2300,12 +2708,14 @@ function renderRig(){
     // running" loses its meaning
     const extra = slots.filter((sl) => sl.slot > 1)
       .map((sl) => `<span class="tail">${"⓪①②③④"[sl.slot] || "#" + sl.slot}${esc(sl.tail || "")}</span>`).join("");
-    return `<span class="wk${w.running ? " on" : ""}" title="${esc((w.last_log||[]).join(String.fromCharCode(10)))}">` +
-           `<span class="st"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}${xN}</span>` +
-           roleBadge(w) +
-           `<span class="tail">${esc(tail)}</span>` + extra +
-           `<button class="gear" data-cfg="${w.line}" title="执行器设置：模型、推理强度与并行数量" aria-label="执行器设置">⚙</button>` +
-           `<button data-wk="${w.line}" data-op="${w.running ? "stop" : "start"}">${w.running ? "停止" : "启动"}</button></span>`;
+    const open = cfg.classList.contains("show") && cfgLine === w.line;
+    const state = w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止";
+    return `<div class="wk${w.running ? " on" : ""}${open ? " editing" : ""}" title="${esc((w.last_log||[]).join(String.fromCharCode(10)))}">` +
+           `<span class="st" aria-hidden="true"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}${xN}</span>` +
+           roleBadge(w) + `<span class="wk-state">${state}</span>` +
+           `<span class="wk-log"><span class="tail">${esc(tail)}</span>${extra}</span>` +
+           `<span class="wk-acts"><button class="icon-btn gear" data-cfg="${w.line}" title="执行器设置：模型、推理强度与并行数量" aria-label="${esc(label)}的执行器设置" aria-expanded="${open}">${icon("gear")}</button>` +
+           `<button data-wk="${w.line}" data-op="${w.running ? "stop" : "start"}">${icon(w.running ? "stop" : "play")}${w.running ? "停止" : "启动"}</button></span></div>`;
   }).join("")
   // claim_misses onto the face — the API emitted them long before anyone read them
   // (installed ≠ armed). Slot keys (alpha@2) match by root name; a root missing
@@ -2314,9 +2724,9 @@ function renderRig(){
       const root = String(m.worker || "").split("@")[0];
       const known = workers.some((w) => w.line === root);
       const mins = m.since ? Math.max(1, Math.round((Date.now() - m.since) / 60000)) : "?";
-      return `<span class="wk" title="路由：${esc(routeLabel(m.route))} · 执行线：${esc(lineLabel(m.line))}">` +
-             `<span class="tail"${known ? "" : ' style="color:var(--bad)"'}>⚠${esc(m.worker)} 连续 ${m.n} 次空领` +
-             ` (≈${mins} 分)${known ? "" : " · 执行器名称可能有误"}</span></span>`;
+      return `<div class="wk miss" title="路由：${esc(routeLabel(m.route))} · 执行线：${esc(lineLabel(m.line))}">` +
+             `<span class="tail"${known ? "" : ' style="color:var(--bad)"'}>${icon("warn")}${esc(m.worker)} 连续 ${m.n} 次空领` +
+             ` (≈${mins} 分)${known ? "" : " · 执行器名称可能有误"}</span></div>`;
     }).join("");
 }
 
@@ -2381,7 +2791,15 @@ function openCfg(anchor, line){
   cfgProbes.clear();  // 重新打开后只采用本次检查，不用旧探测覆盖新的安装事实。
   cfgReadiness = { state: "loading", line };
   renderCfg();
+  renderRig();   // 标出正在设置的那一行
+  cfg.scrollIntoView({ block: "nearest", behavior: REDUCED.matches ? "auto" : "smooth" });
   loadCfgReadiness(line, JSON.stringify(cfgAgents), ++cfgReadinessRequest);
+}
+/** 收起停靠的执行器设置。只是不再显示;已保存的设置不受影响。 */
+function closeCfg(){
+  cfg.classList.remove("show");
+  cfgLine = null; cfgReadinessRequest++;
+  renderRig();
 }
 
 async function loadCfgReadiness(line, signature, request){
@@ -2474,20 +2892,19 @@ function renderCfg(){
     </fieldset>`;
   }).join("");
   cfg.innerHTML = `
-    <h4 style="color:${lineColor(cfgLine)}">${esc(lineLabel(cfgLine))}</h4>
+    <div class="cfg-head"><h4><span style="color:${lineColor(cfgLine)}">${esc(lineLabel(cfgLine))}</span> · 执行器设置</h4>
+      <button type="button" class="icon-btn ghost" data-cfg-close aria-label="收起执行器设置" title="收起执行器设置"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div>
     <p class="runtime-scope">执行线：${w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止"}。执行器启用与执行线启动分开记录。</p>
     <p class="runtime-scope">沿用本机已有执行器与模型配置；检查接入不领取任务、不验证登录，也不调用模型。</p>
     ${cfgReadiness?.state === "loading" ? '<p class="runtime-scope" role="status">正在读取接入状态…</p>'
       : cfgReadiness?.state === "stale" ? '<p class="runtime-scope" role="status">设置已改变；重新打开设置可读取最新接入状态。</p>'
       : cfgReadiness?.state === "failed" ? `<p class="runtime-scope" role="status">接入状态暂未读到：${esc(cfgReadiness.error)}。重新打开设置可重试。</p>` : ""}
-    ${blocks}
+    <div class="cfg-agents">${blocks}</div>
     ${cfgSingle ? `<div class="ends"><span>${esc(lineLabel(cfgLine))}仅配置一个智能体</span></div>` : `
     <button id="cfg-add"${cfgAgents.length >= (MAXP || 1) || cfgLegacy ? " disabled" : ""}>＋ 添加智能体</button>
     <div class="ends"><span>${cfgLegacy ? "服务器旧版 —— 重启看板进程后可用" : ""}</span><span>上限 ${MAXP || 3}(全线共享额度)</span></div>`}
     <div class="note" id="cfg-note">${w.running && w.stale_settings ? "当前进程仍用旧设置,停止再启动才生效" : ""}</div>`;
-  const r = cfgAnchor.getBoundingClientRect();
-  cfg.style.left = Math.min(r.left - 90, innerWidth - 320) + "px";
-  cfg.style.top = (r.bottom + 6) + "px";
+  // 停靠在设置页的执行线列表下方(不再按齿轮位置浮动)。
   cfg.classList.add("show");
 }
 
@@ -2602,6 +3019,7 @@ cfg.addEventListener("input", (e) => {
 });
 
 cfg.addEventListener("click", (e) => {
+  if (e.target.closest("button[data-cfg-close]")){ closeCfg(); return; }
   const probe = e.target.closest("button[data-probe-i]");
   if (probe){ if (!probe.disabled) probeCfgAgent(Number(probe.dataset.probeI)); return; }
   const diagnostic = e.target.closest("button[data-probe-detail]");
@@ -2723,7 +3141,7 @@ function openPick(anchor, taskId){
 }
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#pick") && !e.target.closest("[data-pick]")) pick.classList.remove("show");
-  if (!e.target.closest("#cfg") && !e.target.closest("[data-cfg]")) cfg.classList.remove("show");
+  // #cfg 已停靠在设置页里,不再因点别处而关闭(用它自己的关闭按钮或再按齿轮)。
   // Same open/close etiquette; excluding the OPENING button itself is required or
   // it closes itself on the way in (capture runs first).
   if (!e.target.closest("#edit") && !e.target.closest("[data-edit]")) epop.classList.remove("show");
@@ -2930,6 +3348,9 @@ document.addEventListener("click", async (e) => {
   //   self-meaning elements carry data-stop — even when SELF_ACTING forgets them.
   if (cardEl && !e.target.closest(SELF_ACTING)){
     const id = Number(cardEl.dataset.id);
+    // 第 1 批:点卡片 = 在侧栏打开它(留言、通过、编辑都在那里,同一套 data-a 处理器);
+    //   同时照旧高亮它的整条派生链。
+    openSide({ id, uid: byId.get(id)?.task_uid || null, item: null });
     if (focusId === id){ focusId = null; relSet = new Set(); }
     else {
       focusId = id;
@@ -2941,8 +3362,10 @@ document.addEventListener("click", async (e) => {
     render();
     return;
   }
+  // 侧栏、浮层和工具条里的点击不清高亮——否则带着高亮按「通过」,第一下会被这里吞掉。
   if (!cardEl && !e.target.closest(".goalbox") && !e.target.closest("#rig")
-      && !e.target.closest("#ctx") && !e.target.closest("#tl") && focusId != null){
+      && !e.target.closest("#ctx") && !e.target.closest("#tl")
+      && !e.target.closest("#task-side, #edit, #pick, .modal, #board-bar") && focusId != null){
     focusId = null; relSet = new Set(); render(); return;
   }
 
@@ -2974,7 +3397,12 @@ ${r.memo}`);
   }
 
   const g = e.target.closest("button[data-cfg]");
-  if (g){ openCfg(g, g.dataset.cfg); return; }
+  if (g){
+    // 设置页里齿轮是开关:再按同一条线的齿轮就收起。
+    if (cfg.classList.contains("show") && cfgLine === g.dataset.cfg) closeCfg();
+    else openCfg(g, g.dataset.cfg);
+    return;
+  }
 
   const ed = e.target.closest("button[data-edit]");
   if (ed){ openEdit(ed, ed.dataset.edit); return; }
@@ -3631,13 +4059,13 @@ function homeStatus({ localName = "本机", nodes = null, fleetError = null, hea
   if (healthError && !fleetError) alerts.push({ tone: "warn", where: here, what: "运行检查暂时读不到", next: "稍后会自动重试", go: null });
   if (setup && setup.steps && !setup.complete) {
     // A step the server can do in one request (generate the config, confirm the version,
-    // restart) gets its button right here; anything else is done in the guide on 全部任务.
+    // restart) gets its button right here; anything else is done in the guide on 设置.
     const step = setup.steps.find((s) => s.state !== "done"), act = step && step.action;
     const what = "还差 " + (setup.total - setup.done) + " 步" + (step ? "：" + step.title : "");
     if (act && act.type === "api" && typeof act.path === "string")
       alerts.push({ tone: "warn", where: "看板设置", what, next: step.detail || "按右边的按钮", go: null,
                     action: { path: act.path, body: act.body || {}, confirm: act.confirm || "", label: act.label || "执行" } });
-    else alerts.push({ tone: "warn", where: "看板设置", what, next: "到「全部任务」完成设置", go: "board" });
+    else alerts.push({ tone: "warn", where: "看板设置", what, next: "到「设置」页完成上手引导", go: "settings" });
   }
   const count = 1 + remotes.length;
   const tone = alerts.some((a) => a.tone === "bad") ? "bad" : alerts.length ? "warn" : "ok";
@@ -3728,7 +4156,7 @@ function sideRelations(t, rows = []) {
 
 let lastSetup = null;            // /api/setup as refresh() last saw it (the guide's data)
 let fleetApi = null;             // { showTask, open } — set by the global-view block below
-const HOME_VIEWS = ["home", "board", "history"];
+const HOME_VIEWS = ["home", "board", "history", "settings"];
 let homeView = (() => { try { const v = localStorage.getItem("tb_view"); return HOME_VIEWS.includes(v) ? v : "home"; } catch { return "home"; } })();
 let homeReady = false, homeFleet = null, homeFleetError = null, homeHealth = null, homeHealthError = null, homeActions = null;
 let homeExtrasAt = 0, homeExtrasBusy = false, historyLimit = 40;
@@ -3745,7 +4173,9 @@ function setView(v){
   // The columns' shell (headers, goal box) is built once, from meta — never before the first
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); }
+  else if (v === "settings") loadHomeExtras(true);   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取
   else { homeSig.clear(); renderHomeViews(); loadHomeExtras(true); }
+  window.scrollTo(0, 0);
 }
 document.querySelector(".views").addEventListener("click", (e) => {
   const b = e.target.closest("[data-view]"); if (b) setView(b.dataset.view);
@@ -3839,9 +4269,11 @@ function updateSideLive(){
 function sideExecution(t){
   const section = homeEl("section", undefined, "side-sec");
   section.id = "task-side-execution";
-  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.released, t.run_id]);
-  section.append(homeEl("h3", t.execution_profile && t.status === "not_started" && !t.released ? "放行前核对执行配置" : "派发与领取"));
+  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by]);
+  const checking = !!(t.execution_profile && t.status === "not_started" && !t.released);
+  section.append(homeEl("h3", checking ? "放行前核对执行配置" : "派发与领取"));
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
+  section.append(sideSteps(t, trace));
   const rows = [
     ["最近放行", trace.released_at ? localTime(trace.released_at) : t.released ? "时间未记录" : "尚未放行"],
     ["本轮领取", trace.claimed_at ? localTime(trace.claimed_at) : t.run_id ? "时间待核实" : "尚无领取记录"],
@@ -3864,7 +4296,13 @@ function sideExecution(t){
   }
   const dl = homeEl("dl", undefined, "side-trace");
   for (const [label, value] of rows) dl.append(homeEl("dt", label), homeEl("dd", value));
-  section.append(dl);
+  // 放行前要核对的目录、通道、权限与预算必须摊开;其余逐项记录收进「逐项记录」。
+  if (checking) section.append(dl);
+  else {
+    const rec = homeEl("details", undefined, "side-rec");
+    rec.append(homeEl("summary", "逐项记录"), dl);
+    section.append(rec);
+  }
   if (t.execution_profile && t.status === "not_started" && !t.released) {
     const release = homeEl("button", "放行此任务", "pri"); release.type = "button";
     release.dataset.a = "release"; release.dataset.id = String(t.id); release.dataset.version = String(t.aggregate_version);
@@ -3875,6 +4313,29 @@ function sideExecution(t){
     if (t.execution_profile.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
   }
   return section;
+}
+/** 派发与领取的步骤条:放行 → 领取 → 启动 → 回传 → 人工验收。每步只认本轮绑定的记录;
+ *  没有记录的写「待核实」(灰),不从状态推断「已开工」「已验收」。 */
+function sideSteps(t, trace){
+  const at = (v) => v ? localTime(v) : "";
+  const steps = [];
+  steps.push(["放行", t.released ? (at(trace.released_at) || "已放行") : "尚未放行", t.released ? "done" : t.status === "not_started" ? "now" : "todo"]);
+  steps.push(["领取", trace.claimed_at ? at(trace.claimed_at) : t.run_id ? "待核实" : "未领取", trace.claimed_at ? "done" : t.run_id ? "unknown" : "todo"]);
+  steps.push(["启动", trace.process_state === "observed" ? (at(trace.process_started_at) || "已启动") : trace.process_state === "not_started" ? "未启动" : t.run_id ? "待核实" : "未到",
+    trace.process_state === "observed" ? "done" : trace.process_state === "not_started" ? "warn" : t.run_id ? "unknown" : "todo"]);
+  steps.push(["回传", t.result ? (at(trace.ended_at) || "已回传") : trace.ended_at ? "结果待核实" : "未到", t.result ? "done" : trace.ended_at ? "unknown" : "todo"]);
+  const human = t.status === "waiting" && ["review", "confirm", "decision"].includes(t.waiting_for);
+  steps.push(["人工验收", t.status === "done" ? (t.resolved_by === "auto" ? "自动通过" : t.resolved_by === "cascade" ? "联动关闭" : t.resolved_by ? "已验收" : "已完成")
+    : human ? ({ review: "待验收", confirm: "待选择方案", decision: "待决定" })[t.waiting_for] : "未到",
+    t.status === "done" ? "done" : human ? "now" : "todo"]);
+  const ol = homeEl("ol", undefined, "steps");
+  ol.title = "派发与领取的进度;灰色「待核实」表示没有本轮记录,不等于没做";
+  for (const [name, value, state] of steps) {
+    const li = homeEl("li", undefined, "step " + state);
+    li.append(homeEl("span", undefined, "st-dot"), homeEl("span", name, "st-name"), homeEl("span", value, "st-val"));
+    ol.append(li);
+  }
+  return ol;
 }
 function sideRelationshipBox(t){
   const section = homeEl("section", undefined, "side-sec");
@@ -4043,6 +4504,7 @@ function newClear(){
 }
 document.getElementById("home-new-open").addEventListener("click", () => newShow(true));
 document.getElementById("home-new-cancel").addEventListener("click", newClear);
+document.getElementById("home-new-x").addEventListener("click", newClear);
 document.getElementById("home-new-form").addEventListener("input", newSave);
 for (const name of ["home-new-line", "home-new-profile", "home-new-model"]) document.getElementById(name).addEventListener("change", () => { newExecutionOptions(true); newSave(); });
 document.getElementById("home-new-form").addEventListener("submit", async (e) => {
@@ -4067,13 +4529,19 @@ document.getElementById("home-new-form").addEventListener("submit", async (e) =>
   finally { btn.disabled = false; }
 });
 const homeEl = (tag, text, cls) => { const e = document.createElement(tag); if (text !== undefined) e.textContent = text; if (cls) e.className = cls; return e; };
+// 首页卡的状态徽标:图标+文字。「待我处理」用强调色,执行中用进行色,心跳中断这类异常用警示色。
+const HOME_BADGE = { mine: ["need", "wait"], running: ["run", "play"], done: ["ok", "success"] };
 function homeCard(item, lane){
   const b = homeEl("button", undefined, "hcard"); b.type = "button";
   if (item.tone) b.dataset.tone = item.tone;
   const meta = homeEl("span", undefined, "hc-meta"), next = lane === "done" ? item.next : item.next && "下一步：" + item.next;
-  meta.append(homeEl("span", item.computer, "hc-pc"), homeEl("span", item.state, "hc-st"));
+  const [tone, ic] = item.tone === "warn" ? ["warn", "warn"] : HOME_BADGE[lane] || ["quiet", "wait"];
+  const st = homeEl("span", item.state, "hc-st badge"); st.dataset.tone = tone; st.insertAdjacentHTML("afterbegin", icon(ic));
+  const top = homeEl("span", undefined, "hc-top");
+  top.append(homeEl("span", item.title, "hc-title"), st);
+  meta.append(homeEl("span", item.computer, "hc-pc"));
   if (next) meta.append(homeEl("span", next, "hc-next"));
-  b.append(homeEl("span", item.title, "hc-title"), meta);
+  b.append(top, meta);
   b.setAttribute("aria-label", [item.title, item.computer, item.state, next].filter(Boolean).join("，"));
   b.addEventListener("click", () => openHomeItem(item));
   return b;
@@ -4090,7 +4558,7 @@ function homeLane(lane, items, empty){
   const base = homeNarrow.matches ? 3 : 8, cap = homeExpanded[lane] || items.length <= base + 1 ? items.length : base;
   homeFill(list, JSON.stringify([homeReady, cap, items]), () => {
     if (!homeReady) return [homeEl("p", "正在读取…", "home-empty")];
-    if (!items.length) return [homeEl("p", empty, "home-empty")];
+    if (!items.length) return [homeEmpty(...empty)];
     const out = items.slice(0, cap).map((item) => homeCard(item, lane));
     if (items.length > cap){
       const more = homeEl("button", "还有 " + (items.length - cap) + " 项 · 全部展开", "home-more"); more.type = "button";
@@ -4100,11 +4568,20 @@ function homeLane(lane, items, empty){
     return out;
   });
 }
+/** 空状态:一句「现在怎样」加一句「可以做什么」(style-guide §五 空态)。 */
+function homeEmpty(title, hint, ic = "success"){
+  const box = homeEl("div", undefined, "home-empty");
+  box.insertAdjacentHTML("afterbegin", icon(ic));
+  const text = homeEl("div");
+  text.append(homeEl("b", title), homeEl("span", hint));
+  box.append(text);
+  return box;
+}
 function homeLocalName(){ return meta.node?.display_name; }
 /** Other computers known to this board — until there is one, multi-computer details stay out of sight. */
 const homeMulti = () => (homeFleet?.nodes || []).some((n) => !n.local);
 function renderHomeViews(){
-  if (homeView === "board") return;
+  if (homeView === "board" || homeView === "settings") return;
   const nodes = homeFleet?.nodes || null;
   const lists = homeLists({
     tasks: tasks.map((t) => ({ ...t, hb: hbClass(t) })), localName: homeLocalName(),
@@ -4135,9 +4612,10 @@ function renderHomeViews(){
           row.append(b);
         }
         else if (a.go){
-          const b = homeEl("button", a.go === "board" ? "去设置" : a.go === "retry" ? "重试连接" : "查看详情"); b.type = "button";
+          const b = homeEl("button", a.go === "settings" ? "去设置" : a.go === "retry" ? "重试连接" : "查看详情"); b.type = "button";
+          if (a.go === "settings") b.insertAdjacentHTML("afterbegin", icon("settings"));
           b.addEventListener("click", () => {
-            if (a.go === "board") setView("board");
+            if (a.go === "settings") setView("settings");
             else if (a.go === "retry"){ b.disabled = true; b.textContent = "重试中…"; refresh().finally(() => loadHomeExtras(true)); }
             else fleetApi?.open();
           });
@@ -4154,8 +4632,19 @@ function renderHomeViews(){
         return row;
       })];
     });
-    homeLane("mine", lists.mine, "没有需要你处理的事。新的目标可以在「全部任务」里写。");
-    homeLane("running", lists.running, "没有正在执行的任务。排队中的任务在「全部任务」里。");
+    homeLane("mine", lists.mine, ["没有需要你处理的事", "交付和提问到了会出现在这里。要派新活,点上面的「新建任务」。"]);
+    homeLane("running", lists.running, ["没有正在执行的任务", "排队中的任务在「全部任务」里;执行线在「设置」里启动。", "play"]);
+    // 页脚一行:首页之外还有什么,一键过去。只数本机看板已有的数据。
+    const queued = tasks.filter((t) => t.kind !== "goal" && t.status === "not_started");
+    const held = queued.filter((t) => !t.released).length;
+    homeFill(document.getElementById("home-foot"), JSON.stringify([homeReady, queued.length, held, lists.history.length]), () => {
+      if (!homeReady) return [];
+      const go = (label, view, ic) => { const b = homeEl("button", label, "ghost"); b.type = "button";
+        b.insertAdjacentHTML("afterbegin", icon(ic)); b.addEventListener("click", () => setView(view)); return b; };
+      const txt = homeEl("span", "全部任务里排队 " + queued.length + " 项" + (held ? "（其中 " + held + " 项未放行）" : "") +
+                                 " · 已完成 " + lists.history.length + " 项", "hf-text");
+      return [txt, go("全部任务", "board", "board"), go("历史", "history", "history")];
+    });
     const note = document.getElementById("home-note"), partial = homeFleet?.partial || [];
     note.hidden = !partial.length;
     note.textContent = partial.length ? partial.map((n) => "「" + n + "」").join("、") + "的缓存任务较多，这里只读取了前 1000 项；完整列表在全局视图。" : "";
@@ -4165,7 +4654,7 @@ function renderHomeViews(){
     const partial = homeFleet?.partial || [];
     homeFill(document.getElementById("history-list"), JSON.stringify([homeReady, historyLimit, items, partial]), () => {
       if (!homeReady) return [homeEl("p", "正在读取…", "home-empty")];
-      if (!items.length) return [homeEl("p", "还没有已完成的任务。完成的任务会出现在这里。", "home-empty")];
+      if (!items.length) return [homeEmpty("还没有已完成的任务", "验收通过或自动通过的任务会按完成时间排在这里。", "history")];
       const out = items.slice(0, historyLimit).map((item) => homeCard({ ...item, next: item.updated ? "完成于 " + localTime(item.updated) : "" }, "done"));
       if (items.length > historyLimit){
         const more = homeEl("button", "显示更多（还有 " + (items.length - historyLimit) + " 项）", "home-more"); more.type = "button";
@@ -4199,7 +4688,7 @@ async function homeGet(path){
  *  view is showing. 全部任务 reads them once — enough to know whether there is another
  *  computer for the header to offer — and never polls them. */
 async function loadHomeExtras(force = false){
-  if (homeExtrasBusy || (homeView === "board" && homeExtrasAt > 0) || (!force && Date.now() - homeExtrasAt < 15000)) return;
+  if (homeExtrasBusy || ((homeView === "board" || homeView === "settings") && homeExtrasAt > 0) || (!force && Date.now() - homeExtrasAt < 15000)) return;
   homeExtrasBusy = true;
   try {
     // The computers first (limit=1 still lists every node), then each other computer's own

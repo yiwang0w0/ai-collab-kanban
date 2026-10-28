@@ -142,7 +142,7 @@ test("the device line is one sentence when all is well and lists what needs atte
     ["warn", "多机视图", "暂时读不到", null],
     ["bad", "台式机 A", "磁盘空间不足（2 项）", null],
     ["warn", "台式机 A", "调度器运行锁异常", null],
-    ["warn", "看板设置", "还差 1 步：定义你自己的线", "board"],
+    ["warn", "看板设置", "还差 1 步：定义你自己的线", "settings"],
   ]);
   assert.equal(bad.alerts[2].next, "先腾出磁盘空间再派新任务");
   assert.equal(M.homeHealthWhat("SOMETHING_NEW"), "运行检查报告了问题", "an unknown code still says something, never the code");
@@ -160,7 +160,7 @@ test("the device line is one sentence when all is well and lists what needs atte
   ]);
   const quick = M.homeStatus({ nodes: [local], setup: { complete: false, done: 2, total: 4,
     steps: [{ state: "todo", title: "定义你自己的线", action: { type: "quick", kind: "propose-lines" } }] } });
-  assert.deepEqual(quick.alerts.map((a) => [a.go, a.action]), [["board", undefined]], "other steps still go to the guide");
+  assert.deepEqual(quick.alerts.map((a) => [a.go, a.action]), [["settings", undefined]], "other steps still go to the guide, which now lives on 设置");
 });
 
 test("layout pins: home is the landing view, ids fold under 技术信息, hidden columns never animate", () => {
