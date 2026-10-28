@@ -76,7 +76,7 @@ create a release tag merely to satisfy a version check. Before an authorized
 0.24.0 release, align package/README/tag on the release commit, finish the
 [Windows migration checklist](docs/federation/migration-0.24.md), and attach
 that commit's required CI and acceptance evidence. The package version
-does not claim that physical fleet/provider validation or deployment is done.
+does not claim that physical two-machine/provider validation or deployment is done.
 
 ## Scope guidance
 

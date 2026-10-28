@@ -85,7 +85,7 @@ from its example — the file `store.js` validates a card's `verify_cmd` keys
 against. A fresh clone has none, and the QUICKSTART used to leave that discovery
 to the first refused card. Both copies are gitignored and never overwritten.)
 
-The config is two things at once. It is your **fleet vocabulary** — edit
+The config is two things at once. It is your **line vocabulary** — edit
 `lines[]` and `handoff_targets[]`, or skip the editor and tell your Claude what
 your work looks like (`docs/OPERATE_WITH_CLAUDE.md`). And since v0.3 it is the
 **deployment truth**: optional `port` / `repo` / `gated_subtree` keys that the
@@ -98,7 +98,7 @@ and the env-variable spellings shown below.)
 
 ## 2 · Bless what you're about to run
 
-The fleet **refuses to run unreviewed governance code** — that is the fail-closed
+The workers **refuse to run unreviewed governance code** — that is the fail-closed
 source gate, and on a standalone clone the governance code is the whole tree.
 Blessing = recording "this exact tree is what I accept". With the step-1 config
 in place it is one command:

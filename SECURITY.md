@@ -63,7 +63,7 @@ from a named incident (see `docs/INCIDENTS.md`):
   measured with a live model call, and the Windows drive-letter form was not
   re-measured in that run. **The legacy Codex loop has no equivalent path-deny mechanism**; there
   the boundary is the prompt, which is discipline, not structure. On a shared
-  machine run the fleet as its own OS user; `doctor` and the server both say
+  machine run the board and its workers under a dedicated OS user; `doctor` and the server both say
   which case a deployment is in.
   浏览器使用可撤销、会过期的独立操作员凭据；`panel_sessions.json` 仅保存凭据摘要和签发时间，
   但修改该文件会影响授权，所以同样列入 Claude 路径级 `Read`／`Edit` 禁用清单。
@@ -78,7 +78,7 @@ from a named incident (see `docs/INCIDENTS.md`):
   carry **keys**, never command strings, so a worker that can write files still
   cannot nominate its own script for execution through that registry. This
   statement is about exposed tools, not an OS restriction on the process.
-- **The fleet refuses to run unreviewed governance code.** The revision gate
+- **The workers refuse to run unreviewed governance code.** The revision gate
   pins the gated tree's hash to an operator-blessed value and refuses startup
   from a dirty tree, with a dedicated exit code (3) so refusals are never
   retried as crashes.
@@ -147,7 +147,7 @@ paths. A locally signed execution journal authenticates a recovery observation
 against its stored key, not a physical stop or an uncompromised OS. Review the
 [migration guide](docs/federation/migration-0.24.md), [peer contract](docs/federation/peers.md),
 [broker contract](docs/federation/mcp.md), and [measured progress](docs/federation/PROGRESS.md)
-before treating this development branch as a deployed fleet.
+before treating this development branch as a production deployment.
 
 ## What it deliberately does not defend against
 
