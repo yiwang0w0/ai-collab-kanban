@@ -3143,7 +3143,7 @@ function renderCfg(){
     <div class="cfg-agents">${blocks}</div>
     <div class="cfg-foot">${cfgSingle ? `<span class="ends">${esc(lineLabel(cfgLine))}仅配置一个智能体</span>` : `
       <button type="button" id="cfg-add"${cfgAgents.length >= (MAXP || 1) || cfgLegacy ? " disabled" : ""}>${ic("plus")}添加智能体</button>
-      <span class="ends">${cfgLegacy ? "服务器旧版 —— 重启看板进程后可用 · " : ""}上限 ${MAXP || 3} 个(全线共享额度)；新加的智能体照抄智能体 1 的设置</span>`}</div>
+      <span class="ends">${cfgLegacy ? "服务器旧版,重启看板进程后可用 · " : ""}全线共享,上限 ${MAXP || 3} 个；新加的智能体照抄智能体 1 的设置</span>`}</div>
     <div class="note" id="cfg-note">${w.running && w.stale_settings ? "当前进程仍用旧设置,停止再启动才生效" : ""}</div>`;
   // 停靠在设置页的执行线列表下方(不再按齿轮位置浮动)。
   cfg.classList.add("show");
@@ -3187,7 +3187,7 @@ async function probeCfgAgent(index){
  *  state (no partial success left behind). */
 async function saveAgents(){
   const n = document.getElementById("cfg-note");
-  if (cfgLegacy){ if (n) n.textContent = "服务器旧版 —— 重启看板进程后可用"; return false; }
+  if (cfgLegacy){ if (n) n.textContent = "服务器旧版,重启看板进程后可用"; return false; }
   setCfgSave("saving");
   try {
     const r = await post(`/api/workers/${cfgLine}/settings`, { agents: cfgAgents, rev: cfgRev });
@@ -3867,13 +3867,13 @@ function showRevBar(rev, why){
   const el = document.getElementById("rev-bar");
   if (!el) return;
   el.hidden = false;
-  el.innerHTML = `<div class="uh">${esc(why || `看板已更新到 ${rev}`)} —— 这页还是旧的。你有没保存的输入,所以没有自动刷新。 <button class="pri" data-rev-reload>刷新页面</button></div>`;
+  el.innerHTML = `<div class="uh">${esc(why || `看板已更新到 ${rev}`)},这页还是旧的。 <button class="pri" data-rev-reload>刷新页面</button></div>`;
 }
 document.addEventListener("click", (e) => { if (e.target.closest("[data-rev-reload]")) location.reload(); });
 // The board is restarting on our request (or told us so): hold, then reload when it is back.
 function noteRestart(r){
   restartPending = { at: Date.now(), mode: r?.mode || null, log_path: r?.log_path || null, hinted: false };
-  live(false, "看板正在重启…(新版本起来后这页会自己刷新)");
+  live(false, "看板正在重启…新版本起来后这页会自己刷新");
 }
 setInterval(() => {
   if (!restartPending || restartPending.hinted || Date.now() - restartPending.at < 30000) return;
@@ -3941,7 +3941,7 @@ function renderGuide(su){
   const MARK = { done: "✓", todo: "▸", blocked: "·", unknown: "?" };
   const firstOpen = su.steps.find((s) => s.state !== "done");
   const head = su.complete
-    ? `<b>配置完成 ✓</b><span class="gp">${su.done}/${su.total} —— 板已经可以正常用了</span>`
+    ? `<b>配置完成 ✓</b><span class="gp">${su.done}/${su.total}</span>`
     : `<b>上手引导</b><span class="gp">${su.done}/${su.total} 完成 · 下一步:${esc(firstOpen ? firstOpen.title : "")}</span>`;
   const body = !open ? "" : `<div class="gsteps">` + su.steps.map((s) => {
     const isNow = firstOpen && s.key === firstOpen.key;

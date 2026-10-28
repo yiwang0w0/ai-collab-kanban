@@ -691,13 +691,12 @@ function blessStep() {
     const d = diskConfig();
     if (d && d.gated_subtree)
       return { state: "todo",
-               detail: "配置已经写好了,但看板是在那之前起的 —— 重启一次让它读到",
-               hint: "端口、工作仓路径、要盯住的代码范围这三项只在启动时读一次;加线不用重启",
+               detail: "配置已经写好了,但看板是在那之前起的",
                action: { type: "api", method: "POST", path: "/api/setup/restart", label: "重启看板",
                          confirm: "重启看板,让它读到新配置。\n\n卡、事件、账本都在库里,不会丢;在跑的线会先停下,起来后照原样恢复。" } };
     return { state: "blocked",
              detail: "先做第二步生成配置,再重启看板",
-             hint: '生成的示例配置已经带了 "gated_subtree": "."(意思是:盯住整棵代码树)。看板重启读到它之后,这一步才能做' };
+             hint: '配置里要有 "gated_subtree" 这个键' };
   }
   const revFile = join(store.DATA_DIR, "accepted_rev");
   let head = null;
@@ -707,17 +706,17 @@ function blessStep() {
                         { encoding: "utf8", windowsHide: true }).trim();
   } catch (e) {
     return { state: "unknown", detail: `读不到代码的版本(${String(e.message).slice(0, 60)})`,
-             hint: "看板目录得是一个 git 仓库 —— 「确认版本」就是记下它当前的 git 树哈希" };
+             hint: "看板目录需要是一个 git 仓库" };
   }
   let accepted = null;
   try { accepted = readFileSync(revFile, "utf8").trim(); } catch {}
   if (!accepted)
-    return { state: "todo", detail: "点一下,表示「这个版本我认可」—— 点之前会先列出版本号",
-             hint: "看板只用你确认过的代码运行执行线:开始干活前确认一次,以后每次更新看板代码再确认一次 —— 这道门(源码闸)挡的是没人确认过的代码,所以得你本人来点。命令行也行:python cli/board.py bless",
+    return { state: "todo", detail: "点一下,表示「这个版本我认可」",
+             hint: "命令行也行:python cli/board.py bless",
              action: acceptAction(acceptPreview(head, accepted)) };
   if (accepted !== head)
-    return { state: "todo", detail: "代码有更新,确认记录还停在旧版本 —— 看一眼改动,再确认一次",
-             hint: "在这之前自动拉取会拒绝起线(exit 3)—— 那是门在挡没确认过的代码,不是故障",
+    return { state: "todo", detail: "代码有更新,确认记录还停在旧版本",
+             hint: "确认之前自动拉取不会起线",
              action: acceptAction(acceptPreview(head, accepted)) };
   return { state: "done", detail: `已确认版本 ${accepted.slice(0, 12)}` + (CFG_GATED_SUBTREE === "." ? "" : `(${CFG_GATED_SUBTREE})`) };
 }
@@ -808,7 +807,7 @@ function upgradeState() {
     return { measurable: true, pending: stale.length > 0, running: BOOT_REV, on_disk: onDisk, apply: null,
              steps: stale.length ? [{ key: "sentries", title: "有通知进程还在跑旧代码", state: "todo",
                detail: `${stale.length} 个的版本是 ${[...new Set(stale.map((s) => s.rev))].join("/")},磁盘上是 ${onDisk}`,
-               hint: "看板已经告诉它们了:新版的通知进程会自己换成新代码;老版的会把这件事打给挂它的 Claude,由它停掉重跑" }] : [] };
+               hint: "新版的通知进程会自己换成新代码;老版的要由挂它的 Claude 停掉重跑" }] : [] };
   }
   const bl = blessStep();
   const g = gatedTree();
@@ -826,18 +825,18 @@ function upgradeState() {
   const steps = [
     { key: "bless", title: "确认新版本", state: bl.state === "done" ? "done" : bl.state === "blocked" ? "blocked" : "todo",
       detail: bl.state === "done" ? bl.detail
-            : pv && pv.files != null ? `上次确认 → 这次改了 ${pv.files} 个文件,按「更新」时会先列给你看`
-            : pv ? "首次确认,按「更新」时会先列出版本" : bl.detail },
+            : pv && pv.files != null ? `上次确认 → 这次改了 ${pv.files} 个文件`
+            : pv ? "首次确认" : bl.detail },
     { key: "restart", title: "重启看板", state: "todo",
       detail: `进程跑的是 ${BOOT_REV},磁盘上已经是 ${onDisk}`, hint: keep + (interrupt ? "。" + interrupt : "") },
     ...(sentries.size ? [{ key: "sentries", title: "通知进程", state: "done",
-      detail: `${sentries.size} 个连着 —— 重启后会自动重连并换成新代码` }] : []),
+      detail: `${sentries.size} 个连着,重启后会自动重连并换成新代码` }] : []),
   ];
   const apply = {
     path: needAccept ? "/api/upgrade/apply" : "/api/setup/restart", label: "更新到新代码",
     body: needAccept ? { confirm_tree: pv.tree } : {}, in_progress: c.in_progress, lines: { stop: live, resume: want },
     confirm: [`把看板从 ${BOOT_REV} 更新到 ${onDisk}。`, "",
-              ...(needAccept ? [pv.confirm] : bl.state === "done" ? ["新代码已经确认过了。"] : [`(${bl.detail})`]),
+              ...(needAccept ? [pv.confirm] : bl.state === "done" ? ["新代码已经确认过了。"] : [bl.detail]),
               "", `接着看板会自己重启:${keep}。`, ...(interrupt ? ["", interrupt] : [])].join("\n"),
   };
   return { measurable: true, pending: true, running: BOOT_REV, on_disk: onDisk, steps, apply };
@@ -851,26 +850,26 @@ function setupState() {
   const hasConfig = existsSync(CONFIG_FILE);
   const steps = [
     { key: "board", title: "看板已经起来了", state: "done",
-      detail: `你正在看它 —— 端口 ${PORT}` },
+      detail: `端口 ${PORT}` },
     { key: "config", title: "有一份属于你的配置", ...(hasConfig
         ? (() => { const drift = configDrift();
                    return drift
                      ? { state: "done", detail: `${CONFIG_FILE} —— ⚠ ${drift.join("/")} 改过了,看板还在用启动时读到的旧值`,
-                         hint: "重启看板让新值生效 —— 这几项只在启动时读一次;加线不用重启",
+                         hint: "重启看板让新值生效",
                          drift: true, action: { type: "api", method: "POST", path: "/api/setup/restart", label: "重启看板",
                                                 confirm: "重启看板,让它读到改过的配置。\n\n卡、事件、账本都在库里,不会丢;在跑的线会先停下,起来后照原样恢复。" } }
                      : { state: "done", detail: CONFIG_FILE }; })()
-        : { state: "todo", detail: "点下面的按钮,生成一份属于你的配置文件",
-            hint: "执行线、端口和工作目录路径都会写入此配置；配置已排除在版本控制之外，只保存在本机。当前使用内置默认配置，只有「开发」「协调」两条占位线。",
+        : { state: "todo", detail: "生成一份属于你的配置文件",
+            hint: "执行线、端口和工作目录路径写进这份配置，只保存在本机。",
             action: { type: "api", method: "POST", path: "/api/setup/init-config", label: "生成配置文件" } }) },
     { key: "lines", title: "定义你自己的线", ...(custom
         ? { state: "done", detail: `线: ${LINES.join(" / ")}` }
         : !hasConfig
-          ? { state: "blocked", detail: "先做上一步 —— 你的线就写在那份配置里" }
+          ? { state: "blocked", detail: "先做上一步生成配置" }
           : { state: "todo", detail: `内置的 ${builtinNames} 只是占位,换成你自己的活分几条`,
-              hint: "「线」= 一条自动领卡、一张接一张干下去的流水线,按你的工作切:比如 后端 / 前端 / 文档。用上面的「加线」框直接加,或按下面的按钮让你的 Claude 看看你最近在忙什么、替你起草几条",
+              hint: "用上面的「加线」框直接加,或按下面的按钮让你的 Claude 替你起草几条",
               action: { type: "quick", kind: "propose-lines", label: "让我的 Claude 替我起草线路" } }) },
-    { key: "bless", title: "确认当前版本(开始干活前需要)", ...blessStep() },
+    { key: "bless", title: "确认当前版本", ...blessStep() },
   ];
   const doneN = steps.filter((s) => s.state === "done").length;
   return { steps, done: doneN, total: steps.length, complete: doneN === steps.length,

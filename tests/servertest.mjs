@@ -34,6 +34,21 @@ const STUBS = mkdtempSync(join(tmpdir(), "servertest-stubs-"));
 const LINE = "alpha";
 const NL = String.fromCharCode(10);
 
+// ⭐ 这个 harness 会被当作 **verify 键**从另一条线的 loop 进程里跑起来(`verify_cmd=harness-server`;
+//   `loops/verify_lib.py` 的 verify_environment 明确把 BOARD_* / WORKER_* 原样传给验证命令)。
+//   继承下来的部署面 env 会把每一块「隔离板」变成部署板的配置 —— 2026-10-28 实测到的样子:
+//   继承的 BOARD_CONFIG 让隔离板读了部署的 fleet.config.json(线表 claude-dev/codex-dev/coord),
+//   于是 `line: "alpha"` 全被 badLine 以 400 拒掉:
+//     FAIL  J9-0 (前提) spawn-echo 席位已登记 — save=400 start=400 "未知的线名: alpha"
+//     harness itself fell over: TypeError: Cannot read properties of undefined (reading 'id')
+//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
+//     再由 board() 逐项写回本 harness 自己的值。这与下面 configPort 那段 `delete spawnEnv.BOARD_PORT`
+//     是同一个教训(继承的 env 会悄悄改掉被测的那件事),只是范围从一个键扩到整族。
+//   ⚠ 剔除也修掉两处本来就被污染的负面对照:P3 要求 BOARD_REPO **不存在**(否则 config.repo 不生效),
+//     Q2-6b 要求无身份的线的 slot env 里**没有** WORKER_ROLE_KIND。
+const HOST_ENV = Object.fromEntries(Object.entries(process.env)
+  .filter(([k]) => !/^(?:BOARD|WORKER|REVIEWER)_/i.test(k)));
+
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
   if (cond) { pass++; console.log(`  PASS  ${name}${detail ? " — " + detail : ""}`); }
@@ -115,7 +130,10 @@ async function board({ script = SERVER, env = {}, dataDir = null, files = {}, co
     env = { ...env, BOARD_CONFIG: join(DATA, "p-fleet.config.json") };
   }
   let out = "";
-  const spawnEnv = { ...process.env, BOARD_CODEX_RELEASED: "0", BOARD_CODEX_CMD: "", BOARD_PORT: String(PORT), BOARD_DATA_DIR: DATA,
+  // BOARD_CONFIG 指向一个**不存在**的文件 = 用内置缺省配置(alpha 线在那里);想测配置的 section
+  //   照旧用 opts.env / configPort 覆盖它(`...env` 在最后)。写法与 clitest、looptest 相同。
+  const spawnEnv = { ...HOST_ENV, BOARD_CONFIG: join(DATA, "none-fleet.config.json"),
+           BOARD_CODEX_RELEASED: "0", BOARD_CODEX_CMD: "", BOARD_PORT: String(PORT), BOARD_DATA_DIR: DATA,
            BOARD_DB: join(DATA, "t.db"), BOARD_ALLOW_UNPINNED: "1",
            BOARD_POOL_TEST_MODE: "1", BOARD_POOL_TEST_PROBE: "ok",
            ...(PYTHON ? { BOARD_PYTHON: PYTHON } : {}),
