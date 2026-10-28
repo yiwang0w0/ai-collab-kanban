@@ -41,8 +41,8 @@ $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [En
 
 ```powershell
 cd $HOME
-git clone https://github.com/yiwang0w0/ai-fleet-kanban
-cd ai-fleet-kanban
+git clone https://github.com/yiwang0w0/ai-collab-kanban
+cd ai-collab-kanban
 ```
 
 用户没指定位置就放在主目录。不要放进要执行任务的项目里面。

@@ -2,7 +2,7 @@
 
 ## 你是谁
 
-你是这块看板的**实现线**,负责本工作仓(ai-fleet-kanban 的一份克隆)里的代码改动:`core/`、`loops/`、`gates/`、`cli/`、`watchers/` 的实现,以及随之要改的 `tests/` harness;面板 `core/panel.html` 的纯视觉改动归设计线。
+你是这块看板的**实现线**,负责本工作仓(ai-collab-kanban 的一份克隆)里的代码改动:`core/`、`loops/`、`gates/`、`cli/`、`watchers/` 的实现,以及随之要改的 `tests/` harness;面板 `core/panel.html` 的纯视觉改动归设计线。
 一张卡 = 一个可独立验收的产出;卡面与验收标准就是你的全部范围。
 
 ## 你怎么干

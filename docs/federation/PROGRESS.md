@@ -1224,3 +1224,4 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 四通道真实样本和促销探针预算／凭据待操作者提供；本人确认候选版本后才能调用，不自动充值、重试、重派或合并。
 - 首轮 Windows CI 的 8.3 别名差异已按实际父目录规范化；补齐 Codex CLI 轮次未受强制的预算说明与显式 CLI 超时收尾，只定向复验相关项后提交完整候选 CI。
 - 2026-10-28 产品改名（展示名）：面板标题、安装说明、doctor 抬头、NOTICE、桌面包显示名与作者由「AI 舰队看板／AI Fleet Kanban」改为「AI 协作看板」，注释中的「舰队」统称按上下文改写；名字带 fleet 的技术标识（fleet.config.json、/api/fleet、core/fleet-*、ai-fleet-* 格式名、AiFleetBoard 计划任务名等）刻意不改。
+- 仓库地址、clone 目录、npm 包名、gitleaks 标题与测试示例路径改为 ai-collab-kanban（GitHub 已由操作者改名）；docs/federation 证据、交接说明与任务清单 JSON 中指向旧运行的链接刻意不改（GitHub 自动跳转）。定向验证：verify_page 自测 13、clitest 83、panelcopy／home／版本契约／桌面包 54 项通过；阻塞：无。

@@ -1,12 +1,12 @@
 # AI 协作看板
 
-[![CI](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml)
+[![CI](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml)
 
 **The acceptance-first kanban for mixed AI fleets.**
 
 **Install it by asking your AI.** On Windows, paste this to Claude Code (or another coding agent):
 
-> 帮我安装 AI 协作看板：https://github.com/yiwang0w0/ai-fleet-kanban ，按仓库里的 INSTALL.md 做，任务在 D:\my-project 里执行。
+> 帮我安装 AI 协作看板：https://github.com/yiwang0w0/ai-collab-kanban ，按仓库里的 INSTALL.md 做，任务在 D:\my-project 里执行。
 
 [`INSTALL.md`](INSTALL.md) is written for the agent: it checks the machine, clones, writes a
 config with one line per AI CLI (Claude; Codex too if you ask for it), starts the board in the
@@ -91,7 +91,7 @@ examples/  fleet config · verify registry · mock runtime adapter · demo seeds
 This development branch targets Windows. Install **Git for Windows >= 2.45.0**; the artifact pipeline verifies support for `--no-lazy-fetch` before accessing repository objects. `npm run doctor` reports an old or unsupported Git build explicitly.
 
 ```
-git clone https://github.com/yiwang0w0/ai-fleet-kanban && cd ai-fleet-kanban
+git clone https://github.com/yiwang0w0/ai-collab-kanban && cd ai-collab-kanban
 npm run setup              # doctor → config (a Claude line) → verify registry → prints what is left
 python cli/board.py bless  # confirm this version — or press 「确认当前版本」 in the panel; both show you the diff first
 npm run demo               # board up → demo chain → one mock worker round, zero tokens → a card awaits your ruling

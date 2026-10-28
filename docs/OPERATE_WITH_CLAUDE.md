@@ -5,7 +5,7 @@
 
 ## 一、把板交给它
 
-> 「帮我安装 AI 协作看板:https://github.com/yiwang0w0/ai-fleet-kanban ,按仓库里的 INSTALL.md 做,任务在 D:\my-project 里执行。」
+> 「帮我安装 AI 协作看板:https://github.com/yiwang0w0/ai-collab-kanban ,按仓库里的 INSTALL.md 做,任务在 D:\my-project 里执行。」
 
 你的 Claude 照 [`INSTALL.md`](../INSTALL.md) 做:体检、clone、`node cli/setup.mjs --repo …`(按这台电脑上找到的执行器
 生成配置;你提到 Codex 才加 `--codex`)、`node cli/start.mjs --background`(后台起板,面板按「更新」时原地重起)、
