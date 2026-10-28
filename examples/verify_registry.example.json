@@ -9,7 +9,7 @@
   "_page": "Front-end cards are the ones that cannot self-certify: no execution right means no machine output, so the machine-evidence gate correctly refuses them. These keys give the LOOP a way to produce that evidence. Point them at YOUR pages and YOUR assertions — one key per page is the intended shape. Needs a Chrome/Edge on the machine (doctor reports whether it found one).",
   "page-board-renders": ["node", "examples/verify_page.mjs",
     "--url", "http://127.0.0.1:47824",
-    "--expect", "AI 舰队看板",
+    "--expect", "AI 协作看板",
     "--expect-js", "document.querySelectorAll('.col').length >= 4",
     "--no-console-errors",
     "--wait-ms", "10000"],

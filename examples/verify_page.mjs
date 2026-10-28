@@ -1,7 +1,7 @@
 // verify_page —— 让「页面确实变成了那样」成为机器产出。
 //
 //   node examples/verify_page.mjs --url http://127.0.0.1:47824 \
-//        --expect "AI 舰队看板" --expect-js "document.querySelectorAll('.card').length > 0" \
+//        --expect "AI 协作看板" --expect-js "document.querySelectorAll('.card').length > 0" \
 //        --no-console-errors --screenshot shot.png
 //
 // **为什么需要它**:改前端的卡最难交付。worker 没有执行权,只能写「我改好了」,
@@ -239,8 +239,8 @@ function selftest() {
     const doc = { body: { innerText: text } };
     return JSON.parse(new Function("document", "return " + buildProbe(checks))(doc));
   };
-  ok("命中 → ok", run("AI 舰队看板", { expects: ["舰队"] }).results[0].ok);
-  ok("没命中 → 不 ok", !run("AI 舰队看板", { expects: ["缺席"] }).results[0].ok);
+  ok("命中 → ok", run("AI 协作看板", { expects: ["协作"] }).results[0].ok);
+  ok("没命中 → 不 ok", !run("AI 协作看板", { expects: ["缺席"] }).results[0].ok);
   ok("不应出现而确实没有 → ok", run("干净", { expectNots: ["NaN"] }).results[0].ok);
   ok("不应出现却出现了 → 不 ok", !run("等了 NaNhNaNm 前", { expectNots: ["NaN"] }).results[0].ok);
   ok("正则命中 → ok", run("版本 de7efe1", { expectRes: ["版本 [0-9a-f]{7}"] }).results[0].ok);

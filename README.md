@@ -1,4 +1,4 @@
-# AI Fleet Kanban
+# AI 协作看板
 
 [![CI](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml)
 
@@ -6,7 +6,7 @@
 
 **Install it by asking your AI.** On Windows, paste this to Claude Code (or another coding agent):
 
-> 帮我安装 AI 舰队看板：https://github.com/yiwang0w0/ai-fleet-kanban ，按仓库里的 INSTALL.md 做，任务在 D:\my-project 里执行。
+> 帮我安装 AI 协作看板：https://github.com/yiwang0w0/ai-fleet-kanban ，按仓库里的 INSTALL.md 做，任务在 D:\my-project 里执行。
 
 [`INSTALL.md`](INSTALL.md) is written for the agent: it checks the machine, clones, writes a
 config with one line per AI CLI (Claude; Codex too if you ask for it), starts the board in the
