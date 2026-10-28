@@ -386,3 +386,30 @@ test("写了指示的卡按放行状态显示：未放行说明须放行后再�
   assert.equal(badge({ ...card, released: 1 }, []), '<span class="tag tocoord">你写了指示 · 回原线继续</span>');
   assert.equal(badge({ ...card, released: 1, status: "waiting" }, []), "", "显示条件不变：不在未开始状态不出徽标");
 });
+
+test("方案确认提示：执行失败会退回原线，显式执行配置卡补取消放行一句，普通卡一字不变", () => {
+  // 直接执行面板里的 syncDecision 和同一个常量，不另抄判断；scope 只给提示框和回执框两个替身。
+  const syncDecision = (draft) => new Function("decisionChoice", "outcomeDraft", "receiptDraft",
+    panelSection("const PROFILE_RELEASE_NOTE", "\n") + "\n" +
+    panelSection("function syncDecision(scope, t){", "\nfunction upsert(") + "\nreturn syncDecision;")(...draft);
+  const hint = (card, outcome) => {
+    const h = { textContent: "" }, receipt = { value: "原始回执" };
+    const scope = {
+      querySelector: (sel) => sel === "[data-hoh]" ? h : sel === `[data-handoff-receipt="${card.id}"]` ? receipt : null,
+      querySelectorAll: () => [],
+    };
+    syncDecision([new Map([[card.id, "A"]]), new Map([[card.id, outcome]]), new Map([[card.id, "原始回执"]])])(scope, card);
+    return h.textContent;
+  };
+  const card = { id: 7, decision_package: { options: [{ key: "A", kind: "apply", ready: true }] } };
+  const profile = { execution_profile: { profile_digest: "a".repeat(64) } };
+  const note = "显式执行配置卡会同时取消放行，你重新核对放行后才会再次计费运行。";
+  const failed = "本次会记录为已尝试执行但失败：保留错误回执、把本轮文件归档到交接目录，并交回原智能体修正；不会冒充已应用。";
+  assert.equal(hint(card, "failure"), failed, "普通卡文案不变");
+  assert.equal(hint({ ...card, ...profile }, "failure"), failed + note);
+  // 执行成功只在服务端判定退回原线(confirm_destination=hand_back)时补；留在等待中交复核的不补。
+  const succeeded = "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。";
+  assert.equal(hint({ ...card, ...profile, confirm_destination: "hold_for_review" }, "success"), succeeded);
+  assert.equal(hint({ ...card, ...profile, confirm_destination: "hand_back" }, "success"), succeeded + note);
+  assert.equal(hint({ ...card, confirm_destination: "hand_back" }, "success"), succeeded, "普通卡文案不变");
+});

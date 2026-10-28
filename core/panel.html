@@ -1213,7 +1213,8 @@ const rtColor = (rt) => rt === "codex" ? "#b07dd8" : "var(--cc)";
 const HOLD_HINT = `拆出的子卡已就位,但**目标未放行前,一张也不会被领**(祖先放行不变量)。
 放行整链 = 放行这个目标(board.py release <目标id>);只想放行一部分,将其余子任务设为暂缓领取（hold）。
 在此检查内容;有问题就在输入框写明(=回原线继续),或用 [编辑]。`;
-// 显式执行配置卡(服务端附 execution_profile)退回原线时会收回放行:打回提示与方案确认提示共用这一句,其他卡不加。
+// 显式执行配置卡(服务端附 execution_profile)退回原线时会收回放行(store resolveInner 的 revokeRelease):
+// 打回、决定类、方案确认、侧栏「通过」这些会退回原线的提示共用这一句,只加在真会退回的分支上,其他卡不加。
 const PROFILE_RELEASE_NOTE = "显式执行配置卡会同时取消放行，你重新核对放行后才会再次计费运行。";
 
 let tasks = [], taskEvents = [], meta = {}, skew = 0;   // skew = server time - local time
@@ -1591,7 +1592,8 @@ function cardParts(t){
   //   is waiting for.
   if (t.human_gate && t.status !== "not_started") meta2.push(`<span class="tag hold" title="人工闸保持生效，子任务完成也不会自动解除">待人工 · 不会自动送回</span>`);
   else if (t.human_gate) meta2.push(`<span class="tag hold" title="人工闸保持生效，子任务完成也不会自动解除">不会自动送回</span>` +
-    (!t.released ? `<span class="tag hold">未放行</span>` : ""));
+    // 这一支只在未开始时走到:已有「你写了指示 · 已退回原线，放行后才会再跑」时不再重复「未放行」。
+    (!t.released && !(t.last_verdict || t.verdict) ? `<span class="tag hold">未放行</span>` : ""));
   if (t.progress_blockers?.length) meta2.push(progressTags(t));
   if (t.status === "in_progress"){
     meta2.push(`<span class="hb" data-live="hb"></span>`);
@@ -1861,11 +1863,14 @@ function syncHandoff(scope){
   //   attempts_base). The old wording "续 1 次尝试预算" described a +1 that does
   //   not exist — a cold-machine walkthrough read the API after a bounce, saw
   //   nothing "+1", and correctly could not reconcile the two.
+  // 服务端去向(legacyDisposition):写了指示=退回原线;没写时同意/通过=结案、否决=退回原线。
+  // 只给含退回分支的三句补「取消放行」;空白「同意/通过」那半句是结案,不补。
+  const releaseNote = t?.execution_profile ? "。" + PROFILE_RELEASE_NOTE : "";
   if (h) h.textContent = isQ
-    ? (on ? "同意=按这段指示交回原智能体 执行;否决=退回,写一句为什么更好"
-          : "同意=按建议执行(卡完成);否决=退回原线,写一句为什么更好")
+    ? (on ? "同意=按这段指示交回原智能体 执行;否决=退回,写一句为什么更好" + releaseNote
+          : "同意=按建议执行(卡完成);否决=退回原线,写一句为什么更好" + releaseNote)
     : (on ? "按下=**打回** —— 这段文字作为指令交回原智能体 继续;卡回到原线,下次认领按新一轮派发计算尝试预算(attempts 累计不清零,预算锚在认领时重打)" +
-            (t?.execution_profile ? "。" + PROFILE_RELEASE_NOTE : "")
+            releaseNote
           : "空白提交=**通过**(计入已完成)。需修改或继续:先在上方写明指示再提交 —— 未写指示不会产生后续动作");
 }
 
@@ -1902,17 +1907,20 @@ function syncDecision(scope, t){
       : `采用 ${opt.key} · 交回原智能体`;
   }
   const h = scope.querySelector("[data-hoh]");
+  // 服务端去向:补齐文件、执行失败、不含文件的方案一律退回原线;执行成功看 confirm_destination
+  // (服务端同一判据,通常留在等待中交复核,不退回;人工闸或子任务未完成时才退回)。只在退回的分支补「取消放行」。
+  const releaseNote = t.execution_profile ? PROFILE_RELEASE_NOTE : "";
   if (h) h.textContent = !opt ? "先阅读摘要、做法和代价,再选择一个方案。"
     : incompleteApply
-      ? "确认后不会应用或归档任何文件:只会锁定这个方案方向,并交回原智能体 补齐缺失文件。"
+      ? "确认后不会应用或归档任何文件:只会锁定这个方案方向,并交回原智能体 补齐缺失文件。" + releaseNote
     : executedApply
       ? outcome === "failure"
-        ? "本次会记录为已尝试执行但失败：保留错误回执、把本轮文件归档到交接目录，并交回原智能体修正；不会冒充已应用。"
+        ? "本次会记录为已尝试执行但失败：保留错误回执、把本轮文件归档到交接目录，并交回原智能体修正；不会冒充已应用。" + releaseNote
         : outcome === "success"
-          ? "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。"
+          ? "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。" +
+            (t.confirm_destination === "hand_back" ? releaseNote : "")
           : "先取走并自行应用上面的文件,再明确选择成功或失败并填写原始回执。"
-      : "确认后不会通过(卡回原线):选择与补充指示会原样交回原智能体 继续。" +
-        (t.execution_profile ? PROFILE_RELEASE_NOTE : "");
+      : "确认后不会通过(卡回原线):选择与补充指示会原样交回原智能体 继续。" + releaseNote;
 }
 
 function upsert(t, wanted){
@@ -4423,7 +4431,9 @@ function sideControlsBox(t, ctl){
     no.dataset.a = "reject"; no.dataset.id = String(t.id); no.dataset.kind = "decide"; acts.append(no);
   }
   box.append(ta, acts);
-  if (ctl.kind === "accept") box.append(homeEl("p", "留空按「通过」= 结案;写了一句再按 = 打回给原执行方继续。按两次才生效。"));
+  // 写了一句再按 = 退回原线:显式执行配置卡此时被收回放行,补同一句;其他卡文案不变。
+  if (ctl.kind === "accept") box.append(homeEl("p", "留空按「通过」= 结案;写了一句再按 = 打回给原执行方继续。按两次才生效。" +
+    (t.execution_profile ? PROFILE_RELEASE_NOTE : "")));
   return box;
 }
 function sideTaskStep(t, item){
