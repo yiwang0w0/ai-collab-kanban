@@ -1232,3 +1232,4 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 阻塞:无(上批 INSTALL.md 等两处措辞仍待操作者决定)。
 - 2026-10-28 补改 1c(只动 panel.html):「你写了指示」徽标按 released 分两种(未放行=已退回原线，放行后才会再跑);带 execution_profile 的卡在打回提示与方案确认提示末尾注明会取消放行、须重新核对放行;panelcopytest 加 1 条(21/21),hometest 20、panelsidetest 5、decisiontest 25、gatetest 30 全过;阻塞:无。
 - 2026-10-28 补改 1d(只动 panel.html):按服务端 resolveInner 去向核对全部退回原线提示,决定类同意/否决、补齐文件、执行失败、侧栏「通过」补取消放行一句(执行成功仅 confirm_destination=hand_back 时补,拆分提示不适用);人工闸未放行卡已有新徽标时不再重复「未放行」;panelcopytest 加 1 条(22/22),hometest 20、panelsidetest 5、decisiontest 25、gatetest 30 全过;阻塞:无。
+- 2026-10-28 补改 1e(只动 panel.html):方案确认「执行成功」提示与弹窗单选项小字按 confirm_destination 写——hold_for_review 说卡留在等待中等你复核、原智能体不接手(不补取消放行),hand_back 照旧交回原智能体做结果验证并补取消放行,字段缺失或不认识的值只说去向由服务端判定;panelcopytest 改 1 条、加 1 条(23/23),hometest 20、panelsidetest 5、decisiontest 25、gatetest 30、versiontest 26 全过;阻塞:无。

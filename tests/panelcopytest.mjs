@@ -408,8 +408,43 @@ test("方案确认提示：执行失败会退回原线，显式执行配置卡�
   assert.equal(hint(card, "failure"), failed, "普通卡文案不变");
   assert.equal(hint({ ...card, ...profile }, "failure"), failed + note);
   // 执行成功只在服务端判定退回原线(confirm_destination=hand_back)时补；留在等待中交复核的不补。
+  // 文案也按同一去向说：留在等待中的不说交回原智能体；拿不到去向时不猜，也不补取消放行。
   const succeeded = "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。";
-  assert.equal(hint({ ...card, ...profile, confirm_destination: "hold_for_review" }, "success"), succeeded);
+  const held = "本次会记录为执行成功：保留回执、把文件归档到交接目录；卡留在等待中，等你复核结果，原智能体不会接手。";
+  const unknown = "本次会记录为执行成功：保留回执、把文件归档到交接目录；卡的后续去向由服务端判定，提交后以卡片状态为准。";
+  assert.equal(hint({ ...card, ...profile, confirm_destination: "hold_for_review" }, "success"), held);
+  assert.equal(hint({ ...card, confirm_destination: "hold_for_review" }, "success"), held, "普通卡同样留在等待中");
+  for (const c of [card, { ...card, ...profile }])
+    assert.ok(!hint({ ...c, confirm_destination: "hold_for_review" }, "success").includes("交回原智能体"),
+      "留在等待中的卡不交回原智能体，提示不能这样说");
   assert.equal(hint({ ...card, ...profile, confirm_destination: "hand_back" }, "success"), succeeded + note);
   assert.equal(hint({ ...card, confirm_destination: "hand_back" }, "success"), succeeded, "普通卡文案不变");
+  // 旧服务端不给 confirm_destination；null 或不认识的值同样只给中性说法。
+  for (const dest of [undefined, null, "close"]) {
+    const text = hint({ ...card, ...profile, ...(dest === undefined ? {} : { confirm_destination: dest }) }, "success");
+    assert.equal(text, unknown, String(dest));
+    assert.ok(!text.includes(note), "去向未知不补取消放行：" + String(dest));
+  }
+});
+
+test("方案弹窗「执行成功」小字按服务端去向写，拿不到去向时用中性说法", () => {
+  // 直接执行面板里的 openDecisionModal，只换掉 DOM 与周边函数，看它实际写出的小字。
+  const small = (t) => {
+    const box = { innerHTML: "", querySelector: () => null };
+    const context = { draftVersions: new Map(), decisionSnapshot: null, structuredClone,
+      document: { getElementById: (id) => id === "decision-modal-b" ? box : { textContent: "" } },
+      decisionPanel: () => "", verdictDraft: new Map(), receiptDraft: new Map(), syncHandoff() {},
+      decisionModal: { querySelector: () => null, classList: { add() {} } } };
+    vm.createContext(context);
+    vm.runInContext(panelSection("function openDecisionModal(t){", '\ndocument.addEventListener("dblclick"'), context);
+    context.openDecisionModal({ id: 7, aggregate_version: 1, subject: "s", ...t });
+    const m = box.innerHTML.match(/<span>执行成功<small>([^<]*)<\/small><\/span>/);
+    assert.ok(m, "未找到执行成功选项");
+    return m[1];
+  };
+  assert.equal(small({ confirm_destination: "hold_for_review" }), "已应用;留在等待中,等你复核结果");
+  assert.ok(!small({ confirm_destination: "hold_for_review" }).includes("交回"), "留在等待中的卡不说交回智能体");
+  assert.equal(small({ confirm_destination: "hand_back" }), "已应用;交回智能体做结果验证");
+  for (const t of [{}, { confirm_destination: null }, { confirm_destination: "close" }])
+    assert.equal(small(t), "已应用;后续去向由服务端判定", JSON.stringify(t));
 });

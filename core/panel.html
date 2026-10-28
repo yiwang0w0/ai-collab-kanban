@@ -1320,12 +1320,18 @@ function openDecisionModal(t){
   const staleDraft=draftVersions.get(t.id)!==t.aggregate_version;
   document.getElementById("decision-modal-t").textContent = `#${t.id} 最终裁定 — ${t.subject}`;
   const box = document.getElementById("decision-modal-b");
+  // 「执行成功」小字按服务端去向写(confirm_destination,与 syncDecision 提示同一判据);
+  // 去向缺失(旧服务端)或不认识的值不猜,用中性说法。
+  const successDest = t?.confirm_destination;
+  const successNote = successDest === "hold_for_review" ? "已应用;留在等待中,等你复核结果"
+    : successDest === "hand_back" ? "已应用;交回智能体做结果验证"
+    : "已应用;后续去向由服务端判定";
   box.innerHTML = (staleDraft ? '<p role="alert">任务已更新，旧裁定草稿不能提交。请先保留需要的文字，再重新载入页面并核对任务。</p>' : "") + decisionPanel(t) +
     `<div class="hf-receipt" data-receipt-wrap="${t.id}" hidden>` +
       `<div class="hf-outcome-title">执行结果(必选)</div>` +
       `<div class="hf-outcomes" role="radiogroup" aria-label="执行结果">` +
         `<label><input type="radio" name="hf-outcome-${t.id}" data-handoff-outcome="${t.id}" value="success">` +
-          `<span>执行成功<small>已应用;交回智能体做结果验证</small></span></label>` +
+          `<span>执行成功<small>${successNote}</small></span></label>` +
         `<label class="failure"><input type="radio" name="hf-outcome-${t.id}" data-handoff-outcome="${t.id}" value="failure">` +
           `<span>执行失败<small>算已尝试;未应用;交回智能体修正</small></span></label></div>` +
       `<label for="hf-receipt-${t.id}">执行回执(必填,原文保留)</label>` +
@@ -1909,6 +1915,8 @@ function syncDecision(scope, t){
   const h = scope.querySelector("[data-hoh]");
   // 服务端去向:补齐文件、执行失败、不含文件的方案一律退回原线;执行成功看 confirm_destination
   // (服务端同一判据,通常留在等待中交复核,不退回;人工闸或子任务未完成时才退回)。只在退回的分支补「取消放行」。
+  // 执行成功的提示照 confirm_destination 三分:hold_for_review 说留在等待中、不交回原智能体;hand_back 照旧;
+  // 字段缺失(旧服务端)或不认识的值只说由服务端判定,不猜去向。
   const releaseNote = t.execution_profile ? PROFILE_RELEASE_NOTE : "";
   if (h) h.textContent = !opt ? "先阅读摘要、做法和代价,再选择一个方案。"
     : incompleteApply
@@ -1917,8 +1925,11 @@ function syncDecision(scope, t){
       ? outcome === "failure"
         ? "本次会记录为已尝试执行但失败：保留错误回执、把本轮文件归档到交接目录，并交回原智能体修正；不会冒充已应用。" + releaseNote
         : outcome === "success"
-          ? "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。" +
-            (t.confirm_destination === "hand_back" ? releaseNote : "")
+          ? t.confirm_destination === "hold_for_review"
+            ? "本次会记录为执行成功：保留回执、把文件归档到交接目录；卡留在等待中，等你复核结果，原智能体不会接手。"
+            : t.confirm_destination === "hand_back"
+              ? "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。" + releaseNote
+              : "本次会记录为执行成功：保留回执、把文件归档到交接目录；卡的后续去向由服务端判定，提交后以卡片状态为准。"
           : "先取走并自行应用上面的文件,再明确选择成功或失败并填写原始回执。"
       : "确认后不会通过(卡回原线):选择与补充指示会原样交回原智能体 继续。" + releaseNote;
 }
