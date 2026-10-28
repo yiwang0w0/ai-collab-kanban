@@ -1703,7 +1703,7 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     except Exception: pass
     argv = codex_argv(model, effort, last_path)
     prompt = build_prompt(t, worker, evidence_path, prev_tail, attempt)
-    env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
+    env = codex_runtime.subscription_environment(os.environ); env["PYTHONIOENCODING"] = "utf-8"
     t0 = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         w = run_task_process(t, worker, attempt, "codex", model, effort, argv, env, input=prompt)
@@ -1793,7 +1793,8 @@ def probe_runtime(live=False):
     os.makedirs(DATA, exist_ok=True)
     try:
         w = subprocess.run(argv, input="Reply with exactly: PROBE-OK", capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=600, cwd=REPO)
+                           text=True, encoding="utf-8", errors="replace", timeout=600, cwd=REPO,
+                           env=codex_runtime.subscription_environment(os.environ))
     except Exception as e:
         print(f"[probe] ⛔ 实调用抛异常: {e}"); return 1
     v2 = judge_codex(w.returncode, w.stdout, last_path)

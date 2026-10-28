@@ -624,6 +624,7 @@ def review_one(t, vr=None):
     env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
     if RUNTIME == "codex":
         try:
+            env = codex_runtime.subscription_environment(env)
             argv = codex_runtime.argv(CODEX_CLI, MODEL, EFFORT, out, REPO,
                                        mode="read-only", schema=CODEX_SCHEMA)
             r = subprocess.run(argv, input=prompt, capture_output=True, text=True, encoding="utf-8",

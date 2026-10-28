@@ -9,6 +9,7 @@ import datetime
 import io
 import json
 import os
+import re
 import threading
 
 
@@ -49,6 +50,24 @@ def assert_no_bypass(argv):
         raise RuntimeError(f"bypass 旗被组装进 argv(实现 bug): {hit}")
 
 
+def subscription_environment(env):
+    """复用验证环境过滤；仅恢复所选 Codex 认证目录，不把循环令牌交给 CLI。
+
+    调用方先用 profileEnvironment 剔除全部配置登记的凭据。本函数再沿用
+    verify_environment 的供应商过滤，保留 CODEX_HOME 供 CLI 自己认证；这不构成路径隔离。
+    """
+    from verify_lib import verify_environment
+    clean = verify_environment(env)
+    for key in list(clean):
+        if re.match(r"^(?:BOARD_|WORKER_|REVIEWER_)", key, re.I) and re.search(
+                r"(?:TOKEN|API_KEY|SECRET_KEY|PASSWORD)$", key, re.I):
+            clean.pop(key)
+    home = next((value for key, value in env.items() if key.upper() == "CODEX_HOME"), None)
+    if home:
+        clean["CODEX_HOME"] = home
+    return clean
+
+
 def argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None):
     """组装 codex exec argv。
 
@@ -64,6 +83,7 @@ def argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None):
         "-c", f"model_reasoning_effort={effort}",
         "-c", "shell_environment_policy.inherit=core",
         "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", 'forced_login_method="chatgpt"',
         "-c", "tools.web_search=false",
         "--ignore-user-config",
         "--ephemeral",
