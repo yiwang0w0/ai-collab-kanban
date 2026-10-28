@@ -1598,10 +1598,9 @@ function reapExpired(db) {
   } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
   return n;
 }
-/** 回收显式计费任务只解除持有，不自动授予下一次调用许可。 */
-function holdExplicitProfileRecovery(db, task, reason) {
+/** 回收显式计费任务只解除持有，不自动授予下一次调用许可。打回、重开时传入对应说明，语义相同。 */
+function holdExplicitProfileRecovery(db, task, reason, note = "本轮执行已中断，结果未知。已取消放行，请本人核对后重新放行。") {
   if (!taskExecutionProfile(db, task.id)) return null;
-  const note = "本轮执行已中断，结果未知。已取消放行，请本人核对后重新放行。";
   db.prepare("UPDATE tasks SET released=0, result=CASE WHEN result IS NULL OR result='' THEN ? ELSE result || ? END WHERE id=? AND status='not_started' AND worker IS NULL")
     .run(note, "\n\n—— 当前运行状态 ——\n" + note, Number(task.id));
   return { run_id: task.run_id, recovery_required: true, result_state: "unknown", recovery_reason: reason };
@@ -2185,6 +2184,9 @@ function resolveInner(db, { id, verdict, note = "", resolvedBy = "human", verify
         String(resolvedBy), String(resolvedBy),
         String(resolvedBy), String(resolvedBy),
         now(), Number(id));
+  // 显式计费任务退回原线（打回、通过并备注）也收回放行：再次计费运行前须本人重新核对放行。
+  if (next === "not_started" && t.released)
+    holdExplicitProfileRecovery(db, t, "hand_back", "已退回原线，未自动重跑。已取消放行，请本人核对后重新放行。");
   // ⭐ Layered human_gate unlock (ruling: "auto review should not be absolutely barred
   //   from opening for a human" — the old law was human-only): a human ruling
   //   removes all locks / an auto ruling removes only src='detect' (the literal
@@ -2953,6 +2955,9 @@ function reopenInner(db, { id, line }) {
                       line=CASE WHEN ? IS NULL THEN line ELSE ? END,
                       ${stamp ? stamp.set + ", " : ""}updated_at=? WHERE id=?`
   ).run(line || null, line || null, ...(stamp ? [stamp.arg] : []), now(), Number(id));
+  // 重开同样回到流程：显式计费任务收回放行，须本人重新核对放行后才能再次计费领取。
+  if (t.released)
+    holdExplicitProfileRecovery(db, t, "reopen", "已重新打开，未自动重跑。已取消放行，请本人核对后重新放行。");
   return { id: Number(id), status: "not_started", changed: true, from: t.status };
 }
 

@@ -26,7 +26,7 @@ const cases=[
  {line:"claudeapi",runtime:"claude",model:"claude-haiku-4-5",effort:"high",profile:"claude-api"},
  {line:"gptapi",runtime:"codex",model:"gpt-5.3-codex-spark",effort:"xhigh",profile:"gpt-api"},
 ];
-const seats=new Map(),spawnCounts=new Map();let child,callback,base,operator,shared,output="";
+const seats=new Map(),spawnCounts=new Map(),customCredential=new Map();let child,callback,base,operator,shared,output="";
 async function api(token,method,path,body){
  body=await fixtureVersion(base,token,method,path,body);
  const response=await fetch(base+path,{method,headers:{"Content-Type":"application/json",...(token?{"X-Board-Token":token}:{})},...(method==="GET"?{}:{body:JSON.stringify(body??{})}),signal:AbortSignal.timeout(5000)});
@@ -44,10 +44,10 @@ before(async()=>{
  mkdirSync(REPO);
  REPO=directoryIdentity(REPO).root;
  writeFileSync(CONTROL,"{}");
- callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
+ callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);customCredential.set(value.worker,value.custom_credential);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
  await new Promise(r=>callback.listen(0,"127.0.0.1",r));
  const stub=join(TMP,"受管替身.py");
- writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN','')}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
+ writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN',''),'custom_credential':'GPT_PROJECT_KEY' in os.environ}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
  const original=join(ROOT,"core/server.mjs"),source=readFileSync(original,"utf8"),anchor='[loopScriptOf(line), "--as", line,';
  assert.equal(source.split(anchor).length,2,"精确替换唯一宿主入口后才允许运行夹具");
  const fixture=join(TMP,"server.mjs");
@@ -55,14 +55,14 @@ before(async()=>{
  const listener=netServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));const port=listener.address().port;await new Promise(r=>listener.close(r));base=`http://127.0.0.1:${port}`;
  const config=join(TMP,"fleet.json");
  writeFileSync(config,JSON.stringify({lines:cases.map(row=>({id:row.line})),roles:[],routes:["default"],repo:REPO,max_parallel:1,
-  execution_profiles:[{id:"claude-cli",budget},{id:"codex-cli",budget},{id:"claude-api",enabled:true,budget},{id:"gpt-api",enabled:true,budget,provider_spend_limit_confirmed:true}]}));
+  execution_profiles:[{id:"claude-cli",budget},{id:"codex-cli",budget},{id:"claude-api",enabled:true,budget},{id:"gpt-api",enabled:true,budget,provider_spend_limit_confirmed:true,credential_env:"GPT_PROJECT_KEY"}]}));
  // 保留锁定时已有的 CLI 选择；设置接口仍须拒绝未经许可的新订阅配置。
  writeFileSync(join(TMP,"worker_settings.json"),JSON.stringify(Object.fromEntries(cases.map(row=>[row.line,{rev:0,desired_running:false,agents:[{runtime:row.runtime,model:row.model,effort:row.effort,window:false,execution_profile_id:row.profile}]}]))));
  const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(BOARD_|WORKER_|REVIEWER_|REORG_)/.test(key)));
  child=spawn(process.execPath,[fixture],{windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...environment,
   BOARD_CONFIG:config,BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"board.db"),BOARD_REPO:REPO,BOARD_PORT:String(port),BOARD_PYTHON:PY,
   BOARD_ALLOW_UNPINNED:"1",BOARD_NO_RESTORE:"1",BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_CODEX_RELEASED:"0",BOARD_CODEX_CMD:process.execPath,
-  WORKER_CLAUDE_CLI:process.execPath,KANBAN_ANTHROPIC_API_KEY:"fixture-anthropic-only",KANBAN_OPENAI_API_KEY:"fixture-openai-only",
+  WORKER_CLAUDE_CLI:process.execPath,KANBAN_ANTHROPIC_API_KEY:"fixture-anthropic-only",KANBAN_OPENAI_API_KEY:"fixture-openai-only",GPT_PROJECT_KEY:"fixture-openai-custom",
   BOARD_FOUR_HTTP_CALLBACK:`http://127.0.0.1:${callback.address().port}/`,BOARD_FOUR_HTTP_CONTROL:CONTROL,BOARD_CRASH_BACKOFF_MS:"100",PYTHONUTF8:"1",PYTHONDONTWRITEBYTECODE:"1"}});
  child.stdout.on("data",chunk=>output=(output+chunk).slice(-50000));child.stderr.on("data",chunk=>output=(output+chunk).slice(-50000));
  let ready=false;for(let i=0;i<100;i++){try{if((await fetch(base+"/health",{signal:AbortSignal.timeout(500)})).ok){ready=true;break;}}catch{}if(child.exitCode!==null)break;await delay(100);}assert.ok(ready,output);
@@ -75,7 +75,7 @@ before(async()=>{
 after(async()=>{
  if(child?.exitCode===null){for(const row of cases)await api(operator,"POST",`/api/workers/${row.line}/stop`,{}).catch(()=>{});const done=new Promise(r=>child.once("exit",r));child.kill();await done;}
  if(callback)await new Promise(r=>callback.close(r));
- for(const secret of [...seats.values(),"fixture-anthropic-only","fixture-openai-only"])assert.equal(output.includes(secret),false,"凭据不得出现在宿主日志");
+ for(const secret of [...seats.values(),"fixture-anthropic-only","fixture-openai-only","fixture-openai-custom"])assert.equal(output.includes(secret),false,"凭据不得出现在宿主日志");
  const inside=relative(resolve(tmpdir()),resolve(TMP));assert.ok(inside&&!inside.startsWith("..")&&!isAbsolute(inside));rmSync(TMP,{recursive:true,force:true});
 });
 
@@ -89,7 +89,11 @@ test("四配置公开事实与建卡预览保持私密边界，API 不借用订�
  assert.equal((await api(operator,"POST","/api/workers/codexcli/settings",{agents:[legacy],rev:locked.settings.rev})).status,400,"未解禁的旧订阅保存仍拒绝");
  const created=await create(cases.find(row=>row.line==="claudeapi"));assert.equal(created.released,false);assert.equal(created.max_attempts,1);assert.equal(created.execution_profile.workspace.path,REPO);assert.equal(created.execution_profile.channel,"claude_agent_sdk");
  const wire=JSON.stringify([current.execution_profiles,created.execution_profile]);
- for(const hidden of ["auth_home","credential_env","KANBAN_ANTHROPIC_API_KEY","KANBAN_OPENAI_API_KEY","fixture-anthropic-only","fixture-openai-only",join(TMP,"auth")])assert.equal(wire.includes(hidden),false,hidden);
+ for(const hidden of ["auth_home","credential_env","KANBAN_ANTHROPIC_API_KEY","KANBAN_OPENAI_API_KEY","fixture-anthropic-only","fixture-openai-only","GPT_PROJECT_KEY","fixture-openai-custom",join(TMP,"auth")])assert.equal(wire.includes(hidden),false,hidden);
+});
+
+test("自定义名称的 API 凭据不进入 CLI 或另一 API 执行线的宿主环境",()=>{
+ for(const line of ["claudecli","claudeapi","gptapi"])assert.equal(customCredential.get(line),false,line+" 宿主不应看到自定义凭据变量");
 });
 
 test("本人确认摘要后才放行，受管绑定领取并把 SDK 观察和报告回到原卡",async()=>{

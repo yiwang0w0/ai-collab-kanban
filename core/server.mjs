@@ -1766,7 +1766,7 @@ function slotEnv(line, k, ag, isReview) {
              ...(lg ? { WORKER_ANCHOR: lg.anchor } : {}),
            }) };
   if(profile){delete environment.WORKER_SESSION;delete environment.WORKER_FORK_FROM;delete environment.WORKER_ANCHOR;}
-  const result=profileEnvironment(profile,{env:environment,repoRoot:REPO_ROOT,dataDir:store.DATA_DIR});
+  const result=profileEnvironment(profile,{env:environment,repoRoot:REPO_ROOT,dataDir:store.DATA_DIR,profiles:EXECUTION_PROFILES});
   if(profile)result.WORKER_EXECUTION_PROFILE=JSON.stringify(profileForAgent(ag,line));
   return result;
 }

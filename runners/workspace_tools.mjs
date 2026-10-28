@@ -89,7 +89,8 @@ export function createWorkspaceTools(job){
    if(name==='write_file')return write(args.path,args.content,args.expected_sha256);
    const current=read(args.path);
    if(typeof args.old_text!=='string'||!args.old_text||typeof args.new_text!=='string'||current.text.split(args.old_text).length!==2)throw Error('WORKSPACE_EDIT_NOT_UNIQUE');
-   return write(args.path,current.text.replace(args.old_text,args.new_text),args.expected_sha256);
+   // 函数形式的替换值按字面写入，不解释 $$、$&、$`、$' 等替换序列。
+   return write(args.path,current.text.replace(args.old_text,()=>args.new_text),args.expected_sha256);
   },
  };
 }

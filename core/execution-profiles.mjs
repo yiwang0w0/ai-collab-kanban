@@ -105,8 +105,8 @@ export function publicExecutionProfiles(profiles,{env=process.env,runtimes=[],re
  });
 }
 
-/** 返回宿主 loop 环境；SDK 子进程仍须移除 BOARD／WORKER 身份秘密。 */
-export function profileEnvironment(profile,{env=process.env,repoRoot,dataDir}={}){
+/** 返回宿主 loop 环境；SDK 子进程仍须移除 BOARD／WORKER 身份秘密。profiles 传入全部配置，以剔除每个配置的凭据变量。 */
+export function profileEnvironment(profile,{env=process.env,repoRoot,dataDir,profiles=[]}={}){
  if(profile==null)return {...env};
  if(!profile.enabled)fail("所选执行配置尚未启用");
  if(repoRoot&&(inside(repoRoot,profile.auth_home)||inside(profile.auth_home,repoRoot)))fail("认证目录与工作仓必须分离");
@@ -114,9 +114,11 @@ export function profileEnvironment(profile,{env=process.env,repoRoot,dataDir}={}
  if(api(profile)&&!valuePresent(envValue(env,profile.credential_env)))fail("API 通道缺少独立凭据，未启动调用");
  if(profile.channel==="codex_sdk_api"&&!profile.provider_spend_limit_confirmed)fail("本地 SDK 仅控制时限与步数；请先在供应商项目设置金额上限并由操作者明确确认，未启动调用");
  if(profile.channel==="codex_cli"&&(envValue(env,"BOARD_CODEX_RELEASED")!=="1"||!valuePresent(envValue(env,"BOARD_CODEX_CMD"))))fail("Codex CLI 尚未获原订阅座席许可或缺少命令配置");
+ // 所有配置的凭据变量（含自定义名称）都不进宿主环境；当前 API 配置只在下方按标准名注入一次。
+ const credentialNames=new Set([profile,...profiles].map(item=>item?.credential_env?.toUpperCase()).filter(Boolean));
  const output=Object.fromEntries(Object.entries(env).filter(([key,value])=>typeof value==="string"&&
   !/^(?:ANTHROPIC_|OPENAI_|AZURE_OPENAI_|CLAUDE_CODE_(?:OAUTH_TOKEN|USE_)|CLAUDE_CONFIG_DIR$|CODEX_(?:API_KEY|HOME)$|KANBAN_.*(?:KEY|TOKEN)$)/i.test(key)&&
-  key.toUpperCase()!==profile.credential_env?.toUpperCase()&&
+  !credentialNames.has(key.toUpperCase())&&
   (/^(?:BOARD_|WORKER_|REVIEWER_)/.test(key)||!/(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN|_SECRET_KEY|_PASSWORD)$/i.test(key))));
  if(profile.runtime==="claude")output.CLAUDE_CONFIG_DIR=profile.auth_home;else output.CODEX_HOME=profile.auth_home;
  if(api(profile))output[profile.runtime==="claude"?"ANTHROPIC_API_KEY":"OPENAI_API_KEY"]=envValue(env,profile.credential_env);

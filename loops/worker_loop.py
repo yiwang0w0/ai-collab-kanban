@@ -192,6 +192,9 @@ PROFILE_MODE = EXECUTION_PROFILE is not None
 API_MODE = PROFILE_MODE and EXECUTION_PROFILE.get("channel") in ("claude_agent_sdk", "codex_sdk_api")
 if PROFILE_MODE:
     SESSION = FORK_FROM = ANCHOR = None  # 不继承另一认证通道的旧会话或锚点。
+# API 通道的供应商密钥移出宿主环境，只显式交给 SDK 运行器；登记验证、git 等宿主子进程都拿不到。
+_API_CREDENTIALS = {key: os.environ.pop(key) for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY")
+                    if key in os.environ} if API_MODE else {}
 # ── 线的身份(v0.22.0,fleet.config `lines[].role`,由 server 的 slotEnv 降下来)────────
 #   kind:implement(默认)= 干活;review = 只读、只核对、只判断,评审文本就是交付物。
 #   tools:write(默认)/ read-only —— **唯一被机器强制的部分**:Claude 座席进 argv
@@ -1474,7 +1477,7 @@ def profile_gate(check_sdk=False):
             return "API 轮次预算须为正整数，未领取任务"
         key = "ANTHROPIC_API_KEY" if RUNTIME == "claude" else "OPENAI_API_KEY"
         home = "CLAUDE_CONFIG_DIR" if RUNTIME == "claude" else "CODEX_HOME"
-        if not os.environ.get(key, "").strip() or not os.environ.get(home):
+        if not _API_CREDENTIALS.get(key, "").strip() or not os.environ.get(home):
             return "API 通道缺少独立凭据或认证目录，未领取任务"
         if p["channel"] == "codex_sdk_api" and p.get("provider_spend_limit_confirmed") is not True:
             return "GPT API 需先确认供应商项目金额上限；本地只控制时限和执行步数"
@@ -1673,7 +1676,7 @@ def run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
         json.dump(job, target, ensure_ascii=False, allow_nan=False)
     runner = os.path.join(CODE_ROOT, "runners", "claude_agent.py" if RUNTIME == "claude" else "codex_agent.mjs")
     command = sys.executable if RUNTIME == "claude" else os.environ.get("WORKER_NODE", "node")
-    env = provider_environment(os.environ, p["channel"])
+    env = provider_environment({**os.environ, **_API_CREDENTIALS}, p["channel"])
     terminal = run_api_process(t, worker, attempt, model, effort, [command, runner, "--job", job_file], env)
     raw = terminal.get("usage") or {}
     LAST_ACCT = {"sid": terminal.get("session_id"), "t0": None, "cost_usd": terminal.get("cost_usd"),
@@ -1933,14 +1936,15 @@ def codex_selftest():
 
 
 def budget_args():
-    """单次调用的美元帽 argv: min(每尝试帽, 今日全局余额),下限 $1(让在途卡收尾)。
+    """单次调用的美元帽 argv: min(每尝试帽, 今日全局余额),旧配置下限 $1(让在途卡收尾)。
+    显式执行配置不加下限:传给 CLI 的上限不高于本人放行时确认的金额。
     帽=0/空 表示明示关闸 —— 关的是单次帽,全局预算的领卡前置查仍在主循环。
     ⚠ 默认关(见 gates_lib 与 INCIDENT-8):**订阅制额度不能用美元度量**。"""
     cap = os.environ.get("WORKER_MAX_BUDGET_USD", "0")
     if cap in ("0", ""):
         return []
     rem, _spent, _n, _cap = gates_lib.remaining_today(DATA)
-    eff = max(1.0, min(float(cap), rem))
+    eff = min(float(cap), rem) if PROFILE_MODE else max(1.0, min(float(cap), rem))
     return ["--max-budget-usd", "%.2f" % eff]
 
 

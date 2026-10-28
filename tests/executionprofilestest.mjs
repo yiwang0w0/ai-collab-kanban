@@ -69,6 +69,18 @@ test("API 子环境只注入本家独立凭据，保留宿主绑定并设置明�
  assert.throws(()=>profileEnvironment(get(profiles,"gpt-api"),{env:{...original,KANBAN_OPENAI_API_KEY:""},repoRoot,dataDir}),{code:"BAD_INPUT"});
 });
 
+test("自定义凭据变量名只按标准名注入本家 API，CLI 与另一 API 通道都拿不到",()=>{
+ const profiles=load([{id:"claude-cli",budget},{id:"codex-cli",budget},{id:"claude-api",enabled:true,budget,credential_env:"CLAUDE_PROD_KEY"},{id:"gpt-api",enabled:true,budget,credential_env:"gpt_project_key",provider_spend_limit_confirmed:true}]);
+ const host={...env,CLAUDE_PROD_KEY:"sk-ant-FAKE-A",GPT_PROJECT_KEY:"sk-proj-FAKE-B"};
+ for(const id of ["claude-cli","codex-cli","claude-api","gpt-api"]){
+  const child=profileEnvironment(get(profiles,id),{env:host,repoRoot,dataDir,profiles});
+  for(const name of ["CLAUDE_PROD_KEY","GPT_PROJECT_KEY"])assert.equal(Object.hasOwn(child,name),false,id+" 不应带 "+name);
+  if(id==="claude-api"){assert.equal(child.ANTHROPIC_API_KEY,host.CLAUDE_PROD_KEY);assert.equal(Object.hasOwn(child,"OPENAI_API_KEY"),false);}
+  else if(id==="gpt-api"){assert.equal(child.OPENAI_API_KEY,host.GPT_PROJECT_KEY);assert.equal(Object.hasOwn(child,"ANTHROPIC_API_KEY"),false);}
+  else for(const name of ["ANTHROPIC_API_KEY","OPENAI_API_KEY"])assert.equal(Object.hasOwn(child,name),false,id+" 不应带 "+name);
+ }
+});
+
 test("认证目录只接受明确绝对路径，禁止通道之间或与工作仓重叠",()=>{
  assert.throws(()=>load([{id:"claude-api",auth_home:"相对目录"}]),{code:"BAD_INPUT"});
  assert.throws(()=>load([{id:"claude-api",auth_home:join(dataDir,"auth","claude-cli")}]),{code:"BAD_INPUT"});

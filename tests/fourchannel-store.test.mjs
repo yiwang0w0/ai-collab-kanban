@@ -110,3 +110,25 @@ test("停止或租约到期后显式配置须重新放行，旧卡回收与既�
  const reaped=store.events(f.db,{taskId:expiredProfile}).find(event=>event.kind==="reap");assert.equal(reaped.detail.result_state,"unknown");assert.equal(reaped.detail.recovery_reason,"lease_expired");
  assert.equal(store.reapExpired(f.db),0,"重复收尾不产生新的回收或调用许可");
 });
+
+test("显式配置卡打回、通过并备注或重开后撤回放行，同一配置须本人重新放行才能再次领取",t=>{
+ const f=fixture(t),pool=()=>store.claim(f.db,"sample",5,{line:"sample",runtime:"claude",agentInstanceId:randomUUID(),executionProfile:binding,
+  runContext:{role_id:"sample",role_kind:"implement",tools:"write",execution_profile:binding}});
+ const deliver=(id,profile=binding)=>{const run=f.claim(id,{profile});store.report(f.db,{id,worker:run.worker,runId:run.task.run_id,outcome:"done",evidence:"合成结果，不调用模型"});};
+ const version=id=>store.get(f.db,id).aggregate_version;
+ for(const [label,act] of [
+  ["打回并备注",id=>store.resolve(f.db,{id,verdict:"reject",note:"请补一处说明",expectedVersion:version(id)})],
+  ["通过并备注",id=>store.resolve(f.db,{id,verdict:"approve",note:"通过，备注一句",expectedVersion:version(id)})],
+  ["关闭后重开",id=>{store.resolve(f.db,{id,verdict:"approve",expectedVersion:version(id)});assert.equal(store.get(f.db,id).status,"done");store.reopen(f.db,{id,expectedVersion:version(id)});}],
+ ]){
+  const id=f.add(binding);deliver(id);act(id);
+  const back=store.get(f.db,id);assert.equal(back.status,"not_started",label);assert.equal(back.released,false,label);
+  assert.match(back.result,/合成结果/,label);assert.match(back.result,/重新放行/,label);
+  assert.equal(store.events(f.db,{taskId:id}).at(-1).detail.released,false,label+"：历史记录撤回后的放行状态");
+  assert.equal(pool(),null,label+"：同一配置不能不经重新放行就再次计费领取");
+  store.setReleased(f.db,{id,released:true,expectedVersion:back.aggregate_version,executionProfile:binding});
+  assert.equal(pool()?.id,id,label+"：本人重新放行后可再领取");
+ }
+ const legacy=f.add();deliver(legacy,null);store.resolve(f.db,{id:legacy,verdict:"reject",note:"旧卡打回",expectedVersion:version(legacy)});
+ assert.equal(store.get(f.db,legacy).released,true,"旧无配置卡打回后仍按原规则保持放行");
+});
