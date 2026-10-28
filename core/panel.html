@@ -299,12 +299,6 @@
   .cfg .note{color:var(--warn);font-size:10.5px;margin-top:8px;min-height:13px}
   button.armed{background:var(--accent)!important;color:#1a1a1a!important;border-color:var(--accent)!important;font-weight:700}
   #cfg{width:auto}
-  #cfg fieldset.agent{border:1px solid var(--line);border-radius:var(--r-sm);padding:6px 9px 9px;margin:0 0 10px}
-  #cfg fieldset.agent legend{font-size:11px;font-weight:600;padding:0 4px}
-  #cfg legend .sub{color:var(--dim);font-weight:400;font-size:10px;margin-left:5px}
-  #cfg legend .ax{margin-left:8px;padding:0 6px;font-size:10px;color:var(--bad)}
-  #cfg .duo{display:flex;gap:7px}
-  #cfg .duo>span{flex:1;min-width:0}
   #cfg .runtime-state{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-1) var(--sp-2);margin:var(--sp-2) 0 var(--sp-1);font-size:var(--fs-sm)}
   #cfg .runtime-state dt{color:var(--dim);font-weight:400}
   #cfg .runtime-state dd{margin:0;overflow-wrap:anywhere}
@@ -616,14 +610,9 @@
   #cfg.show{display:block}
   .cfg-head{display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-1)}
   .cfg-head h4{margin:0;flex:1;font-size:var(--fs-lg)}
-  #cfg .cfg-agents{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(300px,100%),1fr));gap:var(--sp-3);margin-top:var(--sp-3)}
-  #cfg fieldset.agent{margin:0;padding:var(--sp-2) var(--sp-3) var(--sp-3);background:var(--panel);border-radius:var(--r-md);min-width:0}
-  #cfg fieldset.agent legend{font-size:var(--fs-sm)}
   #cfg .cap{font-size:var(--fs-sm)}
   #cfg .ends{font-size:var(--fs-sm)}
-  #cfg legend .sub{display:inline;padding:0}
-  #cfg legend .ax{min-height:24px;padding:0 var(--sp-2);margin-left:var(--sp-2)}
-  #cfg #cfg-add{width:auto;margin-top:var(--sp-3)}
+  #cfg #cfg-add{width:auto;margin-top:0}
   #cfg .note{font-size:var(--fs-sm)}
   .line-add{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(190px,100%),1fr));gap:var(--sp-3);padding:var(--sp-3) var(--sp-4) var(--sp-4);align-items:end;font-size:var(--fs-sm)}
   .fld{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0}
@@ -779,12 +768,114 @@
   .pick{z-index:45}
   .pick button{justify-content:flex-start}
 
+  /* ══ 第 1b 批:设置页目录、执行器设置面板、底部留白(docs/style-guide.md §五 设置页 / §六) ══ */
+  /* 内容最后一行不被吸底/浮动的东西压住:页面型视图与五栏都留足底部空白(五栏另有固定页脚)。 */
+  .home{padding-bottom:80px}
+  .cols{padding-bottom:96px}
+  @media (max-width:620px){ .cols{padding-bottom:112px} }
+
+  .settings-view.page{max-width:1280px}
+  .set-layout{display:grid;grid-template-columns:184px minmax(0,1fr);gap:var(--sp-5);align-items:start}
+  .set-main{min-width:0}
+  .set-toc{position:sticky;top:72px;display:flex;flex-direction:column;gap:2px}
+  .set-toc button{justify-content:flex-start;text-align:left;border:0;border-left:2px solid var(--line);border-radius:0 var(--r-sm) var(--r-sm) 0;
+                  background:transparent;color:var(--dim);font-weight:500}
+  .set-toc button:hover{color:var(--fg);background:var(--hover);border-color:var(--dim2)}
+  .set-toc button[aria-current]{color:var(--fg);font-weight:600;border-left-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+  .set-target{scroll-margin-top:72px}
+  @media (max-width:900px){
+    .set-layout{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
+    .set-toc{position:relative;top:auto;flex-direction:row;overflow-x:auto;gap:var(--sp-1);padding-bottom:2px;scrollbar-width:thin;
+             border-bottom:1px solid var(--line)}
+    .set-toc button{flex:none;white-space:nowrap;border-left:0;border-bottom:2px solid transparent;border-radius:var(--r-sm) var(--r-sm) 0 0}
+    .set-toc button[aria-current]{border-bottom-color:var(--accent)}
+    .set-target{scroll-margin-top:132px}
+  }
+
+  /* ── 执行器设置:标题行(线名 · 执行器设置 + 运行状态徽标 + 保存状态),一行说明,智能体横向卡 */
+  #cfg .cfg-head{flex-wrap:wrap;gap:var(--sp-2) var(--sp-3)}
+  #cfg .cfg-head h4{flex:0 1 auto}
+  .cfg-save-wrap{display:inline-flex;align-items:center;gap:var(--sp-2);margin-left:auto;font-size:var(--fs-sm);min-width:0;flex-wrap:wrap}
+  .cfg-save{display:inline-flex;align-items:center;gap:var(--sp-1);color:var(--dim)}
+  .cfg-save[data-st="ok"]{color:var(--ok)}
+  .cfg-save[data-st="bad"]{color:var(--bad)}
+  .cfg-lead{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--sp-1) var(--sp-3);margin-top:var(--sp-1);color:var(--dim);font-size:var(--fs-sm)}
+  .cfg-about > summary{cursor:pointer;color:var(--cc)}
+  .cfg-about[open]{flex-basis:100%}
+  .cfg-about p{margin:var(--sp-1) 0 0}
+  #cfg .cfg-agents{display:flex;flex-direction:column;gap:var(--sp-3);margin-top:var(--sp-3)}
+  #cfg .agent{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);min-width:0;overflow:hidden}
+  .agent-h{display:flex;align-items:center;gap:var(--sp-2);min-height:44px;padding:var(--sp-1) var(--sp-2) var(--sp-1) var(--sp-4);border-bottom:1px solid var(--line)}
+  .agent-h h5{margin:0;font-size:var(--fs-md);font-weight:600}
+  .agent-h .ax{margin-left:auto;color:var(--bad)}
+  .agent-b{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr)}
+  .agent-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-4);padding:var(--sp-4);align-content:start}
+  .af{display:flex;flex-direction:column;gap:6px;min-width:0}
+  .af-wide{grid-column:1/-1}
+  .af select{width:100%}
+  #cfg .af .cap{margin:0;justify-content:flex-start;gap:var(--sp-2)}
+  #cfg .af .cap b{color:var(--accent)}
+  .agent-side{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;padding:var(--sp-4);border-left:1px solid var(--line);
+              background:color-mix(in srgb,var(--panel2) 45%,var(--panel))}
+  #cfg .runtime-facts{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-1) var(--sp-3);margin:0;font-size:var(--fs-sm)}
+  #cfg .runtime-facts dt{color:var(--dim)}
+  #cfg .runtime-facts dd{margin:0;overflow-wrap:anywhere}
+  #cfg .runtime-state{grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-2);margin:0}
+  .rs{display:flex;align-items:center;gap:var(--sp-2);min-width:0;padding:6px var(--sp-2);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel)}
+  .rs::before{content:"";flex:none;width:var(--ic);height:var(--ic);background:currentColor;color:var(--dim2);
+              -webkit-mask:var(--mi) center/contain no-repeat;mask:var(--mi) center/contain no-repeat;
+              --mi:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-dasharray='3 3'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3C/svg%3E")}
+  .rs[data-st="ok"]::before{color:var(--ok);
+    --mi:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='8.5'/%3E%3Cpath d='m8.3 12.2 2.6 2.6 4.9-5.4'/%3E%3C/svg%3E")}
+  .rs[data-st="warn"]::before{color:var(--warn);
+    --mi:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M12 4 2.8 19.5h18.4z'/%3E%3Cpath d='M12 10v4.2M12 17.2v.1'/%3E%3C/svg%3E")}
+  .rs dt{color:var(--dim);font-size:var(--fs-sm);white-space:nowrap}
+  .rs dd{margin:0 0 0 auto;font-size:var(--fs-sm);font-weight:600;text-align:right;min-width:0;overflow-wrap:anywhere}
+  .rs[data-st="ok"] dd{color:var(--ok)}
+  .rs[data-st="warn"] dd{color:var(--warn)}
+  .rs[data-st="unknown"] dd{color:var(--dim)}
+  #cfg .agent-side .runtime-next{margin:0;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .cfg-foot{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-3);margin-top:var(--sp-3)}
+  /* 分段控件:推理强度。只列当前执行器/模型支持的档位;选中项强调色。 */
+  .seg{display:flex;flex-wrap:wrap;width:max-content;max-width:100%;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);overflow:hidden}
+  .seg-o{position:relative;display:flex}
+  .seg-o + .seg-o{border-left:1px solid var(--line)}
+  .seg-o input[type=radio]{position:absolute;inset:0;width:100%;height:100%;margin:0;border:0;border-radius:0;opacity:0;cursor:pointer}
+  .seg-o span{display:inline-flex;align-items:center;justify-content:center;min-width:3.6em;min-height:var(--ctl-h);padding:0 var(--sp-3);
+              color:var(--dim);font-size:var(--fs-sm);font-weight:500;transition:background-color .15s,color .15s}
+  .seg-o:hover span{color:var(--fg);background:var(--hover)}
+  .seg-o input:checked + span,.seg-o.on{background:color-mix(in srgb,var(--accent) 14%,var(--panel));color:var(--accent);font-weight:600}
+  .seg-o input:focus-visible + span{outline:2px solid var(--accent);outline-offset:-3px}
+  .seg-one{border:0;background:transparent;align-items:center;gap:var(--sp-3);overflow:visible}
+  .seg-one .seg-o{display:inline-flex;align-items:center;min-height:var(--ctl-h);padding:0 var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm)}
+  .seg-one .ends{color:var(--dim)}
+  /* 开关:勾选框换成开关样式(行为不变,仍是 checkbox) */
+  label.switch{display:flex;align-items:center;gap:var(--sp-3);min-height:var(--ctl-h);cursor:pointer;font-size:var(--fs-sm);color:var(--fg)}
+  .switch input[type=checkbox]{width:36px;height:20px;border-radius:999px;place-content:center start;padding:0 2px;background:var(--panel2);border-color:var(--dim2)}
+  .switch input[type=checkbox]::before{width:14px;height:14px;border-radius:50%;clip-path:none;background:var(--dim2);transform:none;transition:transform .15s,background-color .15s}
+  .switch input[type=checkbox]:checked{background:var(--accent);border-color:var(--accent)}
+  .switch input[type=checkbox]:checked::before{transform:translateX(16px);background:var(--panel)}
+  @media (prefers-reduced-motion: reduce){ .switch input[type=checkbox]::before,.seg-o span{transition:none} }
+  @media (max-width:760px){
+    .agent-b{grid-template-columns:minmax(0,1fr)}
+    .agent-side{border-left:0;border-top:1px solid var(--line)}
+  }
+  @media (max-width:620px){
+    #cfg{padding:var(--sp-3)}
+    .agent-form{grid-template-columns:minmax(0,1fr);padding:var(--sp-3);gap:var(--sp-3)}
+    .agent-side{padding:var(--sp-3)}
+    .seg{width:100%}
+    .seg-o{flex:1 1 0}
+    .seg-o span{width:100%;min-width:0;padding:0 var(--sp-1)}
+    .cfg-save-wrap{margin-left:0;flex-basis:100%;order:5}
+  }
+
   /* ── 触摸:窄屏与粗指针上可点目标至少 40px(放在最后,压过上面的桌面尺寸) */
   @media (max-width:620px),(pointer:coarse){
     body{--ctl-h:40px}
     .views button{min-height:40px}
     .card-more > summary{min-height:40px}
-    .side-rec > summary,.side-sec > summary{padding:10px 0}
+    .side-rec > summary,.side-sec > summary,.cfg-about > summary{padding:11px 0}
     label.chk{min-height:40px}
   }
 </style>
@@ -943,14 +1034,25 @@
 <main class="home page settings-view" id="settings-view" data-view-panel="settings" hidden>
   <div class="page-head"><h2>设置</h2>
     <p>看板怎么跑在这里调:上手引导、执行线、加线和请你的 Claude 代劳。任务本身在「全部任务」。</p></div>
-  <div class="guide" id="guide" hidden></div>
-  <section class="set-sec" aria-labelledby="set-lines-h">
+  <div class="set-layout">
+  <!-- 左侧小目录(借鉴 Kandev 设置页的「左目录 + 右内容」版式):点哪一项滚到哪一块,滚动时高亮当前块。
+       用按钮而不是 #锚点——地址栏的 # 留给「刷新后保留打开的任务」(#task=)。 -->
+  <nav class="set-toc" id="set-toc" aria-label="设置目录">
+    <button type="button" data-toc="guide">上手引导</button>
+    <button type="button" data-toc="set-lines">执行线与自动拉取</button>
+    <button type="button" data-toc="set-add">加线</button>
+    <button type="button" data-toc="set-quick">请你的 Claude 代劳</button>
+    <button type="button" data-toc="set-ctx">最近会话</button>
+  </nav>
+  <div class="set-main">
+  <div class="guide set-target" id="guide" hidden></div>
+  <section class="set-sec set-target" id="set-lines" aria-labelledby="set-lines-h">
     <div class="set-h"><h3 id="set-lines-h"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>执行线与自动拉取</h3>
       <p>启动后,这条线才会领取交给它、已放行的任务。齿轮里是执行器、模型、推理强度和智能体数量。</p></div>
     <div class="rig" id="rig"></div>
     <div class="cfg" id="cfg"></div>
   </section>
-  <section class="set-sec" aria-labelledby="set-add-h">
+  <section class="set-sec set-target" id="set-add" aria-labelledby="set-add-h">
     <div class="set-h"><h3 id="set-add-h"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>加线</h3>
       <p>写进本机配置文件;加好后在上面的执行线列表里启动。</p></div>
     <!-- v0.4: add a line from the panel — static markup on purpose: #rig is
@@ -973,7 +1075,7 @@
         <span class="note" id="line-add-note" aria-live="polite"></span></div>
     </form>
   </section>
-  <section class="set-sec" aria-labelledby="set-quick-h">
+  <section class="set-sec set-target" id="set-quick" aria-labelledby="set-quick-h">
     <div class="set-h"><h3 id="set-quick-h">请你的 Claude 代劳</h3>
       <p>这些按钮不是马上执行:它们在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没人接手时请求会一直等着(5 分钟后变黄提醒你)。</p></div>
     <!-- v0.5: shortcut requests to the coordinator seat. A press writes a durable
@@ -994,10 +1096,12 @@
       <div id="quick-list"></div>
     </div>
   </section>
-  <div class="ctxwrap"><section class="ctx" id="ctx">
+  <div class="ctxwrap set-target" id="set-ctx"><section class="ctx" id="ctx">
     <h2><svg class="ic fold-ic" aria-hidden="true"><use href="#i-chevron"/></svg>最近会话 <span class="n" id="ctx-sum"></span></h2>
     <div class="body" id="ctx-body"></div>
   </section></div>
+  </div>
+  </div>
 </main>
 
 <div id="board-view" data-view-panel="board" hidden>
@@ -2788,6 +2892,7 @@ function openCfg(anchor, line){
     : st.agents.map((a) => ({ ...a }));
   cfgRev = Number(st.rev || 0);
   cfgAnchor = anchor;
+  cfg.saveState = null;   // 保存状态只说本次打开之后的改动
   cfgProbes.clear();  // 重新打开后只采用本次检查，不用旧探测覆盖新的安装事实。
   cfgReadiness = { state: "loading", line };
   renderCfg();
@@ -2830,6 +2935,7 @@ function effortName(value){
   return copyLabel({ none: "关闭", minimal: "极低", low: "低", medium: "中", high: "高", xhigh: "很高", max: "最高", ultra: "超高" }, value, value ? "强度待核实" : "未设置");
 }
 function renderCfg(){
+  const ic = (n) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="#i-${n}"/></svg>`;
   const w = workers.find((x) => x.line === cfgLine) || {};
   const seatModels = (rt) => { const seat = RUNTIMES.find((r2) => r2.id === rt);
     return (seat && seat.models && seat.models.length) ? seat.models : MODELS; };
@@ -2853,59 +2959,90 @@ function renderCfg(){
     const apiProfile = profile && !["claude_cli", "codex_cli"].includes(profile.channel);
     const probe = cfgProbes.get(runtimeProbeKey(cfgLine, a));
     const readiness = runtimeReadiness(runtime, a, probe, facts?.verifications || w.runtime_verifications, profile);
+    // 状态徽标:已就绪=成功色对勾,待核实=灰色虚线圈,缺失/未启用=警示色。文字照旧来自 runtimeReadiness,不另推断。
+    const tone = (v, good, bad) => v === good || String(v).startsWith(good) ? "ok" : bad.includes(v) ? "warn" : "unknown";
+    const sid = `cfg-a${i}`;
     return `
-    <fieldset class="agent">
-      <legend>智能体 ${i + 1}<span class="sub">${apiProfile ? "逐卡独立会话" : i === 0 ? "持续会话·继承记忆" : "逐卡新会话"}</span>${i > 0 ? `<button class="ax" data-del="${i}" title="删除此智能体">✕</button>` : ""}</legend>
-      ${profiles.length ? `<div class="cap">执行配置</div><select data-i="${i}" data-k="execution_profile_id" aria-label="智能体 ${i + 1}的执行配置">
-        <option value=""${!a.execution_profile_id ? " selected" : ""}>沿用现有 CLI（兼容配置）</option>
-        ${a.execution_profile_id && !profile ? `<option value="${esc(a.execution_profile_id)}" selected>原执行配置待核实</option>` : ""}
-        ${profiles.map((p) => `<option value="${esc(p.id)}"${p.id === a.execution_profile_id ? " selected" : ""}>${esc(p.label)}${p.enabled === false ? "（未启用）" : !p.ready ? "（待配置）" : ""}</option>`).join("")}</select>` : ""}
-      <div class="duo">
-        <span><div class="cap">${profile ? "执行器" : "命令行程序（CLI）"}</div>
-      <select data-i="${i}" data-k="runtime" aria-label="命令行程序"${profile ? " disabled" : ""}>
+    <section class="agent" aria-labelledby="${sid}-h">
+      <div class="agent-h"><h5 id="${sid}-h">智能体 ${i + 1}</h5><span class="badge" data-tone="quiet" title="${apiProfile ? "每张卡开一个独立会话" : i === 0 ? "持续会话，继承上一张卡的记忆" : "每张卡开一个新会话"}">${apiProfile ? "逐卡独立会话" : i === 0 ? "持续会话·继承记忆" : "逐卡新会话"}</span>
+        ${i > 0 ? `<button type="button" class="icon-btn ghost ax" data-del="${i}" aria-label="删除智能体 ${i + 1}" title="删除智能体 ${i + 1}">${ic("close")}</button>` : ""}</div>
+      <div class="agent-b">
+        <div class="agent-form">
+          ${profiles.length ? `<label class="af af-wide"><span class="cap">执行配置</span><select data-i="${i}" data-k="execution_profile_id" aria-label="智能体 ${i + 1}的执行配置">
+            <option value=""${!a.execution_profile_id ? " selected" : ""}>沿用现有 CLI（兼容配置）</option>
+            ${a.execution_profile_id && !profile ? `<option value="${esc(a.execution_profile_id)}" selected>原执行配置待核实</option>` : ""}
+            ${profiles.map((p) => `<option value="${esc(p.id)}"${p.id === a.execution_profile_id ? " selected" : ""}>${esc(p.label)}${p.enabled === false ? "（未启用）" : !p.ready ? "（待配置）" : ""}</option>`).join("")}</select></label>` : ""}
+          <label class="af"><span class="cap">${profile ? "执行器" : "命令行程序（CLI）"}</span>
+            <select data-i="${i}" data-k="runtime" aria-label="命令行程序"${profile ? " disabled" : ""}>
             ${(RUNTIMES.length ? RUNTIMES : [{ id: "claude", label: "Claude Code" }]).map((r2) =>
               `<option value="${r2.id}"${(a.runtime || "claude") === r2.id ? " selected" : ""}${r2.disabled && !(apiProfile && profile.runtime === r2.id) ? " disabled" : ""}>${esc(apiProfile && profile.runtime === r2.id ? r2.id === "codex" ? "Codex 开发智能体" : "Claude 开发智能体" : r2.label)}</option>`).join("")}
-          </select></span>
-        <span><div class="cap">模型名称</div>
-          <select data-i="${i}" data-k="model" aria-label="模型名称">
+            </select></label>
+          <label class="af"><span class="cap">模型名称</span>
+            <select data-i="${i}" data-k="model" aria-label="模型名称">
             ${seatModels(a.runtime || "claude").map((m) =>
               `<option value="${m.id}"${m.id === a.model ? " selected" : ""}>${esc(m.label)}</option>`).join("")}
-          </select></span>
+            </select></label>
+          <div class="af af-wide"><span class="cap" id="${sid}-eff">推理强度 <b>${esc(effortName(a.effort))}</b></span>
+          ${dom.length > 1
+            // 分段控件:只列当前执行器/模型声明的档位(座席值域),当前档高亮。值仍是档位在值域里的序号,
+            //   由 input 处理器换回原来的机器值写入 effort——保存字段与取值不变。
+            ? `<div class="seg" role="radiogroup" aria-labelledby="${sid}-eff">${dom.map((v, k) =>
+                `<label class="seg-o"><input type="radio" name="${sid}-effort" value="${k}" data-i="${i}" data-k="effort"${k === ei ? " checked" : ""} aria-label="${esc(effortName(v))}"><span>${esc(effortName(v))}</span></label>`).join("")}</div>`
+            // ⭐ Single-rung models show NO choice. A control with one position is a decoration that
+            //   does nothing when pressed — the worst kind of UI.
+            : `<div class="seg seg-one"><span class="seg-o on">${esc(effortName(dom[0] || a.effort))}</span><span class="ends">此模型固定单档(座席裁定)</span></div>`}
+          </div>
+          <label class="switch af-wide"><input type="checkbox" role="switch" data-i="${i}" data-k="window"${a.window ? " checked" : ""}><span>在单独的控制台窗口里运行（便于直接看执行过程）</span></label>
+        </div>
+        <div class="agent-side">
+          ${profile ? `<dl class="runtime-facts"><dt>通道</dt><dd>${esc(executionChannelName(profile.channel))}</dd><dt>认证</dt><dd>${esc(executionAuthName(profile.auth_kind))}</dd><dt>计费</dt><dd>${esc(executionBillingName(profile.billing_kind))}</dd><dt>预算</dt><dd>${esc(executionBudgetText(profile.budget, profile.budget_enforcement))}</dd></dl>` : ""}
+          <dl class="runtime-state" aria-label="智能体 ${i + 1}的接入状态">
+            <div class="rs" data-st="${tone(readiness.installation, "已检测", ["未找到 CLI"])}"><dt>安装</dt><dd>${esc(readiness.installation)}</dd></div>
+            <div class="rs" data-st="${tone(readiness.configured, "已配置", ["待配置"])}"><dt>配置</dt><dd>${esc(readiness.configured)}</dd></div>
+            <div class="rs" data-st="${tone(readiness.enabled, "已启用", ["未启用"])}"><dt>启用</dt><dd title="执行器许可，不代表执行线已经启动">${esc(readiness.enabled)}</dd></div>
+            <div class="rs" data-st="${tone(readiness.realTask, "已回传结果", [])}"><dt>真实任务</dt><dd>${esc(readiness.realTask)}</dd></div>
+          </dl>
+          <p class="runtime-next" role="status" title="${esc(readiness.next)}">${esc(readiness.next)}</p>
+          <div class="runtime-check"><button type="button" data-probe-i="${i}"${probe?.state === "checking" ? " disabled" : ""}>${probe?.state === "checking" ? "检查中…" : "检查接入（不调用模型）"}</button>${probe?.detail ? `<button type="button" data-probe-detail="${i}">查看诊断</button>` : ""}</div>
+        </div>
       </div>
-      <div class="cap" style="margin-top:7px">推理强度 <b>${esc(effortName(a.effort))}</b></div>
-      ${dom.length > 1
-        ? `<input type="range" min="0" max="${dom.length - 1}" step="1" value="${ei}" data-i="${i}" data-k="effort" aria-label="智能体 ${i + 1}的推理强度" aria-valuetext="${esc(effortName(a.effort))}">
-            <div class="ends"><span>${esc(effortName(dom[0]))}</span><span>${esc(effortName(dom[dom.length - 1]))}</span></div>`
-        // ⭐ Single-rung models show NO slider. A max=0 slider is a decoration that
-        //   does nothing when pressed — the worst kind of UI.
-        : `<div class="ends"><span>此模型固定单档(座席裁定)</span></div>`}
-      <label class="chk" style="margin-top:5px"><input type="checkbox" data-i="${i}" data-k="window"${a.window ? " checked" : ""}> 用独立控制台窗口启动</label>
-      <dl class="runtime-state" aria-label="智能体 ${i + 1}的接入状态">
-        ${profile ? `<dt>通道</dt><dd>${esc(executionChannelName(profile.channel))}</dd><dt>认证</dt><dd>${esc(executionAuthName(profile.auth_kind))}</dd><dt>计费</dt><dd>${esc(executionBillingName(profile.billing_kind))}</dd><dt>预算</dt><dd>${esc(executionBudgetText(profile.budget, profile.budget_enforcement))}</dd>` : ""}
-        <dt>安装</dt><dd>${esc(readiness.installation)}</dd>
-        <dt>配置</dt><dd>${esc(readiness.configured)}</dd>
-        <dt>启用</dt><dd title="执行器许可，不代表执行线已经启动">${esc(readiness.enabled)}</dd>
-        <dt>真实任务</dt><dd>${esc(readiness.realTask)}</dd>
-      </dl>
-      <p class="runtime-next" role="status">${esc(readiness.next)}</p>
-      <div class="runtime-check"><button type="button" data-probe-i="${i}"${probe?.state === "checking" ? " disabled" : ""}>${probe?.state === "checking" ? "检查中…" : "检查接入（不调用模型）"}</button>${probe?.detail ? `<button type="button" data-probe-detail="${i}">查看诊断</button>` : ""}</div>
-    </fieldset>`;
+    </section>`;
   }).join("");
+  // 保存状态挂在 cfg 元素本身(saveAgents 写入),即改即存:保存中 / 已保存 / 保存失败(原因) / 版本冲突(可重新载入)。
+  const save = cfgSaveHtml(cfg.saveState || null);
+  const lineState = w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止";
   cfg.innerHTML = `
     <div class="cfg-head"><h4><span style="color:${lineColor(cfgLine)}">${esc(lineLabel(cfgLine))}</span> · 执行器设置</h4>
-      <button type="button" class="icon-btn ghost" data-cfg-close aria-label="收起执行器设置" title="收起执行器设置"><svg class="ic" aria-hidden="true" focusable="false"><use href="#i-close"/></svg></button></div>
-    <p class="runtime-scope">执行线：${w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止"}。执行器启用与执行线启动分开记录。</p>
-    <p class="runtime-scope">沿用本机已有执行器与模型配置；检查接入不领取任务、不验证登录，也不调用模型。</p>
+      <span class="badge" data-tone="${w.running ? "run" : "quiet"}" title="执行器启用与执行线启动分开记录">${ic(w.running ? "play" : "stop")}执行线：${lineState}</span>
+      <span class="cfg-save-wrap" role="status" aria-live="polite">${save}</span>
+      <button type="button" class="icon-btn ghost" data-cfg-close aria-label="收起执行器设置" title="收起执行器设置">${ic("close")}</button></div>
+    <div class="cfg-lead">改动即时保存，运行中的进程要停止再启动才用上新设置。
+      <details class="cfg-about"><summary>说明</summary>
+        <p>执行器启用与执行线启动分开记录：「启用」是执行器许可，执行线要另外启动才会领取任务。</p>
+        <p>沿用本机已有执行器与模型配置；检查接入不领取任务、不验证登录，也不调用模型。</p></details></div>
     ${cfgReadiness?.state === "loading" ? '<p class="runtime-scope" role="status">正在读取接入状态…</p>'
       : cfgReadiness?.state === "stale" ? '<p class="runtime-scope" role="status">设置已改变；重新打开设置可读取最新接入状态。</p>'
       : cfgReadiness?.state === "failed" ? `<p class="runtime-scope" role="status">接入状态暂未读到：${esc(cfgReadiness.error)}。重新打开设置可重试。</p>` : ""}
     <div class="cfg-agents">${blocks}</div>
-    ${cfgSingle ? `<div class="ends"><span>${esc(lineLabel(cfgLine))}仅配置一个智能体</span></div>` : `
-    <button id="cfg-add"${cfgAgents.length >= (MAXP || 1) || cfgLegacy ? " disabled" : ""}>＋ 添加智能体</button>
-    <div class="ends"><span>${cfgLegacy ? "服务器旧版 —— 重启看板进程后可用" : ""}</span><span>上限 ${MAXP || 3}(全线共享额度)</span></div>`}
+    <div class="cfg-foot">${cfgSingle ? `<span class="ends">${esc(lineLabel(cfgLine))}仅配置一个智能体</span>` : `
+      <button type="button" id="cfg-add"${cfgAgents.length >= (MAXP || 1) || cfgLegacy ? " disabled" : ""}>${ic("plus")}添加智能体</button>
+      <span class="ends">${cfgLegacy ? "服务器旧版 —— 重启看板进程后可用 · " : ""}上限 ${MAXP || 3} 个(全线共享额度)；新加的智能体照抄智能体 1 的设置</span>`}</div>
     <div class="note" id="cfg-note">${w.running && w.stale_settings ? "当前进程仍用旧设置,停止再启动才生效" : ""}</div>`;
   // 停靠在设置页的执行线列表下方(不再按齿轮位置浮动)。
   cfg.classList.add("show");
+}
+function cfgSaveHtml(sv){
+  const ic = (n) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="#i-${n}"/></svg>`;
+  return !sv ? "" : sv.state === "saving" ? `<span class="cfg-save" data-st="saving">保存中…</span>`
+    : sv.state === "saved" ? `<span class="cfg-save" data-st="ok">${ic("check")}已保存${sv.at ? " " + esc(sv.at) : ""}</span>`
+    : sv.state === "conflict" ? `<span class="cfg-save" data-st="bad">${ic("warn")}${esc(sv.msg)}</span><button type="button" data-cfg-reload>重新载入</button>`
+    : `<span class="cfg-save" data-st="bad">${ic("warn")}保存失败：${esc(sv.msg)}</span>`;
+}
+/** 只重画标题栏里的保存状态,不重建表单(焦点、正在点的分段控件不受影响)。 */
+function setCfgSave(state, msg){
+  cfg.saveState = state ? { state, msg, at: state === "saved" ? new Date().toTimeString().slice(0, 5) : "" } : null;
+  const wrap = cfg.querySelector(".cfg-save-wrap");
+  if (wrap) wrap.innerHTML = cfgSaveHtml(cfg.saveState);
 }
 
 async function probeCfgAgent(index){
@@ -2934,9 +3071,12 @@ async function probeCfgAgent(index){
 async function saveAgents(){
   const n = document.getElementById("cfg-note");
   if (cfgLegacy){ if (n) n.textContent = "服务器旧版 —— 重启看板进程后可用"; return false; }
+  setCfgSave("saving");
   try {
     const r = await post(`/api/workers/${cfgLine}/settings`, { agents: cfgAgents, rev: cfgRev });
-    if (n) n.textContent = r.note || "";
+    setCfgSave("saved");
+    // 「已保存」已在标题栏显示;服务端另有说明(如运行中的进程仍用旧设置)才写在底部。
+    if (n) n.textContent = r.note && !/^已保存/.test(r.note) ? r.note : "";
     const w = workers.find((x) => x.line === cfgLine); if (w) w.settings = r.settings;
     cfgRev = Number((r.settings || {}).rev || 0);      // next save uses the new revision
     return true;
@@ -2955,17 +3095,15 @@ async function saveAgents(){
           cfgRev = Number(w2.settings.rev || 0);
         }
       } catch {}
+      cfg.saveState = { state: "conflict", msg: "另一处面板刚改过这条线，这次没有保存；已取回最新设置，请核对后重新调整" };
       renderCfg();
-      const nc = document.getElementById("cfg-note");
-      if (nc) nc.textContent = "另一处面板刚改过这条线 —— 已取回最新设置,请重新调整";
       return false;
     }
     const w = workers.find((x) => x.line === cfgLine);
     if (w && w.settings && Array.isArray(w.settings.agents))
       cfgAgents = w.settings.agents.map((a) => ({ ...a }));
+    cfg.saveState = { state: "failed", msg: copyError(err) };
     renderCfg();
-    const n2 = document.getElementById("cfg-note");
-    if (n2) n2.textContent = "保存失败:" + copyError(err);
     return false;
   }
 }
@@ -2993,8 +3131,7 @@ cfg.addEventListener("input", (e) => {
   }
   else if (k === "effort"){
     a.effort = domOf(a)[Number(el.value)] || a.effort;
-    const b = el.closest("fieldset").querySelector(".cap b"); if (b) b.textContent = effortName(a.effort);
-    el.setAttribute("aria-valuetext", effortName(a.effort));
+    const b = el.closest(".agent").querySelector(".cap b"); if (b) b.textContent = effortName(a.effort);
     saveAgents();
   } else if (k === "window"){ a.window = el.checked; saveAgents(); }
   else if (k === "model"){
@@ -3020,6 +3157,9 @@ cfg.addEventListener("input", (e) => {
 
 cfg.addEventListener("click", (e) => {
   if (e.target.closest("button[data-cfg-close]")){ closeCfg(); return; }
+  // 版本冲突后「重新载入」:重新取一次看板数据,再按服务端的最新设置重开这条线。
+  const reload = e.target.closest("button[data-cfg-reload]");
+  if (reload){ reload.disabled = true; const line = cfgLine; refresh().finally(() => { if (line) openCfg(cfgAnchor, line); }); return; }
   const probe = e.target.closest("button[data-probe-i]");
   if (probe){ if (!probe.disabled) probeCfgAgent(Number(probe.dataset.probeI)); return; }
   const diagnostic = e.target.closest("button[data-probe-detail]");
@@ -3252,7 +3392,7 @@ async function refresh(){
     tasks = r.tasks; taskEvents = eres; usageByCard = (ures && ures.cards) || {};
     meta = { ...mres, archived_count: r.archived_count, caps: r.caps || {} };
     byId.clear(); for (const t of tasks) byId.set(t.id, t);
-    render(); renderRig(); renderCtx(); homeAfterRefresh();
+    render(); renderRig(); renderCtx(); homeAfterRefresh(); tocSync();
     sideAfterRefresh();
     if (wasDown) loadHomeExtras(true);   // 断开前的多电脑与运行检查结果需要重新读取。
   }catch(e){
@@ -4173,13 +4313,42 @@ function setView(v){
   // The columns' shell (headers, goal box) is built once, from meta — never before the first
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); }
-  else if (v === "settings") loadHomeExtras(true);   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取
+  else if (v === "settings") { loadHomeExtras(true); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取
   else { homeSig.clear(); renderHomeViews(); loadHomeExtras(true); }
   window.scrollTo(0, 0);
 }
 document.querySelector(".views").addEventListener("click", (e) => {
   const b = e.target.closest("[data-view]"); if (b) setView(b.dataset.view);
 });
+// ── 设置页目录:点击滚到对应区块;滚动时高亮「当前所在」的区块(目标顶边越过页头下沿的最后一个)。
+const setToc = document.getElementById("set-toc");
+setToc.addEventListener("click", (e) => {
+  const b = e.target.closest("[data-toc]"); if (!b) return;
+  const el = document.getElementById(b.dataset.toc); if (!el || el.hidden) return;
+  el.scrollIntoView({ block: "start", behavior: REDUCED.matches ? "auto" : "smooth" });
+  tocMark(b.dataset.toc);
+});
+function tocMark(id){
+  for (const b of setToc.querySelectorAll("[data-toc]")){
+    b.hidden = !!document.getElementById(b.dataset.toc)?.hidden;   // 上手引导没数据时不列
+    if (b.dataset.toc === id){ b.setAttribute("aria-current", "true");
+      // 窄屏目录是横向滚动条:只在条内横移让当前项露出来,不滚动整页。
+      if (setToc.scrollWidth > setToc.clientWidth) setToc.scrollLeft = b.offsetLeft - 12; }   // .set-toc 自身是定位元素(offsetParent)
+    else b.removeAttribute("aria-current");
+  }
+}
+let tocTimer = 0;
+function tocSync(){
+  if (homeView !== "settings") return;
+  const line = document.querySelector("header").getBoundingClientRect().bottom + 24;
+  const shown = [...document.querySelectorAll("#settings-view .set-target")].filter((el) => !el.hidden);
+  let cur = shown[0];
+  for (const el of shown) if (el.getBoundingClientRect().top <= line) cur = el;
+  // 滚到底时最后一块可能永远到不了页头下沿:到底就算最后一块。
+  if (scrollY > 0 && innerHeight + scrollY >= document.documentElement.scrollHeight - 2) cur = shown[shown.length - 1];
+  if (cur && setToc.querySelector("[aria-current]")?.dataset.toc !== cur.id) tocMark(cur.id);
+}
+addEventListener("scroll", () => { cancelAnimationFrame(tocTimer); tocTimer = requestAnimationFrame(tocSync); }, { passive: true });
 /** Open a card where it can be acted on: the 全部任务 view, located at the top of its column. */
 function locateOnBoard(id){
   setView("board");

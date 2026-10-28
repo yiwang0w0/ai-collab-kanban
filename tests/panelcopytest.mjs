@@ -49,8 +49,10 @@ test("用量显示使用中文计数单位，不改变计数值", () => {
     assert.equal(copy.formatCount(number), label);
     assert.equal(typeof number, "number");
   }
-  assert.match(source, /aria-valuetext="\$\{esc\(effortName\(a\.effort\)\)\}"/);
-  assert.ok(source.includes('el.setAttribute("aria-valuetext", effortName(a.effort))'));
+  // 推理强度改为分段控件(单选组):每一档的可见文字与无障碍名称都走 effortName;选中后标题里的当前档同步换成中文。
+  assert.match(source, /role="radiogroup"/);
+  assert.match(source, /aria-label="\$\{esc\(effortName\(v\)\)\}"><span>\$\{esc\(effortName\(v\)\)\}<\/span>/);
+  assert.ok(source.includes('const b = el.closest(".agent").querySelector(".cap b"); if (b) b.textContent = effortName(a.effort);'));
 });
 
 test("浏览器错误使用中文说明，中文消息及未知原始错误完整保留", () => {
