@@ -4,10 +4,10 @@
 
 **The acceptance-first kanban for multi-agent AI collaboration.**
 
-Most agent boards solve *how to make a fleet of coding agents run*. This one solves the opposite problem, distilled from weeks of running a high-autonomy mixed fleet (Claude + Codex) against a production codebase: **how not to trust what they say they finished.**
+Most agent boards solve *how to make a team of coding agents run*. This one solves the opposite problem, distilled from weeks of running a high-autonomy mix of agents (Claude + Codex) against a production codebase: **how not to trust what they say they finished.**
 
 - **Deliverable-existence gate** — evidence must name files, and the named files must exist in `HEAD`. Prose doesn't close cards.
-- **Fail-closed source gate** — the fleet refuses to run its own unreviewed code. A dirty governance subtree stops line startup, loudly.
+- **Fail-closed source gate** — the workers refuse to run their own unreviewed code. A dirty governance subtree stops line startup, loudly.
 - **Adjudication authority chain** — a machine reviewer's note never constitutes human approval, and since v0.2 that is structural: three capability tokens (operator / worker / reviewer) and a closed `resolved_by` domain. A worker cannot close, re-scope or approve anything — including its own card. Impersonating authority is a caught, named failure mode (INCIDENT-12 is the live specimen).
 - **Auto-review that cannot rubber-stamp** — a per-card fresh-session reviewer (no Edit, no Bash) pre-runs the card's named verification, and a mechanical gate after the model means "approve with zero machine output" downgrades to a human decision instead of closing the card.
 - **Human gate + handoff boundary** — cards awaiting a human decision never enqueue (zero attempts burn), and hand-applied deliverables land only in operator-authorized directories, with an execution receipt. Irreversible acts stay human.
