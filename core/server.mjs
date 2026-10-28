@@ -1461,6 +1461,9 @@ async function decomposeGoal(goalId, model, forced = false) {
     }
     made[i] = store.add(db, {
       subject: String(t.subject || "(无题)"), description,
+      // 给人看的「要做什么」:拆解计划里带就带上,没带就是 null(退路在 store.cardBrief)。
+      //   schema 里它是可选项 —— 旧模型、旧计划不出这个字段也不该让整次拆解失败。
+      summary: t.summary,
       acceptance: String(t.acceptance || ""), line,
       needsBash: !!t.needs_bash, blockedBy: deps, kind: "task", parentId: goalId,
       // The release valve moved to worker start/stop (ruling): decomposed children

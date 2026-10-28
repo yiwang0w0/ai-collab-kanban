@@ -411,12 +411,21 @@
   .side-trace dt{color:var(--dim)}
   .side-trace dd{margin:0;overflow-wrap:anywhere}
   .side-links{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin:var(--sp-2) 0}
-  .side-next{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--r-md);padding:var(--sp-3);margin-bottom:var(--sp-3)}
-  .side-next[data-tone="quiet"]{border-left-color:var(--line)}
-  .side-next h3{margin:0 0 var(--sp-2);font-size:14px}
-  .side-next p{margin:var(--sp-2) 0 0;color:var(--dim);font-size:13px}
-  .side-next textarea{width:100%;box-sizing:border-box;margin-bottom:var(--sp-2)}
   .side-acts{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-2)}
+  /* 卡片最上面给人看的小块(卡 #14):标签在左、内容在右;窄屏标签换到上一行。
+     强调色只给「要你做什么」那一行 —— 整块都强调等于没有重点(style-guide §一.2)。 */
+  .side-brief{display:grid;gap:var(--sp-3);border:1px solid var(--line);border-radius:var(--r-md);
+              padding:var(--sp-3);margin-bottom:var(--sp-3)}
+  .side-brief-row{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:var(--sp-1) var(--sp-3);align-items:start}
+  .side-brief-row[data-tone="need"]{border-left:3px solid var(--accent);padding-left:var(--sp-3);margin-left:calc(-1 * var(--sp-3))}
+  .side-brief-k{color:var(--dim);font-size:var(--fs-xs);letter-spacing:.06em;padding-top:2px}
+  .side-brief-v{margin:0;font-size:13px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere}
+  .side-brief-v[data-tone="warn"]{color:var(--warn)}
+  .side-brief-next{color:var(--dim)}
+  .side-brief-stack{display:grid;gap:var(--sp-1)}
+  .side-brief textarea{width:100%;box-sizing:border-box;margin-bottom:var(--sp-2)}
+  .side-brief button{margin-top:var(--sp-1)}
+  .side-detail > summary{font-size:13px}
   .side-sec{margin-top:var(--sp-3)}
   .side-sec h3{font-size:13px;color:var(--dim);margin:0 0 var(--sp-2)}
   .side-sec summary{cursor:pointer;color:var(--dim);font-size:13px}
@@ -739,7 +748,7 @@
   .side{box-shadow:-12px 0 32px rgba(0,0,0,.18)}
   .side-head{align-items:center}
   .side-head h2{font-size:var(--fs-xl);font-weight:600}
-  .side-next textarea{min-height:64px}
+  .side-brief textarea{min-height:64px}
   .side-acts button{min-width:6em}
   .steps{list-style:none;margin:var(--sp-2) 0 var(--sp-3);padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}
   .step{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:0 2px;text-align:center;min-width:0}
@@ -879,6 +888,8 @@
     .seg.board-seg{display:flex;flex-wrap:nowrap;width:auto;margin:var(--sp-3) var(--sp-4) 0}
     .board-seg .seg-o span{flex-wrap:wrap;gap:0 var(--sp-1);line-height:1.25;text-align:center}
     .cols[data-col] > .col:not(.on){display:none}
+    /* 390 宽放不下 5.5em 的标签列:标签换到内容上一行,四行照旧按顺序读下来 */
+    .side-brief-row{grid-template-columns:minmax(0,1fr);gap:2px}
   }
 
   /* ── 触摸:窄屏与粗指针上可点目标至少 40px(放在最后,压过上面的桌面尺寸) */
@@ -4524,6 +4535,59 @@ function sideSection(title, text){
   sec.append(homeEl("h3", title), homeEl("pre", String(text)));
   return sec;
 }
+/** 卡片最上面给人看的小块(卡 #14):要做什么 / 现在 / 结果 / 要你做什么。
+ *  ⭐ 这四行里没有一句是面板自己想出来的:
+ *    · 要做什么 = 服务端算好的 t.brief(store.cardBrief:summary 优先,其次「【一句话】」,都没有 ⇒ 不出这一行;
+ *      标题本来就在上面,**不截长正文充数**)。
+ *    · 现在     = 五步条同一个判断(sideTaskStep → homeStep),状态与下一步两个节点的 id 不变,
+ *      updateSideLive 每秒只改这两处文字。
+ *    · 结果     = 交付时宿主从证据里取出的 t.result_summary。交付了却取不到 ⇒ 说出来,并给证据入口;
+ *      看板不替交付方总结。
+ *    · 要你做什么 = 轮到人时才出现,就一个操作框(sideControlsBox),不轮到人时它收进「更多操作」。 */
+function sideBrief(t, step, item, ctlBox, ctl){
+  const box = homeEl("section", undefined, "side-brief");
+  const briefRow = (label, text) => {
+    const row = homeEl("div", undefined, "side-brief-row");
+    row.append(homeEl("span", label, "side-brief-k"), homeEl("p", text, "side-brief-v"));
+    return row;
+  };
+  if (t?.brief) box.append(briefRow("要做什么", t.brief));
+  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
+  const nowRow = homeEl("div", undefined, "side-brief-row");
+  const state = homeEl("p", [where, step?.state || item?.state].filter(Boolean).join(" · "), "side-brief-v");
+  state.id = "task-side-state"; state.dataset.tone = step?.tone || "";
+  const nextText = step?.next || item?.next || (t ? "无需操作" : "在它所属的电脑上处理");
+  const next = homeEl("p", "下一步：" + nextText, "side-brief-v side-brief-next");
+  next.id = "task-side-next";
+  const stack = homeEl("div", undefined, "side-brief-stack");
+  stack.append(state, next);
+  nowRow.append(homeEl("span", "现在", "side-brief-k"), stack);
+  box.append(nowRow);
+  // 交付之后才有「结果」这一行。t.result 有、result_summary 没有 = 交付了但没写那一节。
+  if (t && t.result) {
+    if (t.result_summary) box.append(briefRow("结果", t.result_summary));
+    else {
+      const row = briefRow("结果", "交付里没有给人看的摘要");
+      const go = homeEl("button", "看完整证据"); go.type = "button"; go.dataset.sideOpenDetail = "1";
+      go.addEventListener("click", () => {
+        const d = document.getElementById("task-side-detail");
+        if (!d) return;
+        d.open = true;
+        d.scrollIntoView?.({ block: "nearest" });
+      });
+      row.append(go);
+      box.append(row);
+    }
+  }
+  if (t && ctlBox && ctl?.primary) {
+    const row = homeEl("div", undefined, "side-brief-row");
+    row.dataset.tone = "need";          // 强调色只给这一行:轮到你了
+    row.append(homeEl("span", "要你做什么", "side-brief-k"), ctlBox);
+    box.append(row);
+  }
+  if (!t) box.append(homeEl("p", item ? "这是其他电脑的任务缓存,这里只能查看。" : "这张卡不在本机看板里:可能已归档,或属于另一台电脑。", "side-brief-v"));
+  return box;
+}
 function sideControlsBox(t, ctl){
   const box = homeEl("div");
   if (ctl.kind === "package") {
@@ -4674,29 +4738,25 @@ function renderSide(){
   const step = sideTaskStep(t, item), ctl = sideControls(t, { remote: !t, mine: step?.lane === "mine" });
   const sig = JSON.stringify(t ? [t.id, t.status, t.waiting_for, t.aggregate_version, t.human_gate, t.result,
                                   t.verdict_note, t.description, t.acceptance, (t.decision_package?.options || []).length,
-                                  ctl.kind, ctl.primary]
+                                  ctl.kind, ctl.primary, t.brief, t.result_summary]
                                : ["remote", sideRef.uid, item?.title, item?.state, item?.next]);
   if (sig === sideSig) { updateSideLive(); updateSideContext(t); return; }
   sideSig = sig;
   const body = document.getElementById("task-side-body"), out = [];
   document.getElementById("task-side-title").textContent = t ? t.subject : (item?.title || "任务");
-  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
-  const state = homeEl("p", [where, step?.state || item?.state].filter(Boolean).join(" · "), "side-state");
-  state.id = "task-side-state"; state.dataset.tone = step?.tone || ""; out.push(state);
-  // 唯一的下一步
-  const next = homeEl("div", undefined, "side-next");
-  if (!ctl.primary) next.dataset.tone = "quiet";
-  const nextText = step?.next || item?.next || (t ? "无需操作" : "在它所属的电脑上处理");
-  const nextTitle = homeEl("h3", "下一步：" + nextText); nextTitle.id = "task-side-next"; next.append(nextTitle);
-  if (!t) next.append(homeEl("p", item ? "这是其他电脑的任务缓存,这里只能查看。" : "这张卡不在本机看板里:可能已归档,或属于另一台电脑。"));
+  // ⭐ 最上面是给人看的小块(卡 #14)。原来的各节不是删了,是收进下面那个默认折叠的
+  //   「给执行者看的详细说明」—— 操作者的原话是「这三个都像给 agent 看的,我看得太吃力」。
   const ctlBox = ctl.kind === "none" ? null : sideControlsBox(t, ctl);
-  if (ctlBox && ctl.primary) next.append(ctlBox);
-  out.push(next);
+  out.push(sideBrief(t, step, item, ctlBox, ctl));
   if (t) {
-    out.push(sideExecution(t), sideRelationshipBox(t));
+    const detail = homeEl("details", undefined, "side-sec side-detail");
+    detail.id = "task-side-detail";
+    detail.append(homeEl("summary", "给执行者看的详细说明"));
+    detail.append(sideExecution(t), sideRelationshipBox(t));
     for (const [title, text] of [["任务说明", t.description], ["验收条件", t.acceptance], ["执行结果", t.result], ["裁定记录", t.verdict_note]]) {
-      const sec = sideSection(title, text); if (sec) out.push(sec);
+      const sec = sideSection(title, text); if (sec) detail.append(sec);
     }
+    out.push(detail);
     // 其余操作: 不是「我」这一步时的手动处理、编辑、归档——收起来,不抢下一步
     const more = homeEl("details", undefined, "side-sec");
     more.append(homeEl("summary", ctlBox && !ctl.primary ? "仍要手动处理" : "更多操作"));

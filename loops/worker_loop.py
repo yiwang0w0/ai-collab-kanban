@@ -1074,6 +1074,22 @@ def prompt_selftest():
                "用 Write 工具" in cw and "作为最终回复原样输出" in cw)
             RUNTIME = "claude"
             ok("(对照)claude 座席的交付段没有这条(它写得了)", "作为最终回复" not in chr(10).join(delivery_block("C:/x/e.md")))
+            # ⭐ 卡 #14:证据第一节是给人看的结果。标题固定 —— 宿主按它取 result_summary,
+            #   取不到卡面就显示「交付里没有给人看的摘要」(跨语言对照见 servertest §V)。
+            # TOOL_PROFILE / RUNTIME 在本函数开头已经声明过 global;这里再写一次是 SyntaxError。
+            _tp = TOOL_PROFILE
+            try:
+                seen = []
+                for _rt2, _tp2 in (("claude", "write"), ("claude", "read-only"), ("codex", "read-only")):
+                    RUNTIME, TOOL_PROFILE = _rt2, _tp2
+                    seen.append(chr(10).join(delivery_block("C:/x/e.md")))
+                ok("⭐三种座席的交付段都要求证据第一节写「给人看的结果」,标题逐字一致",
+                   all(HUMAN_RESULT_HEAD in text for text in seen) and HUMAN_RESULT_HEAD == "## 给人看的结果",
+                   HUMAN_RESULT_HEAD)
+                ok("⭐那一节要求白话、不写文件行号(行号留给下面给执行者看的正文)",
+                   all("不写文件行号" in text and "需要你做什么" in text for text in seen))
+            finally:
+                TOOL_PROFILE = _tp
         finally:
             RUNTIME = _rt
     finally:
@@ -1082,11 +1098,27 @@ def prompt_selftest():
     return 1 if fail_n else 0
 
 
+# ⭐ 证据的第一节是给**人**看的(卡 #14)。宿主在交付那一刻按这个**固定标题**从证据里取出
+#   result_summary(core/store.js 的 resultSummaryOf / RESULT_SUMMARY_HEAD,servertest 跨语言对照),
+#   取不到卡面就显示「交付里没有给人看的摘要」并给出证据入口 —— 看板不会另找模型替你总结。
+#   ⚠ 改这里的标题就等于让摘要取不到:两边是同一个字符串,改一处必须改另一处。
+#   三行、白话、不写文件行号:行号写在下面的正文里,那是给执行者看的。
+HUMAN_RESULT_HEAD = "## 给人看的结果"
+HUMAN_RESULT_BLOCK = [
+    f"证据的**第一节**先写给人看的结果(标题照抄,三行以内,白话,不写文件行号):",
+    f"  {HUMAN_RESULT_HEAD}",
+    "  结论:做成了 / 没做成 / 做了一半 —— 一句话",
+    "  改了什么:一句话说清人能感觉到的变化",
+    "  需要你做什么:没有就写「不需要」",
+]
+
+
 def delivery_block(evidence_path):
     """【怎么交付】—— 按座席与工具档变形。codex 的只读沙箱写不了文件,证据改走最终回复,
     由循环落成证据文件(run_codex);其余三种组合照旧用 Write 工具写文件。"""
     if API_MODE:
         return ["", "【怎么交付】把实际修改、产物位置与未执行的检查作为最终中文回复，宿主会落盘并执行登记验证。",
+                *HUMAN_RESULT_BLOCK,
                 "不要写工作仓以外的证据文件，不调用看板命令，不自行验收或派生新任务。", ""]
     if RUNTIME == "codex" and TOOL_PROFILE == "read-only":
         return [
@@ -1094,6 +1126,7 @@ def delivery_block(evidence_path):
             "【怎么交付】你处在 read-only 沙箱,写不了文件。把证据**作为最终回复原样输出**(不要包代码块、"
             "不要附解释),循环会把最终回复落成证据文件:",
             f"  {evidence_path}",
+            *HUMAN_RESULT_BLOCK,
             "证据里要有:核对了什么(文件:行)、依据是什么、结论是什么。贴机器产出,别手抄。",
             "**只要最终回复非空,就算交付**——剩余步骤由循环完成,不需要调用任何看板命令。",
             "",
@@ -1103,6 +1136,7 @@ def delivery_block(evidence_path):
         "",
         "【怎么交付】做完后,把证据写进这个文件(用 Write 工具,不需要跑命令):",
         f"  {evidence_path}",
+        *HUMAN_RESULT_BLOCK,
         ("证据里要有:核对了什么(文件:行)、依据是什么、结论是什么。贴机器产出,别手抄。"
          if ROLE_KIND == "review" else
          "证据里要有:改了什么(文件:行)、跑了什么、实际输出是什么。贴机器产出,别手抄。"),

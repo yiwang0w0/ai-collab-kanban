@@ -267,6 +267,16 @@ const ADDED_COLUMNS = [
   //   with an annotated approve ran around as "not_started yet verdict='approve'"
   //   (measured: 8 cards), lying to everything that reads verdict for "did it pass"
   //   (reports / review pre-filters / archive rules / future automation).
+  // ⭐ 给人看的两段白话(操作者 2026-10-28:「任务说明/执行条件/验收结果都像给 agent 看的,我看得太吃力」)。
+  //   summary        = 作者写的「要做什么」(建卡时带上;两行以内)。
+  //   result_summary = 交付那一刻从证据里**取出来**的「结论 / 改了什么 / 需要你做什么」(三行以内)。
+  //   两者都可以是 NULL,而 NULL 的含义是「没有」,不是「去算一个」:
+  //   · 没有 summary 时的退路只有一条 —— 说明以「【一句话】」开头就取那一行,否则只显示标题。
+  //     **不从长正文里截一段充数**:截出来的第一段通常是背景,读起来像摘要却不是结论(那比没有更坏)。
+  //   · 取不到 result_summary 时显示「交付里没有给人看的摘要」并给出证据入口,**不由模型另行总结** ——
+  //     另行总结等于让一个没干这活的模型替交付方表态。
+  ["summary", "TEXT"],
+  ["result_summary", "TEXT"],
   ["verdict", "TEXT"],
   // ⭐ `last_verdict` is THIS ROUND's ruling = what a human/auto-review last pressed.
   //   Survives without closing. It is the only marker of "came back through a
@@ -1206,7 +1216,7 @@ function matchesExecutionProfile(db, task, profile) {
 }
 
 function addInner(db, {
-  subject, description = "", acceptance = "", blockedBy = [],
+  subject, description = "", acceptance = "", summary = null, blockedBy = [],
   route = DEFAULT_ROUTE, line = null, lockKey = null, needsBash = 0,
   released = 1, maxAttempts = 3, evidencePath = null,
   kind = "task", parentId = null, treeMode, verifyCmd = null, weight = "standard",
@@ -1243,12 +1253,15 @@ function addInner(db, {
   const ownerNodeId = localNode(db).node_id;
   const taskUid = ownerNodeId + "/" + crypto.randomUUID();
   const r = db.prepare(
-    `INSERT INTO tasks (subject, description, acceptance, blocked_by, created_at, updated_at,
+    `INSERT INTO tasks (subject, description, acceptance, summary, blocked_by, created_at, updated_at,
                         route, line, lock_key, needs_bash, released, max_attempts, evidence_path,
                         kind, parent_id, tree_mode, verify_cmd, weight, oneof_key, proves_parent,
                         human_gate, human_gate_src, task_uid, owner_node_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(String(subject), String(description), String(acceptance),
+        // 给人看的「要做什么」。空白与只有空格的输入都落成 NULL ⇒ 读的一侧只有「有」和「没有」两种,
+        //   不会出现空字符串这第三种(空字符串会让退路判断多一个分支,而分支就是将来分叉的地方)。
+        String(summary ?? "").trim() || null,
         // Dep edges go through the SAME single validator as update (plugging only
         // one entrance is the classic hole — goal decomposition pours model-emitted
         // deps straight in here). selfId=null: the row doesn't exist yet, so
@@ -1922,6 +1935,54 @@ function recordExecutionEvent(db, {id,worker,runId,agentInstanceId,executionProf
   }catch(e){try{db.exec(own?"ROLLBACK":"ROLLBACK TO store_execution_event; RELEASE store_execution_event");}catch{}throw e;}
 }
 
+// ── 给人看的两段白话(卡 #14)────────────────────────────────────────────────
+//  纯函数、不碰状态机。放在这里是因为 report() 是证据的**唯一**写入口:摘要在那一刻取出来,
+//  别处(面板、CLI、审阅)就都读同一份,不会各自再解析一遍证据(两处解析必有一处腐烂)。
+const BRIEF_LINE_MAX = 160;              // 单行上限;超了截断并留「…」
+const BRIEF_ONELINER = /^【一句话】[\s:：]*/;   // 没有 summary 时唯一的退路
+/** 固定标题,执行线的提示词里写的就是这一个(loops/worker_loop.py 的 delivery_block)。
+ *  容忍 Markdown 的 #、本仓常用的「—— … ——」包边与结尾冒号;除此之外不猜。 */
+const RESULT_SUMMARY_HEAD = "给人看的结果";
+const RESULT_HEAD_RE = new RegExp(`^\\s*(?:#{1,6}\\s*|—{2,}\\s*|\\*\\*)?${RESULT_SUMMARY_HEAD}(?:\\*\\*)?(?:\\s*—{2,})?\\s*[:：]?\\s*$`);
+const RESULT_STOP_RE = /^\s*(?:#{1,6}\s|—{2,}|```|\*\*[^*]+\*\*\s*$)/;   // 下一节开始
+
+/** 最多 max 行(空行丢掉);被截掉过就在末尾留一个「…」—— 沉默截断读起来像全文。 */
+function clipLines(text, max) {
+  const lines = String(text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  const kept = lines.slice(0, max).map((l) => (l.length > BRIEF_LINE_MAX ? l.slice(0, BRIEF_LINE_MAX) + "…" : l));
+  if (lines.length > max) kept[kept.length - 1] += "…";
+  return kept.join("\n");
+}
+
+/** 卡片最上面那行「要做什么」。作者写的 summary 优先;没有就只认「【一句话】…」这一条退路;
+ *  都没有返回 null = 不显示这一行(标题本来就在上面),**不截长正文充数**。 */
+function cardBrief(t) {
+  const own = clipLines(t?.summary, 2);
+  if (own) return own;
+  const first = String(t?.description || "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
+  if (!BRIEF_ONELINER.test(first)) return null;
+  return clipLines(first.replace(BRIEF_ONELINER, ""), 2);
+}
+
+/** 从证据里取出「给人看的结果」那一节(固定标题之后最多三行)。取不到返回 null ——
+ *  调用方显示「交付里没有给人看的摘要」,**不替交付方总结**。 */
+function resultSummaryOf(evidence) {
+  const lines = String(evidence || "").split(/\r?\n/);
+  const at = lines.findIndex((l) => RESULT_HEAD_RE.test(l));
+  if (at < 0) return null;
+  const out = [];
+  for (let i = at + 1; i < lines.length && out.length < 8; i++) {
+    if (RESULT_STOP_RE.test(lines[i])) break;
+    // 列表符号去掉(「- 结论:…」与「结论:…」是同一句);标题前的空行跳过,正文后的空行收尾。
+    const line = lines[i].replace(/^\s*(?:[-*+•]|\d+[.)])\s*/, "").trim();
+    if (!line) { if (out.length) break; continue; }
+    out.push(line);
+  }
+  // 截断规则与 summary 共用一条(多于三行就留「…」),不在两个地方各写一套。
+  return clipLines(out.join("\n"), 3);
+}
+
 function report(db, { id, worker, outcome, evidence = "", runId }) {
   if (!["done", "wait"].includes(outcome)) throw err(ERR.BAD_INPUT, "outcome 必须是 done 或 wait");
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
@@ -1951,9 +2012,11 @@ function report(db, { id, worker, outcome, evidence = "", runId }) {
     //   refuted for the single-process topology (external review 2026-09-07); the gate is
     //   here so the invariant stops depending on that topology.
     const r = db.prepare(
-      `UPDATE tasks SET status='waiting', waiting_for=?, result=?, lease_until=NULL, updated_at=?
+      `UPDATE tasks SET status='waiting', waiting_for=?, result=?, result_summary=?, lease_until=NULL, updated_at=?
         WHERE id=? AND status='in_progress' AND worker=? AND run_id=?`
-    ).run(waitingFor, String(evidence), now(), Number(id), String(worker), runId);
+      // ⭐ 摘要与证据同一条 UPDATE 落盘:分两步写,中间崩一次就会留下「证据是这轮的、摘要是上轮的」。
+      //   取不到就是 NULL(上一轮的旧摘要也必须被清掉 —— 留着它等于用旧结论说明新证据)。
+    ).run(waitingFor, String(evidence), resultSummaryOf(evidence), now(), Number(id), String(worker), runId);
     if (!r.changes)
       throw err(ERR.CONFLICT, `卡 #${id} 在交付期间被回收或改手,本次交付未落盘`);
     appendEvent(db, {
@@ -2748,7 +2811,7 @@ function update(db, args) {
 
 function updateInner(db, fields) {
   const { id, line, route, maxAttempts, lockKey, needsBash, verifyCmd,
-          subject, description, acceptance, parentId, weight, humanGate,
+          subject, description, acceptance, summary, parentId, weight, humanGate,
           oneofKey, provesParent, blockedBy } = fields;
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
   if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
@@ -2797,6 +2860,9 @@ function updateInner(db, fields) {
   }
   if (description !== undefined){ sets.push("description=?"); args.push(String(description)); }
   if (acceptance !== undefined){  sets.push("acceptance=?");  args.push(String(acceptance)); }
+  // 给人看的摘要也能改:写错一句若只能「归档重建」,历史(尝试、派生、裁定)就断了 —— 与上面三项同一理由。
+  //   清空(传空串)= 回到「没有摘要」的退路,不是留一个空摘要。
+  if (summary !== undefined){     sets.push("summary=?");     args.push(String(summary ?? "").trim() || null); }
   if (line !== undefined)        { sets.push("line=?");         args.push(line ? String(line) : null); }
   if (route !== undefined)       { sets.push("route=?");        args.push(String(route || DEFAULT_ROUTE)); }
   if (maxAttempts != null) { sets.push("max_attempts=?"); args.push(assertMaxAttempts(maxAttempts)); }
@@ -3053,6 +3119,12 @@ function row(r) {
     // the MIDDLE (neither stronger nor weaker).
     weight: r.weight || "standard",
     acceptance: r.acceptance, result: r.result, verdict_note: r.verdict_note,
+    // ── 给人看的两段白话(卡 #14)。summary / result_summary 是**原值**(没有就是 null);
+    //   brief 是「最上面那行要显示什么」的结论,算在这里一处:面板自己算就是第二份判据,
+    //   哪天退路改了,屏幕上和 API 里会各说一套。
+    summary: r.summary || null,
+    result_summary: r.result_summary || null,
+    brief: cardBrief(r),
     lock_key: r.lock_key, evidence_path: r.evidence_path,
     needs_bash: Number(r.needs_bash) === 1, released: Number(r.released) === 1,
     verify_cmd: r.verify_cmd || null,
@@ -3242,6 +3314,8 @@ module.exports = {
   list, get, counts, events, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
   DEFAULT_ROUTE,
   verifyRegistry, assertVerify,
+  // 给人看的两段白话:判据各一处(面板只渲染,不自己解析证据、不自己算退路)。
+  cardBrief, resultSummaryOf, RESULT_SUMMARY_HEAD,
   // Ruling destinations. **The legacy criterion's canon is this one function**
   // (the server's hand-written copy is deleted).
   legacyDisposition, DISPOSITIONS, confirmDestination,

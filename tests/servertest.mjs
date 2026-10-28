@@ -1660,6 +1660,96 @@ try {
        `claim 事件数=${evs.filter((e) => e.kind === "claim").length}`);
   }
 
+  // ══ §V 给人看的两段白话(卡 #14):summary 与它唯一的退路、result_summary 从证据里取 ══
+  //    操作者的原话:「任务说明/执行条件/验收结果这三个都像是给 agent 看的,我看得太吃力」。
+  //    所以卡上多两段**白话**。这一节钉的是两条红线:
+  //      ① 没有 summary 时只有一条退路(说明以「【一句话】」开头取那一行),**不从长正文里截一段充数**
+  //         —— 截出来的第一段通常是背景,读起来像摘要而不是结论,比没有更坏。
+  //      ② result_summary 只从证据的固定标题那一节**取**,取不到就是 null,看板不另找模型总结。
+  {
+    console.log(NL + "[§V 给人看的摘要(summary 退路 · result_summary 从证据提取)]");
+    const V = await mk({});
+    const mkTask = async (body) => (await V.api("POST", "/api/tasks", { line: LINE, humanGate: false, ...body })).body?.task;
+    const got = async (id) => (await V.api("GET", `/api/tasks/${id}`)).body?.task;
+
+    const own = await mkTask({ subject: "标题很长很技术", summary: "把卡片最上面改成人能看懂的三行",
+                               description: "一大段给执行者看的说明,里面有文件:行" });
+    ok("V1 ⭐summary 能写进去也读得出来,brief 就是它(作者写的优先)",
+       own?.summary === "把卡片最上面改成人能看懂的三行" && own?.brief === own?.summary,
+       `summary=${JSON.stringify(own?.summary)} brief=${JSON.stringify(own?.brief)}`);
+
+    const oneLiner = await mkTask({ subject: "没写 summary 的卡",
+                                    description: "【一句话】给卡片最上面加三行白话\n\n下面是给执行者看的细节:文件 core/x.js:12 …" });
+    ok("V2 ⭐没有 summary、说明以「【一句话】」开头 → brief 取那一行(去掉标记)",
+       oneLiner?.summary === null && oneLiner?.brief === "给卡片最上面加三行白话",
+       `brief=${JSON.stringify(oneLiner?.brief)}`);
+
+    const legacy = await mkTask({ subject: "旧卡(只有标题和长说明)",
+                                  description: "背景:这件事起因于上个季度的一个决定,涉及三个模块……\n第二段还在讲背景。" });
+    ok("V3 ⭐旧卡没有新字段 → brief 是 null(只显示标题,不截长说明充数)",
+       legacy?.summary === null && legacy?.brief === null, `brief=${JSON.stringify(legacy?.brief)}`);
+
+    const blank = await mkTask({ subject: "summary 只有空格", summary: "   ", description: "无" });
+    ok("V3b 空白 summary 落成 null(读的一侧只有「有」和「没有」两种)",
+       blank?.summary === null && blank?.brief === null, `summary=${JSON.stringify(blank?.summary)}`);
+
+    const edited = await V.api("POST", `/api/tasks/${legacy.id}/update`,
+                               { summary: "补一句:让人看懂这张卡", expected_version: legacy.aggregate_version });
+    const after = await got(legacy.id);
+    ok("V4 摘要写错能改(不必归档重建 —— 与标题/说明/验收同一条路)",
+       edited.status === 200 && after?.brief === "补一句:让人看懂这张卡", `HTTP ${edited.status} brief=${JSON.stringify(after?.brief)}`);
+
+    // ── result_summary:交付那一刻从证据里取。固定标题 = 执行线提示词里写的那一个。
+    const deliver = async (card, evidence) => {
+      await V.api("POST", `/api/tasks/${card.id}/claim`, { worker: LINE });
+      await V.api("POST", `/api/tasks/${card.id}/report`, { worker: LINE, outcome: "done", evidence });
+      return got(card.id);
+    };
+    const withSummary = await deliver(await mkTask({ subject: "有摘要的交付" }), [
+      "## 给人看的结果", "结论:做成了", "- 改了什么:卡片最上面多了三行白话", "需要你做什么:不需要",
+      "", "## 给执行者看的详细说明", "core/panel.html:4520 加了 sideBrief()",
+    ].join("\n"));
+    ok("V5 ⭐宿主从证据里取出「给人看的结果」那一节(三行,列表符号去掉,下一节不进来)",
+       withSummary?.result_summary === "结论:做成了\n改了什么:卡片最上面多了三行白话\n需要你做什么:不需要",
+       JSON.stringify(withSummary?.result_summary));
+    ok("V5b 证据原文照旧完整落在 result(摘要是另一份,不替换证据)",
+       /core\/panel\.html:4520/.test(withSummary?.result || ""), String(withSummary?.result || "").slice(-40));
+
+    const noHead = await deliver(await mkTask({ subject: "没写那一节的交付" }),
+                                 "改了什么(文件:行)\ncore/x.js:1 改了一行\n跑了什么:node tests/x.mjs 全绿");
+    ok("V6 ⭐证据里没有那一节 → result_summary 是 null(**不**拿第一段充数,面板据此显示「交付里没有给人看的摘要」)",
+       noHead?.result_summary === null && !!noHead?.result, JSON.stringify(noHead?.result_summary));
+
+    const emptySection = await deliver(await mkTask({ subject: "标题写了但下面空着" }),
+                                       "## 给人看的结果\n\n## 给执行者看的详细说明\n细节在这里");
+    ok("V6b 标题有、下面没写 → 同样是 null(有标题不等于有摘要)",
+       emptySection?.result_summary === null, JSON.stringify(emptySection?.result_summary));
+
+    const tooMany = await deliver(await mkTask({ subject: "写了五行" }),
+                                  "## 给人看的结果\n一\n二\n三\n四\n五");
+    ok("V6c 超过三行只留三行,并留一个「…」说明被截过(沉默截断读起来像全文)",
+       tooMany?.result_summary === "一\n二\n三…", JSON.stringify(tooMany?.result_summary));
+
+    // 跨语言对照:执行线提示词里的固定标题与服务端解析用的标题是**同一个字符串**。
+    //   两边各写一份,改一处就静默失效 —— 「交付了却取不到摘要」最难查的就是这一形。
+    //   按源码比对(不 import store.js:那会在测试进程里带出 DATA_DIR / 登记簿的副作用)。
+    const loopSrc = readFileSync(join(ROOT, "loops", "worker_loop.py"), "utf8");
+    const storeSrc = readFileSync(join(ROOT, "core", "store.js"), "utf8");
+    const head = (storeSrc.match(/RESULT_SUMMARY_HEAD = "([^"]+)"/) || [])[1] || "";
+    ok("V7 ⭐提示词里的固定标题与服务端解析的标题逐字一致(跨语言对照)",
+       head === "给人看的结果" && loopSrc.includes(`HUMAN_RESULT_HEAD = "## ${head}"`) &&
+       /function resultSummaryOf\(/.test(storeSrc) && /function cardBrief\(/.test(storeSrc),
+       `store=${JSON.stringify(head)}`);
+
+    // 面板只渲染,不自己解析证据、不自己算退路(两份判据必有一份腐烂)。
+    const panelSrc3 = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
+    ok("V8 面板读 t.brief / t.result_summary,收起详细说明,且自己不解析证据(没有那个固定标题)",
+       /t\.brief/.test(panelSrc3) && /t\.result_summary/.test(panelSrc3) &&
+       /给执行者看的详细说明/.test(panelSrc3) && /交付里没有给人看的摘要/.test(panelSrc3) &&
+       !!head && !panelSrc3.includes(head), "");
+    V.kill();
+  }
+
   if (fail) for (const b of boards) console.log(`\n──── board :${b.PORT} output ────\n` + b.out().slice(-1200));
   for (const b of boards) { try { rmSync(b.DATA, { recursive: true, force: true }); } catch {} }
   try { rmSync(STUBS, { recursive: true, force: true }); } catch {}

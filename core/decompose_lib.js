@@ -63,6 +63,9 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
     "",
     "拆解规则:",
     "- **一张卡 = 一个可独立验收的产出**。复合的要切开。",
+    // 给人看的那一行:人看卡时最先看到它,所以要求白话、不写文件行号。没写也能建卡(schema 里是可选),
+    //   但那张卡在面板上就只剩标题 —— 说清这件事,比默默替它从 description 截一段好。
+    "- 每张卡写一句 summary:给人看的「要做什么」,一两行白话,不写文件行号、不写实现细节。",
     "- 顺序有依赖就用 after 指出前置(填同一批里的序号,从 1 开始);没有就不填。",
     "- 每张卡要写清 acceptance:怎么判这活干没干成,能给可执行命令就给。",
     `- line 从这些里选(填「」前面的标识):${lineMenu(lines, hints, labels)};拿不准就填 null,谁都能领。`,
@@ -74,7 +77,7 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
     "只做一件事:用结构化输出交回结果(结构见下),不写任何文件。",
     "",
     "内容是 JSON,不要包代码块:",
-    '{"tasks":[{"subject":"...","description":"...","acceptance":"...","line":"' +
+    '{"tasks":[{"subject":"...","summary":"...","description":"...","acceptance":"...","line":"' +
       lines.join("|") + '|null","needs_bash":false,"after":[]}]}',
   ].filter(Boolean).join(NL);
 }
@@ -97,6 +100,9 @@ const DECOMPOSE_PLAN_SCHEMA = freeze({
         required: ["subject", "description", "acceptance", "line", "needs_bash", "after"],
         properties: {
           subject: { type: "string", minLength: 1 },
+          // 给人看的「要做什么」。**可选**(不进 required):旧计划、旧模型不出这个字段时整次拆解照旧成立,
+          //   卡上只剩标题(退路在 store.cardBrief),不该为一行文案把整批卡废掉。
+          summary: { type: "string" },
           description: { type: "string" },
           acceptance: { type: "string" },
           line: { type: ["string", "null"] },

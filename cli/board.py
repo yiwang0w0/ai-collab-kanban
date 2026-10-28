@@ -5,7 +5,9 @@
   P="python cli/board.py"
   $P ls [--status not_started|in_progress|waiting|done] [--line alpha] [--archived false|true|all]
   $P show <id>
-  $P create --file payload.json
+  $P create --file payload.json          # payload 的键与 POST /api/tasks 相同:subject(必填)、summary
+                                             #   (给人看的「要做什么」,两行以内)、description、acceptance、
+                                             #   line、weight、verifyCmd、humanGate、parentId …
   $P claim --as alpha                        # pick-a-card claim (routing/locks/deps decided server-side)
   $P take  <id> --as coord --version <aggregate_version>                   # claim a SPECIFIC id (coordinator finishing one card)
   $P edit  <id> --file payload.json --version <aggregate_version>          # rewrite the card face. An in-progress card accepts ONLY a
