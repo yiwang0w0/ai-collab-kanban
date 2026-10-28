@@ -12,7 +12,11 @@ import { execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
-const { buildDecomposePrompt, lineMenu } = require_(join(__dirname, "..", "core", "decompose_lib.js"));
+const { buildDecomposePrompt, lineMenu, DECOMPOSE_PLAN_SCHEMA } = require_(join(__dirname, "..", "core", "decompose_lib.js"));
+let C = null, cliImportError = null;
+try { C = await import(pathToFileURL(join(__dirname, "..", "core", "board-claude-cli.mjs")).href); }
+catch (e) { cliImportError = e; }
+const schemaErrorsOf = C?.schemaErrors;
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
@@ -108,14 +112,19 @@ console.log("\n[③ a goal that continues an earlier goal decomposes WITH its re
 console.log("\n[④ the output contract the server depends on]");
 {
   const p = base();
-  // 2026-10-28：拆解器不再有写工具。交付渠道从「Write 写结果文件」改成「最终回答」，server 从
-  // CLI 的 --output-format json 的 result 字段取出来解析（见 core/board-claude-cli.mjs）。
-  // 提示词里若还点名输出文件或 Write 工具，模型会去调一个不存在的工具，最终回答里没有 JSON。
+  // 2026-10-28：拆解器不再有写工具。交付渠道从「Write 写结果文件」改成 CLI 的结构化输出：
+  // --json-schema 给出计划结构，server 只读结果 JSON 的 structured_output（见 core/board-claude-cli.mjs）。
+  // 提示词里若还点名输出文件或 Write 工具，模型会去调一个不存在的工具。
   ok("⭐提示词不再点名输出文件，也不再叫模型用 Write 工具",
      !p.includes(OUT) && !/Write/.test(p), (p.match(/[^\n]*(?:Write|goal-7\.json)[^\n]*/) || ["(无,符合预期)"])[0]);
-  ok("⭐提示词要求把 JSON 作为最终回答输出、不写任何文件",
-     /只做一件事:把结果作为你的最终回答输出/.test(p) && /不写任何文件/.test(p),
+  ok("⭐提示词要求用结构化输出交回结果、不写任何文件",
+     /只做一件事:用结构化输出交回结果/.test(p) && /不写任何文件/.test(p),
      (p.match(/只做一件事[^\n]*/) || ["(missing)"])[0]);
+  // 提示词里给模型看的结构与 --json-schema 是同一份:示例按 schema 校验必须无误(防两处各改各的)。
+  const shape = (p.match(/\{"tasks".*\}/) || [""])[0];
+  let shapeErrors = ["(示例不是 JSON)"];
+  try { shapeErrors = DECOMPOSE_PLAN_SCHEMA && schemaErrorsOf ? schemaErrorsOf(JSON.parse(shape), DECOMPOSE_PLAN_SCHEMA) : ["(schema 或校验函数缺失)"]; } catch {}
+  ok("⭐提示词里的 JSON 示例符合 DECOMPOSE_PLAN_SCHEMA(字段一致)", Array.isArray(shapeErrors) && shapeErrors.length === 0, shapeErrors.join(" · ").slice(0, 160));
   ok("it is told not to wrap the JSON in a code block (the server parses the final answer)",
      /不要包代码块/.test(p));
   ok("the goal's own subject and background are present",
@@ -130,9 +139,7 @@ console.log("\n[④ the output contract the server depends on]");
 // ══ ⑤–⑩ 看板服务端自己起的 Claude CLI（一键拆解、上下文压缩）的参数、环境与输出解析 ══════════
 // server.mjs 一导入就监听，桩 CLI 又看不到参数（见 decompose_lib.js 文件头），所以参数与环境
 // 由 core/board-claude-cli.mjs 的纯函数组装，这里直接断言；server 只按源码形钉住它确实调用这些函数。
-let C = null;
-try { C = await import(pathToFileURL(join(__dirname, "..", "core", "board-claude-cli.mjs")).href); }
-catch (e) { ok("core/board-claude-cli.mjs 可导入", false, String(e.message).slice(0, 120)); }
+if (cliImportError) ok("core/board-claude-cli.mjs 可导入", false, String(cliImportError.message).slice(0, 120));
 const { loadExecutionProfiles, profileEnvironment } = await import(pathToFileURL(join(__dirname, "..", "core", "execution-profiles.mjs")).href);
 
 // flag 后面紧跟的取值（到下一个 -- 开头的元素为止）；同一 flag 出现多次时合并。
@@ -165,11 +172,20 @@ if (C) {
      JSON.stringify(valuesOf(a, "--tools")) === JSON.stringify(["Read", "Glob", "Grep"]), JSON.stringify(valuesOf(a, "--tools")));
   ok("⭐参数里没有 acceptEdits,权限模式是 dontAsk(未预先放行的一律拒绝)",
      !a.includes("acceptEdits") && JSON.stringify(valuesOf(a, "--permission-mode")) === '["dontAsk"]', JSON.stringify(valuesOf(a, "--permission-mode")));
-  ok("⭐放行清单里没有 Write/Edit/Bash", !valuesOf(a, "--allowedTools").some((t) => /^(?:Write|Edit|Bash)\b/.test(t)),
-     JSON.stringify(valuesOf(a, "--allowedTools")));
+  // 不带路径的 `--allowedTools Read` 会放行任意路径的读取(2026-10-28 spike P1 实测越界读成功):
+  // 越界只能靠 dontAsk(读范围 = cwd + --add-dir)与路径拒绝规则挡,所以 --allowedTools 一项都不给。
+  ok("⭐不带 --allowedTools(没有不带路径的 Read/Glob/Grep 放行;越界由 dontAsk 与拒绝规则挡)",
+     !a.includes("--allowedTools") && !a.includes("--allowed-tools"), JSON.stringify(valuesOf(a, "--allowedTools")));
   ok("⭐只挂工作仓一个目录,不再挂 core/", JSON.stringify(valuesOf(a, "--add-dir")) === JSON.stringify([REPO]), JSON.stringify(valuesOf(a, "--add-dir")));
-  ok("结果走结构化输出(--output-format json),不走文件", JSON.stringify(valuesOf(a, "--output-format")) === '["json"]');
+  let schemaArg = null; try { schemaArg = JSON.parse(valuesOf(a, "--json-schema")[0]); } catch {}
+  ok("⭐结果走结构化输出:--output-format json + --json-schema(与 decompose_lib 的 DECOMPOSE_PLAN_SCHEMA 相同)",
+     JSON.stringify(valuesOf(a, "--output-format")) === '["json"]' && !!DECOMPOSE_PLAN_SCHEMA &&
+     JSON.stringify(schemaArg) === JSON.stringify(DECOMPOSE_PLAN_SCHEMA), String(valuesOf(a, "--json-schema")[0]).slice(0, 80));
   ok("不加载任何 MCP 服务器(--strict-mcp-config,且不给 --mcp-config)", a.includes("--strict-mcp-config") && !a.includes("--mcp-config"));
+  ok("⭐不读用户/项目/本地设置(--setting-sources \"\":其中的 allow 规则与 hooks 不进来)",
+     JSON.stringify(valuesOf(a, "--setting-sources")) === '[""]', JSON.stringify(valuesOf(a, "--setting-sources")));
+  ok("拆解关掉斜杠命令与技能(--disable-slash-commands),不落会话文件(--no-session-persistence)",
+     a.includes("--disable-slash-commands") && a.includes("--no-session-persistence"));
   const deny = valuesOf(a, "--disallowedTools");
   ok("⭐显式拒绝 Bash/PowerShell/Edit/Write/NotebookEdit/WebFetch/WebSearch/Task", WRITE_OR_NET.every((t) => deny.includes(t)),
      WRITE_OR_NET.filter((t) => !deny.includes(t)).join(" ") || "全部在");
@@ -202,20 +218,28 @@ if (C) {
      Object.keys(legacy).filter((k) => !(k in e)).join(" "));
 }
 
-console.log("\n[⑦ 从 CLI 结构化输出里取拆解结果(复用 {…} 提取)]");
+console.log("\n[⑦ 只从 CLI 的 structured_output 取拆解计划(不再从正文抠 JSON)]");
 if (C) {
-  const res = (result, over = {}) => JSON.stringify({ type: "result", subtype: "success", is_error: false, result, permission_denials: [], ...over });
-  const plan = '{"tasks":[{"subject":"写一行说明","after":[]}]}';
-  const p1 = C.decomposePlanOf(res(plan));
-  ok("⭐result 字段里的 JSON 解析成计划", p1.ok && p1.plan?.tasks?.[0]?.subject === "写一行说明", JSON.stringify(p1).slice(0, 120));
-  ok("result 带代码块或前后说明也能取出 {…}",
-     C.decomposePlanOf(res("```json\n" + plan + "\n```")).ok && C.decomposePlanOf(res("结果如下:\n" + plan + "\n完毕")).ok);
-  ok("--verbose 的消息数组形取最后一条 result", C.decomposePlanOf(JSON.stringify([{ type: "system", subtype: "init" }, JSON.parse(res(plan))])).ok);
-  const err = C.decomposePlanOf(res("预算用完", { is_error: true, subtype: "error_max_budget_usd" }));
-  ok("⭐CLI 报错(is_error / subtype 非 success)不当成计划,原因里带 subtype", !err.ok && /error_max_budget_usd/.test(err.reason || ""), err.reason);
+  const task = { subject: "写一行说明", description: "d", acceptance: "a", line: null, needs_bash: false, after: [] };
+  const res = (structured, over = {}) => JSON.stringify({ type: "result", subtype: "success", is_error: false,
+    result: structured === undefined ? "" : JSON.stringify(structured), permission_denials: [],
+    ...(structured === undefined ? {} : { structured_output: structured }), ...over });
+  const p1 = C.decomposePlanOf(res({ tasks: [task, { ...task, subject: "第二张", line: "alpha", after: [1] }] }));
+  ok("⭐structured_output 就是计划", p1.ok && p1.plan?.tasks?.[1]?.subject === "第二张" && p1.plan.tasks[1].after[0] === 1, JSON.stringify(p1).slice(0, 120));
+  // spike ADV1:说明文字里带花括号时,贪婪 {…} 提取会解析失败;T4:模型把分隔符写进说明文字。
+  const textOnly = C.decomposePlanOf(res(undefined, { result: '说明里有 {a:1},计划如下 {"tasks":[' + JSON.stringify(task) + "]}" }));
+  ok("⭐只有 result 正文、没有 structured_output → 不成功(正文里的 JSON 不再被采用)",
+     !textOnly.ok && /structured_output/.test(textOnly.reason || ""), textOnly.reason);
+  for (const [label, bad] of [["缺字段", { tasks: [{ subject: "x" }] }], ["类型错", { tasks: [{ ...task, after: ["1"] }] }],
+                               ["多余字段", { tasks: [{ ...task, budget_usd: 20 }] }], ["空标题", { tasks: [{ ...task, subject: "" }] }],
+                               ["不是对象", ["tasks"]], ["after 非正整数", { tasks: [{ ...task, after: [0] }] }]]) {
+    const r = C.decomposePlanOf(res(bad));
+    ok(`structured_output 不合 schema(${label})→ 不成功,原因写明`, !r.ok && /不合计划结构/.test(r.reason || ""), r.reason);
+  }
+  ok("--verbose 的消息数组形取最后一条 result", C.decomposePlanOf(JSON.stringify([{ type: "system", subtype: "init" }, JSON.parse(res({ tasks: [task] }))])).ok);
+  const err = C.decomposePlanOf(res({ tasks: [task] }, { is_error: true, subtype: "error_max_budget_usd" }));
+  ok("⭐CLI 报错(is_error / subtype 非 success)不当成计划,即使带着 structured_output", !err.ok && /error_max_budget_usd/.test(err.reason || ""), err.reason);
   ok("stdout 不是 JSON(例如桩 CLI 崩了)→ 不成功", !C.decomposePlanOf("SyntaxError: boom").ok && !C.decomposePlanOf("").ok);
-  const bad = C.decomposePlanOf(res("我拆不了"));
-  ok("result 里没有 JSON → 不成功,原因写明不是合法 JSON", !bad.ok && /不是合法 JSON/.test(bad.reason || ""), bad.reason);
 }
 
 console.log("\n[⑧ 上下文压缩的 CLI 参数:不给任何工具]");
@@ -231,6 +255,9 @@ if (C) {
        a.includes("--strict-mcp-config") && JSON.stringify(valuesOf(a, "--permission-mode")) === '["dontAsk"]');
     ok(`${label}:接着同一会话(--resume),提示词紧跟 -p`, a[0] === "-p" && JSON.stringify(valuesOf(a, "--resume")) === '["sid-fixture"]' &&
        (effort ? JSON.stringify(valuesOf(a, "--effort")) === '["low"]' : !a.includes("--effort")));
+    // --disable-slash-commands 会连 /compact 一起关掉(2026-10-28 实测 init 的 slash_commands 变成 0 条),压缩不能加。
+    ok(`⭐${label}:不读用户/项目/本地设置(--setting-sources ""),不加 --disable-slash-commands(会关掉 /compact)`,
+       JSON.stringify(valuesOf(a, "--setting-sources")) === '[""]' && !a.includes("--disable-slash-commands"));
   }
 }
 
@@ -279,6 +306,11 @@ console.log("\n[⑩ server.mjs 确实用这些函数组装(源码形;server 一�
   ok("server 里每个 runCli 调用点都经组装函数(没有手写参数数组)",
      calls.length >= 3 && calls.filter((c) => !/^runCli\((?:decomposeCliArgs|compactCliArgs)\(/.test(c) && !/^runCli\(args/.test(c)).length === 0, calls.join(" | "));
   ok("直接执行 CLAUDE_CLI 的只有 runCli 一处", (srv.match(/execFile\(CLAUDE_CLI/g) || []).length === 1);
+  // dontAsk 下 cwd 与 --add-dir 范围内的读取不需要放行规则(spike P2/P4):cwd 若继承 server 的工作目录
+  // (可能是用户主目录),那里就整片可读。所以 cwd 固定为看板进程自建的空目录。
+  const cwdSrc = cut("const boardCliCwd", "\n}");
+  ok("⭐runCli 的 cwd 是看板自建的空目录(boardCliCwd:mkdtemp 于系统临时目录),不继承 server 的工作目录",
+     /cwd: boardCliCwd\(\)/.test(runCliSrc) && /mkdtempSync\(join\(tmpdir\(\)/.test(cwdSrc), cwdSrc.slice(0, 120) || "(没有 boardCliCwd)");
 }
 
 console.log(`\n${"─".repeat(56)}\nresult: ${pass} PASS / ${fail} FAIL`);

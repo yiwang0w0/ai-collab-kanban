@@ -1232,3 +1232,4 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-10-28 拆解器与压缩收窄：server 直接起的 Claude CLI 环境剔除登记凭据与看板令牌；拆解只开放 Read／Glob／Grep，计划改由 --output-format json 的最终回答交回，去掉 Write、acceptEdits 与 core/ 目录；压缩不给工具；两者拒读整个数据目录、登记簿与全部认证目录。
 - 回归用例修复前红、修复后绿；真实 Claude CLI 2.1.234（haiku、假数据）拆解可解析、越权读被拒、对照可读、无工具压缩成功；decomposetest 66、四通道专项 41、servertest 198、selftest 402、clitest 83 均无失败。阻塞：无。
 - 2026-10-28 POST /api/goals 改为只取 subject／description／parentId 的白名单，客户端夹带的执行配置、actor、尝试次数等不再写进建卡记录；servertest S11 修复前红、修复后绿，servertest 199 无失败。阻塞：无。
+- 2026-10-28 拆解器改用 --json-schema（只读 structured_output、按同一 schema 校验，删掉正文提取），拆解与压缩去掉不带路径的 --allowedTools、加 --setting-sources ""、cwd 改为自建空目录；decomposetest 修复前 16 项红、修复后 77 全绿，servertest 199、clitest 83 无失败，真实 CLI（haiku、假数据）越界读被拒、对照可读、跨 cwd 无工具压缩成功。阻塞：无。

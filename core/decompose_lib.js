@@ -39,8 +39,9 @@ function lineMenu(lines, hints = {}, labels = {}) {
  * @param labels   line id -> display name (v0.22; "" / absent = id only)
  * @param language natural language for generated card text ("" = say nothing)
  *
- * 2026-10-28：拆解器不再有写工具，计划 JSON 就是它的最终回答（server 从 --output-format json 的
- * result 字段里取，见 core/board-claude-cli.mjs）。旧调用方传的 outPath 不再使用。
+ * 2026-10-28：拆解器不再有写工具，计划经 CLI 的结构化输出交回（--json-schema 用下面的
+ * DECOMPOSE_PLAN_SCHEMA，server 只读结果 JSON 的 structured_output，见 core/board-claude-cli.mjs）。
+ * 旧调用方传的 outPath 不再使用。
  */
 function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {}, language = "" }) {
   const lang = String(language || "").trim();
@@ -70,7 +71,7 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
     "- 别拆太碎:3〜8 张为宜。拆不动就只出 1 张。",
     ...(lang ? [`- **卡片正文(subject/description/acceptance)一律用 ${lang} 书写**。`] : []),
     "",
-    "只做一件事:把结果作为你的最终回答输出。最终回答里只有这个 JSON,前后不加说明;不写任何文件。",
+    "只做一件事:用结构化输出交回结果(结构见下),不写任何文件。",
     "",
     "内容是 JSON,不要包代码块:",
     '{"tasks":[{"subject":"...","description":"...","acceptance":"...","line":"' +
@@ -78,4 +79,33 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
   ].filter(Boolean).join(NL);
 }
 
-module.exports = { buildDecomposePrompt, lineMenu };
+/** 计划的结构（CLI 的 --json-schema 与 server 收到 structured_output 后的结构校验共用这一份）。
+ *  字段与上面提示词里的示例一一对应（decomposetest ④ 按本 schema 校验那个示例）。只管结构：line 不做
+ *  枚举，线名是否在实现线内、after 序号是否越界、是否一张都没有，仍由 server 做语义判断
+ *  （线名打错要记在卡面上，不能被 CLI 悄悄纠正）。 */
+const freeze = (value) => {
+  if (value && typeof value === "object") { Object.values(value).forEach(freeze); Object.freeze(value); }
+  return value;
+};
+const DECOMPOSE_PLAN_SCHEMA = freeze({
+  type: "object", additionalProperties: false, required: ["tasks"],
+  properties: {
+    tasks: {
+      type: "array",
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["subject", "description", "acceptance", "line", "needs_bash", "after"],
+        properties: {
+          subject: { type: "string", minLength: 1 },
+          description: { type: "string" },
+          acceptance: { type: "string" },
+          line: { type: ["string", "null"] },
+          needs_bash: { type: "boolean" },
+          after: { type: "array", items: { type: "integer", minimum: 1 } },
+        },
+      },
+    },
+  },
+});
+
+module.exports = { buildDecomposePrompt, lineMenu, DECOMPOSE_PLAN_SCHEMA };

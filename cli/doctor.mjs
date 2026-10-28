@@ -189,11 +189,12 @@ await new Promise((resolve) => {
 {
   // "-p, --print" is checked as one help fragment: the loops pass the SHORT form,
   // so asserting only "--print" would test a spelling we never use.
-  // --tools / --strict-mcp-config / --no-chrome / dontAsk:server 的一键拆解与上下文压缩(core/board-claude-cli.mjs)。
+  // 从 --tools 起的末尾七个与 dontAsk:server 的一键拆解与上下文压缩(core/board-claude-cli.mjs)。
   const CLI_FLAGS = ["-p, --print", "--model", "--effort", "--permission-mode", "--disallowedTools",
                      "--allowedTools", "--add-dir", "--output-format",
                      "--resume", "--session-id", "--fork-session", "--max-budget-usd",
-                     "--tools", "--strict-mcp-config", "--no-chrome"];
+                     "--tools", "--strict-mcp-config", "--no-chrome", "--json-schema", "--setting-sources",
+                     "--disable-slash-commands", "--no-session-persistence"];
   const CLI_CHOICES = { "--effort": ["low", "medium", "high", "xhigh", "max"],
                         "--permission-mode": ["acceptEdits", "dontAsk"],
                         "--output-format": ["json"] };

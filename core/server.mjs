@@ -14,10 +14,10 @@ import {inspectionError} from './inspection.mjs';
 import http from "node:http";
 import { spawn } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, createReadStream, openSync, readSync, closeSync, renameSync, unlinkSync, mkdirSync, chmodSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, statSync, readdirSync, createReadStream, openSync, readSync, closeSync, renameSync, unlinkSync, mkdirSync, chmodSync, mkdtempSync } from "node:fs";
 import { randomUUID, createHash, randomInt, timingSafeEqual } from "node:crypto";
 import { execFile, execFileSync, execSync } from "node:child_process";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
 import { createRequire } from "node:module";
@@ -1378,10 +1378,16 @@ const runCli = (args, timeout = 600000) => new Promise((resolve) => {
       stderr: "提示词 argv 超过 Windows 30000 字符预算(32767 上限)—— 调小相应预算后重试,已拒发" });
   // 看板直接起 claude 的唯一出口(一键拆解、上下文压缩)。环境与执行线旧线同一规则:剔除全部配置登记的
   // 凭据变量,另去掉看板自身的令牌类变量;标准登录变量保留(board-claude-cli.mjs)。
-  execFile(CLAUDE_CLI, args, { timeout, maxBuffer: 8 << 20, windowsHide: true,
+  // cwd 是看板自建的空目录:dontAsk 下 cwd 范围内的读取不需要放行规则,继承 server 的工作目录(可能是
+  // 用户主目录)就等于把那一片交给拆解器读。
+  execFile(CLAUDE_CLI, args, { timeout, maxBuffer: 8 << 20, windowsHide: true, cwd: boardCliCwd(),
                                env: boardCliEnvironment({ env: process.env, profiles: EXECUTION_PROFILES }) },
     (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stdout: stdout || "", stderr: stderr || "" }));
 });
+// 本进程第一次起 CLI 时在系统临时目录下新建,看板不往里写任何东西(拆解 --no-session-persistence;压缩
+// --resume 按会话 id 续写原转录,2026-10-28 实测该目录跑完仍为空)。
+let BOARD_CLI_CWD = null;
+const boardCliCwd = () => BOARD_CLI_CWD || (BOARD_CLI_CWD = mkdtempSync(join(tmpdir(), "kanban-board-cli-")));
 // 两个调用共用的路径拒绝范围:整个数据目录、验证登记簿、全部执行配置的认证目录(与 slotEnv 下传的同一组)。
 const boardCliScope = () => ({ dataDir: resolve(store.DATA_DIR),
   registry: resolve(process.env.BOARD_VERIFY_REGISTRY || join(CODE_ROOT, "core", "verify_registry.json")),
@@ -1391,8 +1397,10 @@ const boardCliScope = () => ({ dataDir: resolve(store.DATA_DIR),
  * Decompose a goal into child tasks.
  * The LLM only PRODUCES A PLAN — the server creates the cards. Letting the
  * decomposer hit the board API makes failure and partial application inseparable.
- * 2026-10-28:计划是模型的最终回答(--output-format json 的 result),不再是它写的文件。拆解器
- * 只有 Read/Glob/Grep,没有任何写工具,不挂 core/,数据目录与认证目录拒读(board-claude-cli.mjs)。
+ * 2026-10-28:计划经 --json-schema 的结构化输出交回(只读 structured_output,不从正文抠 JSON),
+ * 不再是模型写的文件。拆解器只有 Read/Glob/Grep,没有任何写工具,不挂 core/,数据目录与认证目录
+ * 拒读(board-claude-cli.mjs)。结构化输出缺失或不合结构是内部失败(500);线名不在实现线内照旧
+ * 落为「不指定线」并记在卡面上(下方 demoted)。
  */
 async function decomposeGoal(goalId, model, forced = false) {
   const g = store.get(db, goalId);
