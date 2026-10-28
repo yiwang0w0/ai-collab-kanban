@@ -376,3 +376,13 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
   assert.ok(source.includes('released: true, expected_version: Number(b.dataset.version)'));
   assert.ok(source.includes('confirm_execution_profile_digest: b.dataset.executionProfileDigest'), "两押提交原按钮绑定的摘要，配置变化不静默确认");
 });
+
+test("写了指示的卡按放行状态显示：未放行说明须放行后再跑，已放行保留原文案", () => {
+  // 直接执行卡片里这一段徽标代码，不另抄一份判断。
+  const badge = new Function("t", "meta2", panelSection('  if ((t.last_verdict || t.verdict) && t.status === "not_started")', "  // ⭐ Human-gated") +
+    '\nreturn meta2.join("");');
+  const card = { last_verdict: "reject", status: "not_started" };
+  assert.equal(badge({ ...card, released: 0 }, []), '<span class="tag tocoord">你写了指示 · 已退回原线，放行后才会再跑</span>');
+  assert.equal(badge({ ...card, released: 1 }, []), '<span class="tag tocoord">你写了指示 · 回原线继续</span>');
+  assert.equal(badge({ ...card, released: 1, status: "waiting" }, []), "", "显示条件不变：不在未开始状态不出徽标");
+});

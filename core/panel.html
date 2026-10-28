@@ -1213,6 +1213,8 @@ const rtColor = (rt) => rt === "codex" ? "#b07dd8" : "var(--cc)";
 const HOLD_HINT = `拆出的子卡已就位,但**目标未放行前,一张也不会被领**(祖先放行不变量)。
 放行整链 = 放行这个目标(board.py release <目标id>);只想放行一部分,将其余子任务设为暂缓领取（hold）。
 在此检查内容;有问题就在输入框写明(=回原线继续),或用 [编辑]。`;
+// 显式执行配置卡(服务端附 execution_profile)退回原线时会收回放行:打回提示与方案确认提示共用这一句,其他卡不加。
+const PROFILE_RELEASE_NOTE = "显式执行配置卡会同时取消放行，你重新核对放行后才会再次计费运行。";
 
 let tasks = [], taskEvents = [], meta = {}, skew = 0;   // skew = server time - local time
 let usageByCard = {};                                    // card id -> aggregated token usage
@@ -1583,7 +1585,8 @@ function cardParts(t){
   if ((t.last_verdict || t.verdict) && t.status === "not_started")
     // No approval/bounce vocabulary — a badge keeping deleted vocabulary breeds
     // "where is the bounce button". State only what happened.
-    meta2.push(`<span class="tag tocoord">你写了指示 · 回原线继续</span>`);
+    // 未放行的卡不会被领取(显式执行配置卡退回原线时服务端会收回放行),不能写「回原线继续」。
+    meta2.push(`<span class="tag tocoord">${t.released ? "你写了指示 · 回原线继续" : "你写了指示 · 已退回原线，放行后才会再跑"}</span>`);
   // ⭐ Human-gated: out of the queue, attempts unburned — the board must show WHO it
   //   is waiting for.
   if (t.human_gate && t.status !== "not_started") meta2.push(`<span class="tag hold" title="人工闸保持生效，子任务完成也不会自动解除">待人工 · 不会自动送回</span>`);
@@ -1843,6 +1846,7 @@ function syncHandoff(scope){
     return;
   }
   const on = vin.value.trim().length > 0;
+  const t = taskForView(tid,scope);
   // ⭐ One button, TWO meanings — the caption says which, literally. It used to say
   //   "approve" while text present meant not-closing: display and behavior split.
   for (const b of scope.querySelectorAll("[data-a='approve']")){
@@ -1860,7 +1864,8 @@ function syncHandoff(scope){
   if (h) h.textContent = isQ
     ? (on ? "同意=按这段指示交回原智能体 执行;否决=退回,写一句为什么更好"
           : "同意=按建议执行(卡完成);否决=退回原线,写一句为什么更好")
-    : (on ? "按下=**打回** —— 这段文字作为指令交回原智能体 继续;卡回到原线,下次认领按新一轮派发计算尝试预算(attempts 累计不清零,预算锚在认领时重打)"
+    : (on ? "按下=**打回** —— 这段文字作为指令交回原智能体 继续;卡回到原线,下次认领按新一轮派发计算尝试预算(attempts 累计不清零,预算锚在认领时重打)" +
+            (t?.execution_profile ? "。" + PROFILE_RELEASE_NOTE : "")
           : "空白提交=**通过**(计入已完成)。需修改或继续:先在上方写明指示再提交 —— 未写指示不会产生后续动作");
 }
 
@@ -1906,7 +1911,8 @@ function syncDecision(scope, t){
         : outcome === "success"
           ? "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。"
           : "先取走并自行应用上面的文件,再明确选择成功或失败并填写原始回执。"
-      : "确认后不会通过(卡回原线):选择与补充指示会原样交回原智能体 继续。";
+      : "确认后不会通过(卡回原线):选择与补充指示会原样交回原智能体 继续。" +
+        (t.execution_profile ? PROFILE_RELEASE_NOTE : "");
 }
 
 function upsert(t, wanted){
