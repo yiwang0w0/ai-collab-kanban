@@ -869,6 +869,17 @@
     .seg-o span{width:100%;min-width:0;padding:0 var(--sp-1)}
     .cfg-save-wrap{margin-left:0;flex-basis:100%;order:5}
   }
+  /* ── 手机看板选栏(docs/style-guide.md §五 全部任务):≤620px 五栏只显示一栏,栏上方的分段控件选栏;桌面不出现。
+     只在脚本选定了栏(#cols 带 data-col)后才藏别的栏,脚本没跑到时照旧五栏堆叠。 */
+  .seg.board-seg{display:none}
+  .board-seg .n{font-size:inherit;color:var(--dim);font-weight:400;font-variant-numeric:tabular-nums}
+  .board-seg .seg-o input:checked + span .n{color:inherit}
+  .board-seg .seg-o[data-s="waiting"][data-has] input:not(:checked) + span .n{color:var(--accent);font-weight:600}
+  @media (max-width:620px){
+    .seg.board-seg{display:flex;flex-wrap:nowrap;width:auto;margin:var(--sp-3) var(--sp-4) 0}
+    .board-seg .seg-o span{flex-wrap:wrap;gap:0 var(--sp-1);line-height:1.25;text-align:center}
+    .cols[data-col] > .col:not(.on){display:none}
+  }
 
   /* ── 触摸:窄屏与粗指针上可点目标至少 40px(放在最后,压过上面的桌面尺寸) */
   @media (max-width:620px),(pointer:coarse){
@@ -1124,6 +1135,8 @@
   <div class="body" id="tl-body"><div id="tl-bar"><button id="tl-mode-lin">谱系</button><button id="tl-mode-load">负载</button><span style="width:6px"></span><button id="tl-prev" aria-label="上一天" title="上一天">◀</button><input type="date" id="tl-date" aria-label="时间轴日期"><button id="tl-next" aria-label="下一天" title="下一天">▶</button><button id="tl-fit" class="pri">聚焦活动</button><button id="tl-day">全天</button><span id="tl-note"></span></div><div id="tl-scroll"></div></div>
 </section></div>
 
+<!-- 手机(≤620px)一次只显示一栏:这里选栏,每段带该栏卡数(同栏头);桌面宽度不出现。段由 ensureShell 按栏名生成。 -->
+<div class="seg board-seg" id="board-seg" role="radiogroup" aria-label="选择显示的栏"></div>
 <div class="cols" id="cols"></div>
 
 <footer>
@@ -1374,6 +1387,15 @@ const now = () => Date.now() + skew;
 const icon = (name) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`;
 
 const taskColumn = (t) => t.status === "done" ? "done" : (t.kind === "goal" ? "goal" : t.status);
+// ── board-col(pure;tests/hometest.mjs)──
+// 手机(≤620px)上「全部任务」一次只显示一栏。没被你选过时:当前栏还有卡就不跳(不在你看着的时候换栏);
+//   否则「等待中」有卡优先,再按栏的顺序取第一个有卡的;都空停在「等待中」。
+const boardColAuto = (cols, has, cur) => cur && has[cur] ? cur
+  : has.waiting ? "waiting" : (cols.find((k) => has[k]) || "waiting");
+// 按标题筛选:当前栏有命中就留在这;没有就去命中卡所在的栏(「等待中」优先,再按栏的顺序);一张都没命中不动。
+const boardColForHits = (cols, cur, hits) => !hits.size || hits.has(cur) ? cur
+  : hits.has("waiting") ? "waiting" : cols.find((k) => hits.has(k));
+// ── /board-col ──
 function setFindNote(text, tone=""){
   const note = document.getElementById("task-find-note");
   note.textContent = text;
@@ -1393,6 +1415,7 @@ function locateByInput(){
   const id = Number(m[1]), task = byId.get(id);
   if (!task){ setFindNote(`#${id} 不在当前看板中(可能已归档)`, "bad"); input.select(); return; }
   locatedId = id; locateScrollPending = true;
+  setBoardCol(taskColumn(task));   // 手机一栏模式:先切到这张卡所在的栏,再滚到它
   document.getElementById("task-find-clear").disabled = false;
   setFindNote(`#${id} 已定位到「${colLabel(taskColumn(task))}」栏顶`, "ok");
   render();
@@ -1402,8 +1425,12 @@ document.getElementById("task-find-clear").addEventListener("click", () => clear
 // 按标题筛选:只在本页隐藏不匹配的卡(加 nomatch 类),不改列计数、不写任何状态。
 document.getElementById("board-filter").addEventListener("input", (e) => {
   boardFilter = e.target.value.trim().toLowerCase();
-  const n = boardFilter ? tasks.filter((t) => String(t.subject || "").toLowerCase().includes(boardFilter)).length : 0;
+  const hit = boardFilter ? tasks.filter((t) => String(t.subject || "").toLowerCase().includes(boardFilter)) : [];
+  const n = hit.length;
   document.getElementById("board-filter-note").textContent = boardFilter ? `筛选中:标题含「${e.target.value.trim()}」的 ${n} 张;列头计数仍是全部` : "";
+  // 手机一栏模式:当前栏没有命中、别的栏有,就切到命中卡所在的栏。
+  const to = boardColForHits(COLS, boardCol, new Set(hit.map(taskColumn)));
+  if (to && to !== boardCol) setBoardCol(to);
   render();
 });
 document.getElementById("task-find-id").addEventListener("keydown", (e) => {
@@ -1825,8 +1852,33 @@ function ensureShell(){
     const divider = document.createElement("div"); divider.className = "divider";
     shell.set(key, { col, list, n: h2.querySelector(".n"), empty, divider });
   }
+  // 手机选栏的分段控件:与栏同时、按同一份栏名建一次(单选组,方向键可换段);计数由 renderNow 填。
+  document.getElementById("board-seg").innerHTML = COLS.map((key) =>
+    `<label class="seg-o" data-s="${key}"><input type="radio" name="board-col" value="${key}"><span>${esc(colLabel(key))} <small class="n"></small></span></label>`).join("");
   return shell;
 }
+
+// 手机一栏模式选中的栏。你点过的(定位、筛选替你切的也算)记进本标签页 sessionStorage,刷新后照旧;
+//   读写都包 try——无痕窗口或禁用存储时只是不记。没选过 = 由 renderNow 按卡数自动挑(boardColAuto)。
+//   桌面宽度这份状态照样维护,只是 CSS 不按它藏栏。
+const BOARD_COL_KEY = "tb_board_col";
+let boardCol = null, boardColMine = false;
+try { const v = sessionStorage.getItem(BOARD_COL_KEY); if (COLS.includes(v)) { boardCol = v; boardColMine = true; } } catch {}
+function setBoardCol(key){
+  if (!COLS.includes(key)) return;
+  boardCol = key; boardColMine = true;
+  try { sessionStorage.setItem(BOARD_COL_KEY, key); } catch {}
+  applyBoardCol();
+}
+function applyBoardCol(){
+  if (!shell || !boardCol) return;
+  document.getElementById("cols").dataset.col = boardCol;
+  for (const [key, { col }] of shell) col.classList.toggle("on", key === boardCol);
+  for (const r of document.querySelectorAll('#board-seg input[name="board-col"]')) r.checked = r.value === boardCol;
+}
+document.getElementById("board-seg").addEventListener("change", (e) => {
+  if (e.target.name === "board-col") setBoardCol(e.target.value);
+});
 
 /** Arm a two-press button: swap the caption, then pin the button's width to the
  *  wider of the two states. ⭐ Armed captions are longer than resting ones; without
@@ -2656,10 +2708,15 @@ function renderNow(){
   // ── FIRST: note the coordinates before anything moves
   const first = new Map();
   if (!REDUCED.matches && boardShown())
-    for (const [id, el] of cardNodes)
-      if (el.isConnected && !el.dataset.leaving) first.set(id, el.getBoundingClientRect());
+    for (const [id, el] of cardNodes){
+      if (!el.isConnected || el.dataset.leaving) continue;
+      // 手机一栏模式下别的栏是 display:none,卡量出来 0×0;拿它当 FIRST,卡会从左上角飞进来。
+      const r = el.getBoundingClientRect();
+      if (r.width || r.height) first.set(id, r);
+    }
 
   const wanted = new Set();
+  const colHas = {};   // 每栏有没有卡(含收起的),给手机选栏的自动挑栏用
 
   for (const key of COLS){ const label = colLabel(key);
     const { list, n, empty, divider } = sh.get(key);
@@ -2683,6 +2740,7 @@ function renderNow(){
         if (!folded) for (const t of subs) items.push(upsert(t, wanted));
       }
       if (!allGoals.length && !allSubs.length) items.push(empty);
+      colHas[key] = allGoals.length + allSubs.length > 0;
       n.textContent = allGoals.length;
     } else if (key === "not_started"){
       // ⭐ Pile anatomy: segmented claimable → budget-frozen → divider → candidate
@@ -2723,16 +2781,28 @@ function renderNow(){
         if (!folded) for (const t of cand) items.push(upsert(t, wanted));
       }
       if (!rows0.length) items.push(empty);
+      colHas[key] = rows0.length > 0;
       n.textContent = candAll.length ? `${claimableAll.length + frozenAll.length}+${candAll.length}` : String(rows0.length);
     } else {
       const allRows = pinRelated(rowsFor(key));
       const rows = allRows.filter((t) => t.id !== locatedId);
       for (const t of rows) items.push(upsert(t, wanted));
       if (!allRows.length) items.push(empty);
+      colHas[key] = allRows.length > 0;
       n.textContent = allRows.length;
     }
     placeList(list, items);
   }
+
+  // 手机选栏:各段计数照抄栏头;没被你选过时按卡数挑栏(boardColAuto),再把选中的栏亮出来。
+  for (const o of document.querySelectorAll("#board-seg .seg-o")){
+    const key = o.dataset.s, c = sh.get(key);
+    if (!c) continue;
+    o.querySelector(".n").textContent = c.n.textContent;
+    o.toggleAttribute("data-has", !!colHas[key]);
+  }
+  if (!boardColMine) boardCol = boardColAuto(COLS, colHas, boardCol);
+  applyBoardCol();
 
   if (locateScrollPending && locatedId != null){
     const target = cardNodes.get(locatedId);
@@ -2776,6 +2846,7 @@ function renderNow(){
       const a = first.get(id);
       if (!a || !el.isConnected || el.dataset.leaving) continue;
       const b = el.getBoundingClientRect();
+      if (!b.width && !b.height) continue;   // 落进了手机上没显示的栏:看不见,不演
       // In flight AND the destination unchanged: don't rebuild the animation.
       // SSE lands one beat after actions; naively rebuilding restarts the flight at
       // the 20ms mark every time.
@@ -3549,9 +3620,10 @@ document.addEventListener("click", async (e) => {
     return;
   }
   // 侧栏、浮层和工具条里的点击不清高亮——否则带着高亮按「通过」,第一下会被这里吞掉。
+  // 手机选栏控件也不清:换栏正是为了看高亮的派生链落在别栏的卡。
   if (!cardEl && !e.target.closest(".goalbox") && !e.target.closest("#rig")
       && !e.target.closest("#ctx") && !e.target.closest("#tl")
-      && !e.target.closest("#task-side, #edit, #pick, .modal, #board-bar") && focusId != null){
+      && !e.target.closest("#task-side, #edit, #pick, .modal, #board-bar, #board-seg") && focusId != null){
     focusId = null; relSet = new Set(); render(); return;
   }
 

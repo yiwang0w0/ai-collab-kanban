@@ -288,6 +288,75 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
   assert.equal(hasUnsavedInput(), false, "新建任务的下拉由代码填值,不算");
 });
 
+test("手机看板一次一栏:默认等待中有卡优先,定位与筛选切到命中卡所在的栏,选择只存本标签页且读写包 try", () => {
+  const c0 = src.indexOf("// ── board-col(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /board-col ──");
+  assert.ok(c0 > 0 && c1 > c0, "board-col block not found in core/panel.html");
+  const B = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {boardColAuto,boardColForHits};")();
+  const COLS = ["goal", "not_started", "in_progress", "waiting", "done"];
+  const has = (...keys) => Object.fromEntries(keys.map((k) => [k, true]));
+  assert.equal(B.boardColAuto(COLS, has("not_started", "waiting"), null), "waiting", "等待中有卡:先看等待中");
+  assert.equal(B.boardColAuto(COLS, has("in_progress", "done"), null), "in_progress", "等待中没卡:按栏的顺序第一个有卡的");
+  assert.equal(B.boardColAuto(COLS, {}, null), "waiting", "全空停在等待中");
+  assert.equal(B.boardColAuto(COLS, has("not_started", "waiting"), "not_started"), "not_started", "自动挑过的栏还有卡就不跳");
+  assert.equal(B.boardColAuto(COLS, has("waiting"), "not_started"), "waiting", "自动挑过的栏空了才重挑");
+  const hits = (...keys) => new Set(keys);
+  assert.equal(B.boardColForHits(COLS, "waiting", hits("not_started")), "not_started", "当前栏没命中:去命中卡所在的栏");
+  assert.equal(B.boardColForHits(COLS, "goal", hits("in_progress", "waiting")), "waiting", "命中多栏:等待中优先(哪怕进行中排在前面)");
+  assert.equal(B.boardColForHits(COLS, "goal", hits("done", "in_progress")), "in_progress", "再按栏的顺序");
+  assert.equal(B.boardColForHits(COLS, "not_started", hits("not_started", "waiting")), "not_started", "当前栏有命中就不动");
+  assert.equal(B.boardColForHits(COLS, "done", hits()), "done", "一张都没命中不动");
+
+  // 选中状态:sessionStorage 读写都包 try,存储抛错时照常能换栏;只认五栏的键。
+  const s0 = src.indexOf('const BOARD_COL_KEY = "tb_board_col";'), s1 = src.indexOf('document.getElementById("board-seg").addEventListener("change"', s0);
+  assert.ok(s0 > 0 && s1 > s0);
+  const fakeDom = () => {
+    const cols = { dataset: {} }, on = new Set();
+    const shell = new Map(COLS.map((k) => [k, { col: { classList: { toggle: (c, v) => { if (c === "on") v ? on.add(k) : on.delete(k); } } } }]));
+    const radios = COLS.map((value) => ({ value, checked: false }));
+    return { cols, on, shell, radios, document: { getElementById: (id) => (assert.equal(id, "cols"), cols), querySelectorAll: () => radios } };
+  };
+  const load = (storage) => {
+    const d = fakeDom();
+    const api = new Function("COLS", "sessionStorage", "document", "shell", src.slice(s0, s1) +
+      ";return {setBoardCol, applyBoardCol, state: () => [boardCol, boardColMine]};")(COLS, storage, d.document, d.shell);
+    return { ...d, api };
+  };
+  const broken = { getItem() { throw Error("denied"); }, setItem() { throw Error("denied"); } };
+  const b = load(broken);
+  assert.deepEqual(b.api.state(), [null, false], "存储读不了:当没选过");
+  b.api.setBoardCol("done");
+  assert.deepEqual(b.api.state(), ["done", true], "存储写不了:照样换栏");
+  assert.equal(b.cols.dataset.col, "done");
+  assert.deepEqual([...b.on], ["done"]);
+  assert.deepEqual(b.radios.filter((r) => r.checked).map((r) => r.value), ["done"]);
+  b.api.setBoardCol("bogus");
+  assert.deepEqual(b.api.state(), ["done", true], "不认识的键不收");
+  const mem = new Map([["tb_board_col", "in_progress"]]);
+  const store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  const r = load(store);
+  assert.deepEqual(r.api.state(), ["in_progress", true], "刷新后照旧显示你选的栏");
+  r.api.setBoardCol("goal");
+  assert.equal(mem.get("tb_board_col"), "goal");
+  mem.set("tb_board_col", "__proto__");
+  assert.deepEqual(load(store).api.state(), [null, false], "存的值不是五栏之一:当没选过");
+
+  // 结构钉:控件在栏上方、桌面不出现;≤620px 只藏没选中的栏,且只在脚本选定后;页脚留白不退;
+  // 定位与筛选先切栏;你选过就不再自动挑;隐藏栏里量出 0×0 的卡不演 FLIP;选栏不清高亮。
+  assert.ok(src.includes('<div class="seg board-seg" id="board-seg" role="radiogroup" aria-label="选择显示的栏"></div>\n<div class="cols" id="cols"></div>'));
+  assert.ok(src.includes(".seg.board-seg{display:none}"));
+  const segCss = src.slice(src.indexOf(".seg.board-seg{display:none}"), src.indexOf("/* ── 触摸:窄屏与粗指针"));
+  const m620 = segCss.indexOf("@media (max-width:620px){");
+  assert.ok(m620 > 0 && segCss.indexOf(".seg.board-seg{display:flex", m620) > m620
+    && segCss.indexOf(".cols[data-col] > .col:not(.on){display:none}", m620) > m620, "选栏只在 ≤620px 生效");
+  assert.match(src, /@media \(max-width:620px\)\{ \.cols\{padding-bottom:112px\} \}/, "手机上最后一行不被固定页脚压住");
+  assert.ok(src.includes("\n  setBoardCol(taskColumn(task));"), "按卡号定位先切到卡所在的栏");
+  assert.ok(src.includes("\n  const to = boardColForHits(COLS, boardCol, new Set(hit.map(taskColumn)));\n  if (to && to !== boardCol) setBoardCol(to);"),
+    "按标题筛选切到命中卡所在的栏");
+  assert.ok(src.includes("\n  if (!boardColMine) boardCol = boardColAuto(COLS, colHas, boardCol);\n  applyBoardCol();"), "你选过就不再自动挑");
+  assert.ok(src.includes("if (r.width || r.height) first.set(id, r);") && src.includes("if (!b.width && !b.height) continue;"));
+  assert.ok(src.includes("#task-side, #edit, #pick, .modal, #board-bar, #board-seg"));
+});
+
 test("side panel says what any card is doing, not only the two home lanes", () => {
   const base = { id: 2, line: "engine", released: true };
   const o = { lineName: (l) => ({ engine: "引擎" })[l] || l, wfLabels: { dep: "依赖完成" } };
