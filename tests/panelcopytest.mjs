@@ -506,3 +506,149 @@ test("回执区句末与补充指示框按执行结果和服务端去向说：�
   assert.ok(!box.innerHTML.includes(back), "弹窗不再写死交回原智能体");
   assert.ok(!source.includes("请先填写执行回执,再交回智能体"), "缺回执提示不预设交回原智能体");
 });
+
+// ══ 文案闸(卡 #16):给 docs/style-guide.md「不写注释性语句」装一个机器闸 ══════════════
+//  为什么:卡 #9 清掉了二十多句注释性文案,但规则落地只有纪律 —— 下一个写引导步骤、错误文案或页脚
+//  说明的人(人或模型)照旧能写回「(开始干活前需要)」「—— 其实…」,没有任何机器会出声。文案最容易
+//  悄悄回潮:#9 清掉的那些,有好几句就是历次迭代一层层加上去的。
+//
+//  ⚠ 这个闸**不是全量扫描**,够得到的面只有下面三个;够不到的明说,不假装:
+//   A core/server.mjs 的上手引导四个函数(blessStep / upgradeState / setupState / acceptPreview)里的
+//     字面量 —— 这一面是全量的:那几个函数产出的 title/detail/hint/label/confirm 全从这里来。
+//   B core/panel.html 的 HTML 文本节点(按 `>…<` 取)—— 属性值永远不在这两个尖括号之间,所以
+//     title= / aria-label / placeholder 结构上就不在扫描里(style-guide 明说悬停说明允许写解释);
+//     SVG 的 <title> 与执行器设置的「说明」折叠区(cfg-about)同理剔除。
+//   C core/panel.html 里走**文本通道**的字面量:往前 120 字符内出现 textContent / confirm( /
+//     alert( / live( / homeEl( 的那些。innerHTML 的模板汤不在内 —— 模板里
+//     `title="${a ? `…` : `…`}"` 这种插值,字面量自己看不出落在属性里,硬扫会把允许写解释的悬停
+//     文案判成违规。
+//  判据与白名单都在这个文件里:改规则要连白名单一起改,白名单每条必须写理由。
+const CJK_ONE = /[一-鿿]/;
+const cjkCount = (s) => (s.match(/[一-鿿]/g) || []).length;
+const BANNED_WORDS = ["意思是", "也就是", "就是说", "你正在", "其实", "说白了", "换句话说"];
+/** 一条文案三种判法;返回命中的规则(空数组 = 合规)。纯函数,红绿两侧用的都是它。 */
+function copyFindings(text) {
+  // 插值当一个无汉字的占位符:代码里的括号、模板里的表达式都不是文案。
+  const t = String(text).replace(/\$\{[^{}]*\}/g, "X");
+  const hits = [];
+  for (const w of BANNED_WORDS) if (t.includes(w)) hits.push(`解释词「${w}」`);
+  if (t.includes("——")) hits.push("破折号旁白");
+  // 整句就是一对括号 = 占位选项的写法(「(不指定线 · 谁都能领)」),不是给句子加的旁白。
+  const whole = /^\s*[(（][^)）]*[)）]\s*$/.test(t.trim());
+  if (!whole) for (const m of t.matchAll(/[(（]([^)）]*)[)）]/g))
+    if (cjkCount(m[1]) >= 6) { hits.push(`括号里的补充说明「${m[1].slice(0, 14)}」`); break; }
+  return hits;
+}
+
+// 白名单:例外必须被说出来,不能悄悄通过。键 = 文件 + 原文片段;line 只作人看的坐标。
+//   ⚠ 行号会随每次改动漂移,用行号当键会在无关改动之后静默失配 —— 所以键是原文。
+//   每条都要有 why,而且必须真的还被命中(下面断言「没有多余条目」:失效的例外要删,不能攒着)。
+const COPY_ALLOW = [
+  { file: "core/panel.html", line: 1942, text: "(attempts 累计不清零,预算锚在认领时重打)",
+    why: "实测修正过的预算口径:旧文案「续 1 次尝试预算」描述了一个不存在的 +1,有人照着读 API 对不上账(见同处代码注释)。括号里是口径本身,删了会把已知误解放回来" },
+  { file: "core/panel.html", line: 2460, text: "(再点该卡节点=恢复全图)",
+    why: "时间轴图例:括号里是「点哪里会怎样」的图形编码,图例本身就是对照表,不是正文旁白" },
+  { file: "core/panel.html", line: 2461, text: "(时刻见悬浮/时变小字)",
+    why: "同上:时间轴坐标轴的图例,整行都是「符号=含义」的对照表" },
+];
+
+/** 取出一段源码里的字符串字面量(带行号与它前面的上下文)。注释里的引号不算字面量:
+ *  先按最朴素的方式把行注释与块注释换成空白 —— 剔错只会少扫,不会把注释判成文案。 */
+function literalsOf(src, { context = 0 } = {}) {
+  const clean = src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
+                   .replace(/(^|[^:"'`\\])\/\/[^\n]*/g, (m, p) => p + m.slice(p.length).replace(/./g, " "));
+  const out = [];
+  const re = /"((?:[^"\\\n]|\\.)*)"|'((?:[^'\\\n]|\\.)*)'|`((?:[^`\\]|\\.)*)`/g;
+  for (let m; (m = re.exec(clean));) {
+    const text = m[1] ?? m[2] ?? m[3] ?? "";
+    if (!CJK_ONE.test(text)) continue;
+    out.push({ text, line: clean.slice(0, m.index).split("\n").length,
+               before: context ? clean.slice(Math.max(0, m.index - context), m.index) : "" });
+  }
+  return out;
+}
+
+test("文案闸：引导与面板的可见文案里没有注释性语句（规则见 docs/style-guide.md）", () => {
+  const serverSrc = readFileSync(new URL("../core/server.mjs", import.meta.url), "utf8");
+  const fnSlice = (head) => {
+    const a = serverSrc.indexOf(head);
+    assert.ok(a >= 0, `未找到函数：${head}`);
+    const b = serverSrc.indexOf("\n}", a);
+    assert.ok(b > a, `未找到函数结尾：${head}`);
+    return serverSrc.slice(a, b);
+  };
+  const found = [];
+  // ── A 面:上手引导的四个函数
+  for (const head of ["function blessStep() {", "function upgradeState() {", "function setupState() {",
+                      "function acceptPreview(tree, prev) {"])
+    for (const lit of literalsOf(fnSlice(head)))
+      for (const rule of copyFindings(lit.text)) found.push({ file: "core/server.mjs", ...lit, rule });
+
+  // ── B 面:panel.html 的 HTML 文本节点
+  const panelText = source
+    .replace(/<!--[\s\S]*?-->/g, " ")
+    .replace(/<style[\s\S]*?<\/style>/g, " ")
+    .replace(/<title>[\s\S]*?<\/title>/g, " ")
+    .replace(/<details class="cfg-about"[\s\S]*?<\/details>/g, " ");
+  for (const m of panelText.matchAll(/>([^<>\n]+)</g)) {
+    const text = m[1].trim();
+    if (!CJK_ONE.test(text)) continue;
+    for (const rule of copyFindings(text))
+      found.push({ file: "core/panel.html", text, rule, line: panelText.slice(0, m.index).split("\n").length });
+  }
+  // ── C 面:走文本通道的字面量(允许跨一行:textContent = 常和文案分行写)
+  const CHANNEL = /(?:textContent|confirm\(|alert\(|live\(|homeEl\()[\s\S]{0,120}$/;
+  for (const lit of literalsOf(source, { context: 140 })) {
+    if (!CHANNEL.test(lit.before) || /title=|aria-label=|placeholder/.test(lit.before)) continue;
+    for (const rule of copyFindings(lit.text)) found.push({ file: "core/panel.html", ...lit, rule });
+  }
+
+  const allowed = (f) => COPY_ALLOW.find((a) => a.file === f.file && f.text.includes(a.text));
+  const hit = new Set();
+  const left = found.filter((f) => { const a = allowed(f); if (a) { hit.add(a.text); return false; } return true; });
+  assert.deepEqual(left.map((f) => `${f.file}:${f.line} ${f.rule} ← ${f.text.slice(0, 60)}`), [],
+    "界面正文只写状态和下一步动作:括号里的补充说明、破折号夹的旁白、「意思是/你正在」这类解释都不进正文" +
+    "(确实需要的解释放 title= 或文档)。要破例就写进 COPY_ALLOW,并写明理由。");
+  for (const a of COPY_ALLOW) {
+    assert.ok(a.why && a.why.length > 8, `白名单缺理由:${a.file} ${a.text}`);
+    assert.ok(/^core\/[\w.-]+$/.test(a.file) && Number.isInteger(a.line), `白名单要写文件与行号:${a.text}`);
+    assert.ok(hit.has(a.text), `白名单有多余条目(代码里已经没有了,删掉它):${a.file}:${a.line} ${a.text}`);
+  }
+});
+
+test("文案闸的阴性对照：卡 #9 之前的那些写法逐条被判出来", () => {
+  // 逐字取自 28c04da 之前的 core/server.mjs(setupState / blessStep)与 core/panel.html。
+  //   闸自己也要有对照:不先证明它抓得住,全绿只说明「没扫到」。
+  const BEFORE = [
+    ["确认当前版本(开始干活前需要)", "括号补充"],
+    ["你正在看它 —— 端口 47824", "解释词 + 破折号"],
+    ['生成的示例配置已经带了 "gated_subtree": "."(意思是:盯住整棵代码树)。看板重启读到它之后,这一步才能做', "意思是"],
+    ["看板目录得是一个 git 仓库 —— 「确认版本」就是记下它当前的 git 树哈希", "破折号旁白"],
+    ["在这之前自动拉取会拒绝起线(exit 3)—— 那是门在挡没确认过的代码,不是故障", "破折号旁白"],
+    ["先做上一步 —— 你的线就写在那份配置里", "破折号旁白"],
+    ["点一下,表示「这个版本我认可」—— 点之前会先列出版本号", "破折号旁白"],
+    ["看板已更新到 r1 —— 这页还是旧的。你有没保存的输入,所以没有自动刷新。", "破折号旁白"],
+    ["上限 3 个(全线共享额度)；新加的智能体照抄智能体 1 的设置", "括号补充"],
+    ["队外(未放行/祖先未放行/待人工)5 张(已收起)", "括号补充"],
+    ["在单独的控制台窗口里运行（便于直接看执行过程）", "括号补充"],
+    ["目标下的评审卡 #7 还没通过。现在拆解 = 实现一个没人接受的方案。仍要现在拆?(正史会记下这次是强制的)", "括号补充"],
+    ["这些按钮不是马上执行:它们在板上留一条请求,没人接手时请求会一直等着(5 分钟后变黄提醒你)。", "括号补充"],
+  ];
+  for (const [text, why] of BEFORE)
+    assert.ok(copyFindings(text).length > 0, `闸没抓住(${why}):${text.slice(0, 40)}`);
+  // ⚠ 三条规则抓不到的两类(写在这里,免得把闸当成全覆盖):
+  //   · 名词定义句:「「线」= 一条自动领卡、一张接一张干下去的流水线」—— 没有括号、没有破折号、
+  //     没有解释词,机器判不出来「这是定义」。
+  //   · 短括号:「此模型固定单档(座席裁定)」只有 4 个汉字,低于 ≥6 的门槛。
+  //   门槛要是降到 4,`(交付即完成)`(4)、`(已收起)`(3) 这类状态标签就会被误判 —— 宁可少抓,不乱抓。
+  for (const blind of ["「线」= 一条自动领卡、一张接一张干下去的流水线", "此模型固定单档(座席裁定)"])
+    assert.deepEqual(copyFindings(blind), [], `这是已知盲区,别假装抓到了:${blind}`);
+  // 合规的写法必须放过去,否则这个闸只会逼人把话写得更含糊。
+  for (const good of [
+    "端口 47824", "确认当前版本", "这个版本还没确认过", "先做第二步生成配置,再重启看板",
+    '配置里要有 "gated_subtree" 这个键', "重启看板让新值生效", "已确认版本 b1946a98f0cd",
+    "读不到代码的版本(fatal: not a git repository)", "(不指定线 · 谁都能领)", "队外 5 张(已收起)",
+    "重启看板,让它读到新配置。\n\n卡、事件、账本都在库里,不会丢;在跑的线会先停下,起来后照原样恢复。",
+    "看板还没回来(超过 30 秒)。看它的日志:<数据目录>/board.log",
+  ]) assert.deepEqual(copyFindings(good), [], `合规文案被误判:${good.slice(0, 40)}`);
+});

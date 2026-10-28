@@ -909,7 +909,7 @@
  <p>也可以填它给出的 6 位配对码，或者粘贴看板数据目录里 <code>board_token</code> 文件中的操作员令牌。</p>
  <form id="board-pair-form"><label for="board-pair-token">配对码或操作员令牌</label>
   <input id="board-pair-token" type="password" autocomplete="off" spellcheck="false" required style="display:block;width:100%;box-sizing:border-box;margin:12px 0" />
-  <label style="display:flex;gap:8px;align-items:center;margin:0 0 12px"><input type="checkbox" id="board-pair-remember" checked />在这台电脑上记住（点「退出连接」即清除）</label>
+  <label style="display:flex;gap:8px;align-items:center;margin:0 0 12px"><input type="checkbox" id="board-pair-remember" checked />在这台电脑上记住;「退出连接」即清除</label>
   <button type="submit" class="pri">连接看板</button>
  </form>
  <p id="board-pair-note" role="status">请勿把令牌填到网址里。</p>
@@ -1099,7 +1099,7 @@
   </section>
   <section class="set-sec set-target" id="set-quick" aria-labelledby="set-quick-h">
     <div class="set-h"><h3 id="set-quick-h">请你的 Claude 代劳</h3>
-      <p>这些按钮不是马上执行:它们在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没人接手时请求会一直等着(5 分钟后变黄提醒你)。</p></div>
+      <p>按下只是在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没人接手就一直等着。</p></div>
     <!-- v0.5: shortcut requests to the coordinator seat. A press writes a durable
          row and wakes the seat through its SSE sentry; the seat acks/dones via
          board.py and the list below shows the loop closing — or NOT closing. -->
@@ -1234,9 +1234,9 @@ const rtColor = (rt) => rt === "codex" ? "#b07dd8" : "var(--cc)";
 //   separately, only one gets fixed — measured, twice, including a hint that
 //   promised an action this panel cannot perform). It states only who releases and
 //   what happens here, which is correct for every reader.
-const HOLD_HINT = `拆出的子卡已就位,但**目标未放行前,一张也不会被领**(祖先放行不变量)。
-放行整链 = 放行这个目标(board.py release <目标id>);只想放行一部分,将其余子任务设为暂缓领取（hold）。
-在此检查内容;有问题就在输入框写明(=回原线继续),或用 [编辑]。`;
+const HOLD_HINT = `拆出的子卡已就位,但**目标未放行前,一张也不会被领**。
+放行整链 = 放行这个目标(board.py release <目标id>);只想放行一部分,将其余子任务设为暂缓领取。
+在此检查内容;有问题就在输入框写明,或用 [编辑]。`;
 // 显式执行配置卡(服务端附 execution_profile)退回原线时会收回放行(store resolveInner 的 revokeRelease):
 // 打回、决定类、方案确认、侧栏「通过」这些会退回原线的提示共用这一句,只加在真会退回的分支上,其他卡不加。
 const PROFILE_RELEASE_NOTE = "显式执行配置卡会同时取消放行，你重新核对放行后才会再次计费运行。";
@@ -1358,7 +1358,7 @@ function openDecisionModal(t){
           `<span>执行成功<small>${successNote}</small></span></label>` +
         `<label class="failure"><input type="radio" name="hf-outcome-${t.id}" data-handoff-outcome="${t.id}" value="failure">` +
           `<span>执行失败<small>算已尝试;未应用;交回智能体修正</small></span></label></div>` +
-      `<label for="hf-receipt-${t.id}">执行回执(必填,原文保留)</label>` +
+      `<label for="hf-receipt-${t.id}">执行回执(必填)</label>` +
       `<textarea id="hf-receipt-${t.id}" data-handoff-receipt="${t.id}" rows="3" ` +
         `placeholder="粘贴你应用之处返回的原始回执;成功或报错都可以。请另补执行时间、环境和影响范围。"></textarea>` +
       // 句末回执去向由 syncDecision 按执行结果与 confirm_destination 填写(回执区只有它会取消隐藏,填写与显示同处)。
@@ -1939,9 +1939,9 @@ function syncHandoff(scope){
   if (h) h.textContent = isQ
     ? (on ? "同意=按这段指示交回原智能体 执行;否决=退回,写一句为什么更好" + releaseNote
           : "同意=按建议执行(卡完成);否决=退回原线,写一句为什么更好" + releaseNote)
-    : (on ? "按下=**打回** —— 这段文字作为指令交回原智能体 继续;卡回到原线,下次认领按新一轮派发计算尝试预算(attempts 累计不清零,预算锚在认领时重打)" +
+    : (on ? "按下=**打回**:这段文字作为指令交回原智能体 继续;卡回到原线,下次认领按新一轮派发计算尝试预算(attempts 累计不清零,预算锚在认领时重打)" +
             releaseNote
-          : "空白提交=**通过**(计入已完成)。需修改或继续:先在上方写明指示再提交 —— 未写指示不会产生后续动作");
+          : "空白提交=**通过**(计入已完成)。需修改或继续:先在上方写明指示再提交。");
 }
 
 function syncDecision(scope, t){
@@ -2786,8 +2786,8 @@ function renderNow(){
       for (const t of frozen) items.push(upsert(t, wanted));
       if (candAll.length){
         const folded = foldHead(divider, "cand",
-          `队外(未放行/祖先未放行/待人工)${candAll.length} 张(已收起)`,
-          `队外(未放行/祖先未放行/待人工)${candAll.length} 张 —— 放行链根/人裁后才进队`);
+          `队外 ${candAll.length} 张(已收起)`,
+          `队外 ${candAll.length} 张,放行链根或人裁后才进队`);
         items.push(divider);
         if (!folded) for (const t of cand) items.push(upsert(t, wanted));
       }
@@ -3118,9 +3118,9 @@ function renderCfg(){
                 `<label class="seg-o"><input type="radio" name="${sid}-effort" value="${k}" data-i="${i}" data-k="effort"${k === ei ? " checked" : ""} aria-label="${esc(effortName(v))}"><span>${esc(effortName(v))}</span></label>`).join("")}</div>`
             // ⭐ Single-rung models show NO choice. A control with one position is a decoration that
             //   does nothing when pressed — the worst kind of UI.
-            : `<div class="seg seg-one"><span class="seg-o on">${esc(effortName(dom[0] || a.effort))}</span><span class="ends">此模型固定单档(座席裁定)</span></div>`}
+            : `<div class="seg seg-one"><span class="seg-o on">${esc(effortName(dom[0] || a.effort))}</span><span class="ends">此模型固定单档</span></div>`}
           </div>
-          <label class="switch af-wide"><input type="checkbox" role="switch" data-i="${i}" data-k="window"${a.window ? " checked" : ""}><span>在单独的控制台窗口里运行（便于直接看执行过程）</span></label>
+          <label class="switch af-wide"><input type="checkbox" role="switch" data-i="${i}" data-k="window"${a.window ? " checked" : ""}><span>在单独的控制台窗口里运行</span></label>
         </div>
         <div class="agent-side">
           ${profile ? `<dl class="runtime-facts"><dt>通道</dt><dd>${esc(executionChannelName(profile.channel))}</dd><dt>认证</dt><dd>${esc(executionAuthName(profile.auth_kind))}</dd><dt>计费</dt><dd>${esc(executionBillingName(profile.billing_kind))}</dd><dt>预算</dt><dd>${esc(executionBudgetText(profile.budget, profile.budget_enforcement))}</dd></dl>` : ""}
@@ -3345,7 +3345,7 @@ function openEdit(anchor, taskId){
       <input type="range" min="1" max="9" step="1" value="${ma}" data-eid="${t.id}" data-k="maxAttempts" aria-label="自行尝试次数上限">
       <div class="ends"><span>1</span><span>9</span></div>
     </div>
-    <div class="note" id="edit-note">已尝试 ${Number(t.attempts) || 0} 次 —— 改上限不会清空它。</div>`;
+    <div class="note" id="edit-note">已尝试 ${Number(t.attempts) || 0} 次。</div>`;
   const r = anchor.getBoundingClientRect();
   // Measure after showing: a card near the viewport bottom must not hide errors.
   epop.classList.add("show");
@@ -3366,7 +3366,7 @@ async function saveEdit(id, k, v){
     if (n) n.textContent = r.notice ? r.notice
       : r.changed
       ? `已保存(${r.changed} 项)`
-      : "服务端接受了请求,但一列都没改动 —— 键名或值可能不对";
+      : "服务端接受了请求,但一列都没改动,键名或值可能不对";
     await refresh();
   }catch(err){
     // Show the reason VERBATIM (post() carries the server's `error` in the message).
@@ -3590,7 +3590,7 @@ document.addEventListener("click", async (e) => {
       const r = await postDecompose(`/api/goals/${dec.dataset.dec}/decompose`,
                                     { model: (DECOMP[0] || {}).id });
       await refresh();
-      if (r) alert(`拆出 ${r.count} 张子任务卡(${r.model})${r.forced ? "(强制:评审卡未完成,正史已记)" : ""}
+      if (r) alert(`拆出 ${r.count} 张子任务卡(${r.model})${r.forced ? "(强制)" : ""}
 ` + HOLD_HINT);
     }catch(err){ alert("拆解失败:" + copyError(err)); }
     finally{ dec.disabled = false; dec.textContent = lab; }
@@ -3862,7 +3862,7 @@ async function postDecompose(url, body){
   catch (err){
     if (!err.body?.needs_force || !Array.isArray(err.body?.pending_review)) throw err;
     const ids = err.body.pending_review.map((i) => "#" + i).join(" ");
-    if (!confirm(`目标下的评审卡 ${ids} 还没通过。现在拆解 = 实现一个没人接受的方案。\n\n等评审通过再拆,就按「取消」。\n\n仍要现在拆?(正史会记下这次是强制的)`)) return null;
+    if (!confirm(`目标下的评审卡 ${ids} 还没通过。\n\n等评审通过再拆,就按「取消」。\n\n仍要现在拆?`)) return null;
     return post(url, { ...body, force: true });
   }
 }
@@ -3890,8 +3890,8 @@ setInterval(() => {
   if (!restartPending || restartPending.hinted || Date.now() - restartPending.at < 30000) return;
   restartPending.hinted = true;
   live(false, restartPending.mode === "respawn"
-    ? `看板还没回来(超过 30 秒)—— 看它的日志:${restartPending.log_path || "<数据目录>/board.log"}`
-    : "看板还没回来(超过 30 秒)—— 去起它的终端看看(npm start 那个窗口;后台起的看 <数据目录>/board.log)");
+    ? `看板还没回来(超过 30 秒)。看它的日志:${restartPending.log_path || "<数据目录>/board.log"}`
+    : "看板还没回来(超过 30 秒)。去起它的终端看看:npm start 那个窗口;后台起的看 <数据目录>/board.log");
 }, 5000);
 
 // v0.6: the setup guide. Every step's state is MEASURED by the server on each
@@ -3908,7 +3908,7 @@ function renderUpgrade(up){
   el.hidden = false;
   const MARK = { done: "✓", todo: "▸", blocked: "·", unknown: "?" };
   const head = up.running && up.on_disk && up.running !== up.on_disk
-    ? `⬆ 代码更新了 —— 跑着的是 ${esc(up.running)},磁盘上已经是 ${esc(up.on_disk)}。`
+    ? `⬆ 代码更新了:跑着的是 ${esc(up.running)},磁盘上已经是 ${esc(up.on_disk)}。`
     : `⬆ 有通知进程还在跑旧代码:`;
   // v0.18: ONE button. The confirm text (server-written) lists what changed, says data is kept
   // and names the in-flight cards a restart would interrupt; force rides only after that text.
@@ -4010,7 +4010,7 @@ function renderQuick(list){
     // ⭐ Pending too long is the ALARM: silence is not health. Five minutes is
     //   longer than any sentry wake-up and shorter than "I forgot about it".
     const late = r.status === "pending" && ageMin >= 5;
-    const st = r.status === "pending" ? (late ? `等了 ${ageMin} 分无人应答 —— 没有 Claude 在接通知?按上面「让 Claude 持续接收板上通知」` : "已发出,等你的 Claude 接手")
+    const st = r.status === "pending" ? (late ? `等了 ${ageMin} 分无人应答。按上面「让 Claude 持续接收板上通知」` : "已发出,等你的 Claude 接手")
              : `Claude 已接手${r.acked_at ? "(" + ago(Date.parse(r.acked_at)) + ")" : ""}`;   // ago() takes epoch ms (measured: NaNhNaNm 前)
     return `<div class="rq${late ? " late" : ""}${r.status === "acked" ? " acked" : ""}">#${r.id} ${esc(QUICK_LABEL[r.kind] || r.kind)}${r.params?.days ? "(近 " + esc(String(r.params.days)) + " 天)" : ""} · ${st}</div>`;
   }).join("");
@@ -4024,7 +4024,7 @@ document.getElementById("quick").addEventListener("click", async (e) => {
   b.disabled = true;
   try {
     const r = await post("/api/requests", { kind, params });
-    note.textContent = `已发出 #${r.request.id} —— 接着通知的 Claude 会收到,接手后这里会变`;
+    note.textContent = `已发出 #${r.request.id},等接通知的 Claude 接手`;
     await refresh();
   } catch (err) {
     note.textContent = "发送失败:" + copyError(err);
@@ -4059,7 +4059,7 @@ document.getElementById("line-add").addEventListener("submit", async (e) => {
     const rl = r.line.role;
     note.textContent = `已加入线「${r.line.label || r.line.id}」${r.line.accept === "auto" ? "(交付即完成)" : ""}` +
       (rl ? `(${rl.kind === "review" ? "评审" : "实现"}${rl.tools === "read-only" ? "·只读" : ""}${rl.charter ? "·章程 " + rl.charter : ""})` : "") +
-      "—— 配置已写盘,自动拉取行可直接启动";
+      ",配置已写盘,自动拉取行可直接启动";
     idEl.value = ""; hintEl.value = ""; labelEl.value = ""; autoEl.checked = false;
     kindEl.value = "implement"; roEl.checked = false; charterEl.value = "";
     await refresh();

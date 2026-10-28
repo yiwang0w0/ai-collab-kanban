@@ -711,12 +711,11 @@ function blessStep() {
   let accepted = null;
   try { accepted = readFileSync(revFile, "utf8").trim(); } catch {}
   if (!accepted)
-    return { state: "todo", detail: "点一下,表示「这个版本我认可」",
+    return { state: "todo", detail: "这个版本还没确认过",
              hint: "命令行也行:python cli/board.py bless",
              action: acceptAction(acceptPreview(head, accepted)) };
   if (accepted !== head)
     return { state: "todo", detail: "代码有更新,确认记录还停在旧版本",
-             hint: "确认之前自动拉取不会起线",
              action: acceptAction(acceptPreview(head, accepted)) };
   return { state: "done", detail: `已确认版本 ${accepted.slice(0, 12)}` + (CFG_GATED_SUBTREE === "." ? "" : `(${CFG_GATED_SUBTREE})`) };
 }
@@ -760,10 +759,10 @@ function acceptPreview(tree, prev) {
   const files = prev && prev !== tree ? Math.max(0, stat.length - 1) : (prev ? 0 : null);   // last stat line = summary
   const shown = stat.slice(0, 14).map((l) => "  " + l);
   const confirm = [
-    `你正在确认版本 ${tree.slice(0, 12)}` + (CFG_GATED_SUBTREE === "." ? "" : `(${CFG_GATED_SUBTREE})`) +
+    `确认版本 ${tree.slice(0, 12)}` + (CFG_GATED_SUBTREE === "." ? "" : `(${CFG_GATED_SUBTREE})`) +
       (prev ? `(上次确认的是 ${prev.slice(0, 12)})` : "(首次确认)"),
     ...(prev && prev !== tree ? ["", "上次确认 → 这次,改了什么:", ...shown, ...(stat.length > 14 ? [`  …还有 ${stat.length - 14} 行`] : [])] : []),
-    "", "确认 = 你说「这个版本我认可」。执行线只用你确认过的代码起跑。",
+    "", "确认之后执行线才会用这个版本起跑。",
   ].join("\n");
   return { tree, prev, files, stat, confirm };
 }
@@ -807,7 +806,7 @@ function upgradeState() {
     return { measurable: true, pending: stale.length > 0, running: BOOT_REV, on_disk: onDisk, apply: null,
              steps: stale.length ? [{ key: "sentries", title: "有通知进程还在跑旧代码", state: "todo",
                detail: `${stale.length} 个的版本是 ${[...new Set(stale.map((s) => s.rev))].join("/")},磁盘上是 ${onDisk}`,
-               hint: "新版的通知进程会自己换成新代码;老版的要由挂它的 Claude 停掉重跑" }] : [] };
+               hint: "老版的通知进程由挂它的 Claude 停掉重跑" }] : [] };
   }
   const bl = blessStep();
   const g = gatedTree();
@@ -854,13 +853,12 @@ function setupState() {
     { key: "config", title: "有一份属于你的配置", ...(hasConfig
         ? (() => { const drift = configDrift();
                    return drift
-                     ? { state: "done", detail: `${CONFIG_FILE} —— ⚠ ${drift.join("/")} 改过了,看板还在用启动时读到的旧值`,
+                     ? { state: "done", detail: `${CONFIG_FILE} ⚠ ${drift.join("/")} 改过了,看板还在用启动时读到的旧值`,
                          hint: "重启看板让新值生效",
                          drift: true, action: { type: "api", method: "POST", path: "/api/setup/restart", label: "重启看板",
                                                 confirm: "重启看板,让它读到改过的配置。\n\n卡、事件、账本都在库里,不会丢;在跑的线会先停下,起来后照原样恢复。" } }
                      : { state: "done", detail: CONFIG_FILE }; })()
         : { state: "todo", detail: "生成一份属于你的配置文件",
-            hint: "执行线、端口和工作目录路径写进这份配置，只保存在本机。",
             action: { type: "api", method: "POST", path: "/api/setup/init-config", label: "生成配置文件" } }) },
     { key: "lines", title: "定义你自己的线", ...(custom
         ? { state: "done", detail: `线: ${LINES.join(" / ")}` }
@@ -2790,9 +2788,9 @@ const server = http.createServer(async (req, res) => {
       //   line configured there is nothing to wait for, and this is a no-op.
       const pending = store.openChildrenOnLines(db, Number(mg[1]), REVIEW_LINES);
       if (pending.length && !b.force)
-        return json(res, 409, { error: `目标 #${mg[1]} 下还有未完成的评审卡 #${pending.join(" #")} —— 方案还没审完就拆解 = 实现一个没人接受的方案`,
+        return json(res, 409, { error: `目标 #${mg[1]} 下还有未完成的评审卡 #${pending.join(" #")}`,
                                 needs_force: true, pending_review: pending,
-                                hint: "等评审卡通过、改好方案再拆;确实要现在拆,带 force 重发(正史会记下这次是强制的)" });
+                                hint: "等评审卡通过、改好方案再拆;确实要现在拆,带 force 重发" });
       if (pending.length) console.log(`目标 #${mg[1]} 强制拆解:评审卡 #${pending.join(" #")} 未完成(操作者 force)`);
       return json(res, 200, await decomposeGoal(Number(mg[1]), b.model, pending.length > 0));
     }
