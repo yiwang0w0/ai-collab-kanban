@@ -448,3 +448,61 @@ test("方案弹窗「执行成功」小字按服务端去向写，拿不到去�
   for (const t of [{}, { confirm_destination: null }, { confirm_destination: "close" }])
     assert.equal(small(t), "已应用;后续去向由服务端判定", JSON.stringify(t));
 });
+
+test("回执区句末与补充指示框按执行结果和服务端去向说：留在等待中不说交回原智能体，退回原线保留原句，去向未知用中性说法", () => {
+  // 直接执行面板里的 syncDecision 与同段的 receiptFateNote，不另抄判断；scope 只给回执去向、补充指示框和提示框替身。
+  const syncDecision = new Function("decisionChoice", "outcomeDraft", "receiptDraft",
+    panelSection("const PROFILE_RELEASE_NOTE", "\n") + "\n" +
+    panelSection("function syncDecision(scope, t){", "\nfunction upsert(") + "\nreturn syncDecision;");
+  const run = (card, outcome, pick = "A") => {
+    const fate = { textContent: "" }, vin = { placeholder: "" };
+    const nodes = { [`[data-receipt-fate="${card.id}"]`]: fate, [`[data-vin="${card.id}"]`]: vin,
+      "[data-hoh]": { textContent: "" }, [`[data-handoff-receipt="${card.id}"]`]: { value: "原始回执" } };
+    const scope = { querySelector: (sel) => nodes[sel] ?? null, querySelectorAll: () => [] };
+    syncDecision(new Map([[card.id, pick]]), new Map(outcome ? [[card.id, outcome]] : []),
+      new Map([[card.id, "原始回执"]]))(scope, card);
+    return { fate: fate.textContent, vin: vin.placeholder };
+  };
+  const card = { id: 7, decision_package: { options: [
+    { key: "A", kind: "apply", ready: true }, { key: "B", kind: "none" }, { key: "C", kind: "apply", ready: false }] } };
+  const back = "回执会逐字交回原智能体。", vinBack = "可选:补充给原智能体的一句指示";
+  const held = "回执原文留在卡上,供你复核,原智能体不会接手。";
+  const unknown = "回执的后续去向由服务端判定,提交后以卡片状态为准。";
+  const hold = { ...card, confirm_destination: "hold_for_review" }, handBack = { ...card, confirm_destination: "hand_back" };
+  // 执行成功 × hold_for_review：卡留在等待中，回执留在卡上供复核，不交回原智能体。
+  assert.equal(run(hold, "success").fate, held);
+  assert.ok(!run(hold, "success").fate.includes("交回原智能体"), "留在等待中的卡不交回原智能体，回执去向不能这样说");
+  assert.equal(run(hold, "success").vin, "可选:补充一句说明,随回执留在卡上供你复核");
+  assert.ok(!run(hold, "success").vin.includes("原智能体"), "留在等待中的卡，补充指示也到不了原智能体");
+  // 执行成功 × hand_back，以及执行失败(服务端一律退回原线)：保留原句。
+  assert.deepEqual(run(handBack, "success"), { fate: back, vin: vinBack });
+  for (const c of [hold, handBack, card])
+    assert.deepEqual(run(c, "failure"), { fate: back, vin: vinBack }, "执行失败一律退回原线：" + String(c.confirm_destination));
+  // 旧服务端不给 confirm_destination；null 或不认识的值同样只给中性说法，不说交回、也不说留在卡上。
+  for (const dest of [undefined, null, "close"]) {
+    const r = run({ ...card, ...(dest === undefined ? {} : { confirm_destination: dest }) }, "success");
+    assert.equal(r.fate, unknown, String(dest));
+    assert.ok(!r.fate.includes("交回原智能体") && !r.fate.includes("留在卡上"), "去向未知不猜：" + String(dest));
+    assert.equal(r.vin, "可选:补充一句说明", String(dest));
+  }
+  // 还没选执行结果：hand_back 两种结果都退回，照原句；其余把成功与失败分开说。
+  assert.deepEqual(run(handBack, ""), { fate: back, vin: vinBack });
+  assert.equal(run(hold, "").fate, "执行失败时回执会逐字交回原智能体;执行成功时" + held);
+  assert.equal(run(card, "").fate, "执行失败时回执会逐字交回原智能体;执行成功时" + unknown);
+  assert.equal(run(hold, "").vin, "可选:补充一句说明");
+  // 不含文件的方案、文件未补齐的方案都退回原线：补充指示框照旧。
+  assert.equal(run(hold, "", "B").vin, vinBack);
+  assert.equal(run(hold, "", "C").vin, vinBack);
+  // 弹窗里这句只留占位，由 syncDecision 填写；不再写死「交回原智能体」。
+  const box = { innerHTML: "", querySelector: () => null };
+  const context = { draftVersions: new Map(), decisionSnapshot: null, structuredClone,
+    document: { getElementById: (id) => id === "decision-modal-b" ? box : { textContent: "" } },
+    decisionPanel: () => "", verdictDraft: new Map(), receiptDraft: new Map(), syncHandoff() {},
+    decisionModal: { querySelector: () => null, classList: { add() {} } } };
+  vm.createContext(context);
+  vm.runInContext(panelSection("function openDecisionModal(t){", '\ndocument.addEventListener("dblclick"'), context);
+  context.openDecisionModal({ id: 7, aggregate_version: 1, subject: "s", confirm_destination: "hold_for_review" });
+  assert.ok(box.innerHTML.includes('不要粘贴密钥或客户明细;<span data-receipt-fate="7"></span></div>'), "回执去向占位不在提示句末");
+  assert.ok(!box.innerHTML.includes(back), "弹窗不再写死交回原智能体");
+  assert.ok(!source.includes("请先填写执行回执,再交回智能体"), "缺回执提示不预设交回原智能体");
+});

@@ -1337,7 +1337,8 @@ function openDecisionModal(t){
       `<label for="hf-receipt-${t.id}">执行回执(必填,原文保留)</label>` +
       `<textarea id="hf-receipt-${t.id}" data-handoff-receipt="${t.id}" rows="3" ` +
         `placeholder="粘贴你应用之处返回的原始回执;成功或报错都可以。请另补执行时间、环境和影响范围。"></textarea>` +
-      `<div class="hint">失败也算实际执行过,但不会记成已应用。不要粘贴密钥或客户明细;回执会逐字交回原智能体。</div></div>` +
+      // 句末回执去向由 syncDecision 按执行结果与 confirm_destination 填写(回执区只有它会取消隐藏,填写与显示同处)。
+      `<div class="hint">失败也算实际执行过,但不会记成已应用。不要粘贴密钥或客户明细;<span data-receipt-fate="${t.id}"></span></div></div>` +
     `<textarea class="vin" data-vin="${t.id}" rows="2" placeholder="可选:补充给原智能体的一句指示"></textarea>` +
     `<div class="hoh" data-hoh></div><div class="acts decision-actions">` +
     `<button class="pri" data-decide="${t.id}" disabled>先选择 A / B / C</button>` +
@@ -1897,6 +1898,15 @@ function syncDecision(scope, t){
   const receiptWrap = scope.querySelector(`[data-receipt-wrap="${t.id}"]`);
   const receipt = scope.querySelector(`[data-handoff-receipt="${t.id}"]`);
   if (receiptWrap) receiptWrap.hidden = !executedApply;
+  const receiptFate = scope.querySelector(`[data-receipt-fate="${t.id}"]`);
+  if (receiptFate) receiptFate.textContent = receiptFateNote(t, outcome);
+  // 补充指示随裁定写进卡上;执行成功且 hold_for_review 时原智能体收不到,去向未知或还没选结果时不说交给谁;
+  // 其余(不含文件、补齐文件、执行失败、hand_back)都退回原线,照旧。
+  const vin = scope.querySelector(`[data-vin="${t.id}"]`);
+  if (vin) vin.placeholder = !executedApply || outcome === "failure" || t.confirm_destination === "hand_back"
+    ? "可选:补充给原智能体的一句指示"
+    : outcome === "success" && t.confirm_destination === "hold_for_review" ? "可选:补充一句说明,随回执留在卡上供你复核"
+    : "可选:补充一句说明";
   if (receipt && receipt.value !== (receiptDraft.get(t.id) || ""))
     receipt.value = receiptDraft.get(t.id) || "";
   const hasOutcome = !executedApply || Boolean(outcome);
@@ -1932,6 +1942,17 @@ function syncDecision(scope, t){
               : "本次会记录为执行成功：保留回执、把文件归档到交接目录；卡的后续去向由服务端判定，提交后以卡片状态为准。"
           : "先取走并自行应用上面的文件,再明确选择成功或失败并填写原始回执。"
       : "确认后不会通过(卡回原线):选择与补充指示会原样交回原智能体 继续。" + releaseNote;
+}
+
+// 回执区句末的去向(服务端同一判据):执行失败一律退回原线,hand_back 也退回,原智能体从裁定记录尾段读到回执原文;
+// 执行成功且 hold_for_review 时卡留在等待中,回执原文留在卡上(裁定记录与 decision_receipt),原智能体不会接手;
+// 字段缺失(旧服务端)或不认识的值不猜。还没选结果时成功与失败分开说。
+function receiptFateNote(t, outcome){
+  const dest = t?.confirm_destination;
+  if (outcome === "failure" || dest === "hand_back") return "回执会逐字交回原智能体。";
+  const onSuccess = dest === "hold_for_review" ? "回执原文留在卡上,供你复核,原智能体不会接手。"
+    : "回执的后续去向由服务端判定,提交后以卡片状态为准。";
+  return outcome === "success" ? onSuccess : "执行失败时回执会逐字交回原智能体;执行成功时" + onSuccess;
 }
 
 function upsert(t, wanted){
@@ -3597,7 +3618,7 @@ ${r.memo}`);
       return;
     }
     if (executedApply && !receipt){
-      alert("请先填写执行回执,再交回智能体。");
+      alert("请先填写执行回执,再确认。");
       return;
     }
     if (decide.dataset.armed !== "1"){
