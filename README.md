@@ -1,12 +1,12 @@
-# AI Fleet Kanban
+# AI 协作看板
 
-[![CI](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-fleet-kanban/actions/workflows/ci.yml)
+[![CI](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml)
 
-**The acceptance-first kanban for mixed AI fleets.**
+**The acceptance-first kanban for multi-agent AI collaboration.**
 
 **Install it by asking your AI.** On Windows, paste this to Claude Code (or another coding agent):
 
-> 帮我安装 AI 舰队看板：https://github.com/yiwang0w0/ai-fleet-kanban ，按仓库里的 INSTALL.md 做，任务在 D:\my-project 里执行。
+> 帮我安装 AI 协作看板：https://github.com/yiwang0w0/ai-collab-kanban ，按仓库里的 INSTALL.md 做，任务在 D:\my-project 里执行。
 
 [`INSTALL.md`](INSTALL.md) is written for the agent: it checks the machine, clones, writes a
 config with one line per AI CLI (Claude; Codex too if you ask for it), starts the board in the
@@ -14,10 +14,10 @@ background and opens the panel already connected. One step stays yours — 「�
 panel's home page, because the board runs only code a person has confirmed. One computer is all
 it needs; more computers are optional.
 
-Most agent boards solve *how to make a fleet of coding agents run*. This one solves the opposite problem, distilled from weeks of running a high-autonomy mixed fleet (Claude + Codex) against a production codebase: **how not to trust what they say they finished.**
+Most agent boards solve *how to make a team of coding agents run*. This one solves the opposite problem, distilled from weeks of running a high-autonomy mix of agents (Claude + Codex) against a production codebase: **how not to trust what they say they finished.**
 
 - **Deliverable-existence gate** — evidence must name files, and the named files must exist in `HEAD`. Prose doesn't close cards.
-- **Fail-closed source gate** — the fleet refuses to run its own unreviewed code. A dirty governance subtree stops line startup, loudly.
+- **Fail-closed source gate** — the workers refuse to run their own unreviewed code. A dirty governance subtree stops line startup, loudly.
 - **Adjudication authority chain** — a machine reviewer's note never constitutes human approval, and since v0.2 that is structural: three capability tokens (operator / worker / reviewer) and a closed `resolved_by` domain. A worker cannot close, re-scope or approve anything — including its own card. Impersonating authority is a caught, named failure mode (INCIDENT-12 is the live specimen).
 - **Auto-review that cannot rubber-stamp** — a per-card fresh-session reviewer (no Edit, no Bash) pre-runs the card's named verification, and a mechanical gate after the model means "approve with zero machine output" downgrades to a human decision instead of closing the card.
 - **Human gate + handoff boundary** — cards awaiting a human decision never enqueue (zero attempts burn), and hand-applied deliverables land only in operator-authorized directories, with an execution receipt. Irreversible acts stay human.
@@ -91,7 +91,7 @@ examples/  fleet config · verify registry · mock runtime adapter · demo seeds
 This development branch targets Windows. Install **Git for Windows >= 2.45.0**; the artifact pipeline verifies support for `--no-lazy-fetch` before accessing repository objects. `npm run doctor` reports an old or unsupported Git build explicitly.
 
 ```
-git clone https://github.com/yiwang0w0/ai-fleet-kanban && cd ai-fleet-kanban
+git clone https://github.com/yiwang0w0/ai-collab-kanban && cd ai-collab-kanban
 npm run setup              # doctor → config (a Claude line) → verify registry → prints what is left
 python cli/board.py bless  # confirm this version — or press 「确认当前版本」 in the panel; both show you the diff first
 npm run demo               # board up → demo chain → one mock worker round, zero tokens → a card awaits your ruling

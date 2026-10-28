@@ -418,7 +418,7 @@ console.log(NL + "[⑩ autostart: 登录后自动启动(可选)]");
 {
   const { autostartTaskXML, autostartName, taskScheduler } = await import("../core/autostart.mjs");
   const sid = "S-1-5-21-1000-2000-3000-1001";
-  const xml = autostartTaskXML({ sid, node: "C:\\Program Files\\nodejs\\node.exe", root: "D:\\o'neil\\ai-fleet-kanban" });
+  const xml = autostartTaskXML({ sid, node: "C:\\Program Files\\nodejs\\node.exe", root: "D:\\o'neil\\ai-collab-kanban" });
   ok("⭐the task runs start --background from this folder, for this user only, hidden, never twice, without raised rights",
      xml.includes("<UserId>" + sid + "</UserId><Delay>PT30S</Delay>") && xml.includes("<LogonType>InteractiveToken</LogonType><RunLevel>LeastPrivilege</RunLevel>")
      && xml.includes("<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>") && xml.includes("-WindowStyle Hidden")

@@ -1,6 +1,6 @@
 # INSTALL —— 给 AI 的安装步骤
 
-用户对你说"帮我装 AI 舰队看板"时，照这一页做。只面向 Windows，命令按 PowerShell 写。
+用户对你说"帮我装 AI 协作看板"时，照这一页做。只面向 Windows，命令按 PowerShell 写。
 每一步都有能检查的结果：某一步失败就停下，把失败的那一行和它下面的"修法"告诉用户，不要绕过。
 
 看板的命令一律用 `node cli/...` 运行：新装的 Windows 上 PowerShell 默认不允许运行脚本，`npm` 会因为
@@ -41,8 +41,8 @@ $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [En
 
 ```powershell
 cd $HOME
-git clone https://github.com/yiwang0w0/ai-fleet-kanban
-cd ai-fleet-kanban
+git clone https://github.com/yiwang0w0/ai-collab-kanban
+cd ai-collab-kanban
 ```
 
 用户没指定位置就放在主目录。不要放进要执行任务的项目里面。

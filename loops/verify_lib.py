@@ -10,7 +10,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # ⭐两个「仓」要分开(与 worker_loop.py / reviewer_loop.py 同一约定):
 #   CODE_ROOT = 看板自己的代码在哪(本文件的上一级)。登记簿是运营者的档,住这里 ——
 #               core/store.js 也从这里读(path.join(__dirname, "verify_registry.json"))。
-#   REPO      = 舰队作业的目标仓,在本文件里只做验证命令的 cwd。
+#   REPO      = 智能体作业的目标仓,在本文件里只做验证命令的 cwd。
 CODE_ROOT = os.path.dirname(HERE)
 REPO = os.environ.get("BOARD_REPO", CODE_ROOT)
 

@@ -11,7 +11,7 @@
 # CI runs gitleaks with --redact, so a hit names the file and line but never
 # prints what was caught.
 
-title = "ai-fleet-kanban: default secrets + personal identifiers"
+title = "ai-collab-kanban: default secrets + personal identifiers"
 
 [extend]
 useDefault = true
