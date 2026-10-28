@@ -72,10 +72,37 @@ test('Codex 订阅子进程强制 ChatGPT 登录并复用凭据过滤，保留�
  assert.match(result,/subscription contract passed/);
 });
 
+test('Codex 只读登录预检拒绝 API 认证且不注销，未知或超时同样拒发',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,json,subprocess,types\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport codex_runtime as c\nfolder=pathlib.Path(sys.argv[2]); auth=folder/'auth.json'; auth.write_text('{"OPENAI_API_KEY":"fixture-only"}',encoding='utf-8'); original=auth.read_bytes(); seen=[]\nenv={'PATH':'fixture-path','CODEX_HOME':str(folder),'OPENAI_API_KEY':'fixture-only','WORKER_BOARD_TOKEN':'fixture-only'}\ndef response(text,rc=0):\n def run(argv,**kwargs):\n  seen.append(argv); assert argv==[sys.executable,'login','status'],argv\n  assert kwargs['env']['CODEX_HOME']==str(folder) and 'OPENAI_API_KEY' not in kwargs['env']\n  assert all('forced_login_method' not in item for item in argv)\n  return types.SimpleNamespace(returncode=rc,stdout=text,stderr='')\n return run\nassert c.subscription_login_gate(sys.executable,env,_run=response('Logged in using ChatGPT')) is None\nerror=c.subscription_login_gate(sys.executable,env,_run=response('Logged in using an API key: fixture-only'))\nassert error and 'fixture-only' not in error and auth.read_bytes()==original,error\nassert c.subscription_login_gate(sys.executable,env,_run=response('unknown'))\ndef timeout(*a,**kw): raise subprocess.TimeoutExpired(a[0],15)\nassert c.subscription_login_gate(sys.executable,env,_run=timeout)\nprint('read-only login gate passed')`,[f.privateDir],f);
+ assert.match(result,/read-only login gate passed/);
+});
+
 test('Codex worker 实际交接使用订阅环境，原卡最终回复仍由宿主落成证据',()=>{
  const f=fixture();
- const result=python(`import sys,pathlib,os,json,subprocess\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nfolder=pathlib.Path(sys.argv[2]); evidence=folder/'worker-evidence.md'\nw.CODEX_CLI=sys.executable; w.DATA=str(folder); w.RUNTIME='codex'; w.TOOL_PROFILE='write'; w.codex_gate=lambda:None; w.build_prompt=lambda *a:'仅夹具任务'; calls=[]\nos.environ['OPENAI_API_KEY']='FAKE-API'; os.environ['WORKER_BOARD_TOKEN']='FAKE-WORKER'; os.environ['CODEX_HOME']=str(folder/'订阅认证')\ndef run(t,worker,attempt,runtime,model,effort,argv,env,**kw):\n calls.append((argv,env,kw))\n assert 'OPENAI_API_KEY' not in env and 'WORKER_BOARD_TOKEN' not in env\n assert env['CODEX_HOME']==os.environ['CODEX_HOME']\n assert 'forced_login_method="chatgpt"' in argv\n pathlib.Path(argv[argv.index('-o')+1]).write_text('本地夹具最终报告',encoding='utf-8')\n return subprocess.CompletedProcess(argv,0,'{"type":"thread.started","thread_id":"fixture-thread"}\\n{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1}}','')\nw.run_task_process=run\nrc,tail=w.run_codex({'id':19,'run_id':'fixture-run'},'fixture',str(evidence),None,1,'fixture-model','high')\nassert rc==0 and len(calls)==1,(rc,tail)\nassert calls[0][2]['input']=='仅夹具任务'\nassert evidence.read_text(encoding='utf-8')=='本地夹具最终报告'\nprint('worker subscription handoff passed')`,[f.privateDir],f);
+ const result=python(`import sys,pathlib,os,json,subprocess\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nfolder=pathlib.Path(sys.argv[2]); evidence=folder/'worker-evidence.md'\nw.CODEX_CLI=sys.executable; w.DATA=str(folder); w.RUNTIME='codex'; w.TOOL_PROFILE='write'; w.codex_gate=lambda:None; w.codex_runtime.subscription_login_gate=lambda *a,**kw:None; w.build_prompt=lambda *a:'仅夹具任务'; calls=[]\nos.environ['OPENAI_API_KEY']='FAKE-API'; os.environ['WORKER_BOARD_TOKEN']='FAKE-WORKER'; os.environ['CODEX_HOME']=str(folder/'订阅认证')\ndef run(t,worker,attempt,runtime,model,effort,argv,env,**kw):\n calls.append((argv,env,kw))\n assert 'OPENAI_API_KEY' not in env and 'WORKER_BOARD_TOKEN' not in env\n assert env['CODEX_HOME']==os.environ['CODEX_HOME']\n assert 'forced_login_method="chatgpt"' in argv\n pathlib.Path(argv[argv.index('-o')+1]).write_text('本地夹具最终报告',encoding='utf-8')\n return subprocess.CompletedProcess(argv,0,'{"type":"thread.started","thread_id":"fixture-thread"}\\n{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1}}','')\nw.run_task_process=run\nrc,tail=w.run_codex({'id':19,'run_id':'fixture-run'},'fixture',str(evidence),None,1,'fixture-model','high')\nassert rc==0 and len(calls)==1,(rc,tail)\nassert calls[0][2]['input']=='仅夹具任务'\nassert evidence.read_text(encoding='utf-8')=='本地夹具最终报告'\nprint('worker subscription handoff passed')`,[f.privateDir],f);
  assert.match(result,/worker subscription handoff passed/);
+});
+
+test('API 形登录在 worker 生成进程之前被拒绝，原认证文件保留',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,os,types
+sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))
+import worker_loop as w
+folder=pathlib.Path(sys.argv[2]); auth=folder/'auth.json'
+auth.write_text('{"OPENAI_API_KEY":"fixture-only"}',encoding='utf-8'); before=auth.read_bytes()
+os.environ['CODEX_HOME']=str(folder); w.CODEX_CLI=sys.executable; w.REPO=str(folder)
+w.codex_gate=lambda:None
+def status(argv,**kw):
+ assert argv==[sys.executable,'login','status'],argv
+ return types.SimpleNamespace(returncode=0,stdout='Logged in using an API key',stderr='')
+w.codex_runtime.subprocess.run=status
+def forbidden(*a,**kw): raise AssertionError('不应启动生成进程')
+w.run_task_process=forbidden
+rc,error=w.run_codex({'id':1,'run_id':'fixture-run'},'fixture',str(folder/'evidence.md'),None,1,'fixture','high')
+assert rc==-3 and 'ChatGPT' in error and auth.read_bytes()==before,(rc,error)
+print('worker rejected API login before generation')`,[f.privateDir],f);
+ assert.match(result,/worker rejected API login before generation/);
 });
 
 test('显式CLI超时终止工具子树并及时收回输出，Windows后台启动，旧配置超时行为兼容',()=>{

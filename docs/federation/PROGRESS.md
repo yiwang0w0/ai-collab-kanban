@@ -1257,3 +1257,7 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-10-28 英文标语：README 与 package.json description 由「The acceptance-first kanban for mixed AI fleets.」改为「The acceptance-first kanban for multi-agent AI collaboration.」；README 正文里把 fleet 当普通名词的介绍句与 fleet.config.json、fleet-* 测试脚本等技术标识不改；node/npm 读 package.json 正常；阻塞：无。
 - 2026-10-28 README 正文三处把 fleet 当普通名词的说法按操作者决定改写：a fleet of coding agents → a team of coding agents，mixed fleet (Claude + Codex) → mix of agents (Claude + Codex)，源码闸条目主语 the fleet → the workers（源码闸由 worker_loop／reviewer_loop 在执行线启动时执行，不管看板进程）；剩余 fleet 均为 fleet.config.json 与 examples 的 fleet config 技术标识，不改；阻塞：无。
 - 2026-10-28 README 以外文档里把 fleet 当普通名词的说法按操作者决定改写：CONTRIBUTING 与 GLOSSARY 的 physical fleet → physical two-machine（与 README 现有说法一致），SECURITY 共享机器建议的 run the fleet → run the board and its workers，SECURITY 与 QUICKSTART 源码闸条目主语 the fleet → the workers，SECURITY 的 deployed fleet → production deployment，QUICKSTART 的 fleet vocabulary → line vocabulary，桌面包 README 示例问句改为「请通过 AI 协作看板查询…」；fleet.config.json、fleet config、ai-fleet-board.mcpb、fleet-board、C:/fleet-desktop 等技术标识，以及 docs/INCIDENTS.md、docs/交接说明.md、docs/federation 下其余文件刻意不改；阻塞：无。
+
+- 2026-10-28 Codex CLI 闸裁定补修：生成前只读核实 ChatGPT 登录，API/未知认证拒绝生成且不注销；覆盖旧执行线与审阅线。
+- 协调模板改为显式接收已过滤环境，实际调用统一 prepare 预检；断言 exec/续接之后无 -c，防止顶层只读与认证约束失效。
+- 定向检查 11/11；looptest 72、reviewtest 23 项断言通过；实际 CLI 0.149.1 的假 API 登录预检拒绝生成且保留认证文件，未调用模型。

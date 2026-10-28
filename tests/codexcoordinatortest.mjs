@@ -23,6 +23,7 @@ base=pathlib.Path(tempfile.gettempdir())/'协调 工作仓'
 for session in (None,thread):
  args=c.argv('codex.exe','fixture-model','high',str(base/'回复.json'),str(base),str(base/'结构.json'),thread_id=session)
  command=args.index('exec')
+ assert '-c' not in args[command+1:],args
  for setting in ('sandbox_mode="read-only"','approval_policy="never"','forced_login_method="chatgpt"'):
   assert setting in args[:command],args
  assert args[args.index('-C')+1]==str(base) and args.index('-C')<command,args
@@ -45,6 +46,37 @@ with tempfile.TemporaryDirectory(prefix='协调中文-') as folder:
  assert c.read_prompt(str(prompt))=='读取任务，保持只读。'+chr(10)+'第二行'
  args=c.argv('codex.exe','fixture','high',str(pathlib.Path(folder)/'结果.json'),folder,'schema.json')
  assert not any('读取任务' in item for item in args)
+`);
+});
+
+test('协调线要求调用方显式传入已过滤环境，不默认继承宿主环境',()=>{
+ run(`import codex_coordinator as c
+try: c.environment()
+except TypeError: pass
+else: raise AssertionError('缺少显式环境时仍被接受')
+prepared={'CODEX_HOME':'fixture-auth','PATH':'fixture-path'}
+seen=[]
+c.codex_runtime.subscription_environment=lambda value:(seen.append(value) or {'filtered':'fixture'})
+assert c.environment(prepared)=={'filtered':'fixture'}
+assert seen==[prepared]
+`);
+});
+
+test('协调线实际准备入口先核实登录，不符时不返回生成命令',()=>{
+ run(`import codex_coordinator as c
+seen=[]
+source={'CODEX_HOME':'fixture-auth','PATH':'fixture-path'}
+c.codex_runtime.subscription_environment=lambda value:dict(value)
+def login(cli,env,**kwargs):
+ seen.append((cli,env,kwargs)); return '需要 ChatGPT 订阅登录'
+c.codex_runtime.subscription_login_gate=login
+try: c.prepare('codex.exe','fixture','high','last','work','schema',env=source)
+except RuntimeError as error: assert 'ChatGPT' in str(error)
+else: raise AssertionError('认证不符时仍返回生成命令')
+assert len(seen)==1 and seen[0][1]==source and seen[0][2]['workdir']=='work'
+c.codex_runtime.subscription_login_gate=lambda *a,**kw:None
+args,child=c.prepare('codex.exe','fixture','high','last','work','schema',env=source)
+assert child==source and child is not source and 'exec' in args
 `);
 });
 

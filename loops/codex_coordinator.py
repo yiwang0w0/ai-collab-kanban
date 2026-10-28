@@ -3,7 +3,6 @@
 """协调线的一轮 Codex CLI 参数模板；只构造请求，不调度或调用模型。"""
 import io
 import json
-import os
 import uuid
 
 import codex_runtime
@@ -12,8 +11,11 @@ import codex_runtime
 def argv(cli, model, effort, last_path, workdir, schema, *, thread_id=None):
     """首次与续接使用同一组顶层只读配置；消息由调用方通过 UTF-8 stdin 传入。
 
+    此函数只供离线构造，实际起进程须用 prepare() 先只读核对登录方式。
     Codex CLI 0.149.1 的 exec resume 没有 --sandbox 或 -C，故把只读、审批和工作目录
     放在 exec 前的顶层配置中。不加 --ephemeral，续接只接明确 thread_id，不使用 --last。
+    0.149 系列实测：exec／exec resume 后出现任何子命令级 -c，会使前面的顶层 -c
+    全部失效，包括只读与认证约束。因此此模板禁止在 exec 之后添加 -c。
     """
     if not schema:
         raise ValueError("协调线需要明确的结构化输出 schema 文件")
@@ -47,9 +49,18 @@ def argv(cli, model, effort, last_path, workdir, schema, *, thread_id=None):
     return out
 
 
-def environment(env=None):
-    """复用 CLI 订阅环境隔离；调用前仍由宿主剔除所有已登记的配置凭据。"""
-    return codex_runtime.subscription_environment(os.environ if env is None else env)
+def environment(env):
+    """显式接收经 profileEnvironment 处理的环境，再复用 CLI 订阅环境过滤。"""
+    return codex_runtime.subscription_environment(env)
+
+
+def prepare(cli, model, effort, last_path, workdir, schema, *, env, thread_id=None):
+    """实际调用的准备入口：不符 ChatGPT 登录时拒绝，不执行会删除 API 登录的生成命令。"""
+    child = environment(env)
+    error = codex_runtime.subscription_login_gate(cli, child, workdir=workdir)
+    if error:
+        raise RuntimeError(error)
+    return argv(cli, model, effort, last_path, workdir, schema, thread_id=thread_id), child
 
 
 def read_prompt(path):
