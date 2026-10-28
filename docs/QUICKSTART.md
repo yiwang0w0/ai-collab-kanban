@@ -210,8 +210,8 @@ Same cycle, your actual CLI (doctor already told you if it's resolvable):
 python loops/worker_loop.py --as alpha --once
 ```
 
-Or start supervised lines from the panel (自动拉取 row — start/stop per line,
-model/effort per slot) and let the loop claim continuously. For unattended runs
+Or start supervised lines from the panel (设置 page, 执行线与自动拉取 — start/stop per line,
+model/effort per slot under the gear) and let the loop claim continuously. For unattended runs
 add `--until 2026-01-01T23:00` or set `BOARD_UNTIL` on the server.
 
 ## 7 · Hand the whole thing to your Claude

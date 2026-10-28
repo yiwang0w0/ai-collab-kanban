@@ -1233,3 +1233,17 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 回归用例修复前红、修复后绿；真实 Claude CLI 2.1.234（haiku、假数据）拆解可解析、越权读被拒、对照可读、无工具压缩成功；decomposetest 66、四通道专项 41、servertest 198、selftest 402、clitest 83 均无失败。阻塞：无。
 - 2026-10-28 POST /api/goals 改为只取 subject／description／parentId 的白名单，客户端夹带的执行配置、actor、尝试次数等不再写进建卡记录；servertest S11 修复前红、修复后绿，servertest 199 无失败。阻塞：无。
 - 2026-10-28 拆解器改用 --json-schema（只读 structured_output、按同一 schema 校验，删掉正文提取），拆解与压缩去掉不带路径的 --allowedTools、加 --setting-sources ""、cwd 改为自建空目录；decomposetest 修复前 16 项红、修复后 77 全绿，servertest 199、clitest 83 无失败，真实 CLI（haiku、假数据）越界读被拒、对照可读、跨 cwd 无工具压缩成功。阻塞：无。
+- 2026-10-28 看板界面改造第一批(原生渐进,只动 panel.html):顶部改带图标导航并新增「设置」视图,引导/执行线(齿轮设置停靠)/加线/代劳/最近会话移入;「全部任务」只留定位+标题筛选+收起的时间轴+五栏。
+- 统一按钮/输入/下拉/勾选/滑块与焦点环,内联 SVG 图标集;首页卡与看板卡加图标状态徽标,卡片瘦身(留言与通过/编辑进展开区,点卡开侧栏);侧栏派发改五步条,未核实灰显;data-a 两押、版本锁、人工闸不变。
+- 12 套读面板源码的测试全过(hometest 改 2 处断言:设置提示去「设置」);1440/390 无横向溢出,窄屏可点目标≥40px;临时看板 47914 截图,未调模型、未碰 47824。
+- 阻塞:INSTALL.md 与 docs/执行器接入与首个任务.md 仍写「全部任务」上方的自动拉取/齿轮,超出本批允许改动的文件,待操作者确认是否随下一批更新。
+- 2026-10-28 第一批补改 1b(只动 panel.html):设置页加左目录(窄屏横向标签、滚动高亮);执行器设置改为智能体横向卡(左表单右状态),推理强度改分段控件、独立窗口改开关,接入状态改图标徽标,标题行加运行状态与「已保存/保存失败/冲突可重新载入」。
+- 12 套读面板测试全过(panelcopytest 改 1 处:推理强度钉子由滑块 aria-valuetext 改为分段控件的中文标签);1440/390 无溢出、手机目标≥40px、键盘焦点可见,深色已看;保存接口与 CAS 未改。
+- 阻塞:无(上批 INSTALL.md 等两处措辞仍待操作者决定)。
+- 2026-10-28 补改 1c(只动 panel.html):「你写了指示」徽标按 released 分两种(未放行=已退回原线，放行后才会再跑);带 execution_profile 的卡在打回提示与方案确认提示末尾注明会取消放行、须重新核对放行;panelcopytest 加 1 条(21/21),hometest 20、panelsidetest 5、decisiontest 25、gatetest 30 全过;阻塞:无。
+- 2026-10-28 补改 1d(只动 panel.html):按服务端 resolveInner 去向核对全部退回原线提示,决定类同意/否决、补齐文件、执行失败、侧栏「通过」补取消放行一句(执行成功仅 confirm_destination=hand_back 时补,拆分提示不适用);人工闸未放行卡已有新徽标时不再重复「未放行」;panelcopytest 加 1 条(22/22),hometest 20、panelsidetest 5、decisiontest 25、gatetest 30 全过;阻塞:无。
+- 2026-10-28 补改 1e(只动 panel.html):方案确认「执行成功」提示与弹窗单选项小字按 confirm_destination 写——hold_for_review 说卡留在等待中等你复核、原智能体不接手(不补取消放行),hand_back 照旧交回原智能体做结果验证并补取消放行,字段缺失或不认识的值只说去向由服务端判定;panelcopytest 改 1 条、加 1 条(23/23),hometest 20、panelsidetest 5、decisiontest 25、gatetest 30、versiontest 26 全过;阻塞:无。
+- 2026-10-28 补改 1f(只动 panel.html):方案弹窗回执区句末「回执会逐字交回原智能体」改由 syncDecision 按执行结果与 confirm_destination 填写——执行成功×hold_for_review 说回执原文留在卡上供你复核、原智能体不会接手,执行失败与 hand_back 保留原句,去向未知用中性说法,未选结果时成功失败分开说;补充指示框占位与缺回执提示同步不再预设交回;panelcopytest 加 1 条(24/24,单点变异转红),hometest 20、panelsidetest 5、decisiontest 25、gatetest 30、versiontest 26 全过;阻塞:无。
+- 2026-10-28 第一批遗留三件之一(panel.html + hometest):hasUnsavedInput 改按控件判——文本框/多行有非空白字、勾选框偏离默认勾选态、加线「身份」下拉偏离默认项才算没保存,勾选框 value 恒为 on 不再让换版本只弹横幅不自动刷新;hometest 加 1 条(21/21,退回按 value 判即转红)、选择器钉子随之更新;阻塞:无。
+- 第一批遗留三件之二(只动文档):INSTALL.md「开始干活」与 docs/执行器接入与首个任务.md 改指「设置」页「执行线与自动拉取」;顺带把 QUICKSTART、OPERATE_WITH_CLAUDE 与 add-line/coordinator-seat/pool-quota 三个技能里「面板「自动拉取」行」改成同一位置;review-contracttest 4/4;阻塞:无。
+- 第一批遗留三件之三(panel.html + hometest + style-guide):手机(≤620px)「全部任务」栏上方加分段控件(栏名+计数同栏头),一次只显示一栏,默认等待中有卡优先、否则第一个有卡的栏,定位/筛选切到命中卡所在栏,选择存本标签页 sessionStorage(读写包 try);隐藏栏的卡不演 FLIP;桌面不变;hometest 加 1 条(22/22,6 个单点变异各转红),panelcopytest 24、panelsidetest 5、decisiontest 25、gatetest 30、versiontest 26 全过;390/1440 无横向溢出、页脚不压末行、深色与键盘焦点已截图;阻塞:无。

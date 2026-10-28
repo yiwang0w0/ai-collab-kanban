@@ -142,7 +142,7 @@ test("the device line is one sentence when all is well and lists what needs atte
     ["warn", "多机视图", "暂时读不到", null],
     ["bad", "台式机 A", "磁盘空间不足（2 项）", null],
     ["warn", "台式机 A", "调度器运行锁异常", null],
-    ["warn", "看板设置", "还差 1 步：定义你自己的线", "board"],
+    ["warn", "看板设置", "还差 1 步：定义你自己的线", "settings"],
   ]);
   assert.equal(bad.alerts[2].next, "先腾出磁盘空间再派新任务");
   assert.equal(M.homeHealthWhat("SOMETHING_NEW"), "运行检查报告了问题", "an unknown code still says something, never the code");
@@ -160,7 +160,7 @@ test("the device line is one sentence when all is well and lists what needs atte
   ]);
   const quick = M.homeStatus({ nodes: [local], setup: { complete: false, done: 2, total: 4,
     steps: [{ state: "todo", title: "定义你自己的线", action: { type: "quick", kind: "propose-lines" } }] } });
-  assert.deepEqual(quick.alerts.map((a) => [a.go, a.action]), [["board", undefined]], "other steps still go to the guide");
+  assert.deepEqual(quick.alerts.map((a) => [a.go, a.action]), [["settings", undefined]], "other steps still go to the guide, which now lives on 设置");
 });
 
 test("layout pins: home is the landing view, ids fold under 技术信息, hidden columns never animate", () => {
@@ -233,12 +233,128 @@ test("side panel pins: the board's own buttons, the note beside the button, draf
   assert.ok(src.includes('p.set("task", uid)') && src.includes('window.addEventListener("hashchange", sideFromHash)'));
   assert.ok(src.includes("verdictDraft.set(Number(id), e.target.value);" + String.fromCharCode(10) + "  persistDrafts();"));
   assert.ok(src.includes("function loadDrafts(){ try {") && src.includes("sessionStorage.setItem(DRAFTS_KEY"));
-  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #home-new input")'),
+  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #line-add select, #home-new input")'),
     "an unsent new-task title holds the page against an automatic reload too");
   // Creating a task is a plain POST /api/tasks through the panel's post(): no release key, no internal id.
   const at = src.indexOf('getElementById("home-new-form").addEventListener("submit"');
   const sub = src.slice(at, at + 1400);
   assert.ok(at > 0 && sub.includes('await post("/api/tasks", r.body)') && !sub.includes("released"));
+});
+
+test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾选框按默认勾选态判,填了字才拦", () => {
+  const a = src.indexOf("const fieldChanged = "), b = src.indexOf("function showRevBar(", a);
+  assert.ok(a > 0 && b > a, "hasUnsavedInput block not found");
+  // 控件照面板里加线表单与新建任务表单的真实标记造:类型、默认勾选、默认选项都从标记读,不手写。
+  const block = (open, close) => { const i = src.indexOf(open), j = src.indexOf(close, i); assert.ok(i > 0 && j > i, open); return src.slice(i, j); };
+  const forms = { "line-add": block('<form class="line-add" id="line-add"', "</form>"), "home-new": block('<section class="home-new" id="home-new">', "</section>") };
+  const attr = (s, k) => (s.match(new RegExp(`\\s${k}="([^"]*)"`)) || [])[1];
+  const els = [];
+  for (const [scope, html] of Object.entries(forms)) {
+    for (const [, s] of html.matchAll(/<input\b([^>]*)>/g)) {
+      const type = attr(s, "type") || "text", checked = /\schecked\b/.test(s);
+      els.push({ scope, tagName: "INPUT", id: attr(s, "id"), type, value: type === "checkbox" ? "on" : (attr(s, "value") || ""), checked, defaultChecked: checked });
+    }
+    for (const [, s, body] of html.matchAll(/<select\b([^>]*)>([\s\S]*?)<\/select>/g)) {
+      const options = [...body.matchAll(/<option\b([^>]*)>/g)].map(([, o]) => ({ defaultSelected: /\sselected\b/.test(o) }));
+      els.push({ scope, tagName: "SELECT", id: attr(s, "id"), type: "select-one", value: "x", options,
+        selectedIndex: options.length ? Math.max(0, options.findIndex((o) => o.defaultSelected)) : -1 });
+    }
+    for (const [, s, body] of html.matchAll(/<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g))
+      els.push({ scope, tagName: "TEXTAREA", id: attr(s, "id"), type: "textarea", value: body });
+  }
+  const document = { querySelectorAll: (sel) => sel.split(",").flatMap((part) => {
+    part = part.trim();
+    if (part === "textarea") return els.filter((e) => e.tagName === "TEXTAREA");
+    const m = part.match(/^#(line-add|home-new) (input|select)$/);
+    assert.ok(m, "选择器多了没造过的部分:" + part);
+    return els.filter((e) => e.scope === m[1] && e.tagName === m[2].toUpperCase());
+  }) };
+  const hasUnsavedInput = new Function("document", src.slice(a, b) + "\nreturn hasUnsavedInput;")(document);
+  const el = (id) => { const e = els.find((x) => x.id === id); assert.ok(e, id); return e; };
+  assert.equal(el("line-add-ro").type, "checkbox"); assert.equal(el("line-add-auto").value, "on");
+  assert.equal(hasUnsavedInput(), false, "空表单:两个勾选框的 value 恒为 on,不算没保存的输入");
+  el("line-add-id").value = "   ";
+  assert.equal(hasUnsavedInput(), false, "只有空白不算");
+  for (const id of ["line-add-id", "line-add-label", "line-add-hint", "line-add-charter", "home-new-title", "home-new-desc"]) {
+    el(id).value = "docs";
+    assert.equal(hasUnsavedInput(), true, id + " 填了字");
+    el(id).value = "";
+  }
+  el("line-add-ro").checked = true;
+  assert.equal(hasUnsavedInput(), true, "勾上「只读」= 偏离默认");
+  el("line-add-ro").checked = false; el("line-add-kind").selectedIndex = 1;
+  assert.equal(hasUnsavedInput(), true, "身份改成评审 = 偏离默认");
+  el("line-add-kind").selectedIndex = 0; el("home-new-line").selectedIndex = 2;
+  assert.equal(hasUnsavedInput(), false, "新建任务的下拉由代码填值,不算");
+});
+
+test("手机看板一次一栏:默认等待中有卡优先,定位与筛选切到命中卡所在的栏,选择只存本标签页且读写包 try", () => {
+  const c0 = src.indexOf("// ── board-col(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /board-col ──");
+  assert.ok(c0 > 0 && c1 > c0, "board-col block not found in core/panel.html");
+  const B = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {boardColAuto,boardColForHits};")();
+  const COLS = ["goal", "not_started", "in_progress", "waiting", "done"];
+  const has = (...keys) => Object.fromEntries(keys.map((k) => [k, true]));
+  assert.equal(B.boardColAuto(COLS, has("not_started", "waiting"), null), "waiting", "等待中有卡:先看等待中");
+  assert.equal(B.boardColAuto(COLS, has("in_progress", "done"), null), "in_progress", "等待中没卡:按栏的顺序第一个有卡的");
+  assert.equal(B.boardColAuto(COLS, {}, null), "waiting", "全空停在等待中");
+  assert.equal(B.boardColAuto(COLS, has("not_started", "waiting"), "not_started"), "not_started", "自动挑过的栏还有卡就不跳");
+  assert.equal(B.boardColAuto(COLS, has("waiting"), "not_started"), "waiting", "自动挑过的栏空了才重挑");
+  const hits = (...keys) => new Set(keys);
+  assert.equal(B.boardColForHits(COLS, "waiting", hits("not_started")), "not_started", "当前栏没命中:去命中卡所在的栏");
+  assert.equal(B.boardColForHits(COLS, "goal", hits("in_progress", "waiting")), "waiting", "命中多栏:等待中优先(哪怕进行中排在前面)");
+  assert.equal(B.boardColForHits(COLS, "goal", hits("done", "in_progress")), "in_progress", "再按栏的顺序");
+  assert.equal(B.boardColForHits(COLS, "not_started", hits("not_started", "waiting")), "not_started", "当前栏有命中就不动");
+  assert.equal(B.boardColForHits(COLS, "done", hits()), "done", "一张都没命中不动");
+
+  // 选中状态:sessionStorage 读写都包 try,存储抛错时照常能换栏;只认五栏的键。
+  const s0 = src.indexOf('const BOARD_COL_KEY = "tb_board_col";'), s1 = src.indexOf('document.getElementById("board-seg").addEventListener("change"', s0);
+  assert.ok(s0 > 0 && s1 > s0);
+  const fakeDom = () => {
+    const cols = { dataset: {} }, on = new Set();
+    const shell = new Map(COLS.map((k) => [k, { col: { classList: { toggle: (c, v) => { if (c === "on") v ? on.add(k) : on.delete(k); } } } }]));
+    const radios = COLS.map((value) => ({ value, checked: false }));
+    return { cols, on, shell, radios, document: { getElementById: (id) => (assert.equal(id, "cols"), cols), querySelectorAll: () => radios } };
+  };
+  const load = (storage) => {
+    const d = fakeDom();
+    const api = new Function("COLS", "sessionStorage", "document", "shell", src.slice(s0, s1) +
+      ";return {setBoardCol, applyBoardCol, state: () => [boardCol, boardColMine]};")(COLS, storage, d.document, d.shell);
+    return { ...d, api };
+  };
+  const broken = { getItem() { throw Error("denied"); }, setItem() { throw Error("denied"); } };
+  const b = load(broken);
+  assert.deepEqual(b.api.state(), [null, false], "存储读不了:当没选过");
+  b.api.setBoardCol("done");
+  assert.deepEqual(b.api.state(), ["done", true], "存储写不了:照样换栏");
+  assert.equal(b.cols.dataset.col, "done");
+  assert.deepEqual([...b.on], ["done"]);
+  assert.deepEqual(b.radios.filter((r) => r.checked).map((r) => r.value), ["done"]);
+  b.api.setBoardCol("bogus");
+  assert.deepEqual(b.api.state(), ["done", true], "不认识的键不收");
+  const mem = new Map([["tb_board_col", "in_progress"]]);
+  const store = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  const r = load(store);
+  assert.deepEqual(r.api.state(), ["in_progress", true], "刷新后照旧显示你选的栏");
+  r.api.setBoardCol("goal");
+  assert.equal(mem.get("tb_board_col"), "goal");
+  mem.set("tb_board_col", "__proto__");
+  assert.deepEqual(load(store).api.state(), [null, false], "存的值不是五栏之一:当没选过");
+
+  // 结构钉:控件在栏上方、桌面不出现;≤620px 只藏没选中的栏,且只在脚本选定后;页脚留白不退;
+  // 定位与筛选先切栏;你选过就不再自动挑;隐藏栏里量出 0×0 的卡不演 FLIP;选栏不清高亮。
+  assert.ok(src.includes('<div class="seg board-seg" id="board-seg" role="radiogroup" aria-label="选择显示的栏"></div>\n<div class="cols" id="cols"></div>'));
+  assert.ok(src.includes(".seg.board-seg{display:none}"));
+  const segCss = src.slice(src.indexOf(".seg.board-seg{display:none}"), src.indexOf("/* ── 触摸:窄屏与粗指针"));
+  const m620 = segCss.indexOf("@media (max-width:620px){");
+  assert.ok(m620 > 0 && segCss.indexOf(".seg.board-seg{display:flex", m620) > m620
+    && segCss.indexOf(".cols[data-col] > .col:not(.on){display:none}", m620) > m620, "选栏只在 ≤620px 生效");
+  assert.match(src, /@media \(max-width:620px\)\{ \.cols\{padding-bottom:112px\} \}/, "手机上最后一行不被固定页脚压住");
+  assert.ok(src.includes("\n  setBoardCol(taskColumn(task));"), "按卡号定位先切到卡所在的栏");
+  assert.ok(src.includes("\n  const to = boardColForHits(COLS, boardCol, new Set(hit.map(taskColumn)));\n  if (to && to !== boardCol) setBoardCol(to);"),
+    "按标题筛选切到命中卡所在的栏");
+  assert.ok(src.includes("\n  if (!boardColMine) boardCol = boardColAuto(COLS, colHas, boardCol);\n  applyBoardCol();"), "你选过就不再自动挑");
+  assert.ok(src.includes("if (r.width || r.height) first.set(id, r);") && src.includes("if (!b.width && !b.height) continue;"));
+  assert.ok(src.includes("#task-side, #edit, #pick, .modal, #board-bar, #board-seg"));
 });
 
 test("side panel says what any card is doing, not only the two home lanes", () => {

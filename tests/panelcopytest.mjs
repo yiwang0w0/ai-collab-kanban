@@ -49,8 +49,10 @@ test("用量显示使用中文计数单位，不改变计数值", () => {
     assert.equal(copy.formatCount(number), label);
     assert.equal(typeof number, "number");
   }
-  assert.match(source, /aria-valuetext="\$\{esc\(effortName\(a\.effort\)\)\}"/);
-  assert.ok(source.includes('el.setAttribute("aria-valuetext", effortName(a.effort))'));
+  // 推理强度改为分段控件(单选组):每一档的可见文字与无障碍名称都走 effortName;选中后标题里的当前档同步换成中文。
+  assert.match(source, /role="radiogroup"/);
+  assert.match(source, /aria-label="\$\{esc\(effortName\(v\)\)\}"><span>\$\{esc\(effortName\(v\)\)\}<\/span>/);
+  assert.ok(source.includes('const b = el.closest(".agent").querySelector(".cap b"); if (b) b.textContent = effortName(a.effort);'));
 });
 
 test("浏览器错误使用中文说明，中文消息及未知原始错误完整保留", () => {
@@ -373,4 +375,134 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
   assert.ok(source.includes('a === "archive" || a === "release") && b.dataset.armed !== "1"'));
   assert.ok(source.includes('released: true, expected_version: Number(b.dataset.version)'));
   assert.ok(source.includes('confirm_execution_profile_digest: b.dataset.executionProfileDigest'), "两押提交原按钮绑定的摘要，配置变化不静默确认");
+});
+
+test("写了指示的卡按放行状态显示：未放行说明须放行后再跑，已放行保留原文案", () => {
+  // 直接执行卡片里这一段徽标代码，不另抄一份判断。
+  const badge = new Function("t", "meta2", panelSection('  if ((t.last_verdict || t.verdict) && t.status === "not_started")', "  // ⭐ Human-gated") +
+    '\nreturn meta2.join("");');
+  const card = { last_verdict: "reject", status: "not_started" };
+  assert.equal(badge({ ...card, released: 0 }, []), '<span class="tag tocoord">你写了指示 · 已退回原线，放行后才会再跑</span>');
+  assert.equal(badge({ ...card, released: 1 }, []), '<span class="tag tocoord">你写了指示 · 回原线继续</span>');
+  assert.equal(badge({ ...card, released: 1, status: "waiting" }, []), "", "显示条件不变：不在未开始状态不出徽标");
+});
+
+test("方案确认提示：执行失败会退回原线，显式执行配置卡补取消放行一句，普通卡一字不变", () => {
+  // 直接执行面板里的 syncDecision 和同一个常量，不另抄判断；scope 只给提示框和回执框两个替身。
+  const syncDecision = (draft) => new Function("decisionChoice", "outcomeDraft", "receiptDraft",
+    panelSection("const PROFILE_RELEASE_NOTE", "\n") + "\n" +
+    panelSection("function syncDecision(scope, t){", "\nfunction upsert(") + "\nreturn syncDecision;")(...draft);
+  const hint = (card, outcome) => {
+    const h = { textContent: "" }, receipt = { value: "原始回执" };
+    const scope = {
+      querySelector: (sel) => sel === "[data-hoh]" ? h : sel === `[data-handoff-receipt="${card.id}"]` ? receipt : null,
+      querySelectorAll: () => [],
+    };
+    syncDecision([new Map([[card.id, "A"]]), new Map([[card.id, outcome]]), new Map([[card.id, "原始回执"]])])(scope, card);
+    return h.textContent;
+  };
+  const card = { id: 7, decision_package: { options: [{ key: "A", kind: "apply", ready: true }] } };
+  const profile = { execution_profile: { profile_digest: "a".repeat(64) } };
+  const note = "显式执行配置卡会同时取消放行，你重新核对放行后才会再次计费运行。";
+  const failed = "本次会记录为已尝试执行但失败：保留错误回执、把本轮文件归档到交接目录，并交回原智能体修正；不会冒充已应用。";
+  assert.equal(hint(card, "failure"), failed, "普通卡文案不变");
+  assert.equal(hint({ ...card, ...profile }, "failure"), failed + note);
+  // 执行成功只在服务端判定退回原线(confirm_destination=hand_back)时补；留在等待中交复核的不补。
+  // 文案也按同一去向说：留在等待中的不说交回原智能体；拿不到去向时不猜，也不补取消放行。
+  const succeeded = "本次会记录为执行成功：保留回执、把文件归档到交接目录，并交回原智能体做结果验证。";
+  const held = "本次会记录为执行成功：保留回执、把文件归档到交接目录；卡留在等待中，等你复核结果，原智能体不会接手。";
+  const unknown = "本次会记录为执行成功：保留回执、把文件归档到交接目录；卡的后续去向由服务端判定，提交后以卡片状态为准。";
+  assert.equal(hint({ ...card, ...profile, confirm_destination: "hold_for_review" }, "success"), held);
+  assert.equal(hint({ ...card, confirm_destination: "hold_for_review" }, "success"), held, "普通卡同样留在等待中");
+  for (const c of [card, { ...card, ...profile }])
+    assert.ok(!hint({ ...c, confirm_destination: "hold_for_review" }, "success").includes("交回原智能体"),
+      "留在等待中的卡不交回原智能体，提示不能这样说");
+  assert.equal(hint({ ...card, ...profile, confirm_destination: "hand_back" }, "success"), succeeded + note);
+  assert.equal(hint({ ...card, confirm_destination: "hand_back" }, "success"), succeeded, "普通卡文案不变");
+  // 旧服务端不给 confirm_destination；null 或不认识的值同样只给中性说法。
+  for (const dest of [undefined, null, "close"]) {
+    const text = hint({ ...card, ...profile, ...(dest === undefined ? {} : { confirm_destination: dest }) }, "success");
+    assert.equal(text, unknown, String(dest));
+    assert.ok(!text.includes(note), "去向未知不补取消放行：" + String(dest));
+  }
+});
+
+test("方案弹窗「执行成功」小字按服务端去向写，拿不到去向时用中性说法", () => {
+  // 直接执行面板里的 openDecisionModal，只换掉 DOM 与周边函数，看它实际写出的小字。
+  const small = (t) => {
+    const box = { innerHTML: "", querySelector: () => null };
+    const context = { draftVersions: new Map(), decisionSnapshot: null, structuredClone,
+      document: { getElementById: (id) => id === "decision-modal-b" ? box : { textContent: "" } },
+      decisionPanel: () => "", verdictDraft: new Map(), receiptDraft: new Map(), syncHandoff() {},
+      decisionModal: { querySelector: () => null, classList: { add() {} } } };
+    vm.createContext(context);
+    vm.runInContext(panelSection("function openDecisionModal(t){", '\ndocument.addEventListener("dblclick"'), context);
+    context.openDecisionModal({ id: 7, aggregate_version: 1, subject: "s", ...t });
+    const m = box.innerHTML.match(/<span>执行成功<small>([^<]*)<\/small><\/span>/);
+    assert.ok(m, "未找到执行成功选项");
+    return m[1];
+  };
+  assert.equal(small({ confirm_destination: "hold_for_review" }), "已应用;留在等待中,等你复核结果");
+  assert.ok(!small({ confirm_destination: "hold_for_review" }).includes("交回"), "留在等待中的卡不说交回智能体");
+  assert.equal(small({ confirm_destination: "hand_back" }), "已应用;交回智能体做结果验证");
+  for (const t of [{}, { confirm_destination: null }, { confirm_destination: "close" }])
+    assert.equal(small(t), "已应用;后续去向由服务端判定", JSON.stringify(t));
+});
+
+test("回执区句末与补充指示框按执行结果和服务端去向说：留在等待中不说交回原智能体，退回原线保留原句，去向未知用中性说法", () => {
+  // 直接执行面板里的 syncDecision 与同段的 receiptFateNote，不另抄判断；scope 只给回执去向、补充指示框和提示框替身。
+  const syncDecision = new Function("decisionChoice", "outcomeDraft", "receiptDraft",
+    panelSection("const PROFILE_RELEASE_NOTE", "\n") + "\n" +
+    panelSection("function syncDecision(scope, t){", "\nfunction upsert(") + "\nreturn syncDecision;");
+  const run = (card, outcome, pick = "A") => {
+    const fate = { textContent: "" }, vin = { placeholder: "" };
+    const nodes = { [`[data-receipt-fate="${card.id}"]`]: fate, [`[data-vin="${card.id}"]`]: vin,
+      "[data-hoh]": { textContent: "" }, [`[data-handoff-receipt="${card.id}"]`]: { value: "原始回执" } };
+    const scope = { querySelector: (sel) => nodes[sel] ?? null, querySelectorAll: () => [] };
+    syncDecision(new Map([[card.id, pick]]), new Map(outcome ? [[card.id, outcome]] : []),
+      new Map([[card.id, "原始回执"]]))(scope, card);
+    return { fate: fate.textContent, vin: vin.placeholder };
+  };
+  const card = { id: 7, decision_package: { options: [
+    { key: "A", kind: "apply", ready: true }, { key: "B", kind: "none" }, { key: "C", kind: "apply", ready: false }] } };
+  const back = "回执会逐字交回原智能体。", vinBack = "可选:补充给原智能体的一句指示";
+  const held = "回执原文留在卡上,供你复核,原智能体不会接手。";
+  const unknown = "回执的后续去向由服务端判定,提交后以卡片状态为准。";
+  const hold = { ...card, confirm_destination: "hold_for_review" }, handBack = { ...card, confirm_destination: "hand_back" };
+  // 执行成功 × hold_for_review：卡留在等待中，回执留在卡上供复核，不交回原智能体。
+  assert.equal(run(hold, "success").fate, held);
+  assert.ok(!run(hold, "success").fate.includes("交回原智能体"), "留在等待中的卡不交回原智能体，回执去向不能这样说");
+  assert.equal(run(hold, "success").vin, "可选:补充一句说明,随回执留在卡上供你复核");
+  assert.ok(!run(hold, "success").vin.includes("原智能体"), "留在等待中的卡，补充指示也到不了原智能体");
+  // 执行成功 × hand_back，以及执行失败(服务端一律退回原线)：保留原句。
+  assert.deepEqual(run(handBack, "success"), { fate: back, vin: vinBack });
+  for (const c of [hold, handBack, card])
+    assert.deepEqual(run(c, "failure"), { fate: back, vin: vinBack }, "执行失败一律退回原线：" + String(c.confirm_destination));
+  // 旧服务端不给 confirm_destination；null 或不认识的值同样只给中性说法，不说交回、也不说留在卡上。
+  for (const dest of [undefined, null, "close"]) {
+    const r = run({ ...card, ...(dest === undefined ? {} : { confirm_destination: dest }) }, "success");
+    assert.equal(r.fate, unknown, String(dest));
+    assert.ok(!r.fate.includes("交回原智能体") && !r.fate.includes("留在卡上"), "去向未知不猜：" + String(dest));
+    assert.equal(r.vin, "可选:补充一句说明", String(dest));
+  }
+  // 还没选执行结果：hand_back 两种结果都退回，照原句；其余把成功与失败分开说。
+  assert.deepEqual(run(handBack, ""), { fate: back, vin: vinBack });
+  assert.equal(run(hold, "").fate, "执行失败时回执会逐字交回原智能体;执行成功时" + held);
+  assert.equal(run(card, "").fate, "执行失败时回执会逐字交回原智能体;执行成功时" + unknown);
+  assert.equal(run(hold, "").vin, "可选:补充一句说明");
+  // 不含文件的方案、文件未补齐的方案都退回原线：补充指示框照旧。
+  assert.equal(run(hold, "", "B").vin, vinBack);
+  assert.equal(run(hold, "", "C").vin, vinBack);
+  // 弹窗里这句只留占位，由 syncDecision 填写；不再写死「交回原智能体」。
+  const box = { innerHTML: "", querySelector: () => null };
+  const context = { draftVersions: new Map(), decisionSnapshot: null, structuredClone,
+    document: { getElementById: (id) => id === "decision-modal-b" ? box : { textContent: "" } },
+    decisionPanel: () => "", verdictDraft: new Map(), receiptDraft: new Map(), syncHandoff() {},
+    decisionModal: { querySelector: () => null, classList: { add() {} } } };
+  vm.createContext(context);
+  vm.runInContext(panelSection("function openDecisionModal(t){", '\ndocument.addEventListener("dblclick"'), context);
+  context.openDecisionModal({ id: 7, aggregate_version: 1, subject: "s", confirm_destination: "hold_for_review" });
+  assert.ok(box.innerHTML.includes('不要粘贴密钥或客户明细;<span data-receipt-fate="7"></span></div>'), "回执去向占位不在提示句末");
+  assert.ok(!box.innerHTML.includes(back), "弹窗不再写死交回原智能体");
+  assert.ok(!source.includes("请先填写执行回执,再交回智能体"), "缺回执提示不预设交回原智能体");
 });
