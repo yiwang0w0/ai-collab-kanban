@@ -5,7 +5,7 @@
   "dependencies": {
     "@openai/codex-sdk": "0.164.0"
   },
-  "description": "The acceptance-first kanban for mixed AI fleets.",
+  "description": "The acceptance-first kanban for multi-agent AI collaboration.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=24.0.0"

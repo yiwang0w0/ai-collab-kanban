@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml/badge.svg)](https://github.com/yiwang0w0/ai-collab-kanban/actions/workflows/ci.yml)
 
-**The acceptance-first kanban for mixed AI fleets.**
+**The acceptance-first kanban for multi-agent AI collaboration.**
 
 **Install it by asking your AI.** On Windows, paste this to Claude Code (or another coding agent):
 
