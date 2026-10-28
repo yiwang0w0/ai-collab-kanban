@@ -9,6 +9,7 @@ import {spawnSync} from 'node:child_process';
 import {createWorkspaceTools,createWorkspaceMcp,canonicalWorkspacePath} from '../runners/workspace_tools.mjs';
 import {runJob,sdkOptions,loadJob,validateJob} from '../runners/codex_agent.mjs';
 import {directoryIdentity} from '../core/artifacts/git-workspace.mjs';
+import {loadExecutionProfiles,getExecutionProfile,profileEnvironment} from '../core/execution-profiles.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url)),directories=[];
 const py=process.env.BOARD_PYTHON||process.env.PYTHON||'python';
@@ -167,4 +168,36 @@ test('显式 Claude CLI 的金额上限不被抬到 1 美元，旧配置保留�
  const f=fixture();
  const result=python(`import sys,pathlib,os\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nos.environ['WORKER_MAX_BUDGET_USD']='0.5'\ndef cap(argv): i=argv.index('--max-budget-usd'); return argv[i+1]\nw.PROFILE_MODE=True; w.EXECUTION_PROFILE={'execution_profile_id':'claude-cli','budget':{'timeout_sec':60,'max_turns':2,'max_cost_usd':0.5}}\nassert cap(w.cli_argv('样本',[],'claude-fixture','high'))=='0.50', cap(w.cli_argv('样本',[],'claude-fixture','high'))\nw.gates_lib.remaining_today=lambda data:(0.3,0.0,0,1.0)\nassert cap(w.cli_argv('样本',[],'claude-fixture','high'))=='0.30'\nw.PROFILE_MODE=False; w.EXECUTION_PROFILE=None\nassert cap(w.cli_argv('样本',[],'claude-fixture','high'))=='1.00'\nprint('cli budget passed')`,[],f);
  assert.match(result,/cli budget passed/);
+});
+test('登记验证命令看不到认证目录与供应商凭据：显式 Claude CLI、Codex CLI 与旧配置相同',()=>{
+ const f=fixture(),marker='auth-home-fixture-7c1e',auth=join(f.directory,marker),dataDir=f.privateDir,registry=join(f.privateDir,'登记簿.json');
+ const budget={timeout_sec:60,max_turns:2,max_cost_usd:0.5};
+ const profiles=loadExecutionProfiles([{id:'claude-cli',enabled:true,budget,auth_home:join(auth,'claude')},{id:'codex-cli',enabled:true,budget,auth_home:join(auth,'codex')}],{dataDir});
+ const secrets={ANTHROPIC_API_KEY:'sk-ant-FAKE-V',OPENAI_API_KEY:'sk-proj-FAKE-V',AZURE_OPENAI_API_KEY:'FAKE-V',CLAUDE_CODE_OAUTH_TOKEN:'FAKE-V',
+  CLAUDE_CODE_USE_BEDROCK:'1',CODEX_API_KEY:'FAKE-V',KANBAN_ANTHROPIC_API_KEY:'FAKE-V',VENDOR_API_KEY:'FAKE-V'};
+ const watched=[...Object.keys(secrets),'CLAUDE_CONFIG_DIR','CODEX_HOME'].map(name=>`'${name}'`).join(',');
+ // 探针只打印变量名与是否含认证目录标记，不打印值。
+ const probe=`import os,json;w=[${watched}];print(json.dumps({'names':sorted(k for k in os.environ if k.upper() in w),'auth':sorted(k for k,v in os.environ.items() if '${marker}' in v),'keep':os.environ.get('KEEP_ORDINARY'),'python':bool(os.environ.get('PYTHON')),'repo':os.environ.get('BOARD_REPO')}))`;
+ writeFileSync(registry,JSON.stringify({envprobe:['python','-c',probe]}));
+ // 宿主环境按 server.slotEnv 的形状：WORKER_PROTECTED_PATHS 列出全部认证目录；旧配置经 profileEnvironment(null) 原样继承。
+ const host={PATH:process.env.PATH||process.env.Path||'',SystemRoot:process.env.SystemRoot||'',TEMP:process.env.TEMP||tmpdir(),TMP:process.env.TMP||tmpdir(),
+  BOARD_DATA_DIR:dataDir,BOARD_REPO:f.cwd,BOARD_CONFIG:join(f.privateDir,'无配置.json'),BOARD_VERIFY_REGISTRY:registry,BOARD_CODEX_RELEASED:'1',BOARD_CODEX_CMD:process.execPath,
+  WORKER_PROTECTED_PATHS:JSON.stringify([dataDir,registry,...profiles.map(p=>p.auth_home)]),KEEP_ORDINARY:'保留',...secrets,
+  CLAUDE_CONFIG_DIR:join(auth,'日常 claude'),CODEX_HOME:join(auth,'日常 codex')};
+ for(const [id,runtime] of [['claude-cli','claude'],['codex-cli','codex'],[null,'claude']]){
+  const label=id||'旧配置';
+  const loopEnv={...profileEnvironment(id&&getExecutionProfile(profiles,id),{env:host,repoRoot:f.cwd,dataDir,profiles}),WORKER_RUNTIME:runtime};
+  assert.ok(Object.values(loopEnv).some(value=>value.includes(marker)),label+'：夹具前提，循环自身持有认证目录');
+  const file=join(f.privateDir,`loop-env-${id||'legacy'}.json`);writeFileSync(file,JSON.stringify(loopEnv));
+  const out=python(`import sys,os,json,pathlib\nloop=json.loads(pathlib.Path(sys.argv[2]).read_text(encoding='utf-8'))\nos.environ.clear(); os.environ.update(loop)\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nassert w.PROFILE_MODE is ${id?'True':'False'} and not w.API_MODE\nr=w.run_verify({'verify_cmd':'envprobe'})\nassert r['rc']==0, r\nprint(r['out'].strip().splitlines()[-1])`,[file],f);
+  const seen=JSON.parse(out.trim().split(/\r?\n/).at(-1));
+  assert.deepEqual(seen.names,[],label+'：验证命令不应看到登录目录指针或凭据变量');
+  assert.deepEqual(seen.auth,[],label+'：验证命令环境里不应有任何值含认证目录路径');
+  assert.equal(seen.keep,'保留',label+'：普通变量照常继承');assert.equal(seen.python,true,label+'：解释器映射照常传递');assert.equal(seen.repo,f.cwd,label+'：BOARD_ 变量照常继承');
+ }
+});
+test('显式 Claude CLI 的文件工具拒绝读写本配置认证目录，旧配置的 deny 规则不变',()=>{
+ const f=fixture(),auth=join(f.directory,'订阅 登录');
+ const result=python(`import sys,pathlib,os\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nauth=sys.argv[2]\ndef denied(argv): return argv[argv.index('--disallowedTools')+1:]\nlegacy=denied(w.cli_argv('样本',[],'m','high'))\nassert legacy==w.cli_deny_rules(w.DATA), legacy[-2:]\nos.environ['WORKER_PROFILE_AUTH_HOME']=auth; w.PROFILE_MODE=True; w.EXECUTION_PROFILE={'execution_profile_id':'claude-cli','budget':{'timeout_sec':60,'max_turns':2,'max_cost_usd':0.5}}\nrules=denied(w.cli_argv('样本',[],'m','high'))\nhome=w.deny_path(auth)\nassert rules[:len(legacy)]==legacy and rules[len(legacy):]==['Read(%s/**)'%home,'Edit(%s/**)'%home], rules[len(legacy):]\nprint('auth deny passed')`,[auth],f);
+ assert.match(result,/auth deny passed/);
 });

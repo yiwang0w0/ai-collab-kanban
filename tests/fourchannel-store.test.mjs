@@ -132,3 +132,24 @@ test("显式配置卡打回、通过并备注或重开后撤回放行，同一�
  const legacy=f.add();deliver(legacy,null);store.resolve(f.db,{id:legacy,verdict:"reject",note:"旧卡打回",expectedVersion:version(legacy)});
  assert.equal(store.get(f.db,legacy).released,true,"旧无配置卡打回后仍按原规则保持放行");
 });
+
+test("显式配置卡退回原线后，裁定说明写明须本人重新核对放行，不再写回原线继续；旧卡文案不变",t=>{
+ const f=fixture(t);
+ const deliver=(id,profile=binding)=>{const run=f.claim(id,{profile});store.report(f.db,{id,worker:run.worker,runId:run.task.run_id,outcome:"done",evidence:"合成结果，不调用模型"});};
+ const version=id=>store.get(f.db,id).aggregate_version;
+ const cases=[["打回并备注","reject","请补一处说明"],["通过并备注","approve","通过，备注一句"]];
+ for(const [label,verdict,note] of cases){
+  const id=f.add(binding);deliver(id);store.resolve(f.db,{id,verdict,note,expectedVersion:version(id)});
+  const back=store.get(f.db,id);assert.equal(back.released,false,label);
+  assert.doesNotMatch(back.verdict_note,/回原线继续/,label+"：放行已收回，卡面不能再说回原线继续");
+  assert.match(back.verdict_note,/需本人重新核对放行后才会再跑/,label);assert.match(back.verdict_note,new RegExp(note),label+"：人写的指示照常追记");
+  assert.doesNotMatch(back.result,/回原线继续/,label);
+ }
+ const reopened=f.add(binding);deliver(reopened);store.resolve(f.db,{id:reopened,verdict:"approve",expectedVersion:version(reopened)});store.reopen(f.db,{id:reopened,expectedVersion:version(reopened)});
+ assert.doesNotMatch(String(store.get(f.db,reopened).verdict_note||"")+store.get(f.db,reopened).result,/回原线继续/,"重开：说明不写回原线继续");
+ for(const [label,verdict,note] of cases){
+  const id=f.add();deliver(id,null);store.resolve(f.db,{id,verdict,note,expectedVersion:version(id)});
+  const back=store.get(f.db,id);assert.equal(back.released,true,"旧卡"+label);
+  assert.match(back.verdict_note,/ · 回原线继续\)——/,"旧卡"+label+"：裁定抬头文案不变");assert.doesNotMatch(back.verdict_note,/重新核对放行/,"旧卡"+label);
+ }
+});

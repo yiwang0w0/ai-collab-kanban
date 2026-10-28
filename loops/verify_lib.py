@@ -194,6 +194,25 @@ def verify_registry():
     return {key: list(argv) for key, argv in _REGISTRY_COMMANDS.items()}
 
 
+# 验证命令运行的是模型刚写进工作仓的代码，从来不需要模型凭据或登录目录。下面三条名称规则与
+# core/execution-profiles.mjs 的 profileEnvironment 写法相同（改一处须同步另一处）：
+# 供应商凭据与登录目录指针（CLAUDE_CONFIG_DIR、CODEX_HOME）一律剔除；*_API_KEY 等后缀只放过循环自己的
+# BOARD_/WORKER_/REVIEWER_ 变量。WORKER_PROFILE_AUTH_HOME、WORKER_PROTECTED_PATHS 的值就是认证目录路径，
+# 只供循环自身使用（sdk_protected_paths），同样不交给验证命令。
+_PROVIDER_ENV = re.compile(r"^(?:ANTHROPIC_|OPENAI_|AZURE_OPENAI_|CLAUDE_CODE_(?:OAUTH_TOKEN|USE_)|CLAUDE_CONFIG_DIR$|"
+                           r"CODEX_(?:API_KEY|HOME)$|KANBAN_.*(?:KEY|TOKEN)$)", re.I)
+_SECRET_SUFFIX = re.compile(r"(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN|_SECRET_KEY|_PASSWORD)$", re.I)
+_LOOP_PREFIX = re.compile(r"^(?:BOARD_|WORKER_|REVIEWER_)")
+_AUTH_POINTERS = frozenset(("WORKER_PROFILE_AUTH_HOME", "WORKER_PROTECTED_PATHS"))
+
+
+def verify_environment(env):
+    """验证子进程的环境：宿主环境去掉供应商凭据与登录目录指针，其余（PATH、BOARD_* 等）照常继承。"""
+    return {k: v for k, v in env.items()
+            if not _PROVIDER_ENV.match(k) and k.upper() not in _AUTH_POINTERS
+            and (_LOOP_PREFIX.match(k) or not _SECRET_SUFFIX.search(k))}
+
+
 def run_verify(t):
     """卡指名的验证由 **loop** 执行,不采信 worker 的"通过了"申告。
     卡持有的是登记簿的**键**而非命令字符串 —— 持字符串则能写文件的 worker
@@ -212,7 +231,7 @@ def run_verify(t):
         return {"ok": False, "registry_sha256": _REGISTRY_SHA256, "key": key, "rc": None,
                 "out": f"验证 '{key}' 不在登记簿里(可用: {' / '.join(reg) or '(空)'})。"
                        f"请由操作者修改 verify_cmd，或核对新增登记键后重启循环。"}
-    venv = dict(os.environ)
+    venv = verify_environment(os.environ)
     venv.setdefault("BOARD_PYTHON", sys.executable)
     venv["PYTHON"] = venv.get("BOARD_PYTHON", sys.executable)
     # ⭐argv[0] 是解释器**名字**时,映射到本进程的实体。

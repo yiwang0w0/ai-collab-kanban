@@ -2110,6 +2110,8 @@ function resolveInner(db, { id, verdict, note = "", resolvedBy = "human", verify
   //     that never went back.
   const handBack = disp === "hand_back";
   const next = disp === "close" ? "done" : disp === "hand_back" ? "not_started" : "waiting";
+  // 显式计费任务退回原线时收回放行（见下方 holdExplicitProfileRecovery）：本人重新放行前不会再跑，抬头不能写「回原线继续」。
+  const revokeRelease = next === "not_started" && !!t.released && !!taskExecutionProfile(db, t.id);
 
   // Ruling records are NEVER overwritten. One human letter erasing the reviewer's
   // A/B/C means nobody can later know what "A" was (measured: it got erased).
@@ -2125,7 +2127,8 @@ function resolveInner(db, { id, verdict, note = "", resolvedBy = "human", verify
     ? [String(t.verdict_note || "").trim(),
        `—— ${resolvedBy === "human" ? "你的决定" : "自动审阅"}(${now()} · ` +
        `${verdict === "approve" ? "通过" : "打回"}` +
-       `${disp === "hand_back" ? " · 回原线继续" : disp === "hold_for_review" ? " · 留在等待中交审阅" : ""})——`,
+       `${disp === "hand_back" ? (revokeRelease ? " · 已退回原线，需本人重新核对放行后才会再跑" : " · 回原线继续")
+         : disp === "hold_for_review" ? " · 留在等待中交审阅" : ""})——`,
        saidSafe].filter(Boolean).join("\n\n")
     : String(t.verdict_note || "");
 
@@ -2185,7 +2188,7 @@ function resolveInner(db, { id, verdict, note = "", resolvedBy = "human", verify
         String(resolvedBy), String(resolvedBy),
         now(), Number(id));
   // 显式计费任务退回原线（打回、通过并备注）也收回放行：再次计费运行前须本人重新核对放行。
-  if (next === "not_started" && t.released)
+  if (revokeRelease)
     holdExplicitProfileRecovery(db, t, "hand_back", "已退回原线，未自动重跑。已取消放行，请本人核对后重新放行。");
   // ⭐ Layered human_gate unlock (ruling: "auto review should not be absolutely barred
   //   from opening for a human" — the old law was human-only): a human ruling

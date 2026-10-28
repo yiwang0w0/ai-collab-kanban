@@ -1396,6 +1396,9 @@ def cli_argv(prompt, sargs, model, effort):
         "--allowedTools", *(READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS),
         "--add-dir", REPO,
         "--disallowedTools", *cli_deny_rules(DATA),
+        # 显式配置的认证目录可自定义到数据目录之外(不在 PROTECTED 的 auth/** 里):文件工具同样不读不写。
+        *([f"{tool}({deny_path(os.environ['WORKER_PROFILE_AUTH_HOME'])}/**)" for tool in ("Read", "Edit")]
+          if PROFILE_MODE and os.environ.get("WORKER_PROFILE_AUTH_HOME") else []),
         *((READONLY_RULES or []) if TOOL_PROFILE == "read-only" else []),
     ]
 
