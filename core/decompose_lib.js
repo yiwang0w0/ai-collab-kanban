@@ -34,13 +34,15 @@ function lineMenu(lines, hints = {}, labels = {}) {
  * @param goal     the goal card (subject/description/id required)
  * @param prev     the goal this one continues, or null. Only a card whose kind is
  *                 "goal" counts; anything else is ignored.
- * @param outPath  absolute path the decomposer must write its JSON to
  * @param lines    line ids offered (the implement lines, in config order)
  * @param hints    line id -> hint text
  * @param labels   line id -> display name (v0.22; "" / absent = id only)
  * @param language natural language for generated card text ("" = say nothing)
+ *
+ * 2026-10-28：拆解器不再有写工具，计划 JSON 就是它的最终回答（server 从 --output-format json 的
+ * result 字段里取，见 core/board-claude-cli.mjs）。旧调用方传的 outPath 不再使用。
  */
-function buildDecomposePrompt({ goal, prev = null, outPath, lines, hints = {}, labels = {}, language = "" }) {
+function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {}, language = "" }) {
   const lang = String(language || "").trim();
   return [
     "把下面这个目标拆成可以独立交付的子任务。你**不做这些活**,只做拆解。",
@@ -68,8 +70,7 @@ function buildDecomposePrompt({ goal, prev = null, outPath, lines, hints = {}, l
     "- 别拆太碎:3〜8 张为宜。拆不动就只出 1 张。",
     ...(lang ? [`- **卡片正文(subject/description/acceptance)一律用 ${lang} 书写**。`] : []),
     "",
-    "只做一件事:用 Write 工具把结果写进这个文件,别的什么都不要动。",
-    `  ${outPath}`,
+    "只做一件事:把结果作为你的最终回答输出。最终回答里只有这个 JSON,前后不加说明;不写任何文件。",
     "",
     "内容是 JSON,不要包代码块:",
     '{"tasks":[{"subject":"...","description":"...","acceptance":"...","line":"' +

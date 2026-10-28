@@ -72,6 +72,11 @@ from a named incident (see `docs/INCIDENTS.md`):
   都拒绝，数据目录的 `auth/**` 同样生效，未列入的对照文件照常可读。所有 Claude CLI 线（含旧线与审阅线）另按
   `WORKER_AUTH_HOMES` 拒绝读写全部执行配置的认证目录。Codex CLI 0.149.0 的权限档有拒读条目，但 Windows 上只有需管理员
   安装的提权沙箱后端能执行，未提权后端遇到拒读条目直接拒绝运行，所以 Codex 这边仍没有可用的路径拒绝。
+  看板服务端自己起的 Claude CLI（一键拆解、上下文压缩，`core/board-claude-cli.mjs`）也受路径规则约束。它们不往数据目录写，
+  所以整个数据目录 Read／Edit 拒绝，另加登记簿与全部认证目录。拆解器只开放 Read、Glob、Grep（`--tools` 白名单、
+  `--permission-mode dontAsk`、`--strict-mcp-config`），计划经 `--output-format json` 的最终回答交回，不再有 Write、
+  `acceptEdits` 或 `core/` 目录；压缩不开放任何工具；环境剔除登记凭据与看板令牌类变量。同日真实 CLI（haiku、假数据）
+  实测：三次拒读和一次拒列目录都由规则拒绝，Grep 结果不含被拒文件，对照文件可读。
 - **Card text is never a command line.** The worker refuses `.bat/.cmd` CLIs
   (CVE-2024-24576, "BatBadBut": cmd.exe re-parses arguments, so a card body
   could become an executable command line). The gate judges by extension on

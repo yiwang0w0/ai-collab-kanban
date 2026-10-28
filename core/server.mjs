@@ -31,6 +31,7 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
+import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf} from "./board-claude-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -1375,15 +1376,23 @@ const runCli = (args, timeout = 600000) => new Promise((resolve) => {
   if (args.reduce((n, a) => n + a.length * 2 + 3, CLAUDE_CLI.length) > 30000)
     return resolve({ code: 1, stdout: "",
       stderr: "提示词 argv 超过 Windows 30000 字符预算(32767 上限)—— 调小相应预算后重试,已拒发" });
+  // 看板直接起 claude 的唯一出口(一键拆解、上下文压缩)。环境与执行线旧线同一规则:剔除全部配置登记的
+  // 凭据变量,另去掉看板自身的令牌类变量;标准登录变量保留(board-claude-cli.mjs)。
   execFile(CLAUDE_CLI, args, { timeout, maxBuffer: 8 << 20, windowsHide: true,
-                               env: { ...process.env, PYTHONIOENCODING: "utf-8" } },
+                               env: boardCliEnvironment({ env: process.env, profiles: EXECUTION_PROFILES }) },
     (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stdout: stdout || "", stderr: stderr || "" }));
 });
+// 两个调用共用的路径拒绝范围:整个数据目录、验证登记簿、全部执行配置的认证目录(与 slotEnv 下传的同一组)。
+const boardCliScope = () => ({ dataDir: resolve(store.DATA_DIR),
+  registry: resolve(process.env.BOARD_VERIFY_REGISTRY || join(CODE_ROOT, "core", "verify_registry.json")),
+  authHomes: EXECUTION_PROFILES.map((p) => resolve(p.auth_home)) });
 
 /**
  * Decompose a goal into child tasks.
- * The LLM only WRITES A JSON FILE — the server creates the cards. Letting the
+ * The LLM only PRODUCES A PLAN — the server creates the cards. Letting the
  * decomposer hit the board API makes failure and partial application inseparable.
+ * 2026-10-28:计划是模型的最终回答(--output-format json 的 result),不再是它写的文件。拆解器
+ * 只有 Read/Glob/Grep,没有任何写工具,不挂 core/,数据目录与认证目录拒读(board-claude-cli.mjs)。
  */
 async function decomposeGoal(goalId, model, forced = false) {
   const g = store.get(db, goalId);
@@ -1391,10 +1400,6 @@ async function decomposeGoal(goalId, model, forced = false) {
   // punch a hole in the "missing ids are 404" ruling (found by grep once).
   if (!g) throw store.err(store.ERR.NOT_FOUND, `目标 ${goalId} 不存在`);
   if (g.kind !== "goal") throw store.err(store.ERR.BAD_INPUT, `#${goalId} 不是目标`);
-  const outDir = join(store.DATA_DIR, "decompose");
-  const out = join(outDir, `goal-${goalId}.json`);
-  try { mkdirSync(outDir, { recursive: true }); } catch {}
-  try { unlinkSync(out); } catch {}
 
   // ⭐ The prompt is assembled in decompose_lib.js so it can be MEASURED. Built here
   //   it was unreachable by any harness: this module listens on import, and neither a
@@ -1406,23 +1411,18 @@ async function decomposeGoal(goalId, model, forced = false) {
     // v0.22: the menu is the IMPLEMENT lines only — a review line takes no implementation
     // card (its worker would refuse to write code by construction), and a menu that offers
     // it is a de-facto permission. Labels ride along so the model sees the operator's word.
-    outPath: out, lines: IMPL_LINES, hints: LINE_HINT, labels: LINE_LABEL, language: LANGUAGE,
+    lines: IMPL_LINES, hints: LINE_HINT, labels: LINE_LABEL, language: LANGUAGE,
   });
 
-  const r = await runCli(["-p", prompt, "--model", model || DECOMPOSE_MODELS[0].id,
-                          "--effort", "high", "--permission-mode", "acceptEdits",
-                          "--allowedTools", "Read", "Glob", "Grep", "Write",
-                          "--add-dir", REPO_ROOT,
-                          "--add-dir", __dirname]);
-  let raw;
-  // The three failures below are OUR internal failures (child would not start /
+  const r = await runCli(decomposeCliArgs({ prompt, model: model || DECOMPOSE_MODELS[0].id,
+                                            repoRoot: resolve(REPO_ROOT), ...boardCliScope() }));
+  // The failures below are OUR internal failures (child would not start /
   // did not honor the contract). The request is fine, so a 400 would tell the
   // caller "resending is pointless" — a lie ⇒ INTERNAL 500.
-  try { raw = readFileSync(out, "utf8"); }
-  catch { throw store.err(store.ERR.INTERNAL, `拆解没写出结果文件(rc=${r.code})。尾部:${(r.stdout + r.stderr).slice(-400)}`); }
-  const mm = raw.match(/\{[\s\S]*\}/);
-  let d; try { d = JSON.parse(mm ? mm[0] : raw); }
-  catch (e) { throw store.err(store.ERR.INTERNAL, `拆解结果不是合法 JSON:${e.message}`); }
+  const parsed = decomposePlanOf(r.stdout);
+  if (!parsed.ok)
+    throw store.err(store.ERR.INTERNAL, `拆解没给出可用的结果(rc=${r.code}):${parsed.reason}。尾部:${(r.stdout + r.stderr).slice(-400)}`);
+  const d = parsed.plan;
   const list = Array.isArray(d.tasks) ? d.tasks : [];
   // ⚠ "Zero children" is internal too: the prompt says "emit exactly 1 if it will
   //   not split", so an empty array means the upstream ignored instructions — not
@@ -1521,17 +1521,19 @@ async function compactLine(line, note) {
   if (!transcriptOf(sid)) throw store.err(store.ERR.CONFLICT, `${line} 还没有会话记录,没什么可压缩的`);
   const before = contextOf(line);
   let memo = (note || "").trim();
+  // 两步都只要模型产出文字:不给任何工具(--tools ""),拒绝规则与拆解同一组(board-claude-cli.mjs)。
+  //   被续接的会话里有卡面正文,压缩这一步不该成为它伸手调工具的机会。
   if (!memo) {
-    const ask = await runCli(["-p",
+    const ask = await runCli(compactCliArgs({ prompt:
       "接下来要对你自己这个会话做 /compact。请只输出一段【压缩指示】,告诉压缩程序哪些必须保留:" +
       "正在做的任务与其编号、已确认的事实与实测数字、踩过的坑与结论、未完成的下一步、" +
       "以及任何再问一遍代价很大的东西。不要复述全部历史,不要寒暄,不要用代码块,300 字以内。",
-      "--resume", sid, "--model", settingsOf(line).agents[0].model, "--effort", "low"]);
+      sessionId: sid, model: settingsOf(line).agents[0].model, effort: "low", ...boardCliScope() }));
     memo = (ask.stdout || "").trim().slice(0, 1200);
   }
   if (!memo) memo = "保留当前任务、已确认的事实与数字、未完成的下一步。";
-  const r = await runCli(["-p", "/compact " + memo, "--resume", sid,
-                          "--model", settingsOf(line).agents[0].model]);
+  const r = await runCli(compactCliArgs({ prompt: "/compact " + memo, sessionId: sid,
+                                          model: settingsOf(line).agents[0].model, ...boardCliScope() }));
   const after = contextOf(line);
   const did = after.compactions > before.compactions;
   // ⭐ The reported numbers come from the transcript's compactMetadata (pre/post).

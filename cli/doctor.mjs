@@ -189,11 +189,13 @@ await new Promise((resolve) => {
 {
   // "-p, --print" is checked as one help fragment: the loops pass the SHORT form,
   // so asserting only "--print" would test a spelling we never use.
+  // --tools / --strict-mcp-config / --no-chrome / dontAsk:server 的一键拆解与上下文压缩(core/board-claude-cli.mjs)。
   const CLI_FLAGS = ["-p, --print", "--model", "--effort", "--permission-mode", "--disallowedTools",
                      "--allowedTools", "--add-dir", "--output-format",
-                     "--resume", "--session-id", "--fork-session", "--max-budget-usd"];
+                     "--resume", "--session-id", "--fork-session", "--max-budget-usd",
+                     "--tools", "--strict-mcp-config", "--no-chrome"];
   const CLI_CHOICES = { "--effort": ["low", "medium", "high", "xhigh", "max"],
-                        "--permission-mode": ["acceptEdits"],
+                        "--permission-mode": ["acceptEdits", "dontAsk"],
                         "--output-format": ["json"] };
   if (!CLI_PATH) {
     wr("跳过 CLI 参数契约检查(没找到 claude)", "装了 CLI 再跑一次 doctor —— 参数对不上时 worker 起不来,而所有 harness 都用桩,看不出这件事");

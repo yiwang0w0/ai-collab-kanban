@@ -1,10 +1,14 @@
 // Pure-function regression for the goal-decomposition prompt.
 // Touches no board, no database, no CLI: the prompt builder is a pure function
 // precisely so this surface can be measured at all (see core/decompose_lib.js).
+// ⑤–⑩ 同样不起 CLI:看板服务端自己调用 Claude CLI 的参数、环境与输出解析(core/board-claude-cli.mjs);
+// ⑨ 起一次本机 Python,只为拿执行线 verify_lib 的规则做逐条对照。
 
 import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -104,13 +108,15 @@ console.log("\n[③ a goal that continues an earlier goal decomposes WITH its re
 console.log("\n[④ the output contract the server depends on]");
 {
   const p = base();
-  // The server reads exactly this path afterwards; if the prompt ever stops naming
-  // it, the decomposer writes somewhere else and the server reports "no result file".
-  ok("⭐the output path appears verbatim, indented on its own line",
-     p.includes(String.fromCharCode(10) + "  " + OUT + String.fromCharCode(10)));
-  ok("the model is told to write the file and touch nothing else",
-     /只做一件事:用 Write 工具把结果写进这个文件,别的什么都不要动。/.test(p));
-  ok("it is told not to wrap the JSON in a code block (the server parses the raw file)",
+  // 2026-10-28：拆解器不再有写工具。交付渠道从「Write 写结果文件」改成「最终回答」，server 从
+  // CLI 的 --output-format json 的 result 字段取出来解析（见 core/board-claude-cli.mjs）。
+  // 提示词里若还点名输出文件或 Write 工具，模型会去调一个不存在的工具，最终回答里没有 JSON。
+  ok("⭐提示词不再点名输出文件，也不再叫模型用 Write 工具",
+     !p.includes(OUT) && !/Write/.test(p), (p.match(/[^\n]*(?:Write|goal-7\.json)[^\n]*/) || ["(无,符合预期)"])[0]);
+  ok("⭐提示词要求把 JSON 作为最终回答输出、不写任何文件",
+     /只做一件事:把结果作为你的最终回答输出/.test(p) && /不写任何文件/.test(p),
+     (p.match(/只做一件事[^\n]*/) || ["(missing)"])[0]);
+  ok("it is told not to wrap the JSON in a code block (the server parses the final answer)",
      /不要包代码块/.test(p));
   ok("the goal's own subject and background are present",
      p.includes("目标 #7:把工单处理搬上看板") && p.includes("背景说明一行"));
@@ -119,6 +125,160 @@ console.log("\n[④ the output contract the server depends on]");
        { goal: { ...GOAL, description: "" }, outPath: OUT, lines: LINES, hints: HINTS })));
   ok("the decomposer is told it does NOT do the work",
      /你\*\*不做这些活\*\*,只做拆解。/.test(p));
+}
+
+// ══ ⑤–⑩ 看板服务端自己起的 Claude CLI（一键拆解、上下文压缩）的参数、环境与输出解析 ══════════
+// server.mjs 一导入就监听，桩 CLI 又看不到参数（见 decompose_lib.js 文件头），所以参数与环境
+// 由 core/board-claude-cli.mjs 的纯函数组装，这里直接断言；server 只按源码形钉住它确实调用这些函数。
+let C = null;
+try { C = await import(pathToFileURL(join(__dirname, "..", "core", "board-claude-cli.mjs")).href); }
+catch (e) { ok("core/board-claude-cli.mjs 可导入", false, String(e.message).slice(0, 120)); }
+const { loadExecutionProfiles, profileEnvironment } = await import(pathToFileURL(join(__dirname, "..", "core", "execution-profiles.mjs")).href);
+
+// flag 后面紧跟的取值（到下一个 -- 开头的元素为止）；同一 flag 出现多次时合并。
+const valuesOf = (args, flag) => {
+  const out = [];
+  args.forEach((a, i) => {
+    if (a !== flag) return;
+    for (let j = i + 1; j < args.length && !String(args[j]).startsWith("--"); j++) out.push(args[j]);
+  });
+  return out;
+};
+const DATA = "C:\\kanban-fixture\\repo\\core\\.data";
+const REG = "C:\\kanban-fixture\\repo\\core\\verify_registry.json";
+const REPO = "C:\\kanban-fixture\\repo";
+const PROFILES = loadExecutionProfiles([{ id: "claude-prod", label: "生产 API", channel: "claude_agent_sdk",
+  credential_env: "CLAUDE_PROD_KEY", auth_home: "D:\\私人登录\\claude-prod\\" }], { dataDir: DATA });
+const HOMES = PROFILES.map((p) => p.auth_home);
+const SCOPE = { dataDir: DATA, registry: REG, authHomes: HOMES };
+const WRITE_OR_NET = ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task"];
+const PATH_RULES = ["Read(C:/kanban-fixture/repo/core/.data/**)", "Edit(C:/kanban-fixture/repo/core/.data/**)",
+  "Read(C:/kanban-fixture/repo/core/verify_registry.json)", "Edit(C:/kanban-fixture/repo/core/verify_registry.json)",
+  "Read(D:/私人登录/claude-prod/**)", "Edit(D:/私人登录/claude-prod/**)",
+  "Read(C:/kanban-fixture/repo/core/.data/auth/claude-cli/**)", "Edit(C:/kanban-fixture/repo/core/.data/auth/claude-cli/**)"];
+
+console.log("\n[⑤ 一键拆解的 CLI 参数:没有写工具,只读工具也挡住数据目录与全部认证目录]");
+if (C) {
+  const a = C.decomposeCliArgs({ prompt: "拆解提示词", model: "claude-fixture", repoRoot: REPO, ...SCOPE });
+  ok("提示词紧跟 -p(不落在任何可变参数 flag 之后,不会被吞成工具名)", a[0] === "-p" && a[1] === "拆解提示词");
+  ok("⭐可用工具集合只有 Read/Glob/Grep(--tools 白名单,新出的写工具不会自动出现)",
+     JSON.stringify(valuesOf(a, "--tools")) === JSON.stringify(["Read", "Glob", "Grep"]), JSON.stringify(valuesOf(a, "--tools")));
+  ok("⭐参数里没有 acceptEdits,权限模式是 dontAsk(未预先放行的一律拒绝)",
+     !a.includes("acceptEdits") && JSON.stringify(valuesOf(a, "--permission-mode")) === '["dontAsk"]', JSON.stringify(valuesOf(a, "--permission-mode")));
+  ok("⭐放行清单里没有 Write/Edit/Bash", !valuesOf(a, "--allowedTools").some((t) => /^(?:Write|Edit|Bash)\b/.test(t)),
+     JSON.stringify(valuesOf(a, "--allowedTools")));
+  ok("⭐只挂工作仓一个目录,不再挂 core/", JSON.stringify(valuesOf(a, "--add-dir")) === JSON.stringify([REPO]), JSON.stringify(valuesOf(a, "--add-dir")));
+  ok("结果走结构化输出(--output-format json),不走文件", JSON.stringify(valuesOf(a, "--output-format")) === '["json"]');
+  ok("不加载任何 MCP 服务器(--strict-mcp-config,且不给 --mcp-config)", a.includes("--strict-mcp-config") && !a.includes("--mcp-config"));
+  const deny = valuesOf(a, "--disallowedTools");
+  ok("⭐显式拒绝 Bash/PowerShell/Edit/Write/NotebookEdit/WebFetch/WebSearch/Task", WRITE_OR_NET.every((t) => deny.includes(t)),
+     WRITE_OR_NET.filter((t) => !deny.includes(t)).join(" ") || "全部在");
+  ok("⭐拒绝规则含整个数据目录、登记簿与每个执行配置的认证目录(Read/Edit 各一条,盘符形)",
+     PATH_RULES.every((r) => deny.includes(r)), PATH_RULES.filter((r) => !deny.includes(r)).join(" ") || "全部在");
+  ok("模型与档位照旧", JSON.stringify(valuesOf(a, "--model")) === '["claude-fixture"]' && JSON.stringify(valuesOf(a, "--effort")) === '["high"]');
+}
+
+console.log("\n[⑥ CLI 子进程环境:剔除登记凭据与看板自身令牌,标准登录变量照常]");
+if (C) {
+  const ENV = { PATH: "C:\\Windows", USERPROFILE: "C:\\Users\\fixture", BOARD_PYTHON: "C:\\py\\python.exe",
+    CLAUDE_PROD_KEY: "sk-FAKE-prod", claude_prod_key: "sk-FAKE-prod-lower", KANBAN_ANTHROPIC_API_KEY: "sk-FAKE-kanban",
+    KANBAN_OPENAI_API_KEY: "sk-FAKE-openai", WORKER_BOARD_TOKEN: "FAKE-board-token", BOARD_TOKEN: "FAKE-op-token",
+    REVIEW_TOKEN: "FAKE-review-token", KANBAN_PANEL_TOKEN: "FAKE-panel",
+    ANTHROPIC_API_KEY: "sk-ant-standard", CLAUDE_CONFIG_DIR: "C:\\Users\\fixture\\.claude",
+    CLAUDE_CODE_OAUTH_TOKEN: "oauth-standard", ANTHROPIC_BASE_URL: "https://example.invalid", PYTHONIOENCODING: "cp932" };
+  const e = C.boardCliEnvironment({ env: ENV, profiles: PROFILES });
+  const gone = ["CLAUDE_PROD_KEY", "claude_prod_key", "KANBAN_ANTHROPIC_API_KEY", "KANBAN_OPENAI_API_KEY"];
+  ok("⭐全部配置登记的凭据变量(含自定义名、大小写不同)都不在", gone.every((k) => !(k in e)), gone.filter((k) => k in e).join(" ") || "全部剔除");
+  ok("⭐看板自身的令牌类变量不在(WORKER_BOARD_TOKEN、BOARD_TOKEN、REVIEW_TOKEN、KANBAN_*TOKEN)",
+     ["WORKER_BOARD_TOKEN", "BOARD_TOKEN", "REVIEW_TOKEN", "KANBAN_PANEL_TOKEN"].every((k) => !(k in e)));
+  ok("任何值里都不含假凭据串", !Object.values(e).some((v) => /FAKE/.test(String(v))));
+  ok("⭐标准登录变量与普通变量照常(ANTHROPIC_API_KEY、CLAUDE_CONFIG_DIR、CLAUDE_CODE_OAUTH_TOKEN、ANTHROPIC_BASE_URL、PATH、BOARD_PYTHON)",
+     ["ANTHROPIC_API_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_BASE_URL", "PATH", "USERPROFILE", "BOARD_PYTHON"].every((k) => e[k] === ENV[k]));
+  ok("PYTHONIOENCODING 固定 utf-8", e.PYTHONIOENCODING === "utf-8");
+  const legacy = profileEnvironment(null, { env: ENV, profiles: PROFILES });
+  ok("⭐复用旧线规则:结果是 profileEnvironment(null,{profiles}) 的子集,多删的只有看板令牌",
+     Object.keys(e).every((k) => k === "PYTHONIOENCODING" || e[k] === legacy[k]) &&
+     Object.keys(legacy).filter((k) => !(k in e)).every((k) => /TOKEN$/i.test(k)),
+     Object.keys(legacy).filter((k) => !(k in e)).join(" "));
+}
+
+console.log("\n[⑦ 从 CLI 结构化输出里取拆解结果(复用 {…} 提取)]");
+if (C) {
+  const res = (result, over = {}) => JSON.stringify({ type: "result", subtype: "success", is_error: false, result, permission_denials: [], ...over });
+  const plan = '{"tasks":[{"subject":"写一行说明","after":[]}]}';
+  const p1 = C.decomposePlanOf(res(plan));
+  ok("⭐result 字段里的 JSON 解析成计划", p1.ok && p1.plan?.tasks?.[0]?.subject === "写一行说明", JSON.stringify(p1).slice(0, 120));
+  ok("result 带代码块或前后说明也能取出 {…}",
+     C.decomposePlanOf(res("```json\n" + plan + "\n```")).ok && C.decomposePlanOf(res("结果如下:\n" + plan + "\n完毕")).ok);
+  ok("--verbose 的消息数组形取最后一条 result", C.decomposePlanOf(JSON.stringify([{ type: "system", subtype: "init" }, JSON.parse(res(plan))])).ok);
+  const err = C.decomposePlanOf(res("预算用完", { is_error: true, subtype: "error_max_budget_usd" }));
+  ok("⭐CLI 报错(is_error / subtype 非 success)不当成计划,原因里带 subtype", !err.ok && /error_max_budget_usd/.test(err.reason || ""), err.reason);
+  ok("stdout 不是 JSON(例如桩 CLI 崩了)→ 不成功", !C.decomposePlanOf("SyntaxError: boom").ok && !C.decomposePlanOf("").ok);
+  const bad = C.decomposePlanOf(res("我拆不了"));
+  ok("result 里没有 JSON → 不成功,原因写明不是合法 JSON", !bad.ok && /不是合法 JSON/.test(bad.reason || ""), bad.reason);
+}
+
+console.log("\n[⑧ 上下文压缩的 CLI 参数:不给任何工具]");
+if (C) {
+  for (const [label, effort] of [["写压缩指示", "low"], ["/compact", undefined]]) {
+    const a = C.compactCliArgs({ prompt: label === "/compact" ? "/compact 保留任务" : "写一段压缩指示", sessionId: "sid-fixture", model: "claude-fixture", effort, ...SCOPE });
+    ok(`⭐${label}:--tools "" 关掉全部内置工具,没有 --allowedTools/--add-dir/acceptEdits`,
+       JSON.stringify(valuesOf(a, "--tools")) === '[""]' && !a.includes("--allowedTools") && !a.includes("--add-dir") && !a.includes("acceptEdits"),
+       JSON.stringify(valuesOf(a, "--tools")));
+    const deny = valuesOf(a, "--disallowedTools");
+    ok(`${label}:仍显式拒绝写/联网工具并带路径拒绝规则,不加载 MCP,权限模式 dontAsk`,
+       WRITE_OR_NET.every((t) => deny.includes(t)) && PATH_RULES.every((r) => deny.includes(r)) &&
+       a.includes("--strict-mcp-config") && JSON.stringify(valuesOf(a, "--permission-mode")) === '["dontAsk"]');
+    ok(`${label}:接着同一会话(--resume),提示词紧跟 -p`, a[0] === "-p" && JSON.stringify(valuesOf(a, "--resume")) === '["sid-fixture"]' &&
+       (effort ? JSON.stringify(valuesOf(a, "--effort")) === '["low"]' : !a.includes("--effort")));
+  }
+}
+
+console.log("\n[⑨ 路径拒绝规则与执行线(loops/verify_lib.py)等价]");
+if (C) {
+  const PY = [process.env.BOARD_PYTHON, process.env.PYTHON, "python", "py", "python3"].filter(Boolean).find((c) => {
+    try { execFileSync(c, ["-c", "print(1)"], { stdio: "ignore", windowsHide: true }); return true; } catch { return false; }
+  });
+  ok("找到 Python 解释器(对照执行线的规则需要它)", !!PY);
+  if (PY) {
+    const homes = [...HOMES, "D:/私人登录/claude-prod", "E:\\另一处\\登录\\"];
+    const paths = [DATA, REG, "D:\\私人登录\\x\\", "c:\\lower\\case", "relative\\dir"];
+    const script = "import sys,json\nsys.path.insert(0,sys.argv[1])\nimport verify_lib as v\ns=json.loads(sys.argv[2])\n" +
+      "print(json.dumps({'deny_path':[v.deny_path(p) for p in s['paths']],'auth':v.auth_home_deny_rules({'WORKER_AUTH_HOMES':json.dumps(s['homes'])}),'cli':v.cli_deny_rules(s['data'],s['registry'])}))";
+    const py = JSON.parse(execFileSync(PY, ["-I", "-c", script, join(__dirname, "..", "loops"), JSON.stringify({ paths, homes, data: DATA, registry: REG })],
+      { encoding: "utf8", windowsHide: true }));
+    ok("⭐denyPath 与 verify_lib.deny_path 逐条相同", JSON.stringify(paths.map(C.denyPath)) === JSON.stringify(py.deny_path),
+       JSON.stringify(paths.map(C.denyPath)) + " vs " + JSON.stringify(py.deny_path));
+    ok("⭐认证目录规则与 verify_lib.auth_home_deny_rules 逐条相同(含去重、去尾斜杠)",
+       JSON.stringify(C.authHomeDenyRules(homes)) === JSON.stringify(py.auth), JSON.stringify(C.authHomeDenyRules(homes)).slice(0, 200));
+    const js = C.boardDenyRules(SCOPE);
+    ok("登记簿两条与 verify_lib.cli_deny_rules 相同", py.cli.slice(-2).every((r) => js.includes(r)), JSON.stringify(py.cli.slice(-2)));
+    const dataForm = C.denyPath(DATA);
+    ok("⭐执行线的每条数据目录规则都被拆解器的整目录规则覆盖(拆解器不往数据目录写,不必逐文件留出件箱)",
+       js.includes(`Read(${dataForm}/**)`) && js.includes(`Edit(${dataForm}/**)`) &&
+       py.cli.slice(0, -2).every((r) => r.startsWith(`Read(${dataForm}/`) || r.startsWith(`Edit(${dataForm}/`)), String(py.cli.length));
+    let threw = false; try { C.authHomeDenyRules(["relative/home"]); } catch { threw = true; }
+    ok("认证目录不是绝对路径 → 抛错(未知值落拒绝侧,与 Python 的 ValueError 同口径)", threw);
+  }
+}
+
+console.log("\n[⑩ server.mjs 确实用这些函数组装(源码形;server 一导入就监听,参数无法从外部观测)]");
+{
+  const srv = readFileSync(join(__dirname, "..", "core", "server.mjs"), "utf8");
+  const cut = (from, to) => { const i = srv.indexOf(from); return i < 0 ? "" : srv.slice(i, srv.indexOf(to, i + from.length)); };
+  const runCliSrc = cut("const runCli", "async function decomposeGoal");
+  const decomposeSrc = cut("async function decomposeGoal", "function pipelineReview");
+  const compactSrc = cut("async function compactLine", "function setSettings");
+  ok("⭐runCli 的环境经 boardCliEnvironment 组装,不再整份展开 process.env",
+     /boardCliEnvironment\(/.test(runCliSrc) && !/\.\.\.process\.env/.test(runCliSrc), runCliSrc.match(/env:[^\n]*/)?.[0] || "(无 env 行)");
+  ok("⭐拆解经 decomposeCliArgs 组装参数、经 decomposePlanOf 取结果,不再出现 Write/acceptEdits/__dirname/结果文件",
+     /runCli\(decomposeCliArgs\(/.test(decomposeSrc) && /decomposePlanOf\(/.test(decomposeSrc) &&
+     !/"Write"|acceptEdits|__dirname|readFileSync\(out/.test(decomposeSrc));
+  ok("⭐压缩的两次调用都经 compactCliArgs 组装", (compactSrc.match(/runCli\(compactCliArgs\(/g) || []).length === 2);
+  const calls = srv.match(/runCli\([^)]{0,40}/g) || [];
+  ok("server 里每个 runCli 调用点都经组装函数(没有手写参数数组)",
+     calls.length >= 3 && calls.filter((c) => !/^runCli\((?:decomposeCliArgs|compactCliArgs)\(/.test(c) && !/^runCli\(args/.test(c)).length === 0, calls.join(" | "));
+  ok("直接执行 CLAUDE_CLI 的只有 runCli 一处", (srv.match(/execFile\(CLAUDE_CLI/g) || []).length === 1);
 }
 
 console.log(`\n${"─".repeat(56)}\nresult: ${pass} PASS / ${fail} FAIL`);
