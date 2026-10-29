@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // Pure-function regression for the goal-decomposition prompt.
 // Touches no board, no database, no CLI: the prompt builder is a pure function
 // precisely so this surface can be measured at all (see core/decompose_lib.js).
@@ -6,11 +8,19 @@
 
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
-import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const HOST_DATA = mkdtempSync(join(tmpdir(), "decompose-host-"));
+Object.assign(HOST_ENV, { BOARD_CONFIG: join(HOST_DATA, "missing-config.json"), BOARD_REPO: join(__dirname, ".."),
+  BOARD_DATA_DIR: HOST_DATA, BOARD_VERIFY_REGISTRY: join(HOST_DATA, "verify_registry.json") });
+process.once("exit", () => {
+  if (resolve(dirname(HOST_DATA)) !== resolve(tmpdir())) throw new Error("拒绝清理非临时宿主目录");
+  rmSync(HOST_DATA, { recursive: true, force: true });
+});
 const require_ = createRequire(import.meta.url);
 const { buildDecomposePrompt, lineMenu, DECOMPOSE_PLAN_SCHEMA } = require_(join(__dirname, "..", "core", "decompose_lib.js"));
 let C = null, cliImportError = null;
@@ -263,8 +273,8 @@ if (C) {
 
 console.log("\n[⑨ 路径拒绝规则与执行线(loops/verify_lib.py)等价]");
 if (C) {
-  const PY = [process.env.BOARD_PYTHON, process.env.PYTHON, "python", "py", "python3"].filter(Boolean).find((c) => {
-    try { execFileSync(c, ["-c", "print(1)"], { stdio: "ignore", windowsHide: true }); return true; } catch { return false; }
+  const PY = [HOST_ENV.PYTHON, "python", "py", "python3"].filter(Boolean).find((c) => {
+    try { execFileSync(c, ["-c", "print(1)"], { stdio: "ignore", windowsHide: true, env: HOST_ENV }); return true; } catch { return false; }
   });
   ok("找到 Python 解释器(对照执行线的规则需要它)", !!PY);
   if (PY) {
@@ -273,7 +283,7 @@ if (C) {
     const script = "import sys,json\nsys.path.insert(0,sys.argv[1])\nimport verify_lib as v\ns=json.loads(sys.argv[2])\n" +
       "print(json.dumps({'deny_path':[v.deny_path(p) for p in s['paths']],'auth':v.auth_home_deny_rules({'WORKER_AUTH_HOMES':json.dumps(s['homes'])}),'cli':v.cli_deny_rules(s['data'],s['registry'])}))";
     const py = JSON.parse(execFileSync(PY, ["-I", "-c", script, join(__dirname, "..", "loops"), JSON.stringify({ paths, homes, data: DATA, registry: REG })],
-      { encoding: "utf8", windowsHide: true }));
+      { encoding: "utf8", windowsHide: true, env: HOST_ENV }));
     ok("⭐denyPath 与 verify_lib.deny_path 逐条相同", JSON.stringify(paths.map(C.denyPath)) === JSON.stringify(py.deny_path),
        JSON.stringify(paths.map(C.denyPath)) + " vs " + JSON.stringify(py.deny_path));
     ok("⭐认证目录规则与 verify_lib.auth_home_deny_rules 逐条相同(含去重、去尾斜杠)",

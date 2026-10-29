@@ -1,3 +1,5 @@
+import { harnessEnvironment, harnessAuthTestRoot } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 import {DatabaseSync} from 'node:sqlite';
 import {randomUUID} from 'node:crypto';
 import test,{before,after} from 'node:test';
@@ -9,14 +11,14 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {createServer} from 'node:net';
 import {setTimeout as delay} from 'node:timers/promises';
-const ROOT=resolve(process.env.BOARD_AUTH_TEST_ROOT||fileURLToPath(new URL('../',import.meta.url)));
+const ROOT=resolve(harnessAuthTestRoot||fileURLToPath(new URL('../',import.meta.url)));
 const DIR=mkdtempSync(join(tmpdir(),'fleet-panel-auth-'));let child,base,operator,worker,review,logs='';
 const headers=token=>({'X-Board-Token':token,'Content-Type':'application/json'});
 let port;
 // One board on DIR; H6 starts a second one on the same data to measure what survives a restart.
 async function startBoard(){
  const config=join(DIR,'fixture.json');writeFileSync(config,JSON.stringify({lines:[{id:'alpha'}],roles:[],routes:['default']}));
- const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('BOARD_')));
+ const env=HOST_ENV;
  child=spawn(process.execPath,[join(ROOT,'core/server.mjs')],{cwd:ROOT,env:{...env,BOARD_NODE_NAME:'node-test',BOARD_CONFIG:config,BOARD_DATA_DIR:DIR,BOARD_DB:join(DIR,'board.db'),BOARD_PORT:String(port),BOARD_ALLOW_UNPINNED:'1',BOARD_NO_RESTORE:'1',BOARD_POOL_TEST_MODE:'1',BOARD_POOL_TEST_PROBE:'ok',BOARD_EXTRA_ORIGINS:'https://paired.example',BOARD_PYTHON:process.env.PYTHON||'',BOARD_TEST_SHUTDOWN_MS:'45000'},windowsHide:true,stdio:['ignore','pipe','pipe']});
  child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);
  for(let i=0;i<120;i++){if(child.exitCode!==null)throw Error('Fixture stopped');try{if((await fetch(base+'/health')).ok)break;}catch{}await delay(100);}
@@ -85,7 +87,7 @@ test('H3 watcher reads actual authenticated health and cannot treat unavailable 
   db.exec('CREATE TABLE fleet_operator_actions(action_id TEXT PRIMARY KEY,node_id TEXT,node_epoch TEXT,state TEXT,created_at TEXT)');
   const n=db.prepare('SELECT node_id,sync_epoch FROM board_node').get();
   db.prepare('INSERT INTO fleet_operator_actions VALUES(?,?,?,?,?)').run(randomUUID(),n.node_id,n.sync_epoch,'blocked',new Date().toISOString());
-  const run=()=>spawnSync(process.env.PYTHON||'python',[join(ROOT,'watchers/board_health_watch.py'),'--once'],{cwd:ROOT,encoding:'utf8',windowsHide:true,timeout:20000,env:{...process.env,BOARD_URL:base,BOARD_DATA_DIR:DIR,BOARD_GATED_SUBTREE:'',PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
+  const run=()=>spawnSync(process.env.PYTHON||'python',[join(ROOT,'watchers/board_health_watch.py'),'--once'],{cwd:ROOT,encoding:'utf8',windowsHide:true,timeout:20000,env:{...HOST_ENV,BOARD_URL:base,BOARD_DATA_DIR:DIR,BOARD_GATED_SUBTREE:'',PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
   const observed=run();assert.equal(observed.status,1,observed.stderr);assert.match(observed.stdout,/投递受阻/);for(const token of [operator,worker,review])assert.ok(!observed.stdout.includes(token));
   db.exec('DROP TABLE fleet_operator_actions; CREATE TABLE fleet_operator_actions(private TEXT)');
   const unavailable=run();assert.equal(unavailable.status,1,unavailable.stderr);assert.match(unavailable.stdout,/联邦体检不可读/);assert.doesNotMatch(unavailable.stdout,/体检恢复正常/);

@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // Actual HTTP and supervised-child credentials; no model/provider calls.
 import test,{before,after} from 'node:test';
 import assert from 'node:assert/strict';
@@ -12,7 +14,7 @@ import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fixtureVersion} from './http-version-fixture.mjs';
 const ROOT=fileURLToPath(new URL('../',import.meta.url)),TMP=mkdtempSync(join(tmpdir(),'fleet-runtime-auth-'));
-const PY=process.env.BOARD_PYTHON||process.env.PYTHON||'python';
+const PY=HOST_ENV.PYTHON||'python';
 let server,callback,base,operator,shared,output='';const seats=new Map();
 async function api(token,method,path,body){
  body=await fixtureVersion(base,token,method,path,body);
@@ -22,7 +24,7 @@ async function api(token,method,path,body){
 const claim=(token,worker,runtime)=>api(token,'POST','/api/claim',{worker,runtime,worker_protocol_version:2,agent_instance_id:randomUUID()});
 async function card(line){const r=await api(operator,'POST','/api/tasks',{subject:'Synthetic runtime boundary',...(line?{line}:{}),released:1});assert.equal(r.status,201,JSON.stringify(r.body));return r.body.task;}
 function evidence(task){
- const p=spawnSync(PY,['-c',"import sys,json;sys.path.insert(0,sys.argv[1]);import reviewer_loop as r;print(json.dumps(r.machine_evidence(json.loads(sys.argv[2]))))",join(ROOT,'loops'),JSON.stringify({...task,result:'PASS rc=0'})],{windowsHide:true,encoding:'utf8',timeout:15000,env:{...process.env,BOARD_DATA_DIR:TMP,BOARD_CONFIG:join(TMP,'fleet.json'),PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
+ const p=spawnSync(PY,['-c',"import sys,json;sys.path.insert(0,sys.argv[1]);import reviewer_loop as r;print(json.dumps(r.machine_evidence(json.loads(sys.argv[2]))))",join(ROOT,'loops'),JSON.stringify({...task,result:'PASS rc=0'})],{windowsHide:true,encoding:'utf8',timeout:15000,env:{...HOST_ENV,BOARD_DATA_DIR:TMP,BOARD_CONFIG:join(TMP,'fleet.json'),PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
  assert.equal(p.status,0,p.stderr);return JSON.parse(p.stdout.trim());
 }
 before(async()=>{
@@ -34,7 +36,7 @@ before(async()=>{
  const fixture=join(TMP,'server.mjs');writeFileSync(fixture,src.replace(anchor,`[${JSON.stringify(stub)}, "--as", line,`).replaceAll('import.meta.url',JSON.stringify(pathToFileURL(original).href)).replace(/from\s+(['"])\.\/([^'"]+)\1/g,(_,q,p)=>'from '+JSON.stringify(pathToFileURL(join(dirname(original),p)).href)));
  const probe=netServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));base='http://127.0.0.1:'+port;
  const config=join(TMP,'fleet.json');writeFileSync(config,JSON.stringify({lines:[{id:'alpha'},{id:'beta'}],roles:[],routes:['default']}));
- const clean=Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('BOARD_')));
+ const clean=HOST_ENV;
  server=spawn(process.execPath,[fixture],{windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...clean,BOARD_CONFIG:config,BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,'board.db'),BOARD_PORT:String(port),BOARD_PYTHON:PY,BOARD_ALLOW_UNPINNED:'1',BOARD_NO_RESTORE:'1',BOARD_POOL_TEST_MODE:'1',BOARD_POOL_TEST_PROBE:'ok',BOARD_CODEX_RELEASED:'1',BOARD_CODEX_CMD:process.execPath,WORKER_CLAUDE_CLI:process.execPath,BOARD_UNTIL:'2099-01-01T12:00',BOARD_RUNTIME_TEST_CALLBACK:`http://127.0.0.1:${callback.address().port}/`,PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});
  server.stdout.on('data',b=>output+=b);server.stderr.on('data',b=>output+=b);
  let ready=false;for(let i=0;i<100;i++){if(server.exitCode!==null)throw Error('Fixture stopped before ready');try{if((await fetch(base+'/health')).ok){ready=true;break;}}catch{}await delay(100);}assert.ok(ready,'Fixture ready');
@@ -124,5 +126,5 @@ test('P4 stopping a seat revokes its credential',async()=>{
  assert.equal((await claim(token,'alpha','codex')).status,401);
 });
 test('P4 loop uses a supervised credential without passing it to provider subprocesses',()=>{
- const r=spawnSync(PY,['-c',"import os,sys;sys.path.insert(0,sys.argv[1]);import worker_loop as w;assert w._board_token()=='synthetic-supervised-token';assert 'WORKER_BOARD_TOKEN' not in os.environ",join(ROOT,'loops')],{windowsHide:true,encoding:'utf8',timeout:15000,env:{...process.env,BOARD_DATA_DIR:TMP,BOARD_CONFIG:join(TMP,'fleet.json'),WORKER_BOARD_TOKEN:'synthetic-supervised-token',PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});assert.equal(r.status,0,r.stderr);
+ const r=spawnSync(PY,['-c',"import os,sys;sys.path.insert(0,sys.argv[1]);import worker_loop as w;assert w._board_token()=='synthetic-supervised-token';assert 'WORKER_BOARD_TOKEN' not in os.environ",join(ROOT,'loops')],{windowsHide:true,encoding:'utf8',timeout:15000,env:{...HOST_ENV,BOARD_DATA_DIR:TMP,BOARD_CONFIG:join(TMP,'fleet.json'),WORKER_BOARD_TOKEN:'synthetic-supervised-token',PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});assert.equal(r.status,0,r.stderr);
 });

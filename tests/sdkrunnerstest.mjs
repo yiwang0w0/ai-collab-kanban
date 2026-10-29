@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 import test,{after} from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,rmSync,symlinkSync,existsSync,realpathSync} from 'node:fs';
@@ -12,7 +14,7 @@ import {directoryIdentity} from '../core/artifacts/git-workspace.mjs';
 import {loadExecutionProfiles,getExecutionProfile,profileEnvironment} from '../core/execution-profiles.mjs';
 
 const root=fileURLToPath(new URL('../',import.meta.url)),directories=[];
-const py=process.env.BOARD_PYTHON||process.env.PYTHON||'python';
+const py=HOST_ENV.PYTHON||'python';
 after(()=>{for(const dir of directories){const rel=relative(realpathSync.native(tmpdir()),realpathSync.native(dir));assert.ok(rel&&!rel.startsWith('..')&&!isAbsolute(rel));rmSync(dir,{recursive:true,force:true});}});
 function fixture(){
  const directory=realpathSync.native(mkdtempSync(join(tmpdir(),'kanban-sdk-')));directories.push(directory);
@@ -24,8 +26,8 @@ function fixture(){
  writeFileSync(jobPath,JSON.stringify(job));return {directory,cwd,privateDir,jobPath,job:{...job,prompt:'夹具任务',jobPath}};
 }
 function python(script,args,f){
- const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(?:BOARD_|WORKER_|REVIEWER_|REORG_|ANTHROPIC_|OPENAI_|CODEX_)/.test(key)));
- const result=spawnSync(py,['-I','-B','-c',script,root,...args],{cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,env:{...environment,BOARD_DATA_DIR:f.privateDir,BOARD_REPO:f.cwd,WORKER_NODE:process.execPath,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'}});
+ const environment=Object.fromEntries(Object.entries(HOST_ENV).filter(([key])=>!/^(?:BOARD_|WORKER_|REVIEWER_|REORG_|ANTHROPIC_|OPENAI_|CODEX_)/.test(key)));
+ const result=spawnSync(py,['-I','-B','-c',script,root,...args],{cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,env:{...environment,BOARD_CONFIG:join(f.privateDir,'missing-config.json'),BOARD_VERIFY_REGISTRY:join(f.privateDir,'verify_registry.json'),BOARD_DATA_DIR:f.privateDir,BOARD_REPO:f.cwd,WORKER_NODE:process.execPath,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'}});
  assert.equal(result.status,0,result.stderr+'\n'+result.stdout);return result.stdout;
 }
 

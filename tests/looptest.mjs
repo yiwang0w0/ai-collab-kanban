@@ -1,3 +1,4 @@
+import { harnessEnvironment } from "./harness-env.mjs";
 import { fixtureVersion } from "./http-version-fixture.mjs";
 // Loop-layer harness. `node tests/looptest.mjs`
 //
@@ -41,11 +42,10 @@ const LINE = "alpha";                       // built-in config's first line
 //   `POST /api/tasks {line:"alpha"}` 被 `badRoutable` 以 400 拒掉,harness 死在 `body.task` 为 undefined:
 //     the harness itself fell over: TypeError: Cannot read properties of undefined (reading 'id')
 //   结果是 0 PASS / 1 FAIL —— 看起来像被测代码坏了,其实是 harness 不隔离。
-//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
+//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ / REVIEW_ / KANBAN_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
 //     再逐项写回本 harness 自己的值。`BOARD_CONFIG` 指向一个**不存在**的文件 = 用内置缺省配置
 //     (alpha 线在那里),与 clitest / sdkrunnerstest / legacy-boundariestest 同一做法。
-const HOST_ENV = Object.fromEntries(Object.entries(process.env)
-  .filter(([k]) => !/^(?:BOARD|WORKER|REVIEWER)_/i.test(k)));
+const HOST_ENV = harnessEnvironment();
 const NO_CONFIG = join(TMP, "none.json");   // 故意不建:缺省 = 内置线表
 // BOARD_REPO 也要钉:⑭⑮ 断言 argv 里的 --add-dir 与写放行规则就是**这个仓**,继承别处的值会红。
 const BASE_ENV = { ...HOST_ENV, BOARD_CONFIG: NO_CONFIG, BOARD_REPO: ROOT };

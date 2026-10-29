@@ -1,3 +1,4 @@
+import { harnessEnvironment } from "./harness-env.mjs";
 // Board-engine selftest. `node tests/selftest.mjs`
 //
 // Criteria are imported from store.js, never hand-written here a second time —
@@ -87,7 +88,8 @@ process.stdout.write(JSON.stringify({ v, margin, late: margin < 0 }));
     const kids = Array.from({ length: N }, () =>
       new Promise((resolve) => {
         const pr = spawn(process.execPath, [child, storePath, String(startAt)],
-                         { env: { ...process.env } });
+                         { env: { ...harnessEnvironment(), BOARD_DATA_DIR: TMP, BOARD_DB: join(TMP, "t.db"),
+                           BOARD_DEFAULT_ROUTE: "main", BOARD_VERIFY_REGISTRY: join(TMP, "verify_registry.json") } });
         let out = "";
         pr.stdout.on("data", (b) => out += b);
         pr.on("close", () => {

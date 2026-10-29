@@ -1,3 +1,4 @@
+import { harnessEnvironment } from "./harness-env.mjs";
 import { fixtureVersion } from "./http-version-fixture.mjs";
 // Supervisor-layer harness: WHY a line stopped, and who is allowed to restart it.
 // `node tests/servertest.mjs`
@@ -41,13 +42,12 @@ const NL = String.fromCharCode(10);
 //   于是 `line: "alpha"` 全被 badLine 以 400 拒掉:
 //     FAIL  J9-0 (前提) spawn-echo 席位已登记 — save=400 start=400 "未知的线名: alpha"
 //     harness itself fell over: TypeError: Cannot read properties of undefined (reading 'id')
-//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
+//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ / REVIEW_ / KANBAN_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
 //     再由 board() 逐项写回本 harness 自己的值。这与下面 configPort 那段 `delete spawnEnv.BOARD_PORT`
 //     是同一个教训(继承的 env 会悄悄改掉被测的那件事),只是范围从一个键扩到整族。
 //   ⚠ 剔除也修掉两处本来就被污染的负面对照:P3 要求 BOARD_REPO **不存在**(否则 config.repo 不生效),
 //     Q2-6b 要求无身份的线的 slot env 里**没有** WORKER_ROLE_KIND。
-const HOST_ENV = Object.fromEntries(Object.entries(process.env)
-  .filter(([k]) => !/^(?:BOARD|WORKER|REVIEWER)_/i.test(k)));
+const HOST_ENV = harnessEnvironment();
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
@@ -59,7 +59,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** The interpreter the SERVER will use for children. Resolved here so a red result
  *  can say "python was not found" instead of blaming the supervisor. */
 const PYTHON = (() => {
-  for (const c of [process.env.BOARD_PYTHON, process.env.PYTHON, "python", "py", "python3"].filter(Boolean)) {
+  for (const c of [HOST_ENV.PYTHON, "python", "py", "python3"].filter(Boolean)) {
     try { execFileSync(c, ["-c", "print(1)"], { stdio: "ignore" }); return c; } catch {}
   }
   return null;

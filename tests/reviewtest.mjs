@@ -1,3 +1,4 @@
+import { harnessEnvironment } from "./harness-env.mjs";
 import { fixtureVersion } from "./http-version-fixture.mjs";
 // reviewtest — the auto-reviewer measured END TO END: a real board, the real
 // loops/reviewer_loop.py, a stub CLI whose verdict the harness controls.
@@ -84,10 +85,9 @@ const CFGR = join(TMP, "fleet.config.json");
 writeFileSync(CFGR, JSON.stringify({ review: { anti_affinity: "runtime" } }), "utf8");
 // ⭐ 与 looptest 同一道隔离:本 harness 也可能从**另一条线的 loop 进程**里跑起来(验证命令继承
 //   BOARD_* / WORKER_* —— 见 verify_lib.verify_environment),继承的部署面 env 会让隔离板加载部署配置、
-//   让审阅线按别人的 runtime / 模型 / 身份起跑。先把三族整族剔掉,再逐项写回本 harness 自己的值;
+//   让审阅线按别人的 runtime / 模型 / 身份起跑。先把五族整族剔掉,再逐项写回本 harness 自己的值;
 //   BOARD_CONFIG 仍指向下面那份只声明反亲和的临时配置(没有 lines 键 = 内置线表,alpha 在那里)。
-const HOST_ENV = Object.fromEntries(Object.entries(process.env)
-  .filter(([k]) => !/^(?:BOARD|WORKER|REVIEWER)_/i.test(k)));
+const HOST_ENV = harnessEnvironment();
 const commonEnv = {
   ...HOST_ENV, PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8",
   BOARD_PORT: String(PORT), BOARD_URL: BASE, BOARD_DATA_DIR: TMP,

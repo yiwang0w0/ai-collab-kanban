@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // 临时 HTTP 看板与受管 Python 替身；不启动 SDK、供应商 CLI 或真实模型。
 import test,{before,after} from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +20,7 @@ import {fixtureVersion} from "./http-version-fixture.mjs";
 
 const ROOT=fileURLToPath(new URL("../",import.meta.url)),TMP=mkdtempSync(join(tmpdir(),"kanban-four-http-")),CONTROL=join(TMP,"宿主控制.json");
 let REPO=join(TMP,"工作仓");
-const PY=process.env.BOARD_PYTHON||process.env.PYTHON||"python",require=createRequire(import.meta.url),store=require("../core/store.js");
+const PY=HOST_ENV.PYTHON||"python",require=createRequire(import.meta.url),store=require("../core/store.js");
 const budget={timeout_sec:120,max_turns:4,max_cost_usd:0.5};
 const cases=[
  {line:"claudecli",runtime:"claude",model:"claude-haiku-4-5",effort:"high",profile:"claude-cli"},
@@ -61,7 +63,7 @@ before(async()=>{
   execution_profiles:profileConfig}));
  // 保留锁定时已有的 CLI 选择；设置接口仍须拒绝未经许可的新订阅配置。
  writeFileSync(join(TMP,"worker_settings.json"),JSON.stringify(Object.fromEntries([...cases,...extraLines].map(row=>[row.line,{rev:0,desired_running:false,agents:[{runtime:row.runtime,model:row.model,effort:row.effort,window:false,...(row.profile?{execution_profile_id:row.profile}:{})}]}]))));
- const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(BOARD_|WORKER_|REVIEWER_|REORG_)/.test(key)));
+ const environment=Object.fromEntries(Object.entries(HOST_ENV).filter(([key])=>!/^(BOARD_|WORKER_|REVIEWER_|REORG_)/.test(key)));
  child=spawn(process.execPath,[fixture],{windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...environment,
   BOARD_CONFIG:config,BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"board.db"),BOARD_REPO:REPO,BOARD_PORT:String(port),BOARD_PYTHON:PY,
   BOARD_ALLOW_UNPINNED:"1",BOARD_NO_RESTORE:"1",BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_CODEX_RELEASED:"0",BOARD_CODEX_CMD:process.execPath,

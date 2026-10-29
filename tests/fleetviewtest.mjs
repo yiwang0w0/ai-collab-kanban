@@ -1,3 +1,4 @@
+import {harnessEnvironment} from "./harness-env.mjs";
 import test,{after} from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
@@ -92,7 +93,7 @@ test("real HTTP endpoints require operator token, reject foreign origin and rema
  const root=fileURLToPath(new URL("../",import.meta.url)),dir=mkdtempSync(join(tmpdir(),"fleet-view-http-")),dbPath=join(dir,"board.db"),db=node(true,dbPath),id=store.add(db,{subject:"HTTP fixture"}),uid=store.get(db,id).task_uid;
  const config=join(dir,"config.json");writeFileSync(config,JSON.stringify({lines:[{id:"fixture",label:"fixture"}],roles:[],routes:["default"],repo:dir}));db.close();
  const probe=createServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
- let output="",exit=null;const proc=spawn(process.execPath,[join(root,"core/server.mjs")],{cwd:dir,windowsHide:true,env:{...process.env,BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:config,BOARD_DATA_DIR:dir,BOARD_DB:dbPath,BOARD_REPO:dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok"},stdio:["ignore","pipe","pipe"]});proc.stdout.on("data",b=>output+=b);proc.stderr.on("data",b=>output+=b);proc.on("error",e=>output+=e.message);proc.on("exit",code=>exit=code);
+ let output="",exit=null;const proc=spawn(process.execPath,[join(root,"core/server.mjs")],{cwd:dir,windowsHide:true,env:{...harnessEnvironment(),BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:config,BOARD_DATA_DIR:dir,BOARD_DB:dbPath,BOARD_REPO:dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok"},stdio:["ignore","pipe","pipe"]});proc.stdout.on("data",b=>output+=b);proc.stderr.on("data",b=>output+=b);proc.on("error",e=>output+=e.message);proc.on("exit",code=>exit=code);
  const base=`http://127.0.0.1:${port}`,get=(path,headers={})=>fetch(base+path,{headers,signal:AbortSignal.timeout(5000)});
  try{
   let ready=false;for(let i=0;i<80;i++){try{if((await get("/health")).ok){ready=true;break;}}catch{}if(exit!==null)break;await sleep(200);}assert.ok(ready,output);
