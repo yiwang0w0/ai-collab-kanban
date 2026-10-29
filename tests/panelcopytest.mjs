@@ -527,9 +527,30 @@ const CJK_ONE = /[一-鿿]/;
 const cjkCount = (s) => (s.match(/[一-鿿]/g) || []).length;
 const BANNED_WORDS = ["意思是", "也就是", "就是说", "你正在", "其实", "说白了", "换句话说"];
 /** 一条文案三种判法;返回命中的规则(空数组 = 合规)。纯函数,红绿两侧用的都是它。 */
+function copyText(text) {
+  const src = String(text); let out = "";
+  for (let i = 0; i < src.length; i++) {
+    if (src.slice(i, i + 2) !== "${") { out += src[i]; continue; }
+    let end = i + 2, depth = 1, quote = "";
+    for (; end < src.length && depth; end++) {
+      const ch = src[end];
+      if (quote) {
+        if (ch === "\\") end++;
+        else if (ch === quote) quote = "";
+      } else if ('"\'`'.includes(ch)) quote = ch;
+      else if (ch === "{") depth++;
+      else if (ch === "}") depth--;
+    }
+    // 只遮住闭合的插值代码；不执行表达式，未闭合时保留原文供闸检查。
+    if (!depth) { out += "X"; i = end - 1; }
+    else out += src[i];
+  }
+  return out;
+}
+
 function copyFindings(text) {
   // 插值当一个无汉字的占位符:代码里的括号、模板里的表达式都不是文案。
-  const t = String(text).replace(/\$\{[^{}]*\}/g, "X");
+  const t = copyText(text);
   const hits = [];
   for (const w of BANNED_WORDS) if (t.includes(w)) hits.push(`解释词「${w}」`);
   if (t.includes("——")) hits.push("破折号旁白");
@@ -544,8 +565,6 @@ function copyFindings(text) {
 //   ⚠ 行号会随每次改动漂移,用行号当键会在无关改动之后静默失配 —— 所以键是原文。
 //   每条都要有 why,而且必须真的还被命中(下面断言「没有多余条目」:失效的例外要删,不能攒着)。
 const COPY_ALLOW = [
-  { file: "core/panel.html", line: 1942, text: "(attempts 累计不清零,预算锚在认领时重打)",
-    why: "实测修正过的预算口径:旧文案「续 1 次尝试预算」描述了一个不存在的 +1,有人照着读 API 对不上账(见同处代码注释)。括号里是口径本身,删了会把已知误解放回来" },
   { file: "core/panel.html", line: 2460, text: "(再点该卡节点=恢复全图)",
     why: "时间轴图例:括号里是「点哪里会怎样」的图形编码,图例本身就是对照表,不是正文旁白" },
   { file: "core/panel.html", line: 2461, text: "(时刻见悬浮/时变小字)",
@@ -567,6 +586,16 @@ function literalsOf(src, { context = 0 } = {}) {
   }
   return out;
 }
+
+test("文案闸区分嵌套模板表达式和表达式之外的可见旁白", () => {
+  for (const text of [
+    '下载 ${esc(copyLabel({apply:"执行文件",rollback:"回退文件",compare:"对照文件"}))}',
+    '${esc(why || `看板已更新到 ${rev}`)},这页还是旧的。',
+    '状态 ${choose({label:"内部(表达式里有六个汉字说明)",other:"}\\\""})}',
+  ]) assert.deepEqual(copyFindings(text), [], text);
+  for (const text of ['${choose({label:"状态"})}(开始干活前需要)', '${why} —— 其实还没保存'])
+    assert.ok(copyFindings(text).length, text);
+});
 
 test("文案闸：引导与面板的可见文案里没有注释性语句（规则见 docs/style-guide.md）", () => {
   const serverSrc = readFileSync(new URL("../core/server.mjs", import.meta.url), "utf8");
