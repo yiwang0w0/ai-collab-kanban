@@ -4387,10 +4387,16 @@ function executionBillingName(value){
   return ({ __proto__: null, subscription: "订阅额度", claude_subscription: "Claude 订阅额度", chatgpt_subscription: "ChatGPT 订阅额度", api: "API 用量计费", api_usage: "API 用量计费", anthropic_api: "Claude API 余额（促销归属待账单确认）", openai_api: "OpenAI API 用量计费", api_credits: "API 余额（促销归属待账单确认）", promotional_unverified: "API 余额（促销归属待账单确认）" })[value] || "计费来源待核实";
 }
 function executionBudgetText(budget, enforcement = ""){
+  if (enforcement === "cli_timeout_only") {
+    if (!budget || !Number.isSafeInteger(budget.timeout_sec) || budget.timeout_sec <= 0)
+      return "待你确认时限；不能派发真实调用";
+    const amount = Number.isFinite(budget.max_cost_usd) && budget.max_cost_usd > 0 ? `金额参考 ${budget.max_cost_usd} 美元 · ` : "";
+    const turns = Number.isSafeInteger(budget.max_turns) && budget.max_turns > 0 ? `，不能视为已满足 ${budget.max_turns} 轮授权` : "";
+    return `${amount}总时限 ${budget.timeout_sec} 秒 · 单次执行；内部轮次与金额上限无法强制${turns}`;
+  }
   if (!budget || !Number.isFinite(budget.max_cost_usd) || budget.max_cost_usd <= 0 || !Number.isFinite(budget.timeout_sec) || budget.timeout_sec <= 0 || !Number.isSafeInteger(budget.max_turns) || budget.max_turns <= 0)
     return "待你确认金额、时限和轮次；不能派发真实调用";
   const constraint = enforcement === "provider_spend_limit_required" ? "；金额须由供应商项目花费限制约束，本机不提供金额硬封顶" : "";
-  if (enforcement === "cli_timeout_only") return `金额参考 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 单次执行；内部轮次与金额上限无法强制，不能视为已满足 ${budget.max_turns} 轮授权`;
   if (enforcement === "provider_spend_limit_required") return `金额预算 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 工具步骤预算 ${budget.max_turns}（不是模型请求次数${constraint}）`;
   return `金额预算 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 最多 ${budget.max_turns} 轮（实际扣费以供应商为准${constraint}）`;
 }

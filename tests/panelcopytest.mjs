@@ -298,6 +298,11 @@ test("四通道文案区分订阅与 API 计费，不把促销或未知预算写
   assert.match(budget, /工具步骤预算 2/); assert.doesNotMatch(budget, /最多 2 轮/);
   const cliBudget = profileCopy.executionBudgetText({ max_cost_usd: 0.5, timeout_sec: 120, max_turns: 4 }, "cli_timeout_only");
   assert.match(cliBudget, /内部轮次与金额上限无法强制/); assert.match(cliBudget, /不能视为已满足 4 轮授权/);
+  const timeoutOnly = profileCopy.executionBudgetText({ max_cost_usd: null, timeout_sec: 600, max_turns: null }, "cli_timeout_only");
+  assert.match(timeoutOnly, /总时限 600 秒.*单次执行/);
+  assert.doesNotMatch(timeoutOnly, /待你确认|null|金额参考|不能派发/);
+  assert.match(profileCopy.executionBudgetText({ timeout_sec: null }, "cli_timeout_only"), /待你确认时限.*不能派发/);
+  assert.match(profileCopy.executionBudgetText({ timeout_sec: 600 }, "provider_spend_limit_required"), /待你确认金额.*不能派发/);
 });
 
 test("新任务只选择当前执行线已配置组合，显式配置必须先核对再放行", () => {
