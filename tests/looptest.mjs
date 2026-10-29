@@ -570,6 +570,8 @@ try {
     const seatRepo = join(TMP, "codex-stub-repo");
     const seatHit = join(TMP, "codex-stub-hit.json");
     mkdirSync(seatRepo, { recursive: true });
+    // 只读登录预检也由同一个本地 Node 替身响应，不读取任何真实认证。
+    writeFileSync(join(seatRepo, "login"), 'console.log("Logged in using ChatGPT");\n', "utf8");
 
     // The stub does not persist the prompt; it extracts only the hand-off path and
     // writes the evidence file. The hit file records argv structure, never card text.
@@ -637,7 +639,7 @@ process.stdin.on("end", () => {
       : [];
     const seatRows = ledgerRows.filter((r) => r.card === C);
 
-    ok("⭐the stub launched local Node exactly once (no external service called)",
+    ok("⭐替身的生成入口只调用一次（登录预检仅返回固定状态，无外部服务）",
        hit?.kind === "local-node-codex-stub" && hit?.valid === true && seatRows.length === 1,
        `stub=${hit?.kind || "(no hit)"} ledger rows=${seatRows.length}`);
     ok("⭐the real argv path (--json / -o / stdin / workspace-write) reached the stub",

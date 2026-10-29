@@ -9,6 +9,8 @@ import datetime
 import io
 import json
 import os
+import re
+import subprocess
 import threading
 
 
@@ -49,6 +51,46 @@ def assert_no_bypass(argv):
         raise RuntimeError(f"bypass 旗被组装进 argv(实现 bug): {hit}")
 
 
+def subscription_environment(env):
+    """复用验证环境过滤；仅恢复所选 Codex 认证目录，不把循环令牌交给 CLI。
+
+    调用方先用 profileEnvironment 剔除全部配置登记的凭据。本函数再沿用
+    verify_environment 的供应商过滤，保留 CODEX_HOME 供 CLI 自己认证；这不构成路径隔离。
+    """
+    from verify_lib import verify_environment
+    clean = verify_environment(env)
+    for key in list(clean):
+        if re.match(r"^(?:BOARD_|WORKER_|REVIEWER_)", key, re.I) and re.search(
+                r"(?:TOKEN|API_KEY|SECRET_KEY|PASSWORD)$", key, re.I):
+            clean.pop(key)
+    home = next((value for key, value in env.items() if key.upper() == "CODEX_HOME"), None)
+    if home:
+        clean["CODEX_HOME"] = home
+    return clean
+
+
+def subscription_login_gate(cli, env, *, workdir=None, _run=None):
+    """先只读查询登录方式；不能用 forced_login_method 查询，以免 CLI 注销 API 登录。
+
+    原始状态输出可能含密钥提示，不向日志或返回值转述。只接受已确认的 ChatGPT 登录；
+    不登录、不退出、不重试，也不读取认证文件。实际生成命令仍保留强制 ChatGPT 的约束。
+    """
+    invalid = gate(cli)
+    if invalid:
+        return invalid
+    try:
+        result = (_run or subprocess.run)(
+            [cli, "login", "status"], capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=15, env=subscription_environment(env), cwd=workdir,
+            **({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {}))
+    except (OSError, subprocess.SubprocessError):
+        return "Codex 登录状态无法只读核实，未启动生成进程；未执行登录或退出操作。"
+    status = (result.stdout or "") + "\n" + (result.stderr or "")
+    if result.returncode == 0 and re.search(r"logged in using chatgpt", status, re.I):
+        return None
+    return "Codex CLI 需要已有的 ChatGPT 订阅登录；当前认证方式不符或未知，未启动生成进程，也未注销原登录。请由操作者核对所选 CODEX_HOME。"
+
+
 def argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None):
     """组装 codex exec argv。
 
@@ -64,6 +106,8 @@ def argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None):
         "-c", f"model_reasoning_effort={effort}",
         "-c", "shell_environment_policy.inherit=core",
         "-c", "shell_environment_policy.ignore_default_excludes=false",
+        "-c", 'forced_login_method="chatgpt"',
+        "-c", 'windows.sandbox="unelevated"',
         "-c", "tools.web_search=false",
         "--ignore-user-config",
         "--ephemeral",

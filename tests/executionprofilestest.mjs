@@ -40,6 +40,30 @@ test("API 只有独立许可、凭据和完整预算齐备才配置就绪，不�
  assert.equal(missingBudget.ready,false);assert.match(missingBudget.reason,/预算/);
 });
 
+test("Codex 订阅配置只需明确时限，不伪造美元或内部轮次硬上限",()=>{
+ const profiles=load([{id:"codex-cli",budget:{timeout_sec:600,max_turns:null,max_cost_usd:null}}]);
+ const profile=get(profiles,"codex-cli"),fact=publicExecutionProfiles(profiles,{env,runtimes,repoRoot}).find(p=>p.id==="codex-cli");
+ assert.equal(fact.ready,true);assert.equal(fact.budget_enforcement,"cli_timeout_only");
+ assert.match(fact.reason,/不能硬控.*金额.*轮次/);assert.match(fact.reason,/未知/);
+ const child=profileEnvironment(profile,{env,repoRoot,dataDir});
+ assert.equal(child.WORKER_TIMEOUT_SEC,"600");assert.equal(child.WORKER_RATE_MAX_WAITS,"0");
+ assert.equal(Object.hasOwn(child,"WORKER_MAX_TURNS"),false);assert.equal(Object.hasOwn(child,"WORKER_MAX_BUDGET_USD"),false);
+ assert.deepEqual(JSON.parse(child.WORKER_EXECUTION_PROFILE).budget,{timeout_sec:600,max_turns:null,max_cost_usd:null});
+ const complete=get(load([{id:"codex-cli",budget}]),"codex-cli");
+ assert.equal(profileEnvironment(complete,{env,repoRoot,dataDir}).WORKER_TIMEOUT_SEC,"120","旧完整预算仍兼容");
+});
+
+test("Codex 缺时限仍拒绝，Claude CLI 与 API 仍需原完整预算",()=>{
+ const missing=get(load([{id:"codex-cli",budget:{max_turns:4,max_cost_usd:0.5}}]),"codex-cli");
+ assert.equal(publicExecutionProfiles([missing],{env,runtimes,repoRoot})[0].ready,false);
+ assert.throws(()=>profileEnvironment(missing,{env,repoRoot,dataDir}),error=>error.code==="BAD_INPUT"&&/时限/.test(error.message));
+ for(const [id,extra] of [["claude-cli",{}],["claude-api",{enabled:true}],["gpt-api",{enabled:true,provider_spend_limit_confirmed:true}]]){
+  const profile=get(load([{id,...extra,budget:{timeout_sec:600,max_turns:4,max_cost_usd:null}}]),id);
+  assert.equal(publicExecutionProfiles([profile],{env,runtimes,repoRoot})[0].ready,false,id);
+  assert.throws(()=>profileEnvironment(profile,{env,repoRoot,dataDir}),{code:"BAD_INPUT"},id);
+ }
+});
+
 test("公开配置和快照不含认证路径、变量名或密钥；摘要绑定配置而不绑定密钥值",()=>{
  const profiles=apiProfiles(),profile=get(profiles,"claude-api"),snapshot=executionProfileSnapshot(profile);
  assert.equal(snapshot.execution_profile_id,"claude-api");assert.equal(snapshot.channel,"claude_agent_sdk");assert.equal(snapshot.enabled,true);assert.match(snapshot.profile_digest,/^[a-f0-9]{64}$/);

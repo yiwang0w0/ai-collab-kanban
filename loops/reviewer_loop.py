@@ -631,6 +631,10 @@ def review_one(t, vr=None):
     env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
     if RUNTIME == "codex":
         try:
+            env = codex_runtime.subscription_environment(env)
+            login_error = codex_runtime.subscription_login_gate(CODEX_CLI, env, workdir=REPO)
+            if login_error:
+                return None, login_error
             argv = codex_runtime.argv(CODEX_CLI, MODEL, EFFORT, out, REPO,
                                        mode="read-only", schema=CODEX_SCHEMA)
             r = subprocess.run(argv, input=prompt, capture_output=True, text=True, encoding="utf-8",
@@ -838,6 +842,8 @@ def main():
             print(f"[reviewer] ⛔ {e} —— 判决目录的写放行规则组不出来(查 BOARD_DATA_DIR),拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     if RUNTIME == "codex":
         cg = codex_runtime.gate(CODEX_CLI)
+        if not cg:
+            cg = codex_runtime.subscription_login_gate(CODEX_CLI, os.environ, workdir=REPO)
         if cg: print(cg, flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     cgate = context_lib.context_gate(REPO, None, RUNTIME)
     if cgate:

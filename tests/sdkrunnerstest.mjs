@@ -27,7 +27,7 @@ function fixture(){
 }
 function python(script,args,f){
  const environment=Object.fromEntries(Object.entries(HOST_ENV).filter(([key])=>!/^(?:BOARD_|WORKER_|REVIEWER_|REORG_|ANTHROPIC_|OPENAI_|CODEX_)/.test(key)));
- const result=spawnSync(py,['-I','-B','-c',script,root,...args],{cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,env:{...environment,BOARD_CONFIG:join(f.privateDir,'missing-config.json'),BOARD_VERIFY_REGISTRY:join(f.privateDir,'verify_registry.json'),BOARD_DATA_DIR:f.privateDir,BOARD_REPO:f.cwd,WORKER_NODE:process.execPath,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'}});
+ const result=spawnSync(py,['-I','-B','-X','utf8','-c',script,root,...args],{cwd:root,windowsHide:true,encoding:'utf8',timeout:20000,env:{...environment,BOARD_CONFIG:join(f.privateDir,'missing-config.json'),BOARD_VERIFY_REGISTRY:join(f.privateDir,'verify_registry.json'),BOARD_DATA_DIR:f.privateDir,BOARD_REPO:f.cwd,WORKER_NODE:process.execPath,PYTHONUTF8:'1',PYTHONIOENCODING:'utf-8'}});
  assert.equal(result.status,0,result.stderr+'\n'+result.stdout);return result.stdout;
 }
 
@@ -68,6 +68,57 @@ test('宿主SDK流及时记录活动，拒绝陈旧身份与重复终态，超�
  const result=python(`import sys,pathlib,json,uuid,os,time\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nw.PROFILE_MODE=True; w.API_MODE=True; w.RUNTIME='claude'; w.log=lambda *a:None; w.record_process_started=lambda *a:True\nw.EXECUTION_PROFILE={'execution_profile_id':'claude-api','profile_digest':'1'*64,'budget':{'timeout_sec':2}}\nt={'id':9,'run_id':str(uuid.uuid4())}; sent=[]\nw.call=lambda method,path,body,**kw:(sent.append((time.monotonic(),body)) or (200,{}))\nbase={'format':'kanban-agent-event/v1','task_id':9,'run_id':t['run_id'],'agent_instance_id':w.AGENT_INSTANCE_ID,'execution_profile_id':'claude-api','profile_digest':'1'*64,'model':'fixture','effort':'high'}\ndef event(kind,**fields): return {**base,'kind':kind,'event_id':str(uuid.uuid4()),**fields}\nfolder=pathlib.Path(sys.argv[2]); script=folder/'fake.py'; payload=folder/'events.json'\nscript.write_text('import sys,json,time\\nspec=json.load(open(sys.argv[1],encoding="utf-8"))\\nfor item in spec["events"]:\\n print(json.dumps(item),flush=True)\\n time.sleep(spec.get("delay",0))\\ntime.sleep(spec.get("sleep",0))\\nsys.exit(spec.get("exit",0))\\n',encoding='utf-8')\ndef run(events,**extra):\n sent.clear(); payload.write_text(json.dumps({'events':events,**extra}),encoding='utf-8')\n return w.run_api_process(t,'fixture',1,'fixture','high',[sys.executable,'-I','-B',str(script),str(payload)],dict(os.environ))\nterminal=event('terminal',status='success',report='实际回报',usage=None,cost_usd=None)\nstarted=time.monotonic(); answer=run([event('activity'),terminal],delay=0.1)\nassert answer['status']=='success' and len(sent)==2 and sent[0][1]['kind']=='activity' and sent[1][1]['kind']=='terminal'\nassert sent[1][0]-sent[0][0]>=0.08 and sent[1][1]['usage'] is None and sent[1][1]['cost_usd'] is None\nassert run([event('activity',run_id=str(uuid.uuid4()))])['status']=='failed' and len(sent)==1\nassert run([terminal,terminal])['status']=='failed'\nassert run([event('terminal',status='cancelled',report=None,usage=None,cost_usd=None)],exit=1)['status']=='cancelled'\nw.EXECUTION_PROFILE['budget']['timeout_sec']=0.1\nanswer=run([terminal],sleep=1); assert answer['status']=='timeout' and answer['report'] is None and sent[-1][1]['status']=='timeout'\nprint('host stream passed')`,[f.privateDir],f);
  assert.match(result,/host stream passed/);
 });
+test('Codex 本轮使用无需管理员初始化的后端且不混用配置层级',()=>{
+ const f=fixture();
+ python(`import sys,pathlib
+sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))
+import codex_runtime as c
+for mode in ['write','read-only']:
+ args=c.argv('fixture.exe','fixture-model','high','last.txt','fixture-work',mode=mode)
+ assert 'windows.sandbox="unelevated"' in args,args
+ assert all(i>args.index('exec') for i,v in enumerate(args) if v=='-c'),args
+`,[],f);
+});
+
+test('Codex 订阅子进程强制 ChatGPT 登录并复用凭据过滤，保留选定认证目录',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,os,json\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport codex_runtime as c\nsource={'PATH':'fixture-path','CODEX_HOME':str(pathlib.Path(sys.argv[2])/'订阅认证'),'OPENAI_API_KEY':'FAKE-API','openai_base_url':'https://fixture.invalid','CODEX_API_KEY':'FAKE-CODEX','ANTHROPIC_API_KEY':'FAKE-OTHER','WORKER_BOARD_TOKEN':'FAKE-WORKER','BOARD_TOKEN':'FAKE-OPERATOR','REVIEWER_TOKEN':'FAKE-REVIEWER','WORKER_TIMEOUT_SEC':'600','WORKER_AUTH_HOMES':'[]'}\nbefore=dict(source); child=c.subscription_environment(source)\nassert source==before\nassert child['CODEX_HOME']==source['CODEX_HOME'] and child['PATH']=='fixture-path'\nassert child['WORKER_TIMEOUT_SEC']=='600'\nfor key in ['OPENAI_API_KEY','openai_base_url','CODEX_API_KEY','ANTHROPIC_API_KEY','WORKER_BOARD_TOKEN','BOARD_TOKEN','REVIEWER_TOKEN','WORKER_AUTH_HOMES']:\n assert key not in child,(key,child.keys())\nfor mode in ['write','read-only']:\n args=c.argv('fixture.exe','fixture-model','high','last.txt',str(pathlib.Path(sys.argv[2])),mode=mode)\n assert 'forced_login_method="chatgpt"' in args,args\n assert '--dangerously-bypass-approvals-and-sandbox' not in args\nprint('subscription contract passed')`,[f.privateDir],f);
+ assert.match(result,/subscription contract passed/);
+});
+
+test('Codex 只读登录预检拒绝 API 认证且不注销，未知或超时同样拒发',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,json,subprocess,types\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport codex_runtime as c\nfolder=pathlib.Path(sys.argv[2]); auth=folder/'auth.json'; auth.write_text('{"OPENAI_API_KEY":"fixture-only"}',encoding='utf-8'); original=auth.read_bytes(); seen=[]\nenv={'PATH':'fixture-path','CODEX_HOME':str(folder),'OPENAI_API_KEY':'fixture-only','WORKER_BOARD_TOKEN':'fixture-only'}\ndef response(text,rc=0):\n def run(argv,**kwargs):\n  seen.append(argv); assert argv==[sys.executable,'login','status'],argv\n  assert kwargs['env']['CODEX_HOME']==str(folder) and 'OPENAI_API_KEY' not in kwargs['env']\n  assert all('forced_login_method' not in item for item in argv)\n  return types.SimpleNamespace(returncode=rc,stdout=text,stderr='')\n return run\nassert c.subscription_login_gate(sys.executable,env,_run=response('Logged in using ChatGPT')) is None\nerror=c.subscription_login_gate(sys.executable,env,_run=response('Logged in using an API key: fixture-only'))\nassert error and 'fixture-only' not in error and auth.read_bytes()==original,error\nassert c.subscription_login_gate(sys.executable,env,_run=response('unknown'))\ndef timeout(*a,**kw): raise subprocess.TimeoutExpired(a[0],15)\nassert c.subscription_login_gate(sys.executable,env,_run=timeout)\nprint('read-only login gate passed')`,[f.privateDir],f);
+ assert.match(result,/read-only login gate passed/);
+});
+
+test('Codex worker 实际交接使用订阅环境，原卡最终回复仍由宿主落成证据',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,os,json,subprocess\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nfolder=pathlib.Path(sys.argv[2]); evidence=folder/'worker-evidence.md'\nw.CODEX_CLI=sys.executable; w.DATA=str(folder); w.RUNTIME='codex'; w.TOOL_PROFILE='write'; w.codex_gate=lambda:None; w.codex_runtime.subscription_login_gate=lambda *a,**kw:None; w.build_prompt=lambda *a:'仅夹具任务'; calls=[]\nos.environ['OPENAI_API_KEY']='FAKE-API'; os.environ['WORKER_BOARD_TOKEN']='FAKE-WORKER'; os.environ['CODEX_HOME']=str(folder/'订阅认证')\ndef run(t,worker,attempt,runtime,model,effort,argv,env,**kw):\n calls.append((argv,env,kw))\n assert 'OPENAI_API_KEY' not in env and 'WORKER_BOARD_TOKEN' not in env\n assert env['CODEX_HOME']==os.environ['CODEX_HOME']\n assert 'forced_login_method="chatgpt"' in argv\n pathlib.Path(argv[argv.index('-o')+1]).write_text('本地夹具最终报告',encoding='utf-8')\n return subprocess.CompletedProcess(argv,0,'{"type":"thread.started","thread_id":"fixture-thread"}\\n{"type":"turn.completed","usage":{"input_tokens":1,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":1}}','')\nw.run_task_process=run\nrc,tail=w.run_codex({'id':19,'run_id':'fixture-run'},'fixture',str(evidence),None,1,'fixture-model','high')\nassert rc==0 and len(calls)==1,(rc,tail)\nassert calls[0][2]['input']=='仅夹具任务'\nassert evidence.read_text(encoding='utf-8')=='本地夹具最终报告'\nprint('worker subscription handoff passed')`,[f.privateDir],f);
+ assert.match(result,/worker subscription handoff passed/);
+});
+
+test('API 形登录在 worker 生成进程之前被拒绝，原认证文件保留',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,os,types
+sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))
+import worker_loop as w
+folder=pathlib.Path(sys.argv[2]); auth=folder/'auth.json'
+auth.write_text('{"OPENAI_API_KEY":"fixture-only"}',encoding='utf-8'); before=auth.read_bytes()
+os.environ['CODEX_HOME']=str(folder); w.CODEX_CLI=sys.executable; w.REPO=str(folder)
+w.codex_gate=lambda:None
+def status(argv,**kw):
+ assert argv==[sys.executable,'login','status'],argv
+ return types.SimpleNamespace(returncode=0,stdout='Logged in using an API key',stderr='')
+w.codex_runtime.subprocess.run=status
+def forbidden(*a,**kw): raise AssertionError('不应启动生成进程')
+w.run_task_process=forbidden
+rc,error=w.run_codex({'id':1,'run_id':'fixture-run'},'fixture',str(folder/'evidence.md'),None,1,'fixture','high')
+assert rc==-3 and 'ChatGPT' in error and auth.read_bytes()==before,(rc,error)
+print('worker rejected API login before generation')`,[f.privateDir],f);
+ assert.match(result,/worker rejected API login before generation/);
+});
+
 test('显式CLI超时终止工具子树并及时收回输出，Windows后台启动，旧配置超时行为兼容',()=>{
  const f=fixture();
  const result=python(`import sys,pathlib,os,time,json,subprocess\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nfolder=pathlib.Path(sys.argv[2]); child=folder/'child.py'; parent=folder/'parent.py'\nchild.write_text('import time,sys,os\\nprint("child-ready:"+str(os.getpid()),flush=True)\\nprint("child-stderr",file=sys.stderr,flush=True)\\ntime.sleep(10)\\n',encoding='utf-8')\nparent.write_text('import subprocess,sys,os\\np=subprocess.Popen([sys.executable,"-I","-B",sys.argv[1]],stdout=sys.stdout,stderr=sys.stderr)\\nprint("parent-ready",flush=True)\\np.wait()\\n',encoding='utf-8')\nw.PROFILE_MODE=True; w.EXECUTION_PROFILE={'execution_profile_id':'codex-cli'}; w.TIMEOUT=1.2\noptions={}; helper=[]; real_popen=subprocess.Popen; real_run=subprocess.run\ndef popen(*args,**kwargs): options.update(kwargs); return real_popen(*args,**kwargs)\ndef helper_run(*args,**kwargs):\n result=real_run(*args,**kwargs); helper.append({**kwargs,'returncode':result.returncode,'stderr':result.stderr.decode(errors='replace') if isinstance(result.stderr,bytes) else result.stderr});\n if result.returncode: print('taskkill local result',result.returncode,helper[-1]['stderr'],file=sys.stderr,flush=True)\n return result\nw.subprocess.run=helper_run\ntask={'id':7,'run_id':'fixture-run'}; started=time.monotonic()\ntry:\n w.run_task_process(task,'fixture',1,'codex','fixture','high',[sys.executable,'-I','-B',str(parent),str(child)],dict(os.environ),_popen=popen,_call=lambda *a,**k:(200,{}),_log=lambda *a:None)\n raise AssertionError('timeout not raised')\nexcept subprocess.TimeoutExpired as error:\n assert 'parent-ready' in error.stdout and 'child-ready:' in error.stdout and 'child-stderr' in error.stderr, (error.stdout,error.stderr)\n assert time.monotonic()-started<8\n if os.name=='nt':\n  assert options['creationflags']&subprocess.CREATE_NO_WINDOW and helper and helper[0]['creationflags']&subprocess.CREATE_NO_WINDOW\n else: assert options['start_new_session'] is True\nw.subprocess.run=real_run\nw.PROFILE_MODE=False; calls=[]; legacy_options={}\nclass Legacy:\n pid=123; returncode=-1\n def __enter__(self): return self\n def __exit__(self,*a): pass\n def communicate(self,input=None,timeout=None):\n  calls.append(('communicate',timeout))\n  if timeout is not None: raise subprocess.TimeoutExpired('fixture',timeout)\n  return ('旧配置输出','旧配置错误')\n def kill(self): calls.append(('kill',None))\ndef legacy_popen(*a,**kw): legacy_options.update(kw); return Legacy()\ntry:\n w.run_task_process(task,'fixture',1,'codex','fixture','high',[],{},_popen=legacy_popen,_call=lambda *a,**k:(200,{}),_log=lambda *a:None)\n raise AssertionError('legacy timeout not raised')\nexcept subprocess.TimeoutExpired as error: assert error.stdout=='旧配置输出' and error.stderr=='旧配置错误'\nassert len(calls)==3 and calls[1][0]=='kill' and calls[2]==('communicate',None)\nassert 'creationflags' not in legacy_options and 'start_new_session' not in legacy_options\nprint('CLI timeout tree passed')`,[f.privateDir],f);
