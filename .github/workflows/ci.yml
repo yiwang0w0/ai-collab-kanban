@@ -245,7 +245,7 @@ jobs:
         run: bash hrun.sh node tests/reviewtest.mjs
       - name: "legacy verification and evidence boundaries"
         if: ${{ !cancelled() }}
-        run: bash hrun.sh node --test tests/legacy-boundariestest.mjs
+        run: bash hrun.sh node --test tests/legacy-boundariestest.mjs tests/harnessenvtest.mjs
         env:
           PYTHON: python
       - name: "sentrytest (SSE sentry re-runs itself once, old connection closed first)"

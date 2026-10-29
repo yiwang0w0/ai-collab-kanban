@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // sentrytest — the SSE sentry re-runs itself ONCE when the board says it is stale, and it lets
 // go of its old connection FIRST (self-audit v0.18.0 P1-1: while the child ran, the parent's
 // old-rev connection stayed open and the banner kept saying 「有通知进程还在跑旧代码」). A stub
@@ -20,7 +22,7 @@ const ok = (name, cond, detail = "") => {
   console.log(`  ${cond ? "PASS" : "FAIL"}  ${name}${detail ? " — " + detail : ""}`);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const PY = process.env.PYTHON || process.env.BOARD_PYTHON || (process.platform === "win32" ? "python" : "python3");
+const PY = HOST_ENV.PYTHON || (process.platform === "win32" ? "python" : "python3");
 const NEWREV = "n3wrev";
 const DATA=mkdtempSync(join(tmpdir(),"fleet-sentry-auth-")),TOKEN=randomUUID();
 writeFileSync(join(DATA,"board_token"),TOKEN);
@@ -44,7 +46,8 @@ await new Promise((r) => srv.listen(0, "127.0.0.1", r));
 const PORT = srv.address().port;
 console.log(`[sentrytest] stub board on 127.0.0.1:${PORT}  python=${PY}`);
 
-const env = { ...process.env, BOARD_DATA_DIR:DATA, BOARD_URL: `http://127.0.0.1:${PORT}`, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
+const env = { ...HOST_ENV, BOARD_CONFIG:join(DATA,"missing-config.json"), BOARD_REPO:ROOT,
+  BOARD_VERIFY_REGISTRY:join(DATA,"verify_registry.json"), BOARD_DATA_DIR:DATA, BOARD_URL: `http://127.0.0.1:${PORT}`, PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
 delete env.SSE_WATCH_REEXECED;   // a fresh sentry, never re-run
 let out = "";
 const child = spawn(PY, [join(ROOT, "watchers", "sse_watch.py")],

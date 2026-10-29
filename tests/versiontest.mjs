@@ -1,3 +1,4 @@
+import {harnessEnvironment} from "./harness-env.mjs";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -101,7 +102,7 @@ test("two independent processes editing the same observed version have one winne
  const children=[];
  const launch=name=>{
   const p=spawn(process.execPath,[worker,join(ROOT,"core/store.js"),String(id),name],
-   {env:{...process.env,BOARD_DB:path,BOARD_DATA_DIR:TMP},windowsHide:true,stdio:["ignore","pipe","pipe","ipc"]});
+   {env:{...harnessEnvironment(),BOARD_DB:path,BOARD_DATA_DIR:TMP},windowsHide:true,stdio:["ignore","pipe","pipe","ipc"]});
   let out="",stderr="",readyResolve,readyReject;
   const ready=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   const done=new Promise((resolve,reject)=>{
@@ -174,7 +175,7 @@ test("HTTP requires versions, rejects stale controls and returns current version
  const port=listener.address().port;await new Promise(r=>listener.close(r));
  const config=join(TMP,"fleet.config.json");writeFileSync(config,JSON.stringify({lines:[{id:"alpha"}]}));
  const p=spawn(process.execPath,[join(ROOT,"core/server.mjs")],{
-  env:{...process.env,BOARD_PORT:String(port),BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"http.db"),BOARD_CONFIG:config,BOARD_ALLOW_UNPINNED:"1"},
+  env:{...harnessEnvironment(),BOARD_PORT:String(port),BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"http.db"),BOARD_CONFIG:config,BOARD_ALLOW_UNPINNED:"1"},
   windowsHide:true,stdio:["ignore","pipe","pipe"]});
  let out="";p.stdout.on("data",b=>out+=b);p.stderr.on("data",b=>out+=b);
  const base="http://127.0.0.1:"+port;
@@ -199,9 +200,9 @@ test("HTTP requires versions, rejects stale controls and returns current version
   }
   assert.equal((await api("GET",path)).body.task.description,"new");
   const payload=join(TMP,"cli-edit.json");writeFileSync(payload,JSON.stringify({acceptance:"CLI verified"}));
-  const cli=(...args)=>spawnSync(process.env.BOARD_PYTHON||process.env.PYTHON||"python",
+  const cli=(...args)=>spawnSync(harnessEnvironment().PYTHON||"python",
    [join(ROOT,"cli/board.py"),"edit",String(id),"--file",payload,...args],
-   {env:{...process.env,BOARD_URL:base,BOARD_DATA_DIR:TMP,PYTHONUTF8:"1"},windowsHide:true,encoding:"utf8"});
+   {env:{...harnessEnvironment(),BOARD_URL:base,BOARD_DATA_DIR:TMP,PYTHONUTF8:"1"},windowsHide:true,encoding:"utf8"});
   const missing=cli();assert.equal(missing.status,1,missing.stderr);assert.match(missing.stderr,/--version/);
   const stale=cli("--version","1");assert.equal(stale.status,1,stale.stderr);assert.match(stale.stderr,/409/);
   assert.equal((await api("GET",path)).body.task.aggregate_version,2);

@@ -1,3 +1,4 @@
+import {harnessEnvironment} from "./harness-env.mjs";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +17,7 @@ import {migrateSync,shareTask} from "../core/federation/sync-store.mjs";
 const require = createRequire(import.meta.url), store = require("../core/store.js");
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const TMP = mkdtempSync(join(tmpdir(), "fleet-backup-")), handles = [];
+const HOST_ENV = {...harnessEnvironment(), BOARD_CONFIG:join(TMP,"none-config.json")};
 let seq = 0;
 const target = tag => join(TMP, tag + "-" + seq++);
 function fixture() {
@@ -88,7 +90,7 @@ test("restore is isolated, rebinds evidence paths, and cannot start a board or m
   assert.equal(store.get(db,f.id).task_uid,store.get(f.db,f.id).task_uid);
   assert.equal(store.get(db,f.id).evidence_path,join(dest,"evidence/result.md"));
   assert.equal(db.prepare("SELECT backup_id FROM board_restore_hold").get().backup_id,b.backup_id);
-  const env={...process.env,BOARD_DB:join(dest,"board.db"),BOARD_DATA_DIR:dest,
+  const env={...HOST_ENV,BOARD_DB:join(dest,"board.db"),BOARD_DATA_DIR:dest,
     BOARD_CONFIG:join(dest,"missing.config.json"),BOARD_PORT:"0"};
   const server=spawnSync(process.execPath,[join(ROOT,"core/server.mjs")],
     {env,encoding:"utf8",timeout:15000,windowsHide:true});
@@ -163,7 +165,7 @@ test("snapshot during another process writing never separates a task from its co
     'next();'
   ].join("\n");
   const child=spawn(process.execPath,["-e",script,join(ROOT,"core/store.js")],{
-    env:{...process.env,BOARD_DB:f.dbPath,BOARD_DATA_DIR:f.data},windowsHide:true
+    env:{...HOST_ENV,BOARD_DB:f.dbPath,BOARD_DATA_DIR:f.data},windowsHide:true
   });
   let stderr="";child.stderr.on("data",b=>stderr+=b);
   const exit=new Promise((accept,reject)=>{child.on("error",reject);child.on("close",code=>code===0?accept():reject(new Error(stderr)));});
@@ -176,7 +178,7 @@ test("snapshot during another process writing never separates a task from its co
 });
 test("CLI backup/verify/restore round trip and unsupported formats fail closed", () => {
   const f=fixture(),dir=target("cli-backup"),restore=target("cli-restore");
-  const env={...process.env,BOARD_DB:f.dbPath,BOARD_DATA_DIR:f.data};
+  const env={...HOST_ENV,BOARD_DB:f.dbPath,BOARD_DATA_DIR:f.data};
   const cli=(...args)=>spawnSync(process.execPath,[join(ROOT,"cli/backup.mjs"),...args],
     {env,encoding:"utf8",windowsHide:true,timeout:20000});
   const made=cli("create",dir);assert.equal(made.status,0,made.stderr);
@@ -190,7 +192,7 @@ test("CLI backup/verify/restore round trip and unsupported formats fail closed",
 test("backup snapshots and incomplete copies cannot be opened for execution", () => {
   const f=fixture(),b=backup(f);
   const open=(dir)=>spawnSync(process.execPath,["-e","require(process.argv[1]).open()",join(ROOT,"core/store.js")],{
-    env:{...process.env,BOARD_DB:join(dir,"board.db"),BOARD_DATA_DIR:dir},encoding:"utf8",windowsHide:true,timeout:10000
+    env:{...HOST_ENV,BOARD_DB:join(dir,"board.db"),BOARD_DATA_DIR:dir},encoding:"utf8",windowsHide:true,timeout:10000
   });
   assert.match(open(b.destination).stderr,/恢复副本处于隔离状态/);
   const incomplete=target("interrupted");mkdirSync(incomplete);

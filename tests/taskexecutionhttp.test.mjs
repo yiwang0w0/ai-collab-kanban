@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 import test from "node:test";
 import assert from "node:assert/strict";
 import {randomUUID} from "node:crypto";
@@ -22,7 +24,7 @@ test("真实 HTTP 的列表与详情共用执行投影，领取不冒充开工�
  // 服务端不接受空 lines；仅声明夹具执行线，绝不调用启动入口。
  writeFileSync(config,JSON.stringify({lines:[{id:"fixture",label:"专项夹具"}],roles:[],routes:["default"],repo:directory}));
  const listener=createServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));const port=listener.address().port;await new Promise(r=>listener.close(r));
- const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith("BOARD_")));
+ const environment=HOST_ENV;
  const child=spawn(process.execPath,[join(ROOT,"core/server.mjs")],{cwd:directory,windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...environment,
   BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:config,BOARD_DATA_DIR:directory,BOARD_DB:join(directory,"board.db"),BOARD_REPO:directory,
   BOARD_NODE_NAME:"执行投影专项",BOARD_ALLOW_UNPINNED:"1",BOARD_NO_RESTORE:"1",BOARD_SPAWN_ECHO:"1",BOARD_RESTART_MODE:"exit",BOARD_TEST_SHUTDOWN_MS:"30000"}});

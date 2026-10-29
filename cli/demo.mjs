@@ -103,7 +103,19 @@ try { line = ((await boardGet("/api/workers")).lines || [])[0] || null; }
 catch (error) { say(error.message); return await bail(1); }
 if (!line) { say("看板没有配置任何线。"); return await bail(1); }
 say(`④ mock worker 领一张、交一张  python loops/worker_loop.py --as ${line} --once`);
-const mock = spawnSync(PY, [join(CODE_ROOT, "loops", "worker_loop.py"), "--as", line, "--once"], {
+// 只有内置 mock 使用本地宿主观察替身；不回传受管启动记录，不改变真实执行器的身份闸。
+// 固定假 CLI 与运行时，继承的 API 配置也不能把这次零 token 演示变成真实调用。
+const mockHost = [
+  "import sys",
+  `sys.path.insert(0, ${JSON.stringify(join(CODE_ROOT, "loops"))})`,
+  "import worker_loop as w",
+  `w.CLAUDE=[sys.executable, ${JSON.stringify(join(CODE_ROOT, "examples", "mock_worker_cli.py"))}]`,
+  "w.RUNTIME='claude'; w.API_MODE=False; w.PROFILE_MODE=False; w.PROFILE_ERROR=None; w.EXECUTION_PROFILE=None",
+  "w.record_process_started=lambda *args,**kwargs:True",
+  "w.main()",
+].join("\n");
+say("  仅内置 mock 流程演示；不验证宿主启动身份、真实模型或人工验收。");
+const mock = spawnSync(PY, ["-c", mockHost, "--as", line, "--once"], {
   stdio: "inherit", windowsHide: true, cwd: CODE_ROOT,
   env: { ...pyEnv, WORKER_CLI_ARGV: JSON.stringify([PY, join(CODE_ROOT, "examples", "mock_worker_cli.py")]) },
 });

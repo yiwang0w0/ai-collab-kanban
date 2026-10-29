@@ -1,3 +1,4 @@
+import { harnessEnvironment } from "./harness-env.mjs";
 import { fixtureVersion } from "./http-version-fixture.mjs";
 // Supervisor-layer harness: WHY a line stopped, and who is allowed to restart it.
 // `node tests/servertest.mjs`
@@ -34,6 +35,20 @@ const STUBS = mkdtempSync(join(tmpdir(), "servertest-stubs-"));
 const LINE = "alpha";
 const NL = String.fromCharCode(10);
 
+// ⭐ 这个 harness 会被当作 **verify 键**从另一条线的 loop 进程里跑起来(`verify_cmd=harness-server`;
+//   `loops/verify_lib.py` 的 verify_environment 明确把 BOARD_* / WORKER_* 原样传给验证命令)。
+//   继承下来的部署面 env 会把每一块「隔离板」变成部署板的配置 —— 2026-10-28 实测到的样子:
+//   继承的 BOARD_CONFIG 让隔离板读了部署的 fleet.config.json(线表 claude-dev/codex-dev/coord),
+//   于是 `line: "alpha"` 全被 badLine 以 400 拒掉:
+//     FAIL  J9-0 (前提) spawn-echo 席位已登记 — save=400 start=400 "未知的线名: alpha"
+//     harness itself fell over: TypeError: Cannot read properties of undefined (reading 'id')
+//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ / REVIEW_ / KANBAN_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
+//     再由 board() 逐项写回本 harness 自己的值。这与下面 configPort 那段 `delete spawnEnv.BOARD_PORT`
+//     是同一个教训(继承的 env 会悄悄改掉被测的那件事),只是范围从一个键扩到整族。
+//   ⚠ 剔除也修掉两处本来就被污染的负面对照:P3 要求 BOARD_REPO **不存在**(否则 config.repo 不生效),
+//     Q2-6b 要求无身份的线的 slot env 里**没有** WORKER_ROLE_KIND。
+const HOST_ENV = harnessEnvironment();
+
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
   if (cond) { pass++; console.log(`  PASS  ${name}${detail ? " — " + detail : ""}`); }
@@ -44,7 +59,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 /** The interpreter the SERVER will use for children. Resolved here so a red result
  *  can say "python was not found" instead of blaming the supervisor. */
 const PYTHON = (() => {
-  for (const c of [process.env.BOARD_PYTHON, process.env.PYTHON, "python", "py", "python3"].filter(Boolean)) {
+  for (const c of [HOST_ENV.PYTHON, "python", "py", "python3"].filter(Boolean)) {
     try { execFileSync(c, ["-c", "print(1)"], { stdio: "ignore" }); return c; } catch {}
   }
   return null;
@@ -115,7 +130,10 @@ async function board({ script = SERVER, env = {}, dataDir = null, files = {}, co
     env = { ...env, BOARD_CONFIG: join(DATA, "p-fleet.config.json") };
   }
   let out = "";
-  const spawnEnv = { ...process.env, BOARD_CODEX_RELEASED: "0", BOARD_CODEX_CMD: "", BOARD_PORT: String(PORT), BOARD_DATA_DIR: DATA,
+  // BOARD_CONFIG 指向一个**不存在**的文件 = 用内置缺省配置(alpha 线在那里);想测配置的 section
+  //   照旧用 opts.env / configPort 覆盖它(`...env` 在最后)。写法与 clitest、looptest 相同。
+  const spawnEnv = { ...HOST_ENV, BOARD_CONFIG: join(DATA, "none-fleet.config.json"),
+           BOARD_CODEX_RELEASED: "0", BOARD_CODEX_CMD: "", BOARD_PORT: String(PORT), BOARD_DATA_DIR: DATA,
            BOARD_DB: join(DATA, "t.db"), BOARD_ALLOW_UNPINNED: "1",
            BOARD_POOL_TEST_MODE: "1", BOARD_POOL_TEST_PROBE: "ok",
            ...(PYTHON ? { BOARD_PYTHON: PYTHON } : {}),
@@ -837,8 +855,8 @@ try {
       + JSON.stringify({ ts: "t", event: "compact", worker: LINE, before: 9 }) + NL
       + "{broken json" + NL, "utf8");
     const u1 = (await B.api("GET", "/api/usage")).body?.cards || {};
-    ok("M1 ⭐同卡多行求和(#1 = 两次尝试合计)",
-       u1["1"]?.in === 1500 && u1["1"]?.out === 400 && u1["1"]?.rows === 2 && u1["1"]?.cr === 400000,
+    ok("M1 ⭐同卡同attempt两轮求和，不虚增尝试次数",
+       u1["1"]?.in === 1500 && u1["1"]?.out === 400 && u1["1"]?.rows === 2 && u1["1"]?.cr === 400000 && u1["1"]?.attempts === 1 && u1["1"]?.rounds === 2,
        JSON.stringify(u1["1"]));
     ok("M2 各卡独立(#2 单行)", u1["2"]?.in === 1000 && u1["2"]?.rows === 1, JSON.stringify(u1["2"]));
     ok("M3 无卡行(compact 事件)与坏行都跳过,不污染也不致命",
@@ -866,6 +884,10 @@ try {
     const u5 = (await B.api("GET", "/api/usage")).body?.cards || {};
     ok("M7 文件被替换(变短)→ 重新归并,不叠旧账",
        u5["9"]?.in === 1000 && !u5["1"], JSON.stringify(Object.keys(u5)));
+    writeFileSync(LEDGER, readFileSync(LEDGER, "utf8") + row(9,{attempt:2,in:null,out:null}), "utf8");
+    const unknown=(await B.api("GET", "/api/usage")).body?.cards?.["9"];
+    ok("M7b 未知用量保留null，第二个attempt另计一次",
+       unknown?.in===null && unknown?.out===null && unknown?.attempts===2 && unknown?.rounds===2,JSON.stringify(unknown));
 
     // The panel actually consumes it (source-shape pin, same style as B3b).
     const panelSrc = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
@@ -1640,6 +1662,96 @@ try {
                       .some((d) => d.forced === true);
     ok("U6 正史记下了这一次是被人强制放行的(和'因为有变化才跑'区分得开)", forced,
        `claim 事件数=${evs.filter((e) => e.kind === "claim").length}`);
+  }
+
+  // ══ §V 给人看的两段白话(卡 #14):summary 与它唯一的退路、result_summary 从证据里取 ══
+  //    操作者的原话:「任务说明/执行条件/验收结果这三个都像是给 agent 看的,我看得太吃力」。
+  //    所以卡上多两段**白话**。这一节钉的是两条红线:
+  //      ① 没有 summary 时只有一条退路(说明以「【一句话】」开头取那一行),**不从长正文里截一段充数**
+  //         —— 截出来的第一段通常是背景,读起来像摘要而不是结论,比没有更坏。
+  //      ② result_summary 只从证据的固定标题那一节**取**,取不到就是 null,看板不另找模型总结。
+  {
+    console.log(NL + "[§V 给人看的摘要(summary 退路 · result_summary 从证据提取)]");
+    const V = await mk({});
+    const mkTask = async (body) => (await V.api("POST", "/api/tasks", { line: LINE, humanGate: false, ...body })).body?.task;
+    const got = async (id) => (await V.api("GET", `/api/tasks/${id}`)).body?.task;
+
+    const own = await mkTask({ subject: "标题很长很技术", summary: "把卡片最上面改成人能看懂的三行",
+                               description: "一大段给执行者看的说明,里面有文件:行" });
+    ok("V1 ⭐summary 能写进去也读得出来,brief 就是它(作者写的优先)",
+       own?.summary === "把卡片最上面改成人能看懂的三行" && own?.brief === own?.summary,
+       `summary=${JSON.stringify(own?.summary)} brief=${JSON.stringify(own?.brief)}`);
+
+    const oneLiner = await mkTask({ subject: "没写 summary 的卡",
+                                    description: "【一句话】给卡片最上面加三行白话\n\n下面是给执行者看的细节:文件 core/x.js:12 …" });
+    ok("V2 ⭐没有 summary、说明以「【一句话】」开头 → brief 取那一行(去掉标记)",
+       oneLiner?.summary === null && oneLiner?.brief === "给卡片最上面加三行白话",
+       `brief=${JSON.stringify(oneLiner?.brief)}`);
+
+    const legacy = await mkTask({ subject: "旧卡(只有标题和长说明)",
+                                  description: "背景:这件事起因于上个季度的一个决定,涉及三个模块……\n第二段还在讲背景。" });
+    ok("V3 ⭐旧卡没有新字段 → brief 是 null(只显示标题,不截长说明充数)",
+       legacy?.summary === null && legacy?.brief === null, `brief=${JSON.stringify(legacy?.brief)}`);
+
+    const blank = await mkTask({ subject: "summary 只有空格", summary: "   ", description: "无" });
+    ok("V3b 空白 summary 落成 null(读的一侧只有「有」和「没有」两种)",
+       blank?.summary === null && blank?.brief === null, `summary=${JSON.stringify(blank?.summary)}`);
+
+    const edited = await V.api("POST", `/api/tasks/${legacy.id}/update`,
+                               { summary: "补一句:让人看懂这张卡", expected_version: legacy.aggregate_version });
+    const after = await got(legacy.id);
+    ok("V4 摘要写错能改(不必归档重建 —— 与标题/说明/验收同一条路)",
+       edited.status === 200 && after?.brief === "补一句:让人看懂这张卡", `HTTP ${edited.status} brief=${JSON.stringify(after?.brief)}`);
+
+    // ── result_summary:交付那一刻从证据里取。固定标题 = 执行线提示词里写的那一个。
+    const deliver = async (card, evidence) => {
+      await V.api("POST", `/api/tasks/${card.id}/claim`, { worker: LINE });
+      await V.api("POST", `/api/tasks/${card.id}/report`, { worker: LINE, outcome: "done", evidence });
+      return got(card.id);
+    };
+    const withSummary = await deliver(await mkTask({ subject: "有摘要的交付" }), [
+      "## 给人看的结果", "结论:做成了", "- 改了什么:卡片最上面多了三行白话", "需要你做什么:不需要",
+      "", "## 给执行者看的详细说明", "core/panel.html:4520 加了 sideBrief()",
+    ].join("\n"));
+    ok("V5 ⭐宿主从证据里取出「给人看的结果」那一节(三行,列表符号去掉,下一节不进来)",
+       withSummary?.result_summary === "结论:做成了\n改了什么:卡片最上面多了三行白话\n需要你做什么:不需要",
+       JSON.stringify(withSummary?.result_summary));
+    ok("V5b 证据原文照旧完整落在 result(摘要是另一份,不替换证据)",
+       /core\/panel\.html:4520/.test(withSummary?.result || ""), String(withSummary?.result || "").slice(-40));
+
+    const noHead = await deliver(await mkTask({ subject: "没写那一节的交付" }),
+                                 "改了什么(文件:行)\ncore/x.js:1 改了一行\n跑了什么:node tests/x.mjs 全绿");
+    ok("V6 ⭐证据里没有那一节 → result_summary 是 null(**不**拿第一段充数,面板据此显示「交付里没有给人看的摘要」)",
+       noHead?.result_summary === null && !!noHead?.result, JSON.stringify(noHead?.result_summary));
+
+    const emptySection = await deliver(await mkTask({ subject: "标题写了但下面空着" }),
+                                       "## 给人看的结果\n\n## 给执行者看的详细说明\n细节在这里");
+    ok("V6b 标题有、下面没写 → 同样是 null(有标题不等于有摘要)",
+       emptySection?.result_summary === null, JSON.stringify(emptySection?.result_summary));
+
+    const tooMany = await deliver(await mkTask({ subject: "写了五行" }),
+                                  "## 给人看的结果\n一\n二\n三\n四\n五");
+    ok("V6c 超过三行只留三行,并留一个「…」说明被截过(沉默截断读起来像全文)",
+       tooMany?.result_summary === "一\n二\n三…", JSON.stringify(tooMany?.result_summary));
+
+    // 跨语言对照:执行线提示词里的固定标题与服务端解析用的标题是**同一个字符串**。
+    //   两边各写一份,改一处就静默失效 —— 「交付了却取不到摘要」最难查的就是这一形。
+    //   按源码比对(不 import store.js:那会在测试进程里带出 DATA_DIR / 登记簿的副作用)。
+    const loopSrc = readFileSync(join(ROOT, "loops", "worker_loop.py"), "utf8");
+    const storeSrc = readFileSync(join(ROOT, "core", "store.js"), "utf8");
+    const head = (storeSrc.match(/RESULT_SUMMARY_HEAD = "([^"]+)"/) || [])[1] || "";
+    ok("V7 ⭐提示词里的固定标题与服务端解析的标题逐字一致(跨语言对照)",
+       head === "给人看的结果" && loopSrc.includes(`HUMAN_RESULT_HEAD = "## ${head}"`) &&
+       /function resultSummaryOf\(/.test(storeSrc) && /function cardBrief\(/.test(storeSrc),
+       `store=${JSON.stringify(head)}`);
+
+    // 面板只渲染,不自己解析证据、不自己算退路(两份判据必有一份腐烂)。
+    const panelSrc3 = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
+    ok("V8 面板读 t.brief / t.result_summary,收起详细说明,且自己不解析证据(没有那个固定标题)",
+       /t\.brief/.test(panelSrc3) && /t\.result_summary/.test(panelSrc3) &&
+       /给执行者看的详细说明/.test(panelSrc3) && /交付里没有给人看的摘要/.test(panelSrc3) &&
+       !!head && !panelSrc3.includes(head), "");
+    V.kill();
   }
 
   if (fail) for (const b of boards) console.log(`\n──── board :${b.PORT} output ────\n` + b.out().slice(-1200));

@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // clitest — the newcomer's path, measured: package.json, the node preflight predicate,
 // `setup` (pure create, idempotent, never overwrites) and `reset` (fail-closed on every
 // axis). Everything runs against temp files and a temp port; nothing here can reach a
@@ -14,6 +16,8 @@ import { nodeTooOld } from "../core/env.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const TMP = mkdtempSync(join(tmpdir(), "clitest-"));
+Object.assign(HOST_ENV, { BOARD_CONFIG: join(TMP, "none.json"), BOARD_DATA_DIR: join(TMP, "host-data"),
+  BOARD_VERIFY_REGISTRY: join(TMP, "missing-registry.json") });
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
   if (cond) { pass++; console.log(`  PASS  ${name}${detail ? " — " + detail : ""}`); }
@@ -21,7 +25,7 @@ const ok = (name, cond, detail = "") => {
 };
 const run = (script, args = [], env = {}) => {
   const r = spawnSync(process.execPath, [join(ROOT, script), ...args],
-    { encoding: "utf8", env: { ...process.env, ...env }, windowsHide: true, timeout: 120000 });
+    { encoding: "utf8", env: { ...HOST_ENV, ...env }, windowsHide: true, timeout: 120000 });
   return { code: r.status, out: (r.stdout || "") + (r.stderr || "") };
 };
 const NL = String.fromCharCode(10);
@@ -141,7 +145,7 @@ console.log(NL + "[③b codex_cmd / codex_released → env]");
   writeFileSync(cfg, JSON.stringify({ lines: [{ id: "a" }], codex_cmd: "C:/x/codex.exe", codex_released: true }));
   const probe = 'import("./core/env.mjs").then(m=>{m.applyConfigDefaults();console.log(JSON.stringify([process.env.BOARD_CODEX_CMD,process.env.BOARD_CODEX_RELEASED]))})';
   const read = (env) => JSON.parse(spawnSync(process.execPath, ["-e", probe], { cwd: ROOT, encoding: "utf8", windowsHide: true,
-    env: { ...Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("BOARD_CODEX"))), BOARD_CONFIG: cfg, ...env } }).stdout.trim());
+    env: { ...HOST_ENV, BOARD_CONFIG: cfg, ...env } }).stdout.trim());
   ok("config true → BOARD_CODEX_RELEASED=1, codex_cmd → BOARD_CODEX_CMD", JSON.stringify(read({})) === JSON.stringify(["C:/x/codex.exe", "1"]));
   ok("env set → env wins", JSON.stringify(read({ BOARD_CODEX_CMD: "D:/y.exe", BOARD_CODEX_RELEASED: "0" })) === JSON.stringify(["D:/y.exe", "0"]));
   writeFileSync(cfg, JSON.stringify({ lines: [{ id: "a" }], codex_released: false }));
@@ -149,7 +153,7 @@ console.log(NL + "[③b codex_cmd / codex_released → env]");
   // A board that respawns itself (no wrapper) must not hand what it only BACKFILLED to its
   // successor as env — env wins, and an edited config would be ignored after the restart.
   const filled = spawnSync(process.execPath, ["-e", 'import("./core/env.mjs").then(m=>{process.env.BOARD_CODEX_CMD="pre-set";console.log(JSON.stringify(m.backfillEnv({codex_cmd:"x",codex_released:true},m.SEAT_KEYS)))})'],
-    { cwd: ROOT, encoding: "utf8", windowsHide: true, env: Object.fromEntries(Object.entries(process.env).filter(([k]) => !k.startsWith("BOARD_CODEX"))) }).stdout.trim();
+    { cwd: ROOT, encoding: "utf8", windowsHide: true, env: HOST_ENV }).stdout.trim();
   ok("backfillEnv names exactly the env vars it set (not ones already set)", filled === '["BOARD_CODEX_RELEASED"]', filled);
   const srv = readFileSync(join(ROOT, "core", "server.mjs"), "utf8");
   ok("(structure) the respawned successor's env drops the backfilled keys",
@@ -202,7 +206,7 @@ console.log(NL + "[⑤ demo]");
   ok("⭐未 bless → exit 3,是源码闸自己的话,并给出 bless 命令", g.code === 3 && /REFUSED/.test(g.out) && /board\.py bless/.test(g.out), `code=${g.code} ${g.out.slice(0, 120)}`);
   ok("未 bless 时什么都没起(端口仍空)", !(await listening(port)));
 
-  const envB = { ...process.env, ...env, BOARD_ALLOW_UNPINNED: "1", BOARD_TEST_SHUTDOWN_MS: "30000",
+  const envB = { ...HOST_ENV, ...env, BOARD_ALLOW_UNPINNED: "1", BOARD_TEST_SHUTDOWN_MS: "30000",
                  BOARD_POOL_TEST_MODE: "1", BOARD_POOL_TEST_PROBE: "ok" };
   const child = spawn(process.execPath, [join(ROOT, "cli", "demo.mjs")], { env: envB, windowsHide: true });
   const childExit = new Promise((resolve) => child.once("exit", (code, signal) => resolve({code, signal})));
@@ -219,6 +223,8 @@ console.log(NL + "[⑤ demo]");
   let exitTimer;
   const exited = await Promise.race([childExit, new Promise((res) => { exitTimer = setTimeout(() => res(null), 40000); })]);
   clearTimeout(exitTimer);
+  ok("内置 mock 明示其验证边界，不伪造受管进程启动记录",
+     !!waitingCard && waitingCard.execution_trace?.process_state !== "observed" && /不验证宿主启动身份、真实模型或人工验收/.test(out));
   ok("server 到点自停后 demo 正常退出且端口关闭", exited?.code === 0 && exited?.signal === null && !(await listening(port)), `exit=${JSON.stringify(exited)}`);
   ok("demo 的收尾把面板地址和等待裁定的卡告诉了人", /面板/.test(out) && /等待你裁定/.test(out) && /human-gated/.test(out), out.slice(-200));
   ok("(前提)确实是 mock 跑的:输出里有 worker 的一轮日志", /--once|第 1\/3 次尝试|等待中\/待验收/.test(out));
@@ -230,9 +236,9 @@ console.log(NL + "[⑤ demo]");
 //    the hash is written. accepted_rev is a tree object, so two of them diff directly.
 console.log(NL + "[⑥ bless 说清它接受的是什么]");
 {
-  const PY = process.env.PYTHON || process.env.BOARD_PYTHON || "python";
+  const PY = HOST_ENV.PYTHON || "python";
   const data = join(TMP, "bless-data"); mkdirSync(data, { recursive: true });
-  const env = { ...process.env, BOARD_DATA_DIR: data, BOARD_GATED_SUBTREE: ".", PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
+  const env = { ...HOST_ENV, BOARD_DATA_DIR: data, BOARD_GATED_SUBTREE: ".", PYTHONIOENCODING: "utf-8", PYTHONUTF8: "1" };
   const bless = () => { const r = spawnSync(PY, [join(ROOT, "cli", "board.py"), "bless"], { encoding: "utf8", env, windowsHide: true, cwd: ROOT, timeout: 60000 }); return { code: r.status, out: (r.stdout || "") + (r.stderr || "") }; };
   const head = spawnSync("git", ["rev-parse", "HEAD:"], { encoding: "utf8", cwd: ROOT }).stdout.trim();
   const b1 = bless();
@@ -261,7 +267,7 @@ console.log(NL + "[⑦ start.mjs 守护:exit 75 原地重起,其他码透传]");
     'console.log("second boot ok"); process.exit(0);',
   ].join(NL));
   const run = (script) => spawnSync(process.execPath, [join(ROOT, "cli", "start.mjs")],
-    { encoding: "utf8", env: { ...process.env, BOARD_SERVER_SCRIPT: script }, windowsHide: true, timeout: 30000 });
+    { encoding: "utf8", env: { ...HOST_ENV, BOARD_SERVER_SCRIPT: script }, windowsHide: true, timeout: 30000 });
   const r = run(stub);
   ok("⭐子进程 exit 75 → 守护在原地重起它一次(带 BOARD_SUPERVISED=1 / BOARD_RESTARTED_FROM),最终码 0",
      r.status === 0 && /boot supervised=1 from=-/.test(r.stdout) && /看板请求重启/.test(r.stdout) &&
@@ -317,7 +323,7 @@ console.log(NL + "[⑧ start:bg / open / stop]");
     '    { code: "SCHEDULER_LOCK_MISSING", level: "problem", next_action: "inspect_scheduler_owner", count: 1 }] });',
     '  send(res, 404, {}); }); }).listen(Number(process.env.BOARD_PORT), "127.0.0.1");',
   ].join(NL));
-  const env = { ...process.env, BOARD_SERVER_SCRIPT: stub, BOARD_PORT: String(port), BOARD_DATA_DIR: data,
+  const env = { ...HOST_ENV, BOARD_SERVER_SCRIPT: stub, BOARD_PORT: String(port), BOARD_DATA_DIR: data,
                 BOARD_CONFIG: join(TMP, "none.json"), BOARD_URL: "" };
   const cli = (script, args = [], extra = {}) => {
     const r = spawnSync(process.execPath, [join(ROOT, "cli", script), ...args],
@@ -392,10 +398,11 @@ console.log(NL + "[⑨ doctor: 模型请求发往哪里]");
   writeFileSync(join(home, ".claude", "settings.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "https://relay.example.net/v1", ANTHROPIC_AUTH_TOKEN: "sk-relay-secret-value-0001" } }));
   writeFileSync(join(repo, ".claude", "settings.local.json"), JSON.stringify({ env: { ANTHROPIC_BASE_URL: "http://127.0.0.1:8080" } }));
   writeFileSync(join(codexHome, "config.toml"), '[model_providers.zhipu]\nbase_url = "https://open.bigmodel.cn/api/paas/v4"\n');
-  const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(ANTHROPIC_|OPENAI_BASE_URL|CODEX_HOME|BOARD_)/.test(k)));
+  const clean = Object.fromEntries(Object.entries(HOST_ENV).filter(([k]) => !/^(ANTHROPIC_|OPENAI_BASE_URL|CODEX_HOME|BOARD_)/.test(k)));
   const doctor = (extra) => {
     const r = spawnSync(process.execPath, [join(ROOT, "cli", "doctor.mjs")], { encoding: "utf8", windowsHide: true, timeout: 120000,
-      env: { ...clean, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, BOARD_REPO: repo, BOARD_CONFIG: join(TMP, "none.json"),
+      env: { ...clean, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, WORKER_CLAUDE_CLI: process.execPath, BOARD_CODEX_CMD: process.execPath,
+             BOARD_REPO: repo, BOARD_CONFIG: join(TMP, "none.json"), BOARD_VERIFY_REGISTRY: join(TMP, "missing-registry.json"),
              BOARD_DATA_DIR: join(TMP, "doc-data"), BOARD_PORT: "0", ...extra } });
     return (r.stdout || "") + (r.stderr || "");
   };
@@ -437,6 +444,53 @@ console.log(NL + "[⑩ autostart: 登录后自动启动(可选)]");
     ok("Task Scheduler's validation is real: a broken definition is refused",
        !!taskScheduler("check", { name: autostartName() + "-probe", xml: "<Task>bad</Task>" }).error);
   }
+}
+
+// 模板入口只打印 JSON；原文件 payload 仍直传，HTTP 使用进程内桩而不访问看板。
+console.log(NL + "[⑪ 执行者任务模板与旧 create payload]");
+{
+  const PY = HOST_ENV.PYTHON || "python", board = join(ROOT, "cli", "board.py");
+  const env = { ...HOST_ENV, BOARD_URL: "http://127.0.0.1:1", PYTHONUTF8: "1", PYTHONIOENCODING: "utf-8" };
+  const python = (args, input) => spawnSync(PY, ["-I", "-B", "-X", "utf8", ...args],
+    { input, encoding: "utf8", env, cwd: ROOT, windowsHide: true, timeout: 10000 });
+  const printed = python([board, "create", "--template"]);
+  let template = null; try { template = JSON.parse(printed.stdout || ""); } catch {}
+  const example = JSON.parse(readFileSync(join(ROOT, "examples", "任务模板.json"), "utf8"));
+  ok("离线模板不访问看板，输出与现有字段示例相同且默认未放行",
+     printed.status === 0 && JSON.stringify(template) === JSON.stringify(example) && template.released === false,
+     (printed.stderr || "").slice(-180));
+  ok("模板区分人看摘要与执行者五段说明，验收包含命令到预期",
+     !!template && ["goal:", "ctx(file:line):", "do:", "accept(cmd -> expect):", "limits:"].every(label => template.description.split(NL).some(line => line.startsWith(label))) &&
+     !template.summary.includes("file:line") && template.acceptance.includes(" -> "));
+  const payloadFile = join(TMP, "任务模板输入.json");
+  const legacy = { subject: "旧格式原样建卡", description: "原来的自由文本", acceptance: "原来的验收", line: null,
+    parentId: 41, blockedBy: [9], released: false, summary: "保留旧摘要", verifyCmd: null };
+  const script = [
+    "import sys,json,runpy,urllib.request",
+    "board,payload=sys.argv[1:3]; seen=[]",
+    "class Response:",
+    " def __init__(self,task): self.task=task; self.status=201",
+    " def __enter__(self): return self",
+    " def __exit__(self,*args): pass",
+    " def read(self): return json.dumps({'task':{'id':7,'subject':self.task['subject']}}).encode('utf-8')",
+    "def request(req,timeout):",
+    " assert req.full_url=='http://127.0.0.1:1/api/tasks' and req.method=='POST'",
+    " body=json.loads(req.data.decode('utf-8')); seen.append(body); return Response(body)",
+    "urllib.request.urlopen=request",
+    "sys.argv=[board,'create','--file',payload]",
+    "runpy.run_path(board,run_name='__main__')",
+    "print('CAPTURE='+json.dumps(seen,ensure_ascii=False))",
+  ].join(NL);
+  for (const [label, payload] of [["旧自由文本", legacy], ["五段模板", example]]) {
+    writeFileSync(payloadFile, JSON.stringify(payload));
+    const r = python(["-c", script, board, payloadFile]);
+    let captured = null; try { captured = JSON.parse((r.stdout || "").split(/\r?\n/).find(line => line.startsWith("CAPTURE="))?.slice(8)); } catch {}
+    ok(`${label}的 create --file 原样提交全部 payload，不重写绑定、依赖或放行字段`,
+       r.status === 0 && JSON.stringify(captured) === JSON.stringify([payload]), (r.stderr || "").slice(-180));
+  }
+  const conflict = python([board, "create", "--template", "--file", payloadFile]);
+  ok("同时指定模板与建卡文件时拒绝，不猜测操作者要提交什么",
+     conflict.status !== 0 && /不能同时使用/.test(conflict.stderr || ""));
 }
 
 try { rmSync(TMP, { recursive: true, force: true }); } catch {}

@@ -47,10 +47,14 @@ REPO = os.environ.get("BOARD_REPO", CODE_ROOT)
 import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,勿各自复写)
 import codex_runtime
 import context_lib
+import verification_repair
+import evidence_contract
+from host_git_commit import HostCommitGuard, HostCommitError
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
-from verify_lib import run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules, deny_path, REGISTRY, auth_home_deny_rules   # noqa: F401
+from verify_lib import (run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules,  # noqa: F401
+                        deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules)
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
 # clash, and ignoring it here would aim this client at the DEFAULT port's board.
@@ -198,8 +202,8 @@ _API_CREDENTIALS = {key: os.environ.pop(key) for key in ("ANTHROPIC_API_KEY", "O
 # ── 线的身份(v0.22.0,fleet.config `lines[].role`,由 server 的 slotEnv 降下来)────────
 #   kind:implement(默认)= 干活;review = 只读、只核对、只判断,评审文本就是交付物。
 #   tools:write(默认)/ read-only —— **唯一被机器强制的部分**:Claude 座席进 argv
-#         (allowedTools 去掉 Edit + 工作仓的 Edit deny,见 readonly_edit_rules);codex 座席进
-#         `--sandbox read-only`。
+#         (`--tools` 去掉 Edit + 不放行工作仓的写 + 工作仓的 Edit deny,见 cli_write_allow_rules /
+#         readonly_edit_rules);codex 座席进 `--sandbox read-only`。
 #   charter:看板仓相对的 .md,由循环读盘后**逐字内联**进每次提示词并带 sha256;它必须落在受闸
 #         子树之内 —— 源码闸只保护那里,子树之外的章程没人验收过(操作者裁定 2026-09-28:章程住
 #         看板仓)。章程是纪律不是结构;「验收过哪一版」才是结构。
@@ -374,13 +378,17 @@ def call(method, path, body=None, timeout=20):
         raise RuntimeError(f"看板无应答({type(e).__name__}: {e})—— {method} {path}") from None
 
 
+# ⭐可用工具集合(v0.24.0 起走 `--tools` 白名单,不再走不带路径的 `--allowedTools`:后者等于
+#   放行任意路径的读取,2026-10-28 spike P1 实测越界读成功)。白名单的意义是**新版本 CLI 新增的
+#   写工具、联网工具不在里面就不会出现** —— 与拆解器 core/board-claude-cli.mjs 同一立场。
 # ⭐不给 worker Bash:执行只该由协调线做,也就是只有协调线可以 push。需要执行的卡去指名
 #   verify_registry.json 的键,由 **loop**(协调线的代理)代跑 —— 执行权和 push 权在 worker 侧
-#   一次都不出现(用结构防,不用纪律防)。⚠ --allowedTools 给了明示列表就会把 MCP 工具全部
-#   关在外面(实测:无头状态下卡在「需要授权」)。卡的 needs_bash 不再增加工具。
+#   一次都不出现(用结构防,不用纪律防)。卡的 needs_bash 不再增加工具。
+# ⚠ MCP 工具不在 `--tools` 管辖内,但 argv 里有 `--strict-mcp-config` 且不给 `--mcp-config`
+#   ⇒ 用户配置的 MCP 服务器一个都不加载。要放行就得在 server 单位显式挂载并写精确工具名。
 WORKER_TOOLS = ["Read", "Write", "Edit", "Glob", "Grep"]
-# 只读工具档:没有 Edit;Write 留着是为了写证据文件 —— 往工作仓写由 readonly_edit_rules 的 Edit 规则
-#   拒掉(Edit 规则覆盖所有写文件工具,实测)。
+# 只读工具档:没有 Edit;Write 留着是为了写证据文件 —— 往工作仓写在 dontAsk 下本来就没有放行规则
+#   (cli_write_allow_rules 只给证据目录),readonly_edit_rules 的 Edit deny 再拒一遍作为纵深。
 READONLY_TOOLS = ["Read", "Write", "Glob", "Grep"]
 
 
@@ -548,6 +556,7 @@ def harvest_spawned(t, worker):
                 f"{str(it.get('subject') or '')[:34]}")
         s2, r2 = call("POST", "/api/tasks", {
             "subject": str(it.get("subject") or "(无题)"),
+            "summary": str(it.get("summary") or ""),
             "description": str(it.get("description") or ""),
             "acceptance": str(it.get("acceptance") or ""),
             "line": it.get("line") if it.get("line") not in (None, "null") else t.get("line"),
@@ -595,7 +604,47 @@ def worktree_state():
             return ""
     st = git("status", "--porcelain")
     if not st: return None
-    return st, git("diff", "--stat")
+    return st, git("diff", "--no-ext-diff", "--no-textconv", "--stat")
+
+
+def host_commit_enabled():
+    """开关只对实现写入线生效；审阅及只读交付沿用原行为。"""
+    return (os.environ.get("WORKER_HOST_COMMIT") == "1"
+            and ROLE_KIND == "implement" and TOOL_PROFILE == "write")
+
+
+def claim_task(worker, line, route):
+    """占用和严格干净检查先于领取；未知领取结果保留占用，禁止自动再领。"""
+    guard = HostCommitGuard(REPO, worker).acquire() if host_commit_enabled() else None
+    try:
+        status, body = call("POST", "/api/claim",
+                            {"worker": worker, "line": line, "route": route, "lease_minutes": LEASE,
+                             "runtime": RUNTIME, "worker_protocol_version": 2,
+                             "agent_instance_id": AGENT_INSTANCE_ID})
+    except Exception as error:
+        if guard:
+            raise HostCommitError("领取结果未知，已保留仓库占用；人工核实原卡后恢复：" + str(error)) from error
+        raise
+    if guard:
+        if status == 200 and (body or {}).get("task"):
+            body["task"]["_host_commit_guard"] = guard
+        else:
+            guard.release()
+    return status, body
+
+
+def host_delivery(t, evidence, evidence_path, verification, rc):
+    """模型证据与登记验证都完成后才提交；SHA 随原卡报告一起交付。"""
+    guard = t.get("_host_commit_guard")
+    if not guard:
+        if host_commit_enabled():
+            raise HostCommitError("缺少领卡前的仓库占用，拒绝自动提交")
+        return evidence
+    if rc != 0 or not verification or not verification.get("ok"):
+        raise HostCommitError("模型调用或登记验证未成功，拒绝自动提交；保留现场及仓库占用")
+    result = guard.finish(t["id"], t["subject"], evidence_path)
+    note = ("宿主本地提交：" + result["sha"] + "\n本卡路径：" + "、".join(result["paths"])) if result["sha"] else "宿主检查：本卡没有文件变化，未创建空提交。"
+    return evidence + "\n\n" + note
 
 
 ST_MARK = {"done": ("✔", "已完成"), "in_progress": ("▶", "进行中"),
@@ -955,8 +1004,43 @@ def prompt_selftest():
                     stray.append(f"{sub}/{fn}:{i} {name}")
     ok("⭐源码里写进 <data> 的每个文件名都已归类(PROTECTED 或 MODEL_OUTPUT)", not stray, " · ".join(stray[:4]))
     av = cli_argv("提示词", ["--session-id", "x"], "claude-opus-5", "high")
-    ok("⭐主座席 argv 带 --disallowedTools 且紧跟全部规则", "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:] == rules)
-    ok("argv 仍有 --allowedTools 与 --add-dir(deny 是追加,不是替换)", "--allowedTools" in av and "--add-dir" in av)
+
+    def _vals(argv, flag):
+        """flag 后面紧跟的取值(到下一个 -- 开头的元素为止);同一 flag 出现多次时合并。"""
+        out = []
+        for i, a in enumerate(argv):
+            if a != flag: continue
+            for j in range(i + 1, len(argv)):
+                if str(argv[j]).startswith("--"): break
+                out.append(argv[j])
+        return out
+
+    ok("⭐主座席 argv 带 --disallowedTools 且紧跟全部规则",
+       "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:] == rules + auth_home_deny_rules())
+    # ── 读写边界(v0.24.0,按 2026-10-28 spike 实测):与拆解器同一组合 ─────────────────
+    ok("⭐权限模式是 dontAsk,argv 里没有 acceptEdits / plan(plan 会换模型,写只靠模型自律)",
+       _vals(av, "--permission-mode") == ["dontAsk"] and "acceptEdits" not in av and "plan" not in av,
+       str(_vals(av, "--permission-mode")))
+    ok("⭐可用工具由 --tools 白名单给出(write 档 = WORKER_TOOLS)",
+       _vals(av, "--tools") == WORKER_TOOLS, str(_vals(av, "--tools")))
+    ok("⭐--allowedTools 里一个不带路径的工具名都没有(不带路径的 Read 放行 = 放行任意路径的读取,spike P1)",
+       all(re.match(r"^(?:Read|Edit)\(.+\)$", r) for r in _vals(av, "--allowedTools")), str(_vals(av, "--allowedTools")))
+    ok("⭐write 档的写放行 = 工作仓 + 证据目录各一条 Edit(…/**)",
+       _vals(av, "--allowedTools") == [f"Edit({deny_path(REPO)}/**)", f"Edit({deny_path(EVID)}/**)"],
+       str(_vals(av, "--allowedTools")))
+    ok("⭐读范围挂了工作仓与证据目录(dontAsk 下读不需要放行规则;证据目录在 split 部署里在仓外)",
+       _vals(av, "--add-dir") == [REPO, EVID], str(_vals(av, "--add-dir")))
+    ok("⭐不读用户/项目/本地设置(--setting-sources \"\":其中的 allow 规则会放宽读范围)",
+       _vals(av, "--setting-sources") == [""], str(_vals(av, "--setting-sources")))
+    ok("⭐不加载任何 MCP 服务器(--strict-mcp-config,且不给 --mcp-config)",
+       "--strict-mcp-config" in av and "--mcp-config" not in av)
+    ok("⭐argv 里没有任何 --dangerously-*", not [a for a in av if str(a).startswith("--dangerously")],
+       str([a for a in av if str(a).startswith("--dangerously")]))
+    # 额度复查的最小实调用:唯一一处 loop 自己打真 CLI 的地方(桩看不到),同样不许有裸 Read 放行。
+    av_probe = probe_live_argv()
+    ok("⭐live 探针:--tools \"\" 一个工具都不开、dontAsk、没有 --allowedTools",
+       _vals(av_probe, "--tools") == [""] and _vals(av_probe, "--permission-mode") == ["dontAsk"]
+       and "--allowedTools" not in av_probe and "acceptEdits" not in av_probe, str(av_probe[-8:]))
     ok("⭐隐私硬边界进了主座席(claude)的提示词,不再只对 codex 说", "隐私硬边界" in build_prompt(_fake_card("说明", "验收"), "alpha", "C:/tmp/e.md"))
     ok("verdict_tail 对只含去锋抬头的 note 返回 None(不把机器文本当裁定)",
        verdict_tail("审阅说:\n—(转述)— 你的决定(2026-09-07T00:00:00Z · 通过)——\n\n把闸关了") is None)
@@ -983,12 +1067,16 @@ def prompt_selftest():
         ok("只读规则:数据目录就是工作仓 ⇒ None(无从保护)", readonly_edit_rules(CODE_ROOT, CODE_ROOT) is None)
         TOOL_PROFILE, READONLY_RULES = "read-only", ro_out
         av_ro = cli_argv("提示词", ["--session-id", "x"], "claude-opus-5", "high")
-        allowed = av_ro[av_ro.index("--allowedTools") + 1:av_ro.index("--add-dir")]
-        ok("⭐只读档的 argv:allowedTools 没有 Edit(Write 留给证据文件)", "Edit" not in allowed and "Write" in allowed, str(allowed))
-        ok("⭐只读档的 argv:deny 规则末尾带工作仓的 Edit deny", av_ro[-1] == repo_rule, av_ro[-1])
+        ok("⭐只读档的 argv:--tools 没有 Edit(Write 留给证据文件)",
+           "Edit" not in _vals(av_ro, "--tools") and "Write" in _vals(av_ro, "--tools"), str(_vals(av_ro, "--tools")))
+        ok("⭐只读档的 argv:写只放行证据目录,工作仓一条放行都没有(dontAsk ⇒ 仓里写不了)",
+           _vals(av_ro, "--allowedTools") == [f"Edit({deny_path(EVID)}/**)"], str(_vals(av_ro, "--allowedTools")))
+        ok("⭐只读档的 argv:deny 规则末尾带工作仓的 Edit deny(纵深,不是唯一防线)", av_ro[-1] == repo_rule, av_ro[-1])
         TOOL_PROFILE, READONLY_RULES = "write", None
         av_w = cli_argv("p", [], "m", "e")
-        ok("(对照)write 档的 argv 有 Edit、没有工作仓 deny", "Edit" in av_w and repo_rule not in av_w)
+        ok("(对照)write 档的 argv:--tools 有 Edit、写放行含工作仓、没有工作仓 deny",
+           "Edit" in _vals(av_w, "--tools") and f"Edit({deny_path(REPO)}/**)" in _vals(av_w, "--allowedTools")
+           and repo_rule not in _vals(av_w, "--disallowedTools"))
         # 评审框架
         ROLE_KIND = "review"
         rv = build_prompt(_fake_card("说明", "验收"), "astra", "C:/tmp/e.md")
@@ -1030,6 +1118,22 @@ def prompt_selftest():
                "用 Write 工具" in cw and "作为最终回复原样输出" in cw)
             RUNTIME = "claude"
             ok("(对照)claude 座席的交付段没有这条(它写得了)", "作为最终回复" not in chr(10).join(delivery_block("C:/x/e.md")))
+            # ⭐ 卡 #14:证据第一节是给人看的结果。标题固定 —— 宿主按它取 result_summary,
+            #   取不到卡面就显示「交付里没有给人看的摘要」(跨语言对照见 servertest §V)。
+            # TOOL_PROFILE / RUNTIME 在本函数开头已经声明过 global;这里再写一次是 SyntaxError。
+            _tp = TOOL_PROFILE
+            try:
+                seen = []
+                for _rt2, _tp2 in (("claude", "write"), ("claude", "read-only"), ("codex", "read-only")):
+                    RUNTIME, TOOL_PROFILE = _rt2, _tp2
+                    seen.append(chr(10).join(delivery_block("C:/x/e.md")))
+                ok("⭐三种座席的交付段都要求证据第一节写「给人看的结果」,标题逐字一致",
+                   all(HUMAN_RESULT_HEAD in text for text in seen) and HUMAN_RESULT_HEAD == "## 给人看的结果",
+                   HUMAN_RESULT_HEAD)
+                ok("⭐那一节要求白话、不写文件行号(行号留给下面给执行者看的正文)",
+                   all("不写文件行号" in text and "需要你做什么" in text for text in seen))
+            finally:
+                TOOL_PROFILE = _tp
         finally:
             RUNTIME = _rt
     finally:
@@ -1038,11 +1142,33 @@ def prompt_selftest():
     return 1 if fail_n else 0
 
 
-def delivery_block(evidence_path):
+# ⭐ 证据的第一节是给**人**看的(卡 #14)。宿主在交付那一刻按这个**固定标题**从证据里取出
+#   result_summary(core/store.js 的 resultSummaryOf / RESULT_SUMMARY_HEAD,servertest 跨语言对照),
+#   取不到卡面就显示「交付里没有给人看的摘要」并给出证据入口 —— 看板不会另找模型替你总结。
+#   ⚠ 改这里的标题就等于让摘要取不到:两边是同一个字符串,改一处必须改另一处。
+#   三行、白话、不写文件行号:行号写在下面的正文里,那是给执行者看的。
+HUMAN_RESULT_HEAD = "## 给人看的结果"
+HUMAN_RESULT_BLOCK = [
+    f"证据的**第一节**先写给人看的结果(标题照抄,三行以内,白话,不写文件行号):",
+    f"  {HUMAN_RESULT_HEAD}",
+    "  结论:做成了 / 没做成 / 做了一半 —— 一句话",
+    "  改了什么:一句话说清人能感觉到的变化",
+    "  需要你做什么:没有就写「不需要」",
+]
+
+
+def delivery_block(evidence_path, contract=None):
     """【怎么交付】—— 按座席与工具档变形。codex 的只读沙箱写不了文件,证据改走最终回复,
     由循环落成证据文件(run_codex);其余三种组合照旧用 Write 工具写文件。"""
+    if contract:
+        final_reply = API_MODE or RUNTIME == "codex" and TOOL_PROFILE == "read-only"
+        destination = ("把证据正文作为最终中文回复原样输出，宿主落盘。" if final_reply else
+                       f"用 Write 把证据正文写入 {evidence_path}。" + ("若沙箱拒写则作为最终回复原样输出，宿主落盘。" if RUNTIME == "codex" else ""))
+        return ["", "【怎么交付】" + destination,
+                *evidence_contract.prompt(contract), "不调用看板命令，不自行验收；格式与长度合格后才执行宿主登记验证。", ""]
     if API_MODE:
         return ["", "【怎么交付】把实际修改、产物位置与未执行的检查作为最终中文回复，宿主会落盘并执行登记验证。",
+                *HUMAN_RESULT_BLOCK,
                 "不要写工作仓以外的证据文件，不调用看板命令，不自行验收或派生新任务。", ""]
     if RUNTIME == "codex" and TOOL_PROFILE == "read-only":
         return [
@@ -1050,6 +1176,7 @@ def delivery_block(evidence_path):
             "【怎么交付】你处在 read-only 沙箱,写不了文件。把证据**作为最终回复原样输出**(不要包代码块、"
             "不要附解释),循环会把最终回复落成证据文件:",
             f"  {evidence_path}",
+            *HUMAN_RESULT_BLOCK,
             "证据里要有:核对了什么(文件:行)、依据是什么、结论是什么。贴机器产出,别手抄。",
             "**只要最终回复非空,就算交付**——剩余步骤由循环完成,不需要调用任何看板命令。",
             "",
@@ -1059,6 +1186,7 @@ def delivery_block(evidence_path):
         "",
         "【怎么交付】做完后,把证据写进这个文件(用 Write 工具,不需要跑命令):",
         f"  {evidence_path}",
+        *HUMAN_RESULT_BLOCK,
         ("证据里要有:核对了什么(文件:行)、依据是什么、结论是什么。贴机器产出,别手抄。"
          if ROLE_KIND == "review" else
          "证据里要有:改了什么(文件:行)、跑了什么、实际输出是什么。贴机器产出,别手抄。"),
@@ -1109,12 +1237,14 @@ def build_prompt(t, worker, evidence_path, prev_tail=None, attempt=1):
     if prev_tail:
         p.append("⚠ 上一次尝试**没有产出证据文件**。上次进程的输出尾部如下——"
                  "别再走同一条路,换个做法:\n```\n" + prev_tail + "\n```")
-    p += delivery_block(evidence_path)
+    p += delivery_block(evidence_path, evidence_contract.for_task(t))
     p += [
         "",
         "【发现本卡范围外的工作】不要直接处理。写一个 JSON 文件,循环会替你建成卡挂在本卡下面:",
         f"  {spawn_path}",
-        '格式:{"tasks":[{"subject":"...","description":"...","acceptance":"...","line":"<线名>"}]}',
+        '格式:{"tasks":[{"subject":"...","summary":"人看一两行","description":"...","acceptance":"...","line":"<线名>"}]}',
+        "description 沿执行者模板：goal: / ctx(file:line): / do: / accept(cmd -> expect): / limits:；"
+        "只列必要入口，未知行号明确待定位；acceptance 与 accept 段同一口径，不扩字段或权限。",
         "(line 不写 = 跟本卡同一条线。要交给别的线才写。)",
         "(权限和验证不由你指定 —— 写了也会被忽略,由协调决定。)",
         "⭐派生是「候选发现」不是新工作流。**最多提 2 项**,且每一项要同时满足:",
@@ -1291,6 +1421,7 @@ def usage_of(sid, since=None):
     out = {"calls": 0, "in": 0, "cc": 0, "cr": 0, "out": 0, "note": None}
     path = transcript_of(sid)
     if not path:
+        out.update({key: None for key in ("calls", "in", "cc", "cr", "out")})
         out["note"] = "转录未见(桩或未启动)"
         return out
     try:
@@ -1302,16 +1433,18 @@ def usage_of(sid, since=None):
             ts = j.get("timestamp") or ""
             if since and ts and ts < since: continue
             out["calls"] += 1
-            out["in"] += u.get("input_tokens", 0)
-            out["cc"] += u.get("cache_creation_input_tokens", 0)
-            out["cr"] += u.get("cache_read_input_tokens", 0)
-            out["out"] += u.get("output_tokens", 0)
+            for key, source in (("in", "input_tokens"), ("cc", "cache_creation_input_tokens"),
+                                ("cr", "cache_read_input_tokens"), ("out", "output_tokens")):
+                out[key] = None if out[key] is None or u.get(source) is None else out[key] + u[source]
+        if not out["calls"]:
+            out.update({key: None for key in ("calls", "in", "cc", "cr", "out")})
     except Exception as e:
+        out.update({key: None for key in ("calls", "in", "cc", "cr", "out")})
         out["note"] = f"转录解析失败: {e}"
     return out
 
 
-def acct_attempt(t, worker, attempt, model, effort):
+def acct_attempt(t, worker, attempt, model, effort, *, round_number=1, phase="initial", reason=None):
     """一次尝试记一行账。
 
     ⭐**行里必须带 model / effort**。没有它,「有没有提权」谁都观测不到
@@ -1327,7 +1460,11 @@ def acct_attempt(t, worker, attempt, model, effort):
            "card": t["id"], "attempt": attempt, "worker": worker,
            "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
            "model": model, "effort": effort,
-           "sid": (LAST_ACCT["sid"] or "")[:8], **u}
+           "sid": (LAST_ACCT["sid"] or "")[:8], "session_id": LAST_ACCT["sid"], **u,
+           "round": round_number, "phase": phase, "reason": reason,
+           "prompt_chars": LAST_ACCT.get("prompt_chars"), "prompt_bytes": LAST_ACCT.get("prompt_bytes"),
+           "evidence_chars": (t.get("_evidence_measurement") or {}).get("chars"),
+           "evidence_bytes": (t.get("_evidence_measurement") or {}).get("bytes")}
     if PROFILE_MODE:
         row.update({"execution_profile_id": EXECUTION_PROFILE["execution_profile_id"], "channel": EXECUTION_PROFILE["channel"]})
     if API_MODE:
@@ -1346,12 +1483,13 @@ def fmt_acct(rows):
         cost = "待核实" if any(r.get("cost_usd") is None for r in rows) else f"${sum(r['cost_usd'] for r in rows):.4f}（SDK 估算，不是账单）"
         return ("—— 本卡 API 用量 ——" + chr(10) + f"调用 {total('calls')} · 输入 {total('in')} · 输出 {total('out')} 词元 · 费用 {cost}"
                 + chr(10) + "促销归属以供应商账单核对为准；未知用量不记为零。")
-    tot = {k: sum(r.get(k, 0) for r in rows) for k in ("calls", "in", "cc", "cr", "out")}
+    def total(key):
+        return "待核实" if any(r.get(key) is None for r in rows) else f"{sum(r[key] for r in rows):,}"
     # 档位轨迹要进卡面。只有数字的话知道「烧了 3 次」,但看不出「是一边提档一边烧的」。
     traj = " → ".join(tier_label(r.get("model"), r.get("effort")) for r in rows) or "(无)"
     return ("—— 本卡用量记账(明细在 <data>/usage_ledger.jsonl)——" + chr(10) +
-            f"尝试 {len(rows)} 次 · 调用 {tot['calls']} · 输入 {tot['in']:,} · "
-            f"缓存写 {tot['cc']:,} · 缓存读 {tot['cr']:,} · 输出 {tot['out']:,} tok" + chr(10) +
+            f"尝试 {len(set(r.get('attempt') for r in rows))} 次 · 执行 {len(rows)} 轮 · 调用 {total('calls')} · 输入 {total('in')} · "
+            f"缓存写 {total('cc')} · 缓存读 {total('cr')} · 输出 {total('out')} tok" + chr(10) +
             f"档位轨迹: {traj}")
 
 
@@ -1377,7 +1515,24 @@ def judge_codex(rc, stdout, last_path):
 
 def cli_argv(prompt, sargs, model, effort):
     """主座席(Claude CLI)的整条 argv —— 抽出来是为了能从自测断言它的形状(此前只在 run_worker 里)。
-    ⭐ --disallowedTools 是 v0.17.0 加的结构防线:令牌目录与登记簿对模型不可读不可写(见 cli_deny_rules)。"""
+
+    ⭐ 读写边界是这组 argv,不是提示词(v0.24.0 按 2026-10-28 spike 实测改,与拆解器
+      core/board-claude-cli.mjs 同一组合;逐条依据见 verify_lib.cli_write_allow_rules):
+      · `--tools` 白名单:可用的内置工具只有 WORKER_TOOLS / READONLY_TOOLS 这几个。
+      · `--permission-mode dontAsk`:未预先放行的调用一律拒绝,也盖过用户设置里的 defaultMode。
+        ⚠ 不再给不带路径的 `--allowedTools Read …` —— 那等于放行任意路径的读取(spike P1 实测
+        越界读成功:模型能读 ~/.claude 之类的绝对路径)。dontAsk 下 cwd 与 `--add-dir` 范围内的
+        **读**不需要放行规则(spike P2/P4)⇒ 读范围 = cwd(工作仓)+ 工作仓 + 证据目录,越界读被拒。
+      · **写**在 dontAsk 下要显式放行:write 档 = 工作仓 + 证据目录各一条 `Edit(…/**)`;
+        read-only 档只放行证据目录 ⇒ 结构上写不了工作仓(READONLY_RULES 的 Edit deny 再拒一遍)。
+      · `--setting-sources ""`:用户/项目/本地设置里的 allow 规则(会放宽读范围)、hooks、插件都不进来。
+        ⚠ 靠 settings.json 的 apiKeyHelper 登录的部署会响亮失败(与拆解器同一取舍)。
+      · `--strict-mcp-config` 且不给 `--mcp-config`:用户配置的 MCP 服务器一个都不加载。
+      · `--disallowedTools`:v0.17.0 起的路径拒绝规则 —— 令牌目录与登记簿、全部执行配置的认证目录
+        对模型不可读不可写(cli_deny_rules / auth_home_deny_rules);拒绝胜过放行,所以它们即便落在
+        放行目录之内也仍然读不得写不得。
+    ⚠ 证据目录要**单独** `--add-dir`:split 部署里 <data> 在工作仓之外(acceptEdits 时代靠「写哪都
+      放行」蒙过去了),dontAsk 下不挂就连证据文件都交不出来。"""
     return CLAUDE + [
         "-p", prompt,
         *sargs,
@@ -1390,17 +1545,33 @@ def cli_argv(prompt, sargs, model, effort):
         *budget_args(),
         *(["--max-turns", str(int(EXECUTION_PROFILE["budget"]["max_turns"]))]
           if PROFILE_MODE and (EXECUTION_PROFILE.get("budget") or {}).get("max_turns") else []),
-        "--permission-mode", "acceptEdits",
+        "--permission-mode", "dontAsk",
+        "--setting-sources", "",
+        "--strict-mcp-config",
         # ⭐ 工具档(v0.22.0):只读身份 = 没有 Edit,且工作仓整个进 Edit deny(readonly_edit_rules,
         #   main() 算好放在 READONLY_RULES)。这是身份里唯一被机器强制的部分。
-        "--allowedTools", *(READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS),
-        "--add-dir", REPO,
+        "--tools", *(READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS),
+        "--add-dir", REPO, "--add-dir", EVID,
+        "--allowedTools", *cli_write_allow_rules([EVID] if TOOL_PROFILE == "read-only" else [REPO, EVID]),
         "--disallowedTools", *cli_deny_rules(DATA),
+        # 验证原文由宿主写，模型可读用于续修，但不能修改既有日志。
+        f"Edit({deny_path(os.path.join(EVID, 'verify_runs'))}/**)",
         # 全部执行配置的认证目录(可自定义到数据目录之外,不在 PROTECTED 的 auth/** 里):旧线与显式配置
         #   一样,文件工具对每个目录都不读不写(verify_lib.auth_home_deny_rules)。
         *auth_home_deny_rules(),
         *((READONLY_RULES or []) if TOOL_PROFILE == "read-only" else []),
     ]
+
+
+def probe_live_argv():
+    """额度复查的最小实调用(`--probe-runtime --live`)。只要模型回一行字,一个工具都不需要
+    ⇒ `--tools ""` 关掉全部内置工具,顺带与 cli_argv 同一立场:不给不带路径的 `--allowedTools Read`
+    (那等于放行任意路径的读取,2026-10-28 spike P1 实测)。抽成函数是为了能从自测断言它的形状 ——
+    这是唯一一处 loop 自己打真实调用的地方,桩看不到它。"""
+    return CLAUDE + ["-p", "Reply with exactly: PROBE-OK",
+                     "--model", MODEL, "--effort", EFFORT,
+                     "--permission-mode", "dontAsk", "--tools", "",
+                     "--setting-sources", "", "--strict-mcp-config"]
 
 
 def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _call=None, _log=None):
@@ -1428,18 +1599,28 @@ def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _
 def run_task_process(t, worker, attempt, runtime, model, effort, argv, env, *, input=None,
                      _popen=None, _call=None, _log=None):
     """保留 run 的管道/超时语义，只在进程创建成功后补一条宿主观察。"""
-    process_options = ({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}) if PROFILE_MODE else {}
+    if t.get("_attempt_deadline") is not None and time.monotonic() >= t["_attempt_deadline"]:
+        raise subprocess.TimeoutExpired(argv, 0)
+    process_options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
     with (_popen or subprocess.Popen)(argv, stdin=subprocess.PIPE if input is not None else None,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                      encoding="utf-8", errors="replace", env=env, cwd=REPO, **process_options) as process:
         started = time.monotonic()
-        record_process_started(t, worker, attempt, runtime, model, effort, process.pid,
-                               _call=_call, _log=_log)
+        accepted = record_process_started(t, worker, attempt, runtime, model, effort, process.pid,
+                                          _call=_call, _log=_log)
+        if not accepted:
+            if _popen:
+                process.kill()
+            else:
+                stop_api_tree(process)
+            process.communicate()
+            raise RuntimeError("PROCESS_START_RECORD_REJECTED：启动记录未确认，已终止进程")
         try:
             # 记录请求占用本次超时预算，不延长模型允许的运行时间。
-            stdout, stderr = process.communicate(input, timeout=max(0, TIMEOUT - (time.monotonic() - started)))
+            deadline = t.get("_attempt_deadline", started + TIMEOUT)
+            stdout, stderr = process.communicate(input, timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired as e:
-            if PROFILE_MODE:
+            if not _popen:
                 stop_api_tree(process)
                 e.stdout, e.stderr = process.communicate(timeout=5)
             else:
@@ -1667,8 +1848,9 @@ def run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     directory = os.path.join(DATA, "agent_jobs", t["run_id"])
     os.makedirs(directory, mode=0o700, exist_ok=False)
     prompt_file, job_file = os.path.join(directory, "prompt.txt"), os.path.join(directory, "job.json")
+    prompt = build_prompt(t, worker, evidence_path, prev_tail, attempt)
     with io.open(prompt_file, "x", encoding="utf-8") as target:
-        target.write(build_prompt(t, worker, evidence_path, prev_tail, attempt))
+        target.write(prompt)
     p = EXECUTION_PROFILE
     job = {"format": "kanban-agent-job/v1", "task_id": t["id"], "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
            "execution_profile_id": p["execution_profile_id"], "profile_digest": p["profile_digest"], "channel": p["channel"], "runtime": RUNTIME,
@@ -1682,12 +1864,12 @@ def run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     env = provider_environment({**os.environ, **_API_CREDENTIALS}, p["channel"])
     terminal = run_api_process(t, worker, attempt, model, effort, [command, runner, "--job", job_file], env)
     raw = terminal.get("usage") or {}
-    LAST_ACCT = {"sid": terminal.get("session_id"), "t0": None, "cost_usd": terminal.get("cost_usd"),
+    LAST_ACCT = {"sid": terminal.get("session_id"), "t0": None, "cost_usd": terminal.get("cost_usd"), **prompt_measurement(prompt),
                  "usage": {"calls": raw.get("calls"), "in": raw.get("input_tokens"), "out": raw.get("output_tokens"),
                            "cc": raw.get("cache_creation_input_tokens", raw.get("cache_write_input_tokens")), "cr": raw.get("cached_input_tokens", raw.get("cache_read_input_tokens"))}}
     if terminal["status"] != "success":
         return -1, terminal.get("diagnostic", "SDK_EXECUTION_FAILED")
-    with io.open(evidence_path, "x", encoding="utf-8") as target:
+    with io.open(evidence_path, "x", encoding="utf-8", newline="") as target:
         target.write(terminal["report"])
     return 0, "SDK 结果已回传；正式验证与人工验收仍由原流程处理"
 
@@ -1698,23 +1880,38 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     gate = codex_gate()
     if gate:
         return -3, gate
+    env = codex_runtime.subscription_environment(os.environ); env["PYTHONIOENCODING"] = "utf-8"
+    login_error = codex_runtime.subscription_login_gate(CODEX_CLI, env, workdir=REPO)
+    if login_error:
+        LAST_ACCT = {"sid": None, "t0": None, "usage": None}
+        return -3, login_error
     last_path = os.path.join(DATA, f"codex-last-{t['id']}-{attempt}.txt")
     try: os.path.isfile(last_path) and os.remove(last_path)   # 别把上次的残骸当证据
     except Exception: pass
-    argv = codex_argv(model, effort, last_path)
-    prompt = build_prompt(t, worker, evidence_path, prev_tail, attempt)
-    env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
+    context = t.get("_repair_context")
+    argv = (codex_runtime.session_argv(CODEX_CLI, model, effort, last_path, REPO,
+            mode="read-only" if TOOL_PROFILE == "read-only" else "write", thread_id=context.get("session_id"))
+            if context is not None else codex_argv(model, effort, last_path))
+    prompt = context.get("prompt") if context and context.get("prompt") else build_prompt(t, worker, evidence_path, prev_tail, attempt)
     t0 = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         w = run_task_process(t, worker, attempt, "codex", model, effort, argv, env, input=prompt)
     except subprocess.TimeoutExpired:
-        LAST_ACCT = {"sid": None, "t0": t0, "usage": None}
+        LAST_ACCT = {"sid": None, "t0": t0, "usage": None, **prompt_measurement(prompt)}
         return -1, f"(codex 超时 {TIMEOUT}s 被杀)"
     except Exception as e:
-        LAST_ACCT = {"sid": None, "t0": t0, "usage": None}
+        LAST_ACCT = {"sid": None, "t0": t0, "usage": None, **prompt_measurement(prompt)}
         return -2, f"(codex spawn 失败:{e})"
     v = judge_codex(w.returncode, w.stdout, last_path)
-    LAST_ACCT = {"sid": v["thread"], "t0": t0, "usage": v["usage"]}
+    LAST_ACCT = {"sid": v["thread"] or (context or {}).get("session_id"), "t0": t0, "usage": v["usage"], **prompt_measurement(prompt)}
+    if context is not None and v.get("thread"):
+        try:
+            sid = str(uuid.UUID(str(v["thread"])))
+        except ValueError:
+            return -2, "Codex 返回了无效会话 UUID，停止本次尝试"
+        if context.get("session_id") and context["session_id"] != sid:
+            return -2, "Codex 续接返回了不同会话，停止本次尝试"
+        context["session_id"] = sid
     # ⭐ 沙箱写不了证据文件时,最终回复就是证据,由这里落盘(delivery_block 对模型说的正是这个):
     #   只读沙箱必然如此;workspace-write 在**分仓部署**(BOARD_REPO ≠ 看板仓)下也如此 —— 证据路径
     #   在工作仓之外,沙箱拒写(v0.23.1,远程机接手时发现的形)。只在模型没写出文件时才落 ——
@@ -1722,7 +1919,12 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     if v["ok"] and v.get("last") and not os.path.isfile(evidence_path):
         try:
             os.makedirs(os.path.dirname(evidence_path), exist_ok=True)
-            io.open(evidence_path, "w", encoding="utf-8").write(v["last"])
+            original = v["last"]
+            if evidence_contract.for_task(t):
+                with io.open(last_path, encoding="utf-8", newline="") as source:
+                    original = source.read()
+            with io.open(evidence_path, "w", encoding="utf-8", newline="") as target:
+                target.write(original)
             log(f"  codex 没写出证据文件,最终回复已落为证据({len(v['last'])} 字)"
                 + ("" if TOOL_PROFILE == "read-only" else " —— 沙箱可能不允许写工作仓之外的路径(分仓部署)"))
         except Exception as e:
@@ -1756,10 +1958,7 @@ def probe_runtime(live=False):
         # 额度窗到点的复查不能只看版本/路径,要打**最小的实调用**。只过门就解禁的话,
         # 额度其实还满,却把全槽退回原座席,同样的失败会在全局重演一遍。
         try:
-            v = subprocess.run(CLAUDE + ["-p", "Reply with exactly: PROBE-OK",
-                               "--model", MODEL, "--effort", EFFORT,
-                               "--permission-mode", "acceptEdits",
-                               "--allowedTools", "Read"],
+            v = subprocess.run(probe_live_argv(),
                                capture_output=True, text=True, encoding="utf-8", errors="replace",
                                timeout=600, cwd=REPO)
         except Exception as e:
@@ -1788,12 +1987,17 @@ def probe_runtime(live=False):
     if not live:
         print("[probe] " + ("PASS" if ok else "FAIL") + "(无 --live: 没做实调用)", flush=True)
         return 0 if ok else 1
+    login_error = codex_runtime.subscription_login_gate(CODEX_CLI, os.environ, workdir=REPO)
+    if login_error:
+        print("[probe] " + login_error, flush=True)
+        return 1
     try: os.path.isfile(last_path) and os.remove(last_path)
     except Exception: pass
     os.makedirs(DATA, exist_ok=True)
     try:
         w = subprocess.run(argv, input="Reply with exactly: PROBE-OK", capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=600, cwd=REPO)
+                           text=True, encoding="utf-8", errors="replace", timeout=600, cwd=REPO,
+                           env=codex_runtime.subscription_environment(os.environ))
     except Exception as e:
         print(f"[probe] ⛔ 实调用抛异常: {e}"); return 1
     v2 = judge_codex(w.returncode, w.stdout, last_path)
@@ -1851,10 +2055,15 @@ def process_start_selftest(ok):
             if failure == "unreachable": raise RuntimeError("仅夹具断连")
             return 409, {"error": "仅夹具过期运行"}
         before = len(sent)
-        result = run_task_process(task, "夹具执行器", 1, "claude", "fixture-model", "high", [], {},
-                                  _popen=popen, _call=refused, _log=messages.append)
-        ok(f"进程记录:{failure}不重试、不误报spawn失败、不改变返回值",
-           len(sent) == before + 1 and result.returncode == 17 and "不重试" in messages[-1])
+        order = []
+        try:
+            run_task_process(task, "夹具执行器", 1, "claude", "fixture-model", "high", [], {},
+                             _popen=popen, _call=refused, _log=messages.append)
+            ok(f"进程记录:{failure}必须停止进程", False)
+        except RuntimeError as error:
+            ok(f"进程记录:{failure}不重试且停止进程，不消费未确认结果",
+               len(sent) == before + 1 and order == ["created", "kill", "communicate"]
+               and "PROCESS_START_RECORD_REJECTED" in str(error) and "不重试" in messages[-1])
     order = []
     class TimedOut(Process):
         def communicate(self, input=None, timeout=None):
@@ -1964,8 +2173,8 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
         return run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort)
     if RUNTIME == "codex":
         return run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort)
-    # ⚠ --allowedTools 给了明示列表就会**把 MCP 工具全部关在外面**(实测:想调 MCP 工具时
-    #   卡在"需要授权",无头状态下给不出授权就死锁)。要放行就在 server 单位明示放行。
+    # ⚠ 工具集合由 `--tools` 白名单给出(v0.24.0);MCP 工具不在它管辖内,但 `--strict-mcp-config`
+    #   且不给 `--mcp-config` ⇒ 用户配置的 MCP 服务器一个都不加载。要放行就在 server 单位明示挂载。
     # ⭐不给 worker Bash:执行只该由协调线做,也就是只有协调线可以 push。
     #   需要执行的卡去指名 verify_registry.json 的键,由 **loop**(协调线的代理)代跑。
     #   这样执行权和 push 权在 worker 侧一次都不出现 —— 不必依赖提示词里的「禁 push」
@@ -1973,14 +2182,20 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     #   ⚠卡的 needs_bash 不再增加工具。列还在,但这里不看。
     # 加派槽(无 session)也发明示 id —— 不发的话没人知道转录在哪,用量就**数不出来**。
     global LAST_ACCT
-    sargs = session_args()
-    sid_acct = FORKED_SID or SESSION
+    context = t.get("_repair_context")
+    sid_acct = context.get("session_id") if context else None
+    sargs = ["--resume", sid_acct] if sid_acct else session_args()
+    sid_acct = sid_acct or FORKED_SID or SESSION
     if not sargs:
         sid_acct = str(uuid.uuid4())
         sargs = ["--session-id", sid_acct]
+    if context is not None:
+        context["session_id"] = sid_acct
     LAST_ACCT = {"sid": sid_acct,
                  "t0": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")}
-    argv = cli_argv(build_prompt(t, worker, evidence_path, prev_tail, attempt), sargs, model, effort)
+    prompt = context.get("prompt") if context and context.get("prompt") else build_prompt(t, worker, evidence_path, prev_tail, attempt)
+    LAST_ACCT.update(prompt_measurement(prompt))
+    argv = cli_argv(prompt, sargs, model, effort)
     # ⭐ claude 座席的提示词走 argv(-p),Windows CreateProcess 的天花板是 32767 个
     #   UTF-16 字符 —— 预算 env 调大后超限的 spawn 只会留下 WinError 206 的"spawn 失败"。
     #   zcode 座席早有同款预算闸(zcode-profile.mjs),claude 这条链现在补齐:超预算就
@@ -1999,11 +2214,17 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
         return -2, f"(spawn 失败:{e})"
 
 
-def read_evidence(path):
+def prompt_measurement(prompt):
+    measured = evidence_contract.measure(prompt)
+    return {"prompt_chars": measured["chars"], "prompt_bytes": measured["bytes"]}
+
+
+def read_evidence(path, *, preserve=False):
     try:
         if os.path.isfile(path):
-            s = io.open(path, encoding="utf-8", errors="replace").read().strip()
-            return s or None
+            with io.open(path, encoding="utf-8", errors="strict" if preserve else "replace", newline="" if preserve else None) as source:
+                s = source.read()
+            return s if preserve else s.strip() or None
     except Exception as e:
         log(f"  证据读取失败:{e}")
     return None
@@ -2024,12 +2245,13 @@ def _failure_fp(vr, tail):
     return hashlib.md5(s0.encode("utf-8", "replace")).hexdigest()[:12]
 
 
-def handle(t, worker):
+def handle_legacy(t, worker):
     """一张卡的完整处置。返回时卡一定不在 in_progress(不会悬空)。
     返回 "done" / "wait" / "rejected"(交付被看板拒收 —— 见 deliver;主循环只把 done 当成功)。"""
     # 两个模块级信号的写权在这里,主循环只读:最近失败指纹 → 线级熔断;最近卡号 → 链边界判定。
     global LAST_FAIL_FP, LAST_CARD_ID
     tid = t["id"]
+    host_guard = t.get("_host_commit_guard")
     run_id = t.get("run_id")
     if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
         raise RuntimeError("领取回执缺少有效 run_id；未调用模型")
@@ -2068,8 +2290,12 @@ def handle(t, worker):
                    else "(槽配置在阶梯外 —— 本槽不爬梯,逐字沿用)")
                 + f" → {os.path.basename(ev_path)}"
                 + (f"(生涯累计第 {attempt} 次 —— 本卡被打回过,预算已回满)" if used != attempt else ""))
+            if host_guard:
+                host_guard.assert_intact()
             rc, tail = run_worker(t, worker, ev_path, tails[-1] if tails else None, attempt,
                                   a_model, a_effort)
+            if host_guard:
+                host_guard.bind_changes()
             log(f"  {RUNTIME} 退出 rc={rc}")
             LAST_CARD_ID = t["id"]          # 链边界判定用(下一周回的压缩判断)
             row_acct = acct_attempt(t, worker, attempt, a_model, a_effort)
@@ -2082,7 +2308,7 @@ def handle(t, worker):
             #   ⚠这不是"它免费"的意思 —— 那侧的节奏由各自池的闸承担,而那件事**尚未装**,
             #     所以要在 note 里明写(不静默地写 0)。
             _other_pool = (RUNTIME != "claude")
-            if not API_MODE:
+            if not API_MODE and all(row_acct.get(k) is not None for k in ("in", "cc", "cr", "out")):
                 gates_lib.append_spend(DATA, f"worker:{worker}",
                                    0.0 if _other_pool else gates_lib.usd_of(row_acct, a_model),
                                    card=t["id"], model=a_model,
@@ -2131,6 +2357,7 @@ def handle(t, worker):
                 log(f"  验证 {vr['key']}: " + ("通过" if vr["ok"] else f"失败 rc={vr.get('rc')}"))
 
             if ev and (vr is None or vr["ok"]):
+                ev = host_delivery(t, ev, ev_path, vr, rc)
                 made, memo = ([], "") if PROFILE_MODE else harvest_spawned(t, worker)
                 if made and not any(isinstance(x, dict) for x in made):
                     ev += (chr(10) + chr(10) + "—— 本卡派生出的子任务卡 ——" + chr(10) +
@@ -2216,9 +2443,161 @@ def handle(t, worker):
             # 用返回的上限更新手边的值。**判定不动**(判定在上面那一处)—— 动的是材料。
             # 没有这行,max_att 会冻在 claim 那一刻的值。
             max_att = int(r.get("max_attempts", max_att))
+    except HostCommitError as error:
+        LAST_FAIL_FP = "host-commit-refused"
+        deliver_run(tid, worker, "wait", "宿主自动提交停止：" + str(error), what="保留现场")
+        return "wait"
     finally:
         hb.stop.set()
         log(f"  心跳线程停止(共 {hb.beats} 次)")
+
+
+def repair_identity():
+    """续修不可切换认证目录、工作仓、权限或槽位。"""
+    return (RUNTIME, MODEL, EFFORT, TOOL_PROFILE, os.path.realpath(REPO),
+            os.environ.get("CODEX_HOME"), os.environ.get("CLAUDE_CONFIG_DIR"))
+
+
+def current_repair_run(t, worker, attempt):
+    """不续租来掩盖失租；每次追加调用前核实原执行身份仍有效。"""
+    try:
+        status, body = call("GET", f"/api/tasks/{t['id']}")
+        current = body.get("task") or {}
+        if (status != 200 or current.get("status") != "in_progress" or current.get("worker") != worker
+                or current.get("run_id") != t["run_id"] or current.get("attempts") != attempt
+                or (current.get("lease_until") or 0) <= time.time() * 1000):
+            return False
+        status, body = call("GET", f"/api/tasks/{t['id']}/runs")
+        run = next((r for r in body.get("runs", []) if r.get("run_id") == t["run_id"]), {})
+        return (status == 200 and run.get("state") == "running" and run.get("worker") == worker
+                and run.get("runtime") == RUNTIME and run.get("last_attempt") == attempt
+                and run.get("agent_instance_id") == AGENT_INSTANCE_ID)
+    except Exception:
+        return False
+
+
+def repair_round_limit(t):
+    """只用本次授权的冻结策略；不能安全累计的通道保留单轮。"""
+    value = (t.get("verification_repair") or {}).get("max_rounds", 1)
+    maximum = value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else 1
+    budget = (EXECUTION_PROFILE or {}).get("budget") or {}
+    if API_MODE or any(budget.get(k) for k in ("max_turns", "max_cost_usd")) or os.environ.get("WORKER_MAX_BUDGET_USD", "0") not in ("", "0"):
+        return 1, "single_round_budget_unprovable"
+    return maximum, None
+
+
+def handle(t, worker):
+    """默认一尝试内续修；旧阶梯与失败重开必须显式打开兼容开关。"""
+    if os.environ.get("WORKER_LEGACY_RETRY") == "1" and not evidence_contract.for_task(t):
+        return handle_legacy(t, worker)
+    global LAST_ACCT, LAST_FAIL_FP, LAST_CARD_ID
+    run_id = t.get("run_id")
+    if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
+        raise RuntimeError("领取回执缺少有效 run_id；未调用模型")
+    tid, attempt = t["id"], int(t.get("attempts", 1))
+    host_guard = t.get("_host_commit_guard")
+    maximum, limit_reason = repair_round_limit(t)
+    model, effort, binding = MODEL, EFFORT, repair_identity()
+    budget_timeout = ((EXECUTION_PROFILE or {}).get("budget") or {}).get("timeout_sec", TIMEOUT)
+    task = {**t, "_attempt_deadline": time.monotonic() + min(TIMEOUT, budget_timeout), "_repair_context": {}}
+    context, rows, last_result = task["_repair_context"], [], ""
+    contract = evidence_contract.for_task(task)
+    hb = Heartbeat(tid, worker, run_id); hb.start()
+    os.makedirs(EVID, exist_ok=True)
+    log_dir = os.path.join(EVID, "verify_runs", run_id)
+    os.makedirs(log_dir, exist_ok=True)
+    def finish(outcome, text):
+        delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id)
+        return "done" if delivered and outcome == "done" else "wait" if delivered else "rejected"
+    try:
+        for number in range(1, maximum + 1):
+            if number > 1:
+                reason = ("deadline_exhausted" if time.monotonic() >= task["_attempt_deadline"] else
+                          "identity_changed" if repair_identity() != binding else
+                          "lease_lost" if not current_repair_run(task, worker, attempt) else
+                          "session_missing" if not context.get("session_id") else None)
+                if reason:
+                    LAST_FAIL_FP = reason
+                    return finish("wait", f"停止续修：{reason}。\n" + last_result)
+            ev_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number}.md")
+            try:
+                os.remove(ev_path)
+            except FileNotFoundError:
+                pass
+            # 每轮先清空，启动门失败时不能沿用上一轮的用量或会话。
+            LAST_ACCT = {"sid": None, "t0": None, "usage": {k: None for k in ("calls", "in", "cc", "cr", "out")}}
+            log(f"  尝试 {attempt} 第 {number}/{maximum} 轮 [{tier_label(model, effort)}]")
+            try:
+                if host_guard:
+                    host_guard.assert_intact()
+                rc, tail = run_worker(task, worker, ev_path, None, attempt, model, effort)
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+                rc, tail = -2, f"执行环境异常：{type(error).__name__}: {error}"
+            LAST_CARD_ID = tid
+            if FORKED_SID:
+                confirm_forked(FORKED_SID)
+            evidence = read_evidence(ev_path, preserve=bool(contract))
+            task["_evidence_measurement"] = evidence_contract.measure(evidence) if evidence is not None else None
+            body_check = evidence_contract.validate(evidence, contract) if contract and evidence is not None else None
+            if host_guard:
+                host_guard.assert_intact()
+                if not body_check or body_check["ok"]:
+                    host_guard.bind_changes()
+            remaining = task["_attempt_deadline"] - time.monotonic()
+            task["_verify_timeout"] = max(0, remaining)
+            try:
+                vr = run_verify(task) if evidence and rc == 0 and remaining > 0 and (not body_check or body_check["ok"]) else None
+            except Exception as error:
+                vr = {"ok": False, "key": task.get("verify_cmd"), "rc": -2,
+                      "code": "VERIFY_HOST_ERROR", "out": f"验证宿主异常：{type(error).__name__}: {error}"}
+            reason = "deadline_exhausted" if time.monotonic() >= task["_attempt_deadline"] else verification_repair.classify(rc, tail, vr, evidence)
+            if rc == 0 and body_check and not body_check["ok"] and reason not in ("deadline_exhausted", "blocked"):
+                reason = "evidence_contract"
+            log_path = os.path.join(log_dir, f"attempt-{attempt}-round-{number}.log")
+            if vr:
+                try:
+                    with io.open(log_path, "w", encoding="utf-8", newline="") as output:
+                        output.write(str(vr.get("full_out", vr.get("out")) or ""))
+                    vr["log_path"] = log_path
+                    vr["log_bytes"] = os.path.getsize(log_path)
+                except OSError:
+                    vr["code"], vr["ok"], reason = "VERIFY_LOG_UNAVAILABLE", False, "environment"
+                if contract:
+                    appendix = (f"—— 宿主验证附录 ——\n{vr.get('cmd') or vr.get('key')} -> pass {1 if vr['ok'] else 0} / fail {0 if vr['ok'] else 1}（命令数）\n"
+                                + (f"日志：{log_path}（{vr['log_bytes']} UTF-8 bytes）" if vr.get("log_path") else "日志保存失败"))
+                else:
+                    appendix = fmt_verify(vr) + ("\n完整验证日志：" + log_path if vr.get("log_path") else "\n完整验证日志保存失败，停止续修。")
+                evidence = (evidence or "") + "\n\n" + appendix
+            if reason in ("test_failure", "evidence_contract") and number >= maximum:
+                reason = limit_reason or "round_limit"
+            row = acct_attempt(task, worker, attempt, model, effort, round_number=number,
+                               phase="initial" if number == 1 else "repair", reason=reason)
+            rows.append(row)
+            if not API_MODE and all(row.get(k) is not None for k in ("in", "cc", "cr", "out")):
+                gates_lib.append_spend(DATA, f"worker:{worker}", gates_lib.usd_of(row, model) if RUNTIME == "claude" else 0,
+                                       card=tid, model=model, note="逐轮用量；其他池不占主座席美元账" if RUNTIME != "claude" else None, log=log)
+            last_result = ("证据正文拒收：" + "；".join(body_check["errors"]) + f"。原文保留：{ev_path}（{body_check['chars']} 字符，{body_check['bytes']} UTF-8 bytes）。"
+                           if body_check and not body_check["ok"] else evidence or str(tail))
+            if reason == "passed":
+                last_result = host_delivery(t, last_result, ev_path, vr, rc)
+                made, memo = ([], "") if PROFILE_MODE else harvest_spawned(task, worker)
+                if made:
+                    last_result += "\n本卡派生子任务：" + str(made)
+                if memo:
+                    last_result += "\n" + memo
+                return finish("done", last_result)
+            LAST_FAIL_FP = reason
+            if reason not in ("test_failure", "evidence_contract"):
+                return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result)
+            next_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md")
+            context["prompt"] = (evidence_contract.correction(body_check, contract, ev_path, next_path)
+                                 if reason == "evidence_contract" else verification_repair.repair_prompt(vr, log_path, next_path, number + 1))
+        return finish("wait", "续修轮数用尽。\n" + last_result)
+    except HostCommitError as error:
+        LAST_FAIL_FP = "host-commit-refused"
+        return finish("wait", "宿主自动提交停止：" + str(error) + "\n" + last_result)
+    finally:
+        hb.stop.set()
 
 
 def parse_until(v):
@@ -2359,6 +2738,13 @@ def main():
         except ValueError as e:
             print(f"[worker] ⛔ {e} —— 认证目录的拒绝规则组不出来,拒绝启动", flush=True)
             sys.exit(gates_lib.EXIT_REFUSED)
+        # dontAsk 下写要显式放行(cli_write_allow_rules)。规则组不出来 = 工作仓/证据目录的路径
+        #   不是绝对路径 ⇒ 要么写不出证据、要么放行到意外的地方,两种都不许起跑(未知值落拒绝侧)。
+        try:
+            cli_write_allow_rules([REPO, EVID])
+        except ValueError as e:
+            print(f"[worker] ⛔ {e} —— 写放行规则组不出来(查 BOARD_REPO / BOARD_DATA_DIR),拒绝启动", flush=True)
+            sys.exit(gates_lib.EXIT_REFUSED)
     global READONLY_RULES
     if TOOL_PROFILE == "read-only" and RUNTIME == "claude" and not API_MODE:
         READONLY_RULES = readonly_edit_rules(REPO, DATA)
@@ -2375,6 +2761,8 @@ def main():
     #   手动执行、试验等不经 server 的路径上,同一判据同样生效才是防御的本体。
     if not API_MODE and RUNTIME == "codex":
         g2 = codex_gate()
+        if not g2:
+            g2 = codex_runtime.subscription_login_gate(CODEX_CLI, os.environ, workdir=REPO)
         if g2:
             print(g2, flush=True)
             sys.exit(gates_lib.EXIT_REFUSED)
@@ -2473,11 +2861,10 @@ def main():
             if once: return
             time.sleep(max(interval, 300)); continue
         try:
-            s, r = call("POST", "/api/claim",
-                        {"worker": worker, "line": line, "route": route, "lease_minutes": LEASE,
-                         # ⭐认领时自报运行时,面板据此显示实际运行方
-                         "runtime": RUNTIME, "worker_protocol_version": 2,
-                         "agent_instance_id": AGENT_INSTANCE_ID})
+            s, r = claim_task(worker, line, route)
+        except HostCommitError as error:
+            log("⛔ 宿主自动提交领卡前停止：" + str(error))
+            return
         except RuntimeError as e:
             log(str(e)); time.sleep(min(interval, 30)); continue
 
@@ -2520,6 +2907,13 @@ def main():
             log(f"  处置异常:{e}")
             deliver(t['id'], worker, "wait", f"loop 自身异常:{e}", run_id=t.get("run_id"), what="异常兜底")
             outcome = "wait"
+        host_guard = t.get("_host_commit_guard")
+        if host_guard:
+            if outcome == "done":
+                host_guard.release()
+            else:
+                log("⛔ 本卡未交付成功，保留仓库占用及现场；人工检查后恢复本线。")
+                return
         # ⭐无论哪种结局都继续下一张。waiting 停的是那条任务链,不是这个 worker。
         if once: return
         if PROFILE_MODE and outcome != "done":

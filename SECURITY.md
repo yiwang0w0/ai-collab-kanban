@@ -80,6 +80,14 @@ from a named incident (see `docs/INCIDENTS.md`):
   dontAsk 下读范围是 cwd 加 `--add-dir`，所以 cwd 用看板自建的空目录，越界读靠 dontAsk 拒绝，仓内敏感路径靠拒绝规则拒绝。
   同日真实 CLI（haiku、假数据）实测：令牌、登记簿、认证目录的读取与列目录都被拒，工作仓外文件的读取被拒，Grep 结果
   不含被拒文件，对照文件可读。规则命中不会出现在结果的 `permission_denials` 里，dontAsk 范围外的拒绝会出现。
+  v0.24.0 起执行线（`loops/worker_loop.py` 的 `cli_argv`）与审阅线（`loops/reviewer_loop.py`）用**同一组合**：
+  `--tools` 白名单 + `--permission-mode dontAsk` + `--setting-sources ""` + `--strict-mcp-config` + `--add-dir`
+  工作仓（审阅线另加判决目录，执行线另加证据目录）+ 既有路径拒绝规则。两条线都不再给不带路径的
+  `--allowedTools Read …`——那等于放行任意路径的读取（2026-10-28 spike P1 实测越界读成功），读范围因此是
+  cwd（工作仓）加 `--add-dir`，越界读由 dontAsk 拒绝。dontAsk 下**写**要显式放行，放行规则只有带路径的
+  `Edit(<目录>/**)`（`verify_lib.cli_write_allow_rules`）：执行线 = 工作仓 + 证据目录，只读档只有证据目录
+  （所以写不了工作仓），审阅线只有判决目录（「只写判决文件」从提示词约束变成结构约束）。argv 形状由
+  looptest ⑭⑮、reviewtest §2b 与 `--prompt-selftest` 钉住；真实 CLI 的越界读/越界写实测见本次交付的证据。
 - **Card text is never a command line.** The worker refuses `.bat/.cmd` CLIs
   (CVE-2024-24576, "BatBadBut": cmd.exe re-parses arguments, so a card body
   could become an executable command line). The gate judges by extension on

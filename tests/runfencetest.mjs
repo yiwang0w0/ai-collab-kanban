@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 import { fixtureVersion } from "./http-version-fixture.mjs";
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
@@ -141,7 +143,7 @@ test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat w
   const config=join(TMP,"fleet.config.json");
   writeFileSync(config,JSON.stringify({lines:[{id:"alpha",role:{kind:"implement",tools:"write"}}]}));
   const proc=spawn(process.execPath,[join(ROOT,"core/server.mjs")],{
-    env:{...process.env,BOARD_PORT:String(port),BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"http.db"),
+    env:{...HOST_ENV,BOARD_PORT:String(port),BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"http.db"),
       BOARD_CONFIG:config,BOARD_ALLOW_UNPINNED:"1",BOARD_RESTART_MODE:"exit"},
     windowsHide:true,stdio:["ignore","pipe","pipe"]});
   let out="";proc.stdout.on("data",b=>out+=b);proc.stderr.on("data",b=>out+=b);

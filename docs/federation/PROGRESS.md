@@ -1,5 +1,28 @@
 # 多终端共享看板实施记录
 
+## 2026-10-29：四节证据与任务模板
+新放行冻结默认 4000 Unicode 字符的四节正文合同；先校验再验证/提交，超限保留原文并沿原会话总轮数精简，旧证据和宿主附录另计。
+提示与正文按字符/UTF-8 字节计量，token 缺失保留未知；任务五段模板沿旧字段，内置 demo 仅使用明确宿主观察桩。
+相关本地桩 140 项通过，受限任务计划校验红在用户上下文同断言一次复核通过；独立审阅提示差异已修。全量交 CI，无真实模型调用，阻塞：无。
+
+## 2026-10-29：宿主逐卡本地提交
+新增默认关闭的 `host_auto_commit`：领卡前独占干净仓，模型后先校验控制面，登记验证通过后按本卡路径普通提交并向原卡回写 SHA。
+失败、中断及钩子拒绝保留现场；不推送、不授予模型 Git/shell，不宣称已完成路径权限隔离。本地桩与受影响续修回归通过，全量交 CI；阻塞：无。
+
+## 2026-10-29：原会话验证续修
+新放行冻结含首轮的总轮数，历史授权保留单轮；测试红在原会话与档位就地续修，环境异常、失租与预算不足转等待。
+完整验证日志与逐轮账本保留未知值；API 仍单轮，旧阶梯须显式兼容开关。独立差异审阅发现的截止边界、日志读范围和未知用量已修正。
+本地续修 8、旧阶梯 79、服务端 212、权限 8、协调 5、HTTP 7、侧栏 6、Codex 31、审阅 29 项通过；全量交 CI，无新增真实模型调用，阻塞：无。
+
+## 2026-10-29：AppContainer 终态清理顺序
+修正 Job 清空后先关进程句柄、一次删除再回执的顺序；暂存删除失败保留安全错误码，不增加等待或重试。
+两项确定性回归先红后绿，AppContainer 8 项、进程监管 28 项通过；CI174 原生取消与顺序回归通过，错误码夹具补齐父路径规范化，完整 CI 待后续结果。
+
+## 2026-10-28：Codex CLI 通道闭环准备
+订阅 CLI 只要求正数时限，强制 ChatGPT 认证；worker、审阅与协调模板共用凭据过滤，保留既有领取／回报协议。
+受影响离线检查：预算 12 项、SDK 与协调模板 22 项、Codex 自测 31 项、审阅 23 项通过；超时树用例的沙箱权限失败以实际用户上下文单独复核通过。
+路径隔离按操作者决定移至未放行的开发板 #8；真实闭环在 #4 回报，当前等待临时板候选版本由本人确认。
+
 ## 第一百零九批：补齐本机依赖与 CLI 环境报告，2026-10-05
 
 按 T01.01 原三条标准，将已经执行的六个版本检查和三种 CLI 帮助检查整理为 [environment-report.json](environment-report.json)。六个二进制/脚本及三份原帮助输出摘要仍匹配；没有重复执行版本/help、功能回归或真实任务。实际绝对路径和启动参数保留在私有报告，公开文件用路径占位及内容摘要；Zcode 桌面 3.14.4.7912 与 Node CLI 0.16.9 明确区分。
@@ -1252,3 +1275,23 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-10-28 英文标语：README 与 package.json description 由「The acceptance-first kanban for mixed AI fleets.」改为「The acceptance-first kanban for multi-agent AI collaboration.」；README 正文里把 fleet 当普通名词的介绍句与 fleet.config.json、fleet-* 测试脚本等技术标识不改；node/npm 读 package.json 正常；阻塞：无。
 - 2026-10-28 README 正文三处把 fleet 当普通名词的说法按操作者决定改写：a fleet of coding agents → a team of coding agents，mixed fleet (Claude + Codex) → mix of agents (Claude + Codex)，源码闸条目主语 the fleet → the workers（源码闸由 worker_loop／reviewer_loop 在执行线启动时执行，不管看板进程）；剩余 fleet 均为 fleet.config.json 与 examples 的 fleet config 技术标识，不改；阻塞：无。
 - 2026-10-28 README 以外文档里把 fleet 当普通名词的说法按操作者决定改写：CONTRIBUTING 与 GLOSSARY 的 physical fleet → physical two-machine（与 README 现有说法一致），SECURITY 共享机器建议的 run the fleet → run the board and its workers，SECURITY 与 QUICKSTART 源码闸条目主语 the fleet → the workers，SECURITY 的 deployed fleet → production deployment，QUICKSTART 的 fleet vocabulary → line vocabulary，桌面包 README 示例问句改为「请通过 AI 协作看板查询…」；fleet.config.json、fleet config、ai-fleet-board.mcpb、fleet-board、C:/fleet-desktop 等技术标识，以及 docs/INCIDENTS.md、docs/交接说明.md、docs/federation 下其余文件刻意不改；阻塞：无。
+
+- 2026-10-29 #14 独立审阅补修：未放行显式配置卡的目录、权限、预算与放行按钮保持可见，放行后才收进详情；默认材料仍折叠。
+- 新增侧栏行为用例先红后绿；其余相关检查继续按交接集中核对；阻塞：#16 文案闸误把插值代码判为正文，下一卡修正。
+
+- 2026-10-29 #16 修正文案闸的嵌套插值误报，保留外部正文检查，删除未命中的旧白名单；新增正反对照先红后绿，panelcopytest 27/27。
+- #14/#16 隔离检查：servertest 211、decompose 77、home 22、side 6、client 9 项通过；独立审阅已确认补修，无新增问题；阻塞：无。
+
+- 2026-10-29 #12：测试先导入共享隔离入口，清理当前进程与子进程五族部署变量，再回写自己的夹具；补齐空配置/登记簿入口，不改产品验证环境或部署登记簿。
+- 机器清单原有自动候选未完整隔离 19→0；跨源、主进程人工闸与配置入口有实际红绿对照；20 个自动入口/回归共 1054 项通过，真实模型调用 0。
+- 一次独立差异审阅及实际缺口的有限补修复核通过；真实 CLI 边界探针、历史漏洞复现工具单列不运行，后者仅隔离接线与语法检查；阻塞：无。
+- 2026-10-28 Codex CLI 闸裁定补修：生成前只读核实 ChatGPT 登录，API/未知认证拒绝生成且不注销；覆盖旧执行线与审阅线。
+- 协调模板改为显式接收已过滤环境，实际调用统一 prepare 预检；断言 exec/续接之后无 -c，防止顶层只读与认证约束失效。
+- 定向检查 11/11；looptest 72、reviewtest 23 项断言通过；实际 CLI 0.149.1 的假 API 登录预检拒绝生成且保留认证文件，未调用模型。
+
+- 2026-10-29 #4 稳定 CLI 0.165.0 复核：本轮 Windows 单机明确选择无需管理员初始化的 unelevated，保留读写和所有闸；参数不混层级，不作为路径隔离方案。
+- 新增后端/层级断言先红后绿，相关检查12、Codex纯函数31项通过；指定副本的API登录保护、原样本目录可读且拒写均为无模型实测。
+- 后续仍按原8次CLI启动总额顺序验证；认证目录隔离由第8卡与本人处理。
+
+- 2026-10-29 #4 预算显示补修：Codex CLI 只填时限即可正确显示单次执行，金额和内部轮次继续明确不构成硬帽，其他通道仍要求完整预算。
+- 新增空金额/轮次与缺时限对照先红后绿，panelcopytest 27/27；有限独立差异审阅无新增问题；阻塞：无。

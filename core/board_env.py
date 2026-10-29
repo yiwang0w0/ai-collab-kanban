@@ -21,7 +21,8 @@ CONFIG_FILE = os.environ.get("BOARD_CONFIG") or os.path.join(CODE_ROOT, "fleet.c
 
 _KEYS = (("port", "BOARD_PORT"), ("repo", "BOARD_REPO"), ("gated_subtree", "BOARD_GATED_SUBTREE"),
          # codex 座席的两个开关(npm run setup -- --codex 写入);与 core/env.mjs 的 SEAT_KEYS 同表。
-         ("codex_cmd", "BOARD_CODEX_CMD"), ("codex_released", "BOARD_CODEX_RELEASED"))
+         ("codex_cmd", "BOARD_CODEX_CMD"), ("codex_released", "BOARD_CODEX_RELEASED"),
+         ("host_auto_commit", "WORKER_HOST_COMMIT"))
 
 
 def load():
@@ -41,6 +42,8 @@ def apply():
     cfg = load()
     for ck, ek in _KEYS:
         v = cfg.get(ck)
+        if ck == "host_auto_commit" and v is not True:
+            continue
         if v is None or v is False or os.environ.get(ek):
             continue
         os.environ[ek] = "1" if v is True else str(v)
