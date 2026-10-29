@@ -23,9 +23,9 @@ regex = '''(?i)(?:[a-z]:|/mnt/[a-z]|/[a-z])[\\/]+users[\\/]+([^\\/\s"'<>%$`{}*|:
 secretGroup = 1
 
   [[rules.allowlists]]
-  description = "Generic example names, not personal identifiers."
+  description = "Generic example names and the test-fixture placeholder name, not personal identifiers."
   regexTarget = "secret"
-  regexes = ['''(?i)^(you|your-?name|user(name)?|name|me|xxx+|example|public|default|all|runner(admin)?|admin(istrator)?)$''']
+  regexes = ['''(?i)^(you|your-?name|user(name)?|name|me|xxx+|example|public|default|all|runner(admin)?|admin(istrator)?|fixture)$''']
 
   [[rules.allowlists]]
   description = "fea7378: redacted in c50f17a; history kept by operator decision 2026-10-14. Exempt from this rule only - the default secret rules still scan the commit."
