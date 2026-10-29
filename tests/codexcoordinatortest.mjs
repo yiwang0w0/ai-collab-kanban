@@ -24,7 +24,7 @@ for session in (None,thread):
  args=c.argv('codex.exe','fixture-model','high',str(base/'回复.json'),str(base),str(base/'结构.json'),thread_id=session)
  command=args.index('exec')
  assert '-c' not in args[command+1:],args
- for setting in ('sandbox_mode="read-only"','approval_policy="never"','forced_login_method="chatgpt"'):
+ for setting in ('sandbox_mode="read-only"','approval_policy="never"','forced_login_method="chatgpt"','windows.sandbox="unelevated"'):
   assert setting in args[:command],args
  assert args[args.index('-C')+1]==str(base) and args.index('-C')<command,args
  assert '--json' in args and '--ignore-user-config' in args and args[-1]=='-',args

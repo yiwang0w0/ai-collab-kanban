@@ -107,6 +107,7 @@ def argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None):
         "-c", "shell_environment_policy.inherit=core",
         "-c", "shell_environment_policy.ignore_default_excludes=false",
         "-c", 'forced_login_method="chatgpt"',
+        "-c", 'windows.sandbox="unelevated"',
         "-c", "tools.web_search=false",
         "--ignore-user-config",
         "--ephemeral",

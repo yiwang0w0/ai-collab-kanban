@@ -28,6 +28,7 @@ def argv(cli, model, effort, last_path, workdir, schema, *, thread_id=None):
         cli,
         "-c", 'sandbox_mode="read-only"',
         "-c", 'approval_policy="never"',
+        "-c", 'windows.sandbox="unelevated"',
         "-c", 'forced_login_method="chatgpt"',
         "-c", "model_reasoning_effort=" + json.dumps(str(effort)),
         "-c", "shell_environment_policy.inherit=core",
