@@ -119,6 +119,7 @@ if (existsSync(CONFIG_FILE)) {
     if (!Array.isArray(CFG.lines) || !CFG.lines.length) throw new Error("lines[] must be a non-empty array");
     if (!Array.isArray(CFG.routes) || !CFG.routes.length) throw new Error("routes[] must be a non-empty array");
     if (!Array.isArray(CFG.runtimes) || !CFG.runtimes.length) throw new Error("runtimes[] must be a non-empty array");
+    if (CFG.host_auto_commit != null && typeof CFG.host_auto_commit !== "boolean") throw new Error("host_auto_commit 必须是布尔值");
   } catch (e) {
     console.error(`拒绝启动:${CONFIG_FILE} 存在但不可用 —— ${e.message}`);
     process.exit(1);
@@ -1758,6 +1759,8 @@ function slotEnv(line, k, ag, isReview) {
            // BOARD_GATED_SUBTREE was a measured cold-walkthrough trap).
            ...(CFG_GATED_SUBTREE ? { BOARD_GATED_SUBTREE: CFG_GATED_SUBTREE } : {}),
            BOARD_REPO: REPO_ROOT,
+           // 仅宿主配置显式启用；旧部署与审阅循环始终保持关闭。
+           WORKER_HOST_COMMIT: !isReview && CFG.host_auto_commit === true ? "1" : "0",
            WORKER_PROTECTED_PATHS:JSON.stringify([store.DATA_DIR,CONFIG_FILE,
              process.env.BOARD_VERIFY_REGISTRY||join(CODE_ROOT,"core","verify_registry.json"),
              ...EXECUTION_PROFILES.map(p=>p.auth_home),process.env.BOARD_FLEET_ACTIONS_CONFIG,

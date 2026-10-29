@@ -48,6 +48,7 @@ import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,�
 import codex_runtime
 import context_lib
 import verification_repair
+from host_git_commit import HostCommitGuard, HostCommitError
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
@@ -601,7 +602,47 @@ def worktree_state():
             return ""
     st = git("status", "--porcelain")
     if not st: return None
-    return st, git("diff", "--stat")
+    return st, git("diff", "--no-ext-diff", "--no-textconv", "--stat")
+
+
+def host_commit_enabled():
+    """开关只对实现写入线生效；审阅及只读交付沿用原行为。"""
+    return (os.environ.get("WORKER_HOST_COMMIT") == "1"
+            and ROLE_KIND == "implement" and TOOL_PROFILE == "write")
+
+
+def claim_task(worker, line, route):
+    """占用和严格干净检查先于领取；未知领取结果保留占用，禁止自动再领。"""
+    guard = HostCommitGuard(REPO, worker).acquire() if host_commit_enabled() else None
+    try:
+        status, body = call("POST", "/api/claim",
+                            {"worker": worker, "line": line, "route": route, "lease_minutes": LEASE,
+                             "runtime": RUNTIME, "worker_protocol_version": 2,
+                             "agent_instance_id": AGENT_INSTANCE_ID})
+    except Exception as error:
+        if guard:
+            raise HostCommitError("领取结果未知，已保留仓库占用；人工核实原卡后恢复：" + str(error)) from error
+        raise
+    if guard:
+        if status == 200 and (body or {}).get("task"):
+            body["task"]["_host_commit_guard"] = guard
+        else:
+            guard.release()
+    return status, body
+
+
+def host_delivery(t, evidence, evidence_path, verification, rc):
+    """模型证据与登记验证都完成后才提交；SHA 随原卡报告一起交付。"""
+    guard = t.get("_host_commit_guard")
+    if not guard:
+        if host_commit_enabled():
+            raise HostCommitError("缺少领卡前的仓库占用，拒绝自动提交")
+        return evidence
+    if rc != 0 or not verification or not verification.get("ok"):
+        raise HostCommitError("模型调用或登记验证未成功，拒绝自动提交；保留现场及仓库占用")
+    result = guard.finish(t["id"], t["subject"], evidence_path)
+    note = ("宿主本地提交：" + result["sha"] + "\n本卡路径：" + "、".join(result["paths"])) if result["sha"] else "宿主检查：本卡没有文件变化，未创建空提交。"
+    return evidence + "\n\n" + note
 
 
 ST_MARK = {"done": ("✔", "已完成"), "in_progress": ("▶", "进行中"),
@@ -2184,6 +2225,7 @@ def handle_legacy(t, worker):
     # 两个模块级信号的写权在这里,主循环只读:最近失败指纹 → 线级熔断;最近卡号 → 链边界判定。
     global LAST_FAIL_FP, LAST_CARD_ID
     tid = t["id"]
+    host_guard = t.get("_host_commit_guard")
     run_id = t.get("run_id")
     if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
         raise RuntimeError("领取回执缺少有效 run_id；未调用模型")
@@ -2222,8 +2264,12 @@ def handle_legacy(t, worker):
                    else "(槽配置在阶梯外 —— 本槽不爬梯,逐字沿用)")
                 + f" → {os.path.basename(ev_path)}"
                 + (f"(生涯累计第 {attempt} 次 —— 本卡被打回过,预算已回满)" if used != attempt else ""))
+            if host_guard:
+                host_guard.assert_intact()
             rc, tail = run_worker(t, worker, ev_path, tails[-1] if tails else None, attempt,
                                   a_model, a_effort)
+            if host_guard:
+                host_guard.bind_changes()
             log(f"  {RUNTIME} 退出 rc={rc}")
             LAST_CARD_ID = t["id"]          # 链边界判定用(下一周回的压缩判断)
             row_acct = acct_attempt(t, worker, attempt, a_model, a_effort)
@@ -2285,6 +2331,7 @@ def handle_legacy(t, worker):
                 log(f"  验证 {vr['key']}: " + ("通过" if vr["ok"] else f"失败 rc={vr.get('rc')}"))
 
             if ev and (vr is None or vr["ok"]):
+                ev = host_delivery(t, ev, ev_path, vr, rc)
                 made, memo = ([], "") if PROFILE_MODE else harvest_spawned(t, worker)
                 if made and not any(isinstance(x, dict) for x in made):
                     ev += (chr(10) + chr(10) + "—— 本卡派生出的子任务卡 ——" + chr(10) +
@@ -2370,6 +2417,10 @@ def handle_legacy(t, worker):
             # 用返回的上限更新手边的值。**判定不动**(判定在上面那一处)—— 动的是材料。
             # 没有这行,max_att 会冻在 claim 那一刻的值。
             max_att = int(r.get("max_attempts", max_att))
+    except HostCommitError as error:
+        LAST_FAIL_FP = "host-commit-refused"
+        deliver_run(tid, worker, "wait", "宿主自动提交停止：" + str(error), what="保留现场")
+        return "wait"
     finally:
         hb.stop.set()
         log(f"  心跳线程停止(共 {hb.beats} 次)")
@@ -2418,6 +2469,7 @@ def handle(t, worker):
     if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
         raise RuntimeError("领取回执缺少有效 run_id；未调用模型")
     tid, attempt = t["id"], int(t.get("attempts", 1))
+    host_guard = t.get("_host_commit_guard")
     maximum, limit_reason = repair_round_limit(t)
     model, effort, binding = MODEL, EFFORT, repair_identity()
     budget_timeout = ((EXECUTION_PROFILE or {}).get("budget") or {}).get("timeout_sec", TIMEOUT)
@@ -2449,6 +2501,8 @@ def handle(t, worker):
             LAST_ACCT = {"sid": None, "t0": None, "usage": {k: None for k in ("calls", "in", "cc", "cr", "out")}}
             log(f"  尝试 {attempt} 第 {number}/{maximum} 轮 [{tier_label(model, effort)}]")
             try:
+                if host_guard:
+                    host_guard.assert_intact()
                 rc, tail = run_worker(task, worker, ev_path, None, attempt, model, effort)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
                 rc, tail = -2, f"执行环境异常：{type(error).__name__}: {error}"
@@ -2456,6 +2510,8 @@ def handle(t, worker):
             if FORKED_SID:
                 confirm_forked(FORKED_SID)
             evidence = read_evidence(ev_path)
+            if host_guard:
+                host_guard.bind_changes()
             remaining = task["_attempt_deadline"] - time.monotonic()
             task["_verify_timeout"] = max(0, remaining)
             try:
@@ -2483,6 +2539,7 @@ def handle(t, worker):
                                        card=tid, model=model, note="逐轮用量；其他池不占主座席美元账" if RUNTIME != "claude" else None, log=log)
             last_result = evidence or str(tail)
             if reason == "passed":
+                last_result = host_delivery(t, last_result, ev_path, vr, rc)
                 made, memo = ([], "") if PROFILE_MODE else harvest_spawned(task, worker)
                 if made:
                     last_result += "\n本卡派生子任务：" + str(made)
@@ -2495,6 +2552,9 @@ def handle(t, worker):
             context["prompt"] = verification_repair.repair_prompt(vr, log_path,
                 os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md"), number + 1)
         return finish("wait", "续修轮数用尽。\n" + last_result)
+    except HostCommitError as error:
+        LAST_FAIL_FP = "host-commit-refused"
+        return finish("wait", "宿主自动提交停止：" + str(error) + "\n" + last_result)
     finally:
         hb.stop.set()
 
@@ -2760,11 +2820,10 @@ def main():
             if once: return
             time.sleep(max(interval, 300)); continue
         try:
-            s, r = call("POST", "/api/claim",
-                        {"worker": worker, "line": line, "route": route, "lease_minutes": LEASE,
-                         # ⭐认领时自报运行时,面板据此显示实际运行方
-                         "runtime": RUNTIME, "worker_protocol_version": 2,
-                         "agent_instance_id": AGENT_INSTANCE_ID})
+            s, r = claim_task(worker, line, route)
+        except HostCommitError as error:
+            log("⛔ 宿主自动提交领卡前停止：" + str(error))
+            return
         except RuntimeError as e:
             log(str(e)); time.sleep(min(interval, 30)); continue
 
@@ -2807,6 +2866,13 @@ def main():
             log(f"  处置异常:{e}")
             deliver(t['id'], worker, "wait", f"loop 自身异常:{e}", run_id=t.get("run_id"), what="异常兜底")
             outcome = "wait"
+        host_guard = t.get("_host_commit_guard")
+        if host_guard:
+            if outcome == "done":
+                host_guard.release()
+            else:
+                log("⛔ 本卡未交付成功，保留仓库占用及现场；人工检查后恢复本线。")
+                return
         # ⭐无论哪种结局都继续下一张。waiting 停的是那条任务链,不是这个 worker。
         if once: return
         if PROFILE_MODE and outcome != "done":

@@ -28,7 +28,7 @@ const cases=[
  {line:"claudeapi",runtime:"claude",model:"claude-haiku-4-5",effort:"high",profile:"claude-api"},
  {line:"gptapi",runtime:"codex",model:"gpt-5.3-codex-spark",effort:"xhigh",profile:"gpt-api"},
 ];
-const seats=new Map(),spawnCounts=new Map(),customCredential=new Map(),kanbanCredential=new Map(),authHomes=new Map();let child,callback,base,operator,shared,output="";
+const seats=new Map(),spawnCounts=new Map(),customCredential=new Map(),kanbanCredential=new Map(),authHomes=new Map(),hostCommit=new Map();let child,callback,base,operator,shared,output="";
 // 无执行配置的旧线与审阅线：同一宿主组装点（slotEnv），只换成替身。
 const extraLines=[{line:"legacycli",runtime:"claude",model:"claude-haiku-4-5",effort:"high"},{line:"review",runtime:"claude",model:"claude-haiku-4-5",effort:"high"}];
 const profileConfig=[{id:"claude-cli",budget},{id:"codex-cli",budget},{id:"claude-api",enabled:true,budget},{id:"gpt-api",enabled:true,budget,provider_spend_limit_confirmed:true,credential_env:"GPT_PROJECT_KEY"}];
@@ -49,17 +49,17 @@ before(async()=>{
  mkdirSync(REPO);
  REPO=directoryIdentity(REPO).root;
  writeFileSync(CONTROL,"{}");
- callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);customCredential.set(value.worker,value.custom_credential);kanbanCredential.set(value.worker,value.kanban_credential);authHomes.set(value.worker,value.auth_homes);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
+ callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);customCredential.set(value.worker,value.custom_credential);kanbanCredential.set(value.worker,value.kanban_credential);authHomes.set(value.worker,value.auth_homes);hostCommit.set(value.worker,value.host_commit);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
  await new Promise(r=>callback.listen(0,"127.0.0.1",r));
  const stub=join(TMP,"受管替身.py");
- writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN',''),'custom_credential':'GPT_PROJECT_KEY' in os.environ,'kanban_credential':'KANBAN_ANTHROPIC_API_KEY' in os.environ,'auth_homes':os.environ.get('WORKER_AUTH_HOMES')}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
+ writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN',''),'custom_credential':'GPT_PROJECT_KEY' in os.environ,'kanban_credential':'KANBAN_ANTHROPIC_API_KEY' in os.environ,'auth_homes':os.environ.get('WORKER_AUTH_HOMES'),'host_commit':os.environ.get('WORKER_HOST_COMMIT')}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
  const original=join(ROOT,"core/server.mjs"),source=readFileSync(original,"utf8"),anchor='[loopScriptOf(line), "--as", line,',reviewAnchor='? [loopScriptOf(line), "--interval", "300",';
  assert.equal(source.split(anchor).length,2,"精确替换唯一宿主入口后才允许运行夹具");assert.equal(source.split(reviewAnchor).length,2,"审阅线入口同样唯一");
  const fixture=join(TMP,"server.mjs");
  writeFileSync(fixture,source.replace(anchor,`[${JSON.stringify(stub)}, "--as", line,`).replace(reviewAnchor,`? [${JSON.stringify(stub)}, "--as", "review", "--interval", "300",`).replaceAll("import.meta.url",JSON.stringify(pathToFileURL(original).href)).replace(/from\s+(['"])\.\/([^'"]+)\1/g,(_,q,path)=>"from "+JSON.stringify(pathToFileURL(join(dirname(original),path)).href)));
  const listener=netServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));const port=listener.address().port;await new Promise(r=>listener.close(r));base=`http://127.0.0.1:${port}`;
  const config=join(TMP,"fleet.json");
- writeFileSync(config,JSON.stringify({lines:[...cases,extraLines[0]].map(row=>({id:row.line})),roles:["review"],routes:["default"],repo:REPO,max_parallel:1,
+ writeFileSync(config,JSON.stringify({lines:[...cases,extraLines[0]].map(row=>({id:row.line})),roles:["review"],routes:["default"],repo:REPO,max_parallel:1,host_auto_commit:true,
   execution_profiles:profileConfig}));
  // 保留锁定时已有的 CLI 选择；设置接口仍须拒绝未经许可的新订阅配置。
  writeFileSync(join(TMP,"worker_settings.json"),JSON.stringify(Object.fromEntries([...cases,...extraLines].map(row=>[row.line,{rev:0,desired_running:false,agents:[{runtime:row.runtime,model:row.model,effort:row.effort,window:false,...(row.profile?{execution_profile_id:row.profile}:{})}]}]))));
@@ -106,6 +106,11 @@ test("无执行配置的旧线与审阅线同样拿不到任何配置登记的�
   assert.equal(customCredential.get(line),false,line+" 宿主不应看到自定义名称凭据 GPT_PROJECT_KEY");
   assert.equal(kanbanCredential.get(line),false,line+" 宿主不应看到默认登记的 KANBAN_ANTHROPIC_API_KEY");
  }
+});
+
+test("宿主逐卡提交开关经真实受管入口传给写入线，审阅循环保持关闭",()=>{
+ for(const line of ["claudecli","claudeapi","gptapi","legacycli"])assert.equal(hostCommit.get(line),"1",line);
+ assert.equal(hostCommit.get("review"),"0");
 });
 
 test("每条执行线（显式配置、旧线、审阅线）都收到全部配置的认证目录清单",()=>{
