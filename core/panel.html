@@ -4749,10 +4749,14 @@ function renderSide(){
   const ctlBox = ctl.kind === "none" ? null : sideControlsBox(t, ctl);
   out.push(sideBrief(t, step, item, ctlBox, ctl));
   if (t) {
+    const execution = sideExecution(t);
+    const checking = !!(t.execution_profile && t.status === "not_started" && !t.released);
+    if (checking) out.push(execution);
     const detail = homeEl("details", undefined, "side-sec side-detail");
     detail.id = "task-side-detail";
     detail.append(homeEl("summary", "给执行者看的详细说明"));
-    detail.append(sideExecution(t), sideRelationshipBox(t));
+    if (!checking) detail.append(execution);
+    detail.append(sideRelationshipBox(t));
     for (const [title, text] of [["任务说明", t.description], ["验收条件", t.acceptance], ["执行结果", t.result], ["裁定记录", t.verdict_note]]) {
       const sec = sideSection(title, text); if (sec) detail.append(sec);
     }
