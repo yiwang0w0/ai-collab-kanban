@@ -91,7 +91,7 @@ from unittest.mock import patch
 ns=runpy.run_path(sys.argv[1]); sandbox=ns['AppContainer'].__new__(ns['AppContainer'])
 sandbox.created=False; sandbox.sid=ctypes.c_void_p(); sandbox.report={'profile_removed':False,'staging_removed':False}
 with tempfile.TemporaryDirectory(prefix='ai-fleet-sandbox-') as root:
-    sandbox.root=Path(root); sandbox.temp_parent=sandbox.root.parent
+    sandbox.root=Path(root); sandbox.temp_parent=sandbox.root.parent.resolve()
     error=PermissionError(13,'fixture-private-path'); error.winerror=32
     with patch('shutil.rmtree',side_effect=error) as remove:
         sandbox.close(); assert remove.call_count==1
