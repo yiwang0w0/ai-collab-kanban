@@ -43,5 +43,6 @@ def repair_prompt(verification, log_path, evidence_path, round_number):
     return (f"本次尝试第 {round_number} 轮，就地修复刚才的验证失败。保持原任务、会话、模型、强度与权限。\n"
             f"验证键：{verification.get('key')}，退出码：{verification.get('rc')}。\n"
             + "\n\n".join(parts) + ("\n（其余完整项见日志。）" if size < len(output) else "")
-            + f"\n完整验证日志：{log_path}\n更新交付证据：{evidence_path}\n"
+            + f"\n完整验证日志：{log_path}" + (f"（{verification['log_bytes']} UTF-8 bytes）" if verification.get("log_bytes") is not None else "")
+            + f"\n更新交付证据：{evidence_path}\n"
               "只处理这次失败；如确实卡住请明确说明，不另开任务或提高档位。")

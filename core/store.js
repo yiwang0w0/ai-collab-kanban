@@ -1206,7 +1206,10 @@ function verificationRepairPolicy(value) {
   if (!value || typeof value !== "object" || Array.isArray(value) ||
       !Number.isSafeInteger(value.max_rounds) || value.max_rounds < 1 || value.legacy_retry !== false)
     return {max_rounds:1,legacy_retry:false};
-  return {max_rounds:value.max_rounds,legacy_retry:false};
+  const contract=value.evidence_contract;
+  const fixed=contract&&contract.version===1&&Number.isSafeInteger(contract.max_chars)&&contract.max_chars>0
+    ? {evidence_contract:{version:1,max_chars:contract.max_chars}} : {};
+  return {max_rounds:value.max_rounds,legacy_retry:false,...fixed};
 }
 function taskVerificationRepair(db, task, {fromRun = true} = {}) {
   if (fromRun && task.run_id) {

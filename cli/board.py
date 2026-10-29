@@ -5,6 +5,7 @@
   P="python cli/board.py"
   $P ls [--status not_started|in_progress|waiting|done] [--line alpha] [--archived false|true|all]
   $P show <id>
+  $P create --template                       # 离线打印现有字段的执行者模板 JSON，不访问看板
   $P create --file payload.json          # payload 的键与 POST /api/tasks 相同:subject(必填)、summary
                                              #   (给人看的「要做什么」,两行以内)、description、acceptance、
                                              #   line、weight、verifyCmd、humanGate、parentId …
@@ -173,7 +174,13 @@ def main():
         print(json.dumps(d["task"], ensure_ascii=False, indent=1))
 
     elif cmd == "create":
-        if not fp: sys.exit("create 需要 --file payload.json")
+        if "--template" in sys.argv:
+            if fp: sys.exit("create 的 --template 与 --file 不能同时使用；先编辑模板，再用 --file 建卡")
+            # 模板只是现有 API payload 的示例，不新增字段转换或任何执行授权。
+            template = os.path.join(os.path.dirname(HERE), "examples", "任务模板.json")
+            print(json.dumps(json.loads(readfile(template)), ensure_ascii=False, indent=2))
+            return
+        if not fp: sys.exit("create 需要 --file payload.json；可用 create --template 查看执行者模板")
         s, d = call("POST", "/api/tasks", json.loads(readfile(fp)))
         if s >= 400: die(s, d)
         print(f"已建 #{d['task']['id']}: {d['task']['subject']}")

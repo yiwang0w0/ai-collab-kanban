@@ -135,6 +135,13 @@ console.log("\n[④ the output contract the server depends on]");
   let shapeErrors = ["(示例不是 JSON)"];
   try { shapeErrors = DECOMPOSE_PLAN_SCHEMA && schemaErrorsOf ? schemaErrorsOf(JSON.parse(shape), DECOMPOSE_PLAN_SCHEMA) : ["(schema 或校验函数缺失)"]; } catch {}
   ok("⭐提示词里的 JSON 示例符合 DECOMPOSE_PLAN_SCHEMA(字段一致)", Array.isArray(shapeErrors) && shapeErrors.length === 0, shapeErrors.join(" · ").slice(0, 160));
+  let sample = null; try { sample = JSON.parse(shape).tasks[0]; } catch {}
+  ok("执行者说明保留五段入口，验收命令与预期不挤入给人看的摘要",
+     !!sample && ["goal:", "ctx(file:line):", "do:", "accept(cmd -> expect):", "limits:"].every(label => sample.description.split(String.fromCharCode(10)).some(line => line.startsWith(label))) &&
+     sample.acceptance.includes(" -> ") && !sample.summary.includes("file:line"), sample?.description);
+  ok("拆解说明要求未核实位置待定位，沿用登记验证、权限与放行闸",
+     p.includes("不伪造位置") && p.includes("verifyCmd 仍只使用已登记键") &&
+     p.includes("不改变既有权限、放行、父任务绑定或去重规则"));
   ok("it is told not to wrap the JSON in a code block (the server parses the final answer)",
      /不要包代码块/.test(p));
   ok("the goal's own subject and background are present",

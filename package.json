@@ -23,7 +23,7 @@
     "node:identity": "node cli/node.mjs",
     "test:fleet-view": "node tests/fleetviewtest.mjs",
     "test:home": "node tests/hometest.mjs && node tests/panelcopytest.mjs && node tests/panelsidetest.mjs && node tests/taskexecutionviewtest.mjs && node --test tests/taskexecutionhttp.test.mjs",
-    "test:channels": "node --test tests/executionprofilestest.mjs tests/fourchannel-store.test.mjs tests/fourchannelhttp.test.mjs tests/sdkrunnerstest.mjs tests/codexcoordinatortest.mjs tests/verificationrepairtest.mjs tests/hostcommittest.mjs",
+    "test:channels": "node --test tests/executionprofilestest.mjs tests/fourchannel-store.test.mjs tests/fourchannelhttp.test.mjs tests/sdkrunnerstest.mjs tests/codexcoordinatortest.mjs tests/verificationrepairtest.mjs tests/hostcommittest.mjs tests/evidencecontracttest.mjs",
     "test:identity": "node tests/identitytest.mjs",
     "backup": "node cli/backup.mjs",
     "test:backup": "node tests/backuptest.mjs",

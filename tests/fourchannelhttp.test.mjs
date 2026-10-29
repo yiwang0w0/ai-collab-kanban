@@ -123,7 +123,8 @@ test("本人确认摘要后才放行，受管绑定领取并把 SDK 观察和报
  const row=cases.find(row=>row.line==="gptapi"),created=await create(row),path=`/api/tasks/${created.id}`,token=seats.get(row.line);
  const wrong=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:"f".repeat(64)});assert.equal(wrong.status,409);
  assert.equal((await task(created.id)).body.task.released,false);
- assert.deepEqual(created.verification_repair,{max_rounds:3,legacy_retry:false});
+ const repairPolicy={max_rounds:3,legacy_retry:false,evidence_contract:{version:1,max_chars:4000}};
+ assert.deepEqual(created.verification_repair,repairPolicy);
  const badRepair=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:created.execution_profile.profile_digest,confirm_verification_repair_digest:"f".repeat(64)});assert.equal(badRepair.status,409);
  const released=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:created.execution_profile.profile_digest,confirm_verification_repair_digest:created.verification_repair_digest});assert.equal(released.status,200,JSON.stringify(released.body));
  const fixed=(await task(created.id)).body.task.execution_profile;assert.deepEqual(fixed.workspace,created.execution_profile.workspace);assert.equal(fixed.tools,"write");assert.equal(fixed.profile_digest,created.execution_profile.profile_digest);
@@ -131,11 +132,11 @@ test("本人确认摘要后才放行，受管绑定领取并把 SDK 观察和报
  const other=cases.find(row=>row.line==="claudeapi");assert.equal((await api(seats.get(other.line),"POST","/api/claim",{worker:other.line,line:row.line,runtime:other.runtime,worker_protocol_version:2,agent_instance_id:randomUUID()})).status,409);
  const unbound=await api(shared,"POST","/api/claim",{worker:"manual",line:row.line,runtime:row.runtime,worker_protocol_version:2,agent_instance_id:randomUUID()});assert.equal(unbound.status,204,"共享旧凭据不能领取绑定 API 卡");
  const instance=randomUUID(),picked=await claim(row,token,instance);assert.equal(picked.status,200,JSON.stringify(picked.body));assert.equal(picked.body.task.id,created.id);
- assert.deepEqual(picked.body.task.verification_repair,{max_rounds:3,legacy_retry:false});
+ assert.deepEqual(picked.body.task.verification_repair,repairPolicy);
  assert.deepEqual(picked.body.task.execution_profile.workspace,fixed.workspace);assert.equal(picked.body.task.execution_profile.tools,fixed.tools);
  const runProfile=(await api(operator,"GET",path+"/runs")).body.runs.find(run=>run.run_id===picked.body.task.run_id).policy.context.execution_profile;
  const runRepair=(await api(operator,"GET",path+"/runs")).body.runs.find(run=>run.run_id===picked.body.task.run_id).policy.context.verification_repair;
- assert.deepEqual(runRepair,{max_rounds:3,legacy_retry:false});
+ assert.deepEqual(runRepair,repairPolicy);
  assert.deepEqual(runProfile.workspace,fixed.workspace);assert.equal(runProfile.tools,fixed.tools);assert.equal(runProfile.profile_digest,fixed.profile_digest);
  const running=picked.body.task,profile=created.execution_profile;
  const started=await api(token,"POST",path+"/process-started",{worker:row.line,run_id:running.run_id,agent_instance_id:instance,runtime:row.runtime,attempt:running.attempts,pid:12345,model:row.model,effort:row.effort});assert.equal(started.status,200,JSON.stringify(started.body));

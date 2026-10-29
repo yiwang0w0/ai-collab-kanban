@@ -48,6 +48,7 @@ import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,�
 import codex_runtime
 import context_lib
 import verification_repair
+import evidence_contract
 from host_git_commit import HostCommitGuard, HostCommitError
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
@@ -555,6 +556,7 @@ def harvest_spawned(t, worker):
                 f"{str(it.get('subject') or '')[:34]}")
         s2, r2 = call("POST", "/api/tasks", {
             "subject": str(it.get("subject") or "(无题)"),
+            "summary": str(it.get("summary") or ""),
             "description": str(it.get("description") or ""),
             "acceptance": str(it.get("acceptance") or ""),
             "line": it.get("line") if it.get("line") not in (None, "null") else t.get("line"),
@@ -1155,9 +1157,15 @@ HUMAN_RESULT_BLOCK = [
 ]
 
 
-def delivery_block(evidence_path):
+def delivery_block(evidence_path, contract=None):
     """【怎么交付】—— 按座席与工具档变形。codex 的只读沙箱写不了文件,证据改走最终回复,
     由循环落成证据文件(run_codex);其余三种组合照旧用 Write 工具写文件。"""
+    if contract:
+        final_reply = API_MODE or RUNTIME == "codex" and TOOL_PROFILE == "read-only"
+        destination = ("把证据正文作为最终中文回复原样输出，宿主落盘。" if final_reply else
+                       f"用 Write 把证据正文写入 {evidence_path}。" + ("若沙箱拒写则作为最终回复原样输出，宿主落盘。" if RUNTIME == "codex" else ""))
+        return ["", "【怎么交付】" + destination,
+                *evidence_contract.prompt(contract), "不调用看板命令，不自行验收；格式与长度合格后才执行宿主登记验证。", ""]
     if API_MODE:
         return ["", "【怎么交付】把实际修改、产物位置与未执行的检查作为最终中文回复，宿主会落盘并执行登记验证。",
                 *HUMAN_RESULT_BLOCK,
@@ -1229,12 +1237,14 @@ def build_prompt(t, worker, evidence_path, prev_tail=None, attempt=1):
     if prev_tail:
         p.append("⚠ 上一次尝试**没有产出证据文件**。上次进程的输出尾部如下——"
                  "别再走同一条路,换个做法:\n```\n" + prev_tail + "\n```")
-    p += delivery_block(evidence_path)
+    p += delivery_block(evidence_path, evidence_contract.for_task(t))
     p += [
         "",
         "【发现本卡范围外的工作】不要直接处理。写一个 JSON 文件,循环会替你建成卡挂在本卡下面:",
         f"  {spawn_path}",
-        '格式:{"tasks":[{"subject":"...","description":"...","acceptance":"...","line":"<线名>"}]}',
+        '格式:{"tasks":[{"subject":"...","summary":"人看一两行","description":"...","acceptance":"...","line":"<线名>"}]}',
+        "description 沿执行者模板：goal: / ctx(file:line): / do: / accept(cmd -> expect): / limits:；"
+        "只列必要入口，未知行号明确待定位；acceptance 与 accept 段同一口径，不扩字段或权限。",
         "(line 不写 = 跟本卡同一条线。要交给别的线才写。)",
         "(权限和验证不由你指定 —— 写了也会被忽略,由协调决定。)",
         "⭐派生是「候选发现」不是新工作流。**最多提 2 项**,且每一项要同时满足:",
@@ -1451,7 +1461,10 @@ def acct_attempt(t, worker, attempt, model, effort, *, round_number=1, phase="in
            "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
            "model": model, "effort": effort,
            "sid": (LAST_ACCT["sid"] or "")[:8], "session_id": LAST_ACCT["sid"], **u,
-           "round": round_number, "phase": phase, "reason": reason}
+           "round": round_number, "phase": phase, "reason": reason,
+           "prompt_chars": LAST_ACCT.get("prompt_chars"), "prompt_bytes": LAST_ACCT.get("prompt_bytes"),
+           "evidence_chars": (t.get("_evidence_measurement") or {}).get("chars"),
+           "evidence_bytes": (t.get("_evidence_measurement") or {}).get("bytes")}
     if PROFILE_MODE:
         row.update({"execution_profile_id": EXECUTION_PROFILE["execution_profile_id"], "channel": EXECUTION_PROFILE["channel"]})
     if API_MODE:
@@ -1835,8 +1848,9 @@ def run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     directory = os.path.join(DATA, "agent_jobs", t["run_id"])
     os.makedirs(directory, mode=0o700, exist_ok=False)
     prompt_file, job_file = os.path.join(directory, "prompt.txt"), os.path.join(directory, "job.json")
+    prompt = build_prompt(t, worker, evidence_path, prev_tail, attempt)
     with io.open(prompt_file, "x", encoding="utf-8") as target:
-        target.write(build_prompt(t, worker, evidence_path, prev_tail, attempt))
+        target.write(prompt)
     p = EXECUTION_PROFILE
     job = {"format": "kanban-agent-job/v1", "task_id": t["id"], "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
            "execution_profile_id": p["execution_profile_id"], "profile_digest": p["profile_digest"], "channel": p["channel"], "runtime": RUNTIME,
@@ -1850,12 +1864,12 @@ def run_api_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     env = provider_environment({**os.environ, **_API_CREDENTIALS}, p["channel"])
     terminal = run_api_process(t, worker, attempt, model, effort, [command, runner, "--job", job_file], env)
     raw = terminal.get("usage") or {}
-    LAST_ACCT = {"sid": terminal.get("session_id"), "t0": None, "cost_usd": terminal.get("cost_usd"),
+    LAST_ACCT = {"sid": terminal.get("session_id"), "t0": None, "cost_usd": terminal.get("cost_usd"), **prompt_measurement(prompt),
                  "usage": {"calls": raw.get("calls"), "in": raw.get("input_tokens"), "out": raw.get("output_tokens"),
                            "cc": raw.get("cache_creation_input_tokens", raw.get("cache_write_input_tokens")), "cr": raw.get("cached_input_tokens", raw.get("cache_read_input_tokens"))}}
     if terminal["status"] != "success":
         return -1, terminal.get("diagnostic", "SDK_EXECUTION_FAILED")
-    with io.open(evidence_path, "x", encoding="utf-8") as target:
+    with io.open(evidence_path, "x", encoding="utf-8", newline="") as target:
         target.write(terminal["report"])
     return 0, "SDK 结果已回传；正式验证与人工验收仍由原流程处理"
 
@@ -1883,13 +1897,13 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     try:
         w = run_task_process(t, worker, attempt, "codex", model, effort, argv, env, input=prompt)
     except subprocess.TimeoutExpired:
-        LAST_ACCT = {"sid": None, "t0": t0, "usage": None}
+        LAST_ACCT = {"sid": None, "t0": t0, "usage": None, **prompt_measurement(prompt)}
         return -1, f"(codex 超时 {TIMEOUT}s 被杀)"
     except Exception as e:
-        LAST_ACCT = {"sid": None, "t0": t0, "usage": None}
+        LAST_ACCT = {"sid": None, "t0": t0, "usage": None, **prompt_measurement(prompt)}
         return -2, f"(codex spawn 失败:{e})"
     v = judge_codex(w.returncode, w.stdout, last_path)
-    LAST_ACCT = {"sid": v["thread"] or (context or {}).get("session_id"), "t0": t0, "usage": v["usage"]}
+    LAST_ACCT = {"sid": v["thread"] or (context or {}).get("session_id"), "t0": t0, "usage": v["usage"], **prompt_measurement(prompt)}
     if context is not None and v.get("thread"):
         try:
             sid = str(uuid.UUID(str(v["thread"])))
@@ -1905,7 +1919,12 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     if v["ok"] and v.get("last") and not os.path.isfile(evidence_path):
         try:
             os.makedirs(os.path.dirname(evidence_path), exist_ok=True)
-            io.open(evidence_path, "w", encoding="utf-8").write(v["last"])
+            original = v["last"]
+            if evidence_contract.for_task(t):
+                with io.open(last_path, encoding="utf-8", newline="") as source:
+                    original = source.read()
+            with io.open(evidence_path, "w", encoding="utf-8", newline="") as target:
+                target.write(original)
             log(f"  codex 没写出证据文件,最终回复已落为证据({len(v['last'])} 字)"
                 + ("" if TOOL_PROFILE == "read-only" else " —— 沙箱可能不允许写工作仓之外的路径(分仓部署)"))
         except Exception as e:
@@ -2175,6 +2194,7 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     LAST_ACCT = {"sid": sid_acct,
                  "t0": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")}
     prompt = context.get("prompt") if context and context.get("prompt") else build_prompt(t, worker, evidence_path, prev_tail, attempt)
+    LAST_ACCT.update(prompt_measurement(prompt))
     argv = cli_argv(prompt, sargs, model, effort)
     # ⭐ claude 座席的提示词走 argv(-p),Windows CreateProcess 的天花板是 32767 个
     #   UTF-16 字符 —— 预算 env 调大后超限的 spawn 只会留下 WinError 206 的"spawn 失败"。
@@ -2194,11 +2214,17 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
         return -2, f"(spawn 失败:{e})"
 
 
-def read_evidence(path):
+def prompt_measurement(prompt):
+    measured = evidence_contract.measure(prompt)
+    return {"prompt_chars": measured["chars"], "prompt_bytes": measured["bytes"]}
+
+
+def read_evidence(path, *, preserve=False):
     try:
         if os.path.isfile(path):
-            s = io.open(path, encoding="utf-8", errors="replace").read().strip()
-            return s or None
+            with io.open(path, encoding="utf-8", errors="strict" if preserve else "replace", newline="" if preserve else None) as source:
+                s = source.read()
+            return s if preserve else s.strip() or None
     except Exception as e:
         log(f"  证据读取失败:{e}")
     return None
@@ -2462,7 +2488,7 @@ def repair_round_limit(t):
 
 def handle(t, worker):
     """默认一尝试内续修；旧阶梯与失败重开必须显式打开兼容开关。"""
-    if os.environ.get("WORKER_LEGACY_RETRY") == "1":
+    if os.environ.get("WORKER_LEGACY_RETRY") == "1" and not evidence_contract.for_task(t):
         return handle_legacy(t, worker)
     global LAST_ACCT, LAST_FAIL_FP, LAST_CARD_ID
     run_id = t.get("run_id")
@@ -2475,6 +2501,7 @@ def handle(t, worker):
     budget_timeout = ((EXECUTION_PROFILE or {}).get("budget") or {}).get("timeout_sec", TIMEOUT)
     task = {**t, "_attempt_deadline": time.monotonic() + min(TIMEOUT, budget_timeout), "_repair_context": {}}
     context, rows, last_result = task["_repair_context"], [], ""
+    contract = evidence_contract.for_task(task)
     hb = Heartbeat(tid, worker, run_id); hb.start()
     os.makedirs(EVID, exist_ok=True)
     log_dir = os.path.join(EVID, "verify_runs", run_id)
@@ -2509,27 +2536,39 @@ def handle(t, worker):
             LAST_CARD_ID = tid
             if FORKED_SID:
                 confirm_forked(FORKED_SID)
-            evidence = read_evidence(ev_path)
+            evidence = read_evidence(ev_path, preserve=bool(contract))
+            task["_evidence_measurement"] = evidence_contract.measure(evidence) if evidence is not None else None
+            body_check = evidence_contract.validate(evidence, contract) if contract and evidence is not None else None
             if host_guard:
-                host_guard.bind_changes()
+                host_guard.assert_intact()
+                if not body_check or body_check["ok"]:
+                    host_guard.bind_changes()
             remaining = task["_attempt_deadline"] - time.monotonic()
             task["_verify_timeout"] = max(0, remaining)
             try:
-                vr = run_verify(task) if evidence and rc == 0 and remaining > 0 else None
+                vr = run_verify(task) if evidence and rc == 0 and remaining > 0 and (not body_check or body_check["ok"]) else None
             except Exception as error:
                 vr = {"ok": False, "key": task.get("verify_cmd"), "rc": -2,
                       "code": "VERIFY_HOST_ERROR", "out": f"验证宿主异常：{type(error).__name__}: {error}"}
             reason = "deadline_exhausted" if time.monotonic() >= task["_attempt_deadline"] else verification_repair.classify(rc, tail, vr, evidence)
+            if rc == 0 and body_check and not body_check["ok"] and reason not in ("deadline_exhausted", "blocked"):
+                reason = "evidence_contract"
             log_path = os.path.join(log_dir, f"attempt-{attempt}-round-{number}.log")
             if vr:
                 try:
-                    with io.open(log_path, "w", encoding="utf-8") as output:
+                    with io.open(log_path, "w", encoding="utf-8", newline="") as output:
                         output.write(str(vr.get("full_out", vr.get("out")) or ""))
                     vr["log_path"] = log_path
+                    vr["log_bytes"] = os.path.getsize(log_path)
                 except OSError:
                     vr["code"], vr["ok"], reason = "VERIFY_LOG_UNAVAILABLE", False, "environment"
-                evidence = (evidence or "") + "\n\n" + fmt_verify(vr) + ("\n完整验证日志：" + log_path if vr.get("log_path") else "\n完整验证日志保存失败，停止续修。")
-            if reason == "test_failure" and number >= maximum:
+                if contract:
+                    appendix = (f"—— 宿主验证附录 ——\n{vr.get('cmd') or vr.get('key')} -> pass {1 if vr['ok'] else 0} / fail {0 if vr['ok'] else 1}（命令数）\n"
+                                + (f"日志：{log_path}（{vr['log_bytes']} UTF-8 bytes）" if vr.get("log_path") else "日志保存失败"))
+                else:
+                    appendix = fmt_verify(vr) + ("\n完整验证日志：" + log_path if vr.get("log_path") else "\n完整验证日志保存失败，停止续修。")
+                evidence = (evidence or "") + "\n\n" + appendix
+            if reason in ("test_failure", "evidence_contract") and number >= maximum:
                 reason = limit_reason or "round_limit"
             row = acct_attempt(task, worker, attempt, model, effort, round_number=number,
                                phase="initial" if number == 1 else "repair", reason=reason)
@@ -2537,7 +2576,8 @@ def handle(t, worker):
             if not API_MODE and all(row.get(k) is not None for k in ("in", "cc", "cr", "out")):
                 gates_lib.append_spend(DATA, f"worker:{worker}", gates_lib.usd_of(row, model) if RUNTIME == "claude" else 0,
                                        card=tid, model=model, note="逐轮用量；其他池不占主座席美元账" if RUNTIME != "claude" else None, log=log)
-            last_result = evidence or str(tail)
+            last_result = ("证据正文拒收：" + "；".join(body_check["errors"]) + f"。原文保留：{ev_path}（{body_check['chars']} 字符，{body_check['bytes']} UTF-8 bytes）。"
+                           if body_check and not body_check["ok"] else evidence or str(tail))
             if reason == "passed":
                 last_result = host_delivery(t, last_result, ev_path, vr, rc)
                 made, memo = ([], "") if PROFILE_MODE else harvest_spawned(task, worker)
@@ -2547,10 +2587,11 @@ def handle(t, worker):
                     last_result += "\n" + memo
                 return finish("done", last_result)
             LAST_FAIL_FP = reason
-            if reason != "test_failure":
+            if reason not in ("test_failure", "evidence_contract"):
                 return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result)
-            context["prompt"] = verification_repair.repair_prompt(vr, log_path,
-                os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md"), number + 1)
+            next_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md")
+            context["prompt"] = (evidence_contract.correction(body_check, contract, ev_path, next_path)
+                                 if reason == "evidence_contract" else verification_repair.repair_prompt(vr, log_path, next_path, number + 1))
         return finish("wait", "续修轮数用尽。\n" + last_result)
     except HostCommitError as error:
         LAST_FAIL_FP = "host-commit-refused"

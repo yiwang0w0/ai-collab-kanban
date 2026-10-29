@@ -1,0 +1,9 @@
+{
+  "subject": "填写单个可独立交付的任务标题",
+  "summary": "用一两行白话说明交付后会有什么变化。",
+  "description": "goal: 本卡唯一交付目标。\nctx(file:line): 必要源码或文档入口；未核实的位置写待定位，不伪造行号。\ndo: 本卡需要完成的具体动作。\naccept(cmd -> expect): 按 acceptance 中的同一命令与预期验收。\nlimits: 允许修改的文件范围与原有预算；新增权限、生产操作、部署、推送和付费调用须另行确认。",
+  "acceptance": "填写已登记验证键对应的命令 -> 预期退出码、断言或产物；缺少前提时明确缺什么。",
+  "verifyCmd": null,
+  "line": null,
+  "released": false
+}

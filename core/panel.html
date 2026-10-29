@@ -4642,6 +4642,7 @@ function sideExecution(t){
   section.append(sideSteps(t, trace));
   const rows = [
     ["验证续修", `最多 ${t.verification_repair?.max_rounds || 1} 轮（含首轮）；同一会话与原档位，环境异常转等待`],
+    ["证据正文", t.verification_repair?.evidence_contract ? `固定四节，最多 ${t.verification_repair.evidence_contract.max_chars} Unicode 字符；宿主附录另计` : "沿原证据合同"],
     ["最近放行", trace.released_at ? localTime(trace.released_at) : t.released ? "时间未记录" : "尚未放行"],
     ["本轮领取", trace.claimed_at ? localTime(trace.claimed_at) : t.run_id ? "时间待核实" : "尚无领取记录"],
   ];

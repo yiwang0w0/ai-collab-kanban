@@ -67,7 +67,10 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
     //   但那张卡在面板上就只剩标题 —— 说清这件事,比默默替它从 description 截一段好。
     "- 每张卡写一句 summary:给人看的「要做什么」,一两行白话,不写文件行号、不写实现细节。",
     "- 顺序有依赖就用 after 指出前置(填同一批里的序号,从 1 开始);没有就不填。",
-    "- 每张卡要写清 acceptance:怎么判这活干没干成,能给可执行命令就给。",
+    "- description 使用执行者五段模板，保留这些标签：goal: / ctx(file:line): / do: / accept(cmd -> expect): / limits:。",
+    "- goal 写本卡唯一交付目标；ctx(file:line) 只列必要文件与行号入口，未核实时写待定位，不伪造位置；do 写本卡具体动作。",
+    "- accept(cmd -> expect) 与 acceptance 使用同一验收口径：命令 -> 预期退出码、断言或产物；未具备验证条件时明确缺什么。verifyCmd 仍只使用已登记键，不能靠正文新增执行权。",
+    "- limits 写允许修改的范围、预算与需要另行确认的动作；模板不改变既有权限、放行、父任务绑定或去重规则。",
     `- line 从这些里选(填「」前面的标识):${lineMenu(lines, hints, labels)};拿不准就填 null,谁都能领。`,
     "- 要跑命令的卡把 needs_bash 设成 true;只读写文件的不要设。",
     "- 涉及生产数据、DB migration、删除、push、花钱的,**在 description 里显式写明需要人确认**。",
@@ -77,8 +80,10 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
     "只做一件事:用结构化输出交回结果(结构见下),不写任何文件。",
     "",
     "内容是 JSON,不要包代码块:",
-    '{"tasks":[{"subject":"...","summary":"...","description":"...","acceptance":"...","line":"' +
-      lines.join("|") + '|null","needs_bash":false,"after":[]}]}',
+    JSON.stringify({tasks:[{subject:"...",summary:"一句话说明交付结果",
+      description:"goal: 一个交付目标" + NL + "ctx(file:line): 必要入口，未核实则写待定位" + NL +
+        "do: 本卡具体动作" + NL + "accept(cmd -> expect): 与 acceptance 同一口径" + NL + "limits: 修改范围与原有授权",
+      acceptance:"已登记验证命令 -> 预期退出码、断言或产物",line:lines.join("|") + "|null",needs_bash:false,after:[]}]}),
   ].filter(Boolean).join(NL);
 }
 

@@ -1041,7 +1041,9 @@ function taskProfilePreview(task){
 function taskRepairPreview(task) {
   if (task.status === "not_started" && !task.released) {
     const configured=Number(process.env.BOARD_VERIFY_REPAIR_ROUNDS ?? 3);
-    const policy={max_rounds:Number.isSafeInteger(configured)&&configured>0?configured:1,legacy_retry:false};
+    const maxChars=Number(process.env.BOARD_EVIDENCE_MAX_CHARS ?? 4000);
+    const policy={max_rounds:Number.isSafeInteger(configured)&&configured>0?configured:1,legacy_retry:false,
+      evidence_contract:{version:1,max_chars:Number.isSafeInteger(maxChars)&&maxChars>0?maxChars:4000}};
     return {policy,digest:createHash("sha256").update(JSON.stringify(policy)).digest("hex")};
   }
   return {policy:store.taskVerificationRepair(db,task,{fromRun:task.status!=="not_started"})};
