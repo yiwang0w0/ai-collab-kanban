@@ -1681,10 +1681,11 @@ function cardParts(t){
   let usage = "";
   {
     const u = usageByCard[t.id];
-    if (u && (u.in || u.out || u.cr || u.cc)) {
+    if (u && (u.rows || u.in || u.out || u.cr || u.cc)) {
+      const shown = value => value == null ? "待核实" : value;
       usage = `<span class="tok" title="本卡累计模型用量（词元）
-输入 ${u["in"]} · 输出 ${u.out} · 缓存读 ${u.cr} · 缓存写 ${u.cc} · 调用 ${u.calls} 次">` +
-        `词元 ${fmtTok(u["in"] + u.out)}` + (u.cr ? `<small>+缓存读${fmtTok(u.cr)}</small>` : ``) + `</span>`;
+输入 ${shown(u["in"])} · 输出 ${shown(u.out)} · 缓存读 ${shown(u.cr)} · 缓存写 ${shown(u.cc)} · 调用 ${shown(u.calls)} 次 · 尝试 ${u.attempts} 次 · 执行 ${u.rounds} 轮">` +
+        `词元 ${u["in"] == null || u.out == null ? "待核实" : fmtTok(u["in"] + u.out)}` + (u.cr ? `<small>+缓存读${fmtTok(u.cr)}</small>` : ``) + `</span>`;
     }
   }
 
@@ -3809,8 +3810,8 @@ ${r.memo}`);
       await post(`/api/tasks/${id}/resolve`, { verdict: a, note, resolved_by: "human" });
       verdictDraft.delete(Number(id));
     }
-    // 仅显式执行配置的新卡提供放行按钮，沿用原放行接口与首次确认时的版本。
-    else if (a === "release") await post(`/api/tasks/${id}/release`, { released: true, expected_version: Number(b.dataset.version), confirm_execution_profile_digest: b.dataset.executionProfileDigest });
+    // 放行沿用首次确认的任务版本与预览摘要。
+    else if (a === "release") await post(`/api/tasks/${id}/release`, { released: true, expected_version: Number(b.dataset.version), confirm_execution_profile_digest: b.dataset.executionProfileDigest || undefined, confirm_verification_repair_digest: b.dataset.verificationRepairDigest });
     else if (a === "hold")    await post(`/api/tasks/${id}/release`, { released: false });
     else if (a === "archive") await post(`/api/tasks/${id}/archive`, {expected_version:Number(b.dataset.version)});
     await refresh();
@@ -4634,12 +4635,13 @@ function updateSideLive(){
 function sideExecution(t){
   const section = homeEl("section", undefined, "side-sec");
   section.id = "task-side-execution";
-  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by]);
-  const checking = !!(t.execution_profile && t.status === "not_started" && !t.released);
+  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by]);
+  const checking = t.status === "not_started" && !t.released;
   section.append(homeEl("h3", checking ? "放行前核对执行配置" : "派发与领取"));
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
   section.append(sideSteps(t, trace));
   const rows = [
+    ["验证续修", `最多 ${t.verification_repair?.max_rounds || 1} 轮（含首轮）；同一会话与原档位，环境异常转等待`],
     ["最近放行", trace.released_at ? localTime(trace.released_at) : t.released ? "时间未记录" : "尚未放行"],
     ["本轮领取", trace.claimed_at ? localTime(trace.claimed_at) : t.run_id ? "时间待核实" : "尚无领取记录"],
   ];
@@ -4668,14 +4670,15 @@ function sideExecution(t){
     rec.append(homeEl("summary", "逐项记录"), dl);
     section.append(rec);
   }
-  if (t.execution_profile && t.status === "not_started" && !t.released) {
+  if (checking) {
     const release = homeEl("button", "放行此任务", "pri"); release.type = "button";
     release.dataset.a = "release"; release.dataset.id = String(t.id); release.dataset.version = String(t.aggregate_version);
-    release.dataset.executionProfileDigest = t.execution_profile.profile_digest || "";
-    if (t.execution_profile.ready === false || !release.dataset.executionProfileDigest) release.disabled = true;
+    release.dataset.executionProfileDigest = t.execution_profile?.profile_digest || "";
+    release.dataset.verificationRepairDigest = t.verification_repair_digest || "";
+    if (!release.dataset.verificationRepairDigest || t.execution_profile && (t.execution_profile.ready === false || !release.dataset.executionProfileDigest)) release.disabled = true;
     section.append(homeEl("p", "先核对以上目录、通道、权限与预算；按两次后才会放行。", "side-state"), release);
-    if (t.execution_profile.configuration_changed) section.append(homeEl("p", "执行配置已变化，请重新核对以上配置后再放行；第二次确认不会自动接受另一份配置。", "side-state"));
-    if (t.execution_profile.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
+    if (t.execution_profile?.configuration_changed) section.append(homeEl("p", "执行配置已变化，请重新核对以上配置后再放行；第二次确认不会自动接受另一份配置。", "side-state"));
+    if (t.execution_profile?.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
   }
   return section;
 }
@@ -4756,7 +4759,7 @@ function renderSide(){
   out.push(sideBrief(t, step, item, ctlBox, ctl));
   if (t) {
     const execution = sideExecution(t);
-    const checking = !!(t.execution_profile && t.status === "not_started" && !t.released);
+    const checking = t.status === "not_started" && !t.released;
     if (checking) out.push(execution);
     const detail = homeEl("details", undefined, "side-sec side-detail");
     detail.id = "task-side-detail";

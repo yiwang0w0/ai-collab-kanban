@@ -855,8 +855,8 @@ try {
       + JSON.stringify({ ts: "t", event: "compact", worker: LINE, before: 9 }) + NL
       + "{broken json" + NL, "utf8");
     const u1 = (await B.api("GET", "/api/usage")).body?.cards || {};
-    ok("M1 ⭐同卡多行求和(#1 = 两次尝试合计)",
-       u1["1"]?.in === 1500 && u1["1"]?.out === 400 && u1["1"]?.rows === 2 && u1["1"]?.cr === 400000,
+    ok("M1 ⭐同卡同attempt两轮求和，不虚增尝试次数",
+       u1["1"]?.in === 1500 && u1["1"]?.out === 400 && u1["1"]?.rows === 2 && u1["1"]?.cr === 400000 && u1["1"]?.attempts === 1 && u1["1"]?.rounds === 2,
        JSON.stringify(u1["1"]));
     ok("M2 各卡独立(#2 单行)", u1["2"]?.in === 1000 && u1["2"]?.rows === 1, JSON.stringify(u1["2"]));
     ok("M3 无卡行(compact 事件)与坏行都跳过,不污染也不致命",
@@ -884,6 +884,10 @@ try {
     const u5 = (await B.api("GET", "/api/usage")).body?.cards || {};
     ok("M7 文件被替换(变短)→ 重新归并,不叠旧账",
        u5["9"]?.in === 1000 && !u5["1"], JSON.stringify(Object.keys(u5)));
+    writeFileSync(LEDGER, readFileSync(LEDGER, "utf8") + row(9,{attempt:2,in:null,out:null}), "utf8");
+    const unknown=(await B.api("GET", "/api/usage")).body?.cards?.["9"];
+    ok("M7b 未知用量保留null，第二个attempt另计一次",
+       unknown?.in===null && unknown?.out===null && unknown?.attempts===2 && unknown?.rounds===2,JSON.stringify(unknown));
 
     // The panel actually consumes it (source-shape pin, same style as B3b).
     const panelSrc = readFileSync(join(ROOT, "core", "panel.html"), "utf8");

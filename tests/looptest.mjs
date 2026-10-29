@@ -48,7 +48,11 @@ const LINE = "alpha";                       // built-in config's first line
 const HOST_ENV = harnessEnvironment();
 const NO_CONFIG = join(TMP, "none.json");   // 故意不建:缺省 = 内置线表
 // BOARD_REPO 也要钉:⑭⑮ 断言 argv 里的 --add-dir 与写放行规则就是**这个仓**,继承别处的值会红。
-const BASE_ENV = { ...HOST_ENV, BOARD_CONFIG: NO_CONFIG, BOARD_REPO: ROOT };
+// 本文件专测旧阶梯、失败重开与限流等待，显式启用兼容；新默认续修另有纯桩回归。
+const BASE_ENV = { ...HOST_ENV, BOARD_CONFIG: NO_CONFIG, BOARD_REPO: ROOT, WORKER_LEGACY_RETRY: "1" };
+// 旧阶梯层使用共享令牌，不能冒充受管宿主的启动证明。这里只注入宿主观察桩；
+// 拒收后杀进程由 verificationrepairtest 和真实 HTTP 身份边界测试另行验证。
+const LEGACY_HOST = `import sys\nsys.path.insert(0,${JSON.stringify(join(ROOT, "loops"))})\nimport worker_loop as w\nw.record_process_started=lambda *args,**kwargs:True\nw.main()\n`;
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
@@ -241,7 +245,7 @@ try {
 
   // ── start the loop, isolated ──────────────────────────────────────────────
   console.log("\n[② start worker_loop.py against the isolated board]");
-  loop = spawn(PY, [join(ROOT, "loops", "worker_loop.py"), "--as", LINE, "--interval", "1"], {
+  loop = spawn(PY, ["-c", LEGACY_HOST, "--as", LINE, "--interval", "1"], {
     env: { ...BASE_ENV,
            BOARD_URL: BASE,
            BOARD_ALLOW_UNPINNED: "1",        // isolated harness only
@@ -488,7 +492,7 @@ try {
     //   never ends, finally never runs, and the harness hangs silently — the worst
     //   failure mode of all. Close it from all three sides.
     const fin = (code) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, out }); };
-    const p = spawn(PY, [join(ROOT, "loops", "worker_loop.py"), "--as", LINE,
+    const p = spawn(PY, ["-c", LEGACY_HOST, "--as", LINE,
                          "--interval", "1", ...(once ? ["--once"] : [])], {
       env: { ...BASE_ENV, BOARD_URL: BASE, BOARD_DATA_DIR: TMP,
              BOARD_ALLOW_UNPINNED: "1",
@@ -851,8 +855,10 @@ process.stdin.on("end", () => {
        rules.filter((r) => /verify_registry\.json\)$/.test(r)).length === 2, rules.slice(0, 3).join(" "));
     ok("⭐只有 Read / Edit 两种规则(Write/Glob/Grep 写法 CLI 明说不匹配)",
        rules.length > 0 && rules.every((r) => /^(Read|Edit)\(/.test(r)), rules.filter((r) => !/^(Read|Edit)\(/.test(r)).slice(0, 2).join(" "));
-    ok("⭐没有一条规则盖住证据目录(整目录的 Read deny 连 Write 证据都拒 —— 实测)",
-       rules.every((r) => !r.includes(`${dataFwd}/evidence/`) && !r.endsWith(`${dataFwd}/evidence)`)
+    const verifyLogDeny=`Edit(${dataFwd}/evidence/verify_runs/**)`;
+    ok("⭐验证日志只拒写；证据目录其余部分可读写，不使用整目录Read拒绝",
+       rules.includes(verifyLogDeny) && !rules.includes(`Read(${dataFwd}/evidence/verify_runs/**)`)
+       && rules.every((r) => r===verifyLogDeny || !r.includes(`${dataFwd}/evidence/`) && !r.endsWith(`${dataFwd}/evidence)`)
                           && !r.endsWith(`${dataFwd}/**)`) && !r.endsWith(`${dataFwd}/*)`)));
     ok("规则里没有反斜杠(正斜杠绝对路径,两平台一致)", rules.length > 0 && rules.every((r) => !r.includes("\\")));
     // ── v0.24.0:读写边界的 argv 形状(2026-10-28 spike 实测:不带路径的 `--allowedTools Read`

@@ -298,9 +298,11 @@ const unnamedOf = (t) => {
 
 // SQL repo paths resolve only inside the server. The browser-facing object carries
 // file names, hashes and controlled download endpoints — never source paths.
-const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t);return {
+const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
   ...t,
   execution_trace: taskExecutionView(db, t),
+  verification_repair:repair.policy,
+  ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
   ...(profile ? {execution_profile:profile} : {}),
   progress_blockers: store.stuckWhy(db,t),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
@@ -968,17 +970,16 @@ const CRASH_BACKOFF_MS = Math.max(1, Number(process.env.BOARD_CRASH_BACKOFF_MS) 
 const SETTINGS_FILE = join(store.DATA_DIR, "worker_settings.json");
 
 // ── Per-card token usage, aggregated from the loop's ledger ──────────────────
-// usage_ledger.jsonl is APPEND-ONLY (the loop writes one row per attempt), which
-// makes incremental reading exact: remember the byte offset of the last COMPLETE
-// line and fold only what's new. Re-reading the whole file on every panel refresh
-// would grow linearly with fleet age for no reason.
+// usage_ledger.jsonl 每次调用轮追加一行；同一尝试的续修不能算作新尝试。
+// 账本仅追加：记住末个完整行的字节位置，只归并新行，避免每次刷新重读全文件。
 const USAGE_FILE = join(store.DATA_DIR, "usage_ledger.jsonl");
 let usageByCard = new Map();
+let usageAttemptKeys = new Map();
 let usageOffset = 0;
 function refreshUsage() {
   let size;
   try { size = statSync(USAGE_FILE).size; } catch { return; }   // no ledger yet = no usage
-  if (size < usageOffset) { usageByCard = new Map(); usageOffset = 0; }  // replaced/truncated → refold
+  if (size < usageOffset) { usageByCard = new Map(); usageAttemptKeys = new Map(); usageOffset = 0; }  // replaced/truncated → refold
   if (size === usageOffset) return;
   let buf;
   try {
@@ -1000,9 +1001,12 @@ function refreshUsage() {
     if (j.card == null) continue;                               // compact events carry no card
     const id = Number(j.card);
     const c = usageByCard.get(id) || { rows: 0, calls: 0, in: 0, cc: 0, cr: 0, out: 0 };
-    c.rows++; c.calls += Number(j.calls) || 0;
-    c.in += Number(j["in"]) || 0; c.cc += Number(j.cc) || 0;
-    c.cr += Number(j.cr) || 0; c.out += Number(j.out) || 0;
+    c.rows++; c.rounds = c.rows;
+    const attempts=usageAttemptKeys.get(id)||new Set();
+    attempts.add(Number.isSafeInteger(j.attempt) ? `${j.run_id||"legacy"}:${j.attempt}` : `unknown:${c.rows}`);
+    usageAttemptKeys.set(id,attempts);c.attempts=attempts.size;
+    for(const key of ["calls","in","cc","cr","out"])
+      c[key] = c[key]===null || j[key]===null || j[key]===undefined ? null : c[key]+(Number(j[key])||0);
     usageByCard.set(id, c);
   }
 }
@@ -1031,6 +1035,15 @@ function taskProfilePreview(task){
     else{ready=false;reason="执行线已更换配置，请核对任务原先选择的通道与模型";}
   }
   return {...shown,ready,reason,configuration_changed:shown.profile_digest!==fixed.profile_digest};
+}
+// 只有本人核对本次预览后，才把新默认轮数写进放行记录；旧调用保持一轮。
+function taskRepairPreview(task) {
+  if (task.status === "not_started" && !task.released) {
+    const configured=Number(process.env.BOARD_VERIFY_REPAIR_ROUNDS ?? 3);
+    const policy={max_rounds:Number.isSafeInteger(configured)&&configured>0?configured:1,legacy_retry:false};
+    return {policy,digest:createHash("sha256").update(JSON.stringify(policy)).digest("hex")};
+  }
+  return {policy:store.taskVerificationRepair(db,task,{fromRun:task.status!=="not_started"})};
 }
 const DECOMPOSE_MODELS = CFG.decompose_models;
 // Natural language for GENERATED content (decomposed cards today; other generators
@@ -2485,6 +2498,7 @@ function claimIdentity(body, role, seat=null) {
     return { role_id:roleId, role_kind:role.kind, tools:role.tools,
       charter:role.charter, charter_sha256:LINE_CHARTER_HASH[roleId] ?? null,
       seat:role.seat, enforcement:"unattested", worker_protocol_version:body.worker_protocol_version ?? null,
+      verification_repair:store.taskVerificationRepair(db,task,{fromRun:false}),
       ...(seat?.executionProfile?{execution_profile:seat.executionProfile}:{}) };
   }};
 }
@@ -3103,7 +3117,7 @@ const server = http.createServer(async (req, res) => {
         // the alarm.
         if (!r.ok) return json(res, statusFor({ code: r.code, message: r.why }, "claim"), { error: r.why, id });
         emit("task.claimed", { id, worker: b.worker });
-        return json(res, 200, { task: r.task });
+        return json(res, 200, { task: taskOut(r.task) });
       }
       if (action === "heartbeat") {
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: b.lease_minutes });
@@ -3351,7 +3365,13 @@ const server = http.createServer(async (req, res) => {
           if(b.confirm_execution_profile_digest!==preview.profile_digest)throw store.err(store.ERR.CONFLICT,"执行配置已变化，请重新核对通道、工作目录和预算后放行");
           const {ready,reason,configuration_changed,...fixed}=preview;executionProfile=fixed;
         }
-        const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile });
+        let verificationRepair=null;
+        if(task&&b.released!==false&&!task.released&&b.confirm_verification_repair_digest!==undefined){
+          const repair=taskRepairPreview(task);
+          if(b.confirm_verification_repair_digest!==repair.digest)throw store.err(store.ERR.CONFLICT,"验证续修轮数已变化，请重新核对后放行");
+          verificationRepair=repair.policy;
+        }
+        const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile,verificationRepair });
         emit("task.released", r);
         return json(res, 200, { task: taskOut(store.get(db, id)) });
       }

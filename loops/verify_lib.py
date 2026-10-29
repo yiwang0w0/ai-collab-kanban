@@ -3,7 +3,7 @@
 """verify_lib —— 卡指名验证的**唯一**执行器(worker_loop 与将来的 reviewer_loop 共用)。
 写在两处必有一处腐烂。登记簿 = verify_registry.json(与 core/store.js 读**同一个文件**)。
 审阅在烧模型之前也先打这里的确定性验证 —— 红了就机器打回,不烧模型。"""
-import json, os, re, subprocess, sys, io, datetime, hashlib
+import json, os, re, subprocess, sys, io, datetime, hashlib, time
 from types import MappingProxyType
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -316,10 +316,16 @@ def run_verify(t):
         real[0] = sys.executable
     shown = " ".join(real)      # ★证据里写**实际跑的东西**(照抄 argv 就成了谎)
     try:
+        timeout = min(VERIFY_TIMEOUT, t.get("_verify_timeout", VERIFY_TIMEOUT))
+        if t.get("_attempt_deadline") is not None:
+            timeout = min(timeout, max(0, t["_attempt_deadline"] - time.monotonic()))
+        if timeout <= 0:
+            raise subprocess.TimeoutExpired(real, timeout)
         w = subprocess.run(real, shell=False, cwd=REPO, capture_output=True, env=venv,
-                           text=True, encoding="utf-8", errors="replace", timeout=VERIFY_TIMEOUT)
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        output = (w.stdout or "") + (w.stderr or "")
         return {"registry_sha256": _REGISTRY_SHA256, "ok": w.returncode == 0, "key": key, "cmd": shown, "rc": w.returncode,
-                "out": ((w.stdout or "") + (w.stderr or ""))[-4000:]}
+                "out": output[-4000:], "full_out": output}
     except subprocess.TimeoutExpired:
         return {"ok": False, "registry_sha256": _REGISTRY_SHA256, "key": key, "cmd": shown, "rc": -1,
                 "out": f"({VERIFY_TIMEOUT}s 超时中止)"}

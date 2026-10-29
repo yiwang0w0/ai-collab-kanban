@@ -1201,6 +1201,32 @@ function taskExecutionProfile(db, id) {
   return profile;
 }
 
+// 新放行策略只从该次授权事件或运行快照取；历史记录缺失时只有首轮。
+function verificationRepairPolicy(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      !Number.isSafeInteger(value.max_rounds) || value.max_rounds < 1 || value.legacy_retry !== false)
+    return {max_rounds:1,legacy_retry:false};
+  return {max_rounds:value.max_rounds,legacy_retry:false};
+}
+function taskVerificationRepair(db, task, {fromRun = true} = {}) {
+  if (fromRun && task.run_id) {
+    const run=db.prepare("SELECT policy_json,policy_sha256 FROM task_runs WHERE run_id=? AND task_id=?").get(task.run_id,Number(task.id));
+    if (run) {
+      try {
+        if (crypto.createHash("sha256").update(run.policy_json).digest("hex") !== run.policy_sha256)
+          return verificationRepairPolicy(null);
+        return verificationRepairPolicy(JSON.parse(run.policy_json).context?.verification_repair);
+      } catch { return verificationRepairPolicy(null); }
+    }
+  }
+  for (const event of db.prepare("SELECT detail FROM task_events WHERE task_id=? AND kind='release' ORDER BY id DESC").iterate(Number(task.id))) {
+    let detail;try { detail=JSON.parse(event.detail); } catch { continue; }
+    if (detail.action === "release" && detail.from === false && detail.to === true)
+      return verificationRepairPolicy(detail.verification_repair);
+  }
+  return verificationRepairPolicy(null);
+}
+
 function matchesExecutionProfile(db, task, profile) {
   const expected = taskExecutionProfile(db, task.id);
   if (!expected || !profile) return expected === null && profile == null;
@@ -2947,7 +2973,7 @@ function setPinnedInner(db, { id, pinned }) {
 
 /** Release / hold (the old "backlog"). What moves is a COLUMN, not a status — no
  *  fifth state. */
-function setReleased(db, { id, released, actor = "human", expectedVersion, executionProfile = null }) {
+function setReleased(db, { id, released, actor = "human", expectedVersion, executionProfile = null, verificationRepair = null }) {
   const ownsTransaction = !db.isTransaction;
   db.exec(ownsTransaction ? "BEGIN IMMEDIATE" : "SAVEPOINT store_set_released");
   try {
@@ -2969,6 +2995,7 @@ function setReleased(db, { id, released, actor = "human", expectedVersion, execu
       taskId: id, kind: "release", actor,
       detail: eventState({ ...before, released: value }, {
         action: value ? "release" : "hold", from: Boolean(before.released), to: Boolean(value),
+        ...(value && !before.released ? {verification_repair:verificationRepairPolicy(verificationRepair)} : {}),
       }),
     });
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_set_released");
@@ -3306,7 +3333,7 @@ function openChildrenOnLines(db, parentId, lines) {
 module.exports = {
   UUID_RE, migrateLifecycle, resolveWithPreparation,
   localNode, renameNode, assertLocalIdentityInput, requireRun, runs, requireExpectedVersion, assertExpectedVersion,
-  open, migrate, add, claim, heartbeat, recordProcessStarted, recordExecutionEvent, taskExecutionProfile, matchesExecutionProfile, bumpAttempt, report, resolve, update, setReleased, archive,
+  open, migrate, add, claim, heartbeat, recordProcessStarted, recordExecutionEvent, taskExecutionProfile, taskVerificationRepair, matchesExecutionProfile, bumpAttempt, report, resolve, update, setReleased, archive,
   addRequest, getRequest, listRequests, ackRequest, doneRequest, REQUEST_KINDS, REQUEST_STATUS,
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,

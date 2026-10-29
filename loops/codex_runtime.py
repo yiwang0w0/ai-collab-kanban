@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import threading
+import uuid
 
 
 CODEX_BYPASS = (
@@ -122,6 +123,32 @@ def argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None):
     return out
 
 
+def session_argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None, thread_id=None):
+    """可续接的明确会话形；首轮与续轮的权限、认证、配置层级完全相同。"""
+    if mode not in ("write", "read-only"):
+        raise ValueError("未知 Codex mode")
+    if thread_id is not None:
+        thread_id = str(uuid.UUID(str(thread_id)))
+    out = [cli, "-c", 'sandbox_mode="workspace-write"' if mode == "write" else 'sandbox_mode="read-only"',
+           "-c", 'approval_policy="on-request"' if mode == "write" else 'approval_policy="never"']
+    if mode == "write":
+        # 对应既有 --approve-for-me 的自动审查；续接不改为 never，也不绕过沙箱。
+        out += ["-c", 'approvals_reviewer="auto_review"']
+    out += ["-c", 'windows.sandbox="unelevated"', "-c", 'forced_login_method="chatgpt"',
+            "-c", "model_reasoning_effort=" + json.dumps(str(effort)),
+            "-c", "shell_environment_policy.inherit=core",
+            "-c", "shell_environment_policy.ignore_default_excludes=false",
+            "-c", "tools.web_search=false", "-C", workdir, "exec"]
+    if thread_id:
+        out += ["resume", thread_id]
+    out += ["-m", str(model), "--ignore-user-config", "--skip-git-repo-check", "--json"]
+    if schema:
+        out += ["--output-schema", schema]
+    out += ["-o", last_path, "-"]
+    assert_no_bypass(out)
+    return out
+
+
 def judge(rc, stdout, last_path):
     """成功需同时满足 rc=0、turn.completed、-o 最终消息非空。"""
     done, failed_msg, thread, usage = False, None, None, None
@@ -162,10 +189,10 @@ def judge(rc, stdout, last_path):
             + ("\nerror: " + " | ".join(errs[-3:]) if errs else "")
             + ("\n最终消息尾: " + last[-400:] if last else ""))
     u = usage or {}
-    mapped = ({"calls": 1, "in": u.get("input_tokens", 0),
-               "cc": u.get("cache_write_input_tokens", 0),
-               "cr": u.get("cached_input_tokens", 0),
-               "out": u.get("output_tokens", 0), "note": None}
+    mapped = ({"calls": 1, "in": u.get("input_tokens"),
+               "cc": u.get("cache_write_input_tokens"),
+               "cr": u.get("cached_input_tokens"),
+               "out": u.get("output_tokens"), "note": None}
               if usage is not None else None)
     return {"ok": ok, "tail": tail, "thread": thread, "usage": mapped, "last": last}
 
@@ -173,7 +200,7 @@ def judge(rc, stdout, last_path):
 def append_usage(data_dir, who, model, effort, verdict, *, card=None, attempt=None, note=None, log=print):
     """把 Codex JSONL usage 写入共享 usage_ledger;拿不到用量也显式写一行说明。"""
     usage = dict(verdict.get("usage") or
-                 {"calls": 0, "in": 0, "cc": 0, "cr": 0, "out": 0,
+                 {"calls": None, "in": None, "cc": None, "cr": None, "out": None,
                   "note": note or "未见 turn.completed usage"})
     if note:
         usage["note"] = note

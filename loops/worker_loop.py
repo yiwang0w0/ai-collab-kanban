@@ -47,6 +47,7 @@ REPO = os.environ.get("BOARD_REPO", CODE_ROOT)
 import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,勿各自复写)
 import codex_runtime
 import context_lib
+import verification_repair
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
@@ -1369,6 +1370,7 @@ def usage_of(sid, since=None):
     out = {"calls": 0, "in": 0, "cc": 0, "cr": 0, "out": 0, "note": None}
     path = transcript_of(sid)
     if not path:
+        out.update({key: None for key in ("calls", "in", "cc", "cr", "out")})
         out["note"] = "转录未见(桩或未启动)"
         return out
     try:
@@ -1380,16 +1382,18 @@ def usage_of(sid, since=None):
             ts = j.get("timestamp") or ""
             if since and ts and ts < since: continue
             out["calls"] += 1
-            out["in"] += u.get("input_tokens", 0)
-            out["cc"] += u.get("cache_creation_input_tokens", 0)
-            out["cr"] += u.get("cache_read_input_tokens", 0)
-            out["out"] += u.get("output_tokens", 0)
+            for key, source in (("in", "input_tokens"), ("cc", "cache_creation_input_tokens"),
+                                ("cr", "cache_read_input_tokens"), ("out", "output_tokens")):
+                out[key] = None if out[key] is None or u.get(source) is None else out[key] + u[source]
+        if not out["calls"]:
+            out.update({key: None for key in ("calls", "in", "cc", "cr", "out")})
     except Exception as e:
+        out.update({key: None for key in ("calls", "in", "cc", "cr", "out")})
         out["note"] = f"转录解析失败: {e}"
     return out
 
 
-def acct_attempt(t, worker, attempt, model, effort):
+def acct_attempt(t, worker, attempt, model, effort, *, round_number=1, phase="initial", reason=None):
     """一次尝试记一行账。
 
     ⭐**行里必须带 model / effort**。没有它,「有没有提权」谁都观测不到
@@ -1405,7 +1409,8 @@ def acct_attempt(t, worker, attempt, model, effort):
            "card": t["id"], "attempt": attempt, "worker": worker,
            "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
            "model": model, "effort": effort,
-           "sid": (LAST_ACCT["sid"] or "")[:8], **u}
+           "sid": (LAST_ACCT["sid"] or "")[:8], "session_id": LAST_ACCT["sid"], **u,
+           "round": round_number, "phase": phase, "reason": reason}
     if PROFILE_MODE:
         row.update({"execution_profile_id": EXECUTION_PROFILE["execution_profile_id"], "channel": EXECUTION_PROFILE["channel"]})
     if API_MODE:
@@ -1424,12 +1429,13 @@ def fmt_acct(rows):
         cost = "待核实" if any(r.get("cost_usd") is None for r in rows) else f"${sum(r['cost_usd'] for r in rows):.4f}（SDK 估算，不是账单）"
         return ("—— 本卡 API 用量 ——" + chr(10) + f"调用 {total('calls')} · 输入 {total('in')} · 输出 {total('out')} 词元 · 费用 {cost}"
                 + chr(10) + "促销归属以供应商账单核对为准；未知用量不记为零。")
-    tot = {k: sum(r.get(k, 0) for r in rows) for k in ("calls", "in", "cc", "cr", "out")}
+    def total(key):
+        return "待核实" if any(r.get(key) is None for r in rows) else f"{sum(r[key] for r in rows):,}"
     # 档位轨迹要进卡面。只有数字的话知道「烧了 3 次」,但看不出「是一边提档一边烧的」。
     traj = " → ".join(tier_label(r.get("model"), r.get("effort")) for r in rows) or "(无)"
     return ("—— 本卡用量记账(明细在 <data>/usage_ledger.jsonl)——" + chr(10) +
-            f"尝试 {len(rows)} 次 · 调用 {tot['calls']} · 输入 {tot['in']:,} · "
-            f"缓存写 {tot['cc']:,} · 缓存读 {tot['cr']:,} · 输出 {tot['out']:,} tok" + chr(10) +
+            f"尝试 {len(set(r.get('attempt') for r in rows))} 次 · 执行 {len(rows)} 轮 · 调用 {total('calls')} · 输入 {total('in')} · "
+            f"缓存写 {total('cc')} · 缓存读 {total('cr')} · 输出 {total('out')} tok" + chr(10) +
             f"档位轨迹: {traj}")
 
 
@@ -1494,6 +1500,8 @@ def cli_argv(prompt, sargs, model, effort):
         "--add-dir", REPO, "--add-dir", EVID,
         "--allowedTools", *cli_write_allow_rules([EVID] if TOOL_PROFILE == "read-only" else [REPO, EVID]),
         "--disallowedTools", *cli_deny_rules(DATA),
+        # 验证原文由宿主写，模型可读用于续修，但不能修改既有日志。
+        f"Edit({deny_path(os.path.join(EVID, 'verify_runs'))}/**)",
         # 全部执行配置的认证目录(可自定义到数据目录之外,不在 PROTECTED 的 auth/** 里):旧线与显式配置
         #   一样,文件工具对每个目录都不读不写(verify_lib.auth_home_deny_rules)。
         *auth_home_deny_rules(),
@@ -1537,18 +1545,28 @@ def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _
 def run_task_process(t, worker, attempt, runtime, model, effort, argv, env, *, input=None,
                      _popen=None, _call=None, _log=None):
     """保留 run 的管道/超时语义，只在进程创建成功后补一条宿主观察。"""
-    process_options = ({"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}) if PROFILE_MODE else {}
+    if t.get("_attempt_deadline") is not None and time.monotonic() >= t["_attempt_deadline"]:
+        raise subprocess.TimeoutExpired(argv, 0)
+    process_options = {"creationflags": subprocess.CREATE_NO_WINDOW} if os.name == "nt" else {"start_new_session": True}
     with (_popen or subprocess.Popen)(argv, stdin=subprocess.PIPE if input is not None else None,
                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
                                      encoding="utf-8", errors="replace", env=env, cwd=REPO, **process_options) as process:
         started = time.monotonic()
-        record_process_started(t, worker, attempt, runtime, model, effort, process.pid,
-                               _call=_call, _log=_log)
+        accepted = record_process_started(t, worker, attempt, runtime, model, effort, process.pid,
+                                          _call=_call, _log=_log)
+        if not accepted:
+            if _popen:
+                process.kill()
+            else:
+                stop_api_tree(process)
+            process.communicate()
+            raise RuntimeError("PROCESS_START_RECORD_REJECTED：启动记录未确认，已终止进程")
         try:
             # 记录请求占用本次超时预算，不延长模型允许的运行时间。
-            stdout, stderr = process.communicate(input, timeout=max(0, TIMEOUT - (time.monotonic() - started)))
+            deadline = t.get("_attempt_deadline", started + TIMEOUT)
+            stdout, stderr = process.communicate(input, timeout=max(0, deadline - time.monotonic()))
         except subprocess.TimeoutExpired as e:
-            if PROFILE_MODE:
+            if not _popen:
                 stop_api_tree(process)
                 e.stdout, e.stderr = process.communicate(timeout=5)
             else:
@@ -1815,8 +1833,11 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     last_path = os.path.join(DATA, f"codex-last-{t['id']}-{attempt}.txt")
     try: os.path.isfile(last_path) and os.remove(last_path)   # 别把上次的残骸当证据
     except Exception: pass
-    argv = codex_argv(model, effort, last_path)
-    prompt = build_prompt(t, worker, evidence_path, prev_tail, attempt)
+    context = t.get("_repair_context")
+    argv = (codex_runtime.session_argv(CODEX_CLI, model, effort, last_path, REPO,
+            mode="read-only" if TOOL_PROFILE == "read-only" else "write", thread_id=context.get("session_id"))
+            if context is not None else codex_argv(model, effort, last_path))
+    prompt = context.get("prompt") if context and context.get("prompt") else build_prompt(t, worker, evidence_path, prev_tail, attempt)
     t0 = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         w = run_task_process(t, worker, attempt, "codex", model, effort, argv, env, input=prompt)
@@ -1827,7 +1848,15 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
         LAST_ACCT = {"sid": None, "t0": t0, "usage": None}
         return -2, f"(codex spawn 失败:{e})"
     v = judge_codex(w.returncode, w.stdout, last_path)
-    LAST_ACCT = {"sid": v["thread"], "t0": t0, "usage": v["usage"]}
+    LAST_ACCT = {"sid": v["thread"] or (context or {}).get("session_id"), "t0": t0, "usage": v["usage"]}
+    if context is not None and v.get("thread"):
+        try:
+            sid = str(uuid.UUID(str(v["thread"])))
+        except ValueError:
+            return -2, "Codex 返回了无效会话 UUID，停止本次尝试"
+        if context.get("session_id") and context["session_id"] != sid:
+            return -2, "Codex 续接返回了不同会话，停止本次尝试"
+        context["session_id"] = sid
     # ⭐ 沙箱写不了证据文件时,最终回复就是证据,由这里落盘(delivery_block 对模型说的正是这个):
     #   只读沙箱必然如此;workspace-write 在**分仓部署**(BOARD_REPO ≠ 看板仓)下也如此 —— 证据路径
     #   在工作仓之外,沙箱拒写(v0.23.1,远程机接手时发现的形)。只在模型没写出文件时才落 ——
@@ -1966,10 +1995,15 @@ def process_start_selftest(ok):
             if failure == "unreachable": raise RuntimeError("仅夹具断连")
             return 409, {"error": "仅夹具过期运行"}
         before = len(sent)
-        result = run_task_process(task, "夹具执行器", 1, "claude", "fixture-model", "high", [], {},
-                                  _popen=popen, _call=refused, _log=messages.append)
-        ok(f"进程记录:{failure}不重试、不误报spawn失败、不改变返回值",
-           len(sent) == before + 1 and result.returncode == 17 and "不重试" in messages[-1])
+        order = []
+        try:
+            run_task_process(task, "夹具执行器", 1, "claude", "fixture-model", "high", [], {},
+                             _popen=popen, _call=refused, _log=messages.append)
+            ok(f"进程记录:{failure}必须停止进程", False)
+        except RuntimeError as error:
+            ok(f"进程记录:{failure}不重试且停止进程，不消费未确认结果",
+               len(sent) == before + 1 and order == ["created", "kill", "communicate"]
+               and "PROCESS_START_RECORD_REJECTED" in str(error) and "不重试" in messages[-1])
     order = []
     class TimedOut(Process):
         def communicate(self, input=None, timeout=None):
@@ -2088,14 +2122,19 @@ def run_worker(t, worker, evidence_path, prev_tail, attempt, model, effort):
     #   ⚠卡的 needs_bash 不再增加工具。列还在,但这里不看。
     # 加派槽(无 session)也发明示 id —— 不发的话没人知道转录在哪,用量就**数不出来**。
     global LAST_ACCT
-    sargs = session_args()
-    sid_acct = FORKED_SID or SESSION
+    context = t.get("_repair_context")
+    sid_acct = context.get("session_id") if context else None
+    sargs = ["--resume", sid_acct] if sid_acct else session_args()
+    sid_acct = sid_acct or FORKED_SID or SESSION
     if not sargs:
         sid_acct = str(uuid.uuid4())
         sargs = ["--session-id", sid_acct]
+    if context is not None:
+        context["session_id"] = sid_acct
     LAST_ACCT = {"sid": sid_acct,
                  "t0": datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")}
-    argv = cli_argv(build_prompt(t, worker, evidence_path, prev_tail, attempt), sargs, model, effort)
+    prompt = context.get("prompt") if context and context.get("prompt") else build_prompt(t, worker, evidence_path, prev_tail, attempt)
+    argv = cli_argv(prompt, sargs, model, effort)
     # ⭐ claude 座席的提示词走 argv(-p),Windows CreateProcess 的天花板是 32767 个
     #   UTF-16 字符 —— 预算 env 调大后超限的 spawn 只会留下 WinError 206 的"spawn 失败"。
     #   zcode 座席早有同款预算闸(zcode-profile.mjs),claude 这条链现在补齐:超预算就
@@ -2139,7 +2178,7 @@ def _failure_fp(vr, tail):
     return hashlib.md5(s0.encode("utf-8", "replace")).hexdigest()[:12]
 
 
-def handle(t, worker):
+def handle_legacy(t, worker):
     """一张卡的完整处置。返回时卡一定不在 in_progress(不会悬空)。
     返回 "done" / "wait" / "rejected"(交付被看板拒收 —— 见 deliver;主循环只把 done 当成功)。"""
     # 两个模块级信号的写权在这里,主循环只读:最近失败指纹 → 线级熔断;最近卡号 → 链边界判定。
@@ -2197,7 +2236,7 @@ def handle(t, worker):
             #   ⚠这不是"它免费"的意思 —— 那侧的节奏由各自池的闸承担,而那件事**尚未装**,
             #     所以要在 note 里明写(不静默地写 0)。
             _other_pool = (RUNTIME != "claude")
-            if not API_MODE:
+            if not API_MODE and all(row_acct.get(k) is not None for k in ("in", "cc", "cr", "out")):
                 gates_lib.append_spend(DATA, f"worker:{worker}",
                                    0.0 if _other_pool else gates_lib.usd_of(row_acct, a_model),
                                    card=t["id"], model=a_model,
@@ -2334,6 +2373,130 @@ def handle(t, worker):
     finally:
         hb.stop.set()
         log(f"  心跳线程停止(共 {hb.beats} 次)")
+
+
+def repair_identity():
+    """续修不可切换认证目录、工作仓、权限或槽位。"""
+    return (RUNTIME, MODEL, EFFORT, TOOL_PROFILE, os.path.realpath(REPO),
+            os.environ.get("CODEX_HOME"), os.environ.get("CLAUDE_CONFIG_DIR"))
+
+
+def current_repair_run(t, worker, attempt):
+    """不续租来掩盖失租；每次追加调用前核实原执行身份仍有效。"""
+    try:
+        status, body = call("GET", f"/api/tasks/{t['id']}")
+        current = body.get("task") or {}
+        if (status != 200 or current.get("status") != "in_progress" or current.get("worker") != worker
+                or current.get("run_id") != t["run_id"] or current.get("attempts") != attempt
+                or (current.get("lease_until") or 0) <= time.time() * 1000):
+            return False
+        status, body = call("GET", f"/api/tasks/{t['id']}/runs")
+        run = next((r for r in body.get("runs", []) if r.get("run_id") == t["run_id"]), {})
+        return (status == 200 and run.get("state") == "running" and run.get("worker") == worker
+                and run.get("runtime") == RUNTIME and run.get("last_attempt") == attempt
+                and run.get("agent_instance_id") == AGENT_INSTANCE_ID)
+    except Exception:
+        return False
+
+
+def repair_round_limit(t):
+    """只用本次授权的冻结策略；不能安全累计的通道保留单轮。"""
+    value = (t.get("verification_repair") or {}).get("max_rounds", 1)
+    maximum = value if isinstance(value, int) and not isinstance(value, bool) and value >= 1 else 1
+    budget = (EXECUTION_PROFILE or {}).get("budget") or {}
+    if API_MODE or any(budget.get(k) for k in ("max_turns", "max_cost_usd")) or os.environ.get("WORKER_MAX_BUDGET_USD", "0") not in ("", "0"):
+        return 1, "single_round_budget_unprovable"
+    return maximum, None
+
+
+def handle(t, worker):
+    """默认一尝试内续修；旧阶梯与失败重开必须显式打开兼容开关。"""
+    if os.environ.get("WORKER_LEGACY_RETRY") == "1":
+        return handle_legacy(t, worker)
+    global LAST_ACCT, LAST_FAIL_FP, LAST_CARD_ID
+    run_id = t.get("run_id")
+    if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
+        raise RuntimeError("领取回执缺少有效 run_id；未调用模型")
+    tid, attempt = t["id"], int(t.get("attempts", 1))
+    maximum, limit_reason = repair_round_limit(t)
+    model, effort, binding = MODEL, EFFORT, repair_identity()
+    budget_timeout = ((EXECUTION_PROFILE or {}).get("budget") or {}).get("timeout_sec", TIMEOUT)
+    task = {**t, "_attempt_deadline": time.monotonic() + min(TIMEOUT, budget_timeout), "_repair_context": {}}
+    context, rows, last_result = task["_repair_context"], [], ""
+    hb = Heartbeat(tid, worker, run_id); hb.start()
+    os.makedirs(EVID, exist_ok=True)
+    log_dir = os.path.join(EVID, "verify_runs", run_id)
+    os.makedirs(log_dir, exist_ok=True)
+    def finish(outcome, text):
+        delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id)
+        return "done" if delivered and outcome == "done" else "wait" if delivered else "rejected"
+    try:
+        for number in range(1, maximum + 1):
+            if number > 1:
+                reason = ("deadline_exhausted" if time.monotonic() >= task["_attempt_deadline"] else
+                          "identity_changed" if repair_identity() != binding else
+                          "lease_lost" if not current_repair_run(task, worker, attempt) else
+                          "session_missing" if not context.get("session_id") else None)
+                if reason:
+                    LAST_FAIL_FP = reason
+                    return finish("wait", f"停止续修：{reason}。\n" + last_result)
+            ev_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number}.md")
+            try:
+                os.remove(ev_path)
+            except FileNotFoundError:
+                pass
+            # 每轮先清空，启动门失败时不能沿用上一轮的用量或会话。
+            LAST_ACCT = {"sid": None, "t0": None, "usage": {k: None for k in ("calls", "in", "cc", "cr", "out")}}
+            log(f"  尝试 {attempt} 第 {number}/{maximum} 轮 [{tier_label(model, effort)}]")
+            try:
+                rc, tail = run_worker(task, worker, ev_path, None, attempt, model, effort)
+            except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
+                rc, tail = -2, f"执行环境异常：{type(error).__name__}: {error}"
+            LAST_CARD_ID = tid
+            if FORKED_SID:
+                confirm_forked(FORKED_SID)
+            evidence = read_evidence(ev_path)
+            remaining = task["_attempt_deadline"] - time.monotonic()
+            task["_verify_timeout"] = max(0, remaining)
+            try:
+                vr = run_verify(task) if evidence and rc == 0 and remaining > 0 else None
+            except Exception as error:
+                vr = {"ok": False, "key": task.get("verify_cmd"), "rc": -2,
+                      "code": "VERIFY_HOST_ERROR", "out": f"验证宿主异常：{type(error).__name__}: {error}"}
+            reason = "deadline_exhausted" if time.monotonic() >= task["_attempt_deadline"] else verification_repair.classify(rc, tail, vr, evidence)
+            log_path = os.path.join(log_dir, f"attempt-{attempt}-round-{number}.log")
+            if vr:
+                try:
+                    with io.open(log_path, "w", encoding="utf-8") as output:
+                        output.write(str(vr.get("full_out", vr.get("out")) or ""))
+                    vr["log_path"] = log_path
+                except OSError:
+                    vr["code"], vr["ok"], reason = "VERIFY_LOG_UNAVAILABLE", False, "environment"
+                evidence = (evidence or "") + "\n\n" + fmt_verify(vr) + ("\n完整验证日志：" + log_path if vr.get("log_path") else "\n完整验证日志保存失败，停止续修。")
+            if reason == "test_failure" and number >= maximum:
+                reason = limit_reason or "round_limit"
+            row = acct_attempt(task, worker, attempt, model, effort, round_number=number,
+                               phase="initial" if number == 1 else "repair", reason=reason)
+            rows.append(row)
+            if not API_MODE and all(row.get(k) is not None for k in ("in", "cc", "cr", "out")):
+                gates_lib.append_spend(DATA, f"worker:{worker}", gates_lib.usd_of(row, model) if RUNTIME == "claude" else 0,
+                                       card=tid, model=model, note="逐轮用量；其他池不占主座席美元账" if RUNTIME != "claude" else None, log=log)
+            last_result = evidence or str(tail)
+            if reason == "passed":
+                made, memo = ([], "") if PROFILE_MODE else harvest_spawned(task, worker)
+                if made:
+                    last_result += "\n本卡派生子任务：" + str(made)
+                if memo:
+                    last_result += "\n" + memo
+                return finish("done", last_result)
+            LAST_FAIL_FP = reason
+            if reason != "test_failure":
+                return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result)
+            context["prompt"] = verification_repair.repair_prompt(vr, log_path,
+                os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md"), number + 1)
+        return finish("wait", "续修轮数用尽。\n" + last_result)
+    finally:
+        hb.stop.set()
 
 
 def parse_until(v):
