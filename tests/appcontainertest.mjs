@@ -5,6 +5,7 @@ import {join,relative,resolve} from 'node:path';
 import {tmpdir} from 'node:os';
 import {createServer,connect} from 'node:net';
 import {execFileSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import {pinFile,superviseCommand,superviseProcess} from '../core/execution/supervisor.mjs';
 const ROOT=mkdtempSync(join(tmpdir(),'fleet-appcontainer-')),outside=join(ROOT,'private.txt');writeFileSync(outside,'PRIVATE-OUTSIDE-DATA');let serial=0;
 const python=pinFile(execFileSync(process.env.BOARD_PYTHON||process.env.PYTHON||'python',['-I','-S','-X','utf8','-c','import sys;print(sys.executable)'],{encoding:'utf8',windowsHide:true}).trim()),command=pinFile(process.execPath);
@@ -48,5 +49,55 @@ test('cancellation stops sandbox descendants and removes the profile and staged 
  const f=fixture(`import {spawn} from 'node:child_process';import {writeFileSync} from 'node:fs';const child=spawn(process.execPath,['-e','setInterval(()=>{},1000)'],{stdio:'inherit',windowsHide:true});child.once('spawn',()=>writeFileSync('child.pid',String(child.pid)));setInterval(()=>{},1000);`),controller=new AbortController(),running=superviseCommand({...f.options,signal:controller.signal});
  let pid;try{for(let i=0;i<200;i++){if(existsSync(join(f.cwd,'child.pid'))){pid=Number(readFileSync(join(f.cwd,'child.pid'),'utf8'));break;}await new Promise(r=>setTimeout(r,20));}assert.ok(pid);}
  finally{controller.abort();}
- const out=await running;assert.equal(out.status,'cancelled',JSON.stringify(out));assert.equal(out.process.cleanup,'job_empty');assert.equal(out.process.sandbox.profile_removed,true);assert.equal(out.process.sandbox.staging_removed,true);assert.throws(()=>process.kill(pid,0));
+ const out=await running;assert.equal(out.status,'cancelled',JSON.stringify(out));assert.equal(out.process.cleanup,'job_empty');assert.equal(out.process.sandbox.profile_removed,true);assert.equal(out.process.sandbox.staging_removed,true,JSON.stringify(out));assert.throws(()=>process.kill(pid,0));
+});
+
+test('终态回执前关闭进程句柄且只清理一次，异常路径保留同一顺序',()=>{
+ const probe=String.raw`
+import ctypes,io,json,runpy,sys,tempfile,types
+ns=runpy.run_path(sys.argv[1]); g=ns['main'].__globals__; real=ns['WindowsProcess']
+for fail_started in (False,True):
+    events=[]
+    class Sandbox:
+        report={}
+        def close(self): events.append('sandbox')
+    class Process:
+        pid=123; containment='windows-job'; thread=None; process=1; job=2
+        close=real.close; close_handles=real.close_handles
+        def __init__(self,request):
+            self.closed=False; self.sandbox=Sandbox(); self.stdin=io.BytesIO()
+            self.stdout=tempfile.TemporaryFile(); self.stderr=tempfile.TemporaryFile()
+            self.k=types.SimpleNamespace(CloseHandle=lambda handle: events.append('handle'))
+        def poll(self): return 0
+        def stop(self): pass
+        def cleanup(self): events.append('job_empty'); return 'job_empty'
+    def emit(event):
+        if event['kind']=='started' and fail_started: raise OSError('fixture')
+        if event['kind']=='done': events.append('done')
+    g['WindowsProcess']=Process; g['checked_request']=lambda: {'input':'','timeout_ms':1000}; g['emit']=emit
+    result=ns['main']()
+    expected=['handle','handle','sandbox'] if fail_started else ['job_empty','handle','handle','sandbox','done']
+    assert events==expected,(fail_started,events)
+    assert result==(1 if fail_started else 0)
+print('ordered-once')`;
+ assert.equal(execFileSync(python.path,['-I','-S','-X','utf8','-c',probe,fileURLToPath(new URL('../core/execution/process_host.py',import.meta.url))],{encoding:'utf8',windowsHide:true}).trim(),'ordered-once');
+});
+
+test('暂存删除失败只回安全错误码且仍不算清理完成',()=>{
+ const probe=String.raw`
+import ctypes,json,runpy,sys,tempfile
+from pathlib import Path
+from unittest.mock import patch
+ns=runpy.run_path(sys.argv[1]); sandbox=ns['AppContainer'].__new__(ns['AppContainer'])
+sandbox.created=False; sandbox.sid=ctypes.c_void_p(); sandbox.report={'profile_removed':False,'staging_removed':False}
+with tempfile.TemporaryDirectory(prefix='ai-fleet-sandbox-') as root:
+    sandbox.root=Path(root); sandbox.temp_parent=sandbox.root.parent
+    error=PermissionError(13,'fixture-private-path'); error.winerror=32
+    with patch('shutil.rmtree',side_effect=error) as remove:
+        sandbox.close(); assert remove.call_count==1
+    assert sandbox.report['staging_removed'] is False
+    assert sandbox.report['staging_cleanup_error']=={'errno':13,'winerror':32}
+    assert 'fixture-private-path' not in json.dumps(sandbox.report)
+print('safe-error')`;
+ assert.equal(execFileSync(python.path,['-I','-S','-X','utf8','-c',probe,fileURLToPath(new URL('../core/execution/process_host.py',import.meta.url))],{encoding:'utf8',windowsHide:true}).trim(),'safe-error');
 });
