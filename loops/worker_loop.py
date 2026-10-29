@@ -1698,12 +1698,16 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     gate = codex_gate()
     if gate:
         return -3, gate
+    env = codex_runtime.subscription_environment(os.environ); env["PYTHONIOENCODING"] = "utf-8"
+    login_error = codex_runtime.subscription_login_gate(CODEX_CLI, env, workdir=REPO)
+    if login_error:
+        LAST_ACCT = {"sid": None, "t0": None, "usage": None}
+        return -3, login_error
     last_path = os.path.join(DATA, f"codex-last-{t['id']}-{attempt}.txt")
     try: os.path.isfile(last_path) and os.remove(last_path)   # 别把上次的残骸当证据
     except Exception: pass
     argv = codex_argv(model, effort, last_path)
     prompt = build_prompt(t, worker, evidence_path, prev_tail, attempt)
-    env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
     t0 = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     try:
         w = run_task_process(t, worker, attempt, "codex", model, effort, argv, env, input=prompt)
@@ -1788,12 +1792,17 @@ def probe_runtime(live=False):
     if not live:
         print("[probe] " + ("PASS" if ok else "FAIL") + "(无 --live: 没做实调用)", flush=True)
         return 0 if ok else 1
+    login_error = codex_runtime.subscription_login_gate(CODEX_CLI, os.environ, workdir=REPO)
+    if login_error:
+        print("[probe] " + login_error, flush=True)
+        return 1
     try: os.path.isfile(last_path) and os.remove(last_path)
     except Exception: pass
     os.makedirs(DATA, exist_ok=True)
     try:
         w = subprocess.run(argv, input="Reply with exactly: PROBE-OK", capture_output=True,
-                           text=True, encoding="utf-8", errors="replace", timeout=600, cwd=REPO)
+                           text=True, encoding="utf-8", errors="replace", timeout=600, cwd=REPO,
+                           env=codex_runtime.subscription_environment(os.environ))
     except Exception as e:
         print(f"[probe] ⛔ 实调用抛异常: {e}"); return 1
     v2 = judge_codex(w.returncode, w.stdout, last_path)
@@ -2375,6 +2384,8 @@ def main():
     #   手动执行、试验等不经 server 的路径上,同一判据同样生效才是防御的本体。
     if not API_MODE and RUNTIME == "codex":
         g2 = codex_gate()
+        if not g2:
+            g2 = codex_runtime.subscription_login_gate(CODEX_CLI, os.environ, workdir=REPO)
         if g2:
             print(g2, flush=True)
             sys.exit(gates_lib.EXIT_REFUSED)

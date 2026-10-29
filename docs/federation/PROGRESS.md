@@ -1,5 +1,14 @@
 # 多终端共享看板实施记录
 
+## 2026-10-29：AppContainer 终态清理顺序
+修正 Job 清空后先关进程句柄、一次删除再回执的顺序；暂存删除失败保留安全错误码，不增加等待或重试。
+两项确定性回归先红后绿，AppContainer 8 项、进程监管 28 项通过；CI174 原生取消与顺序回归通过，错误码夹具补齐父路径规范化，完整 CI 待后续结果。
+
+## 2026-10-28：Codex CLI 通道闭环准备
+订阅 CLI 只要求正数时限，强制 ChatGPT 认证；worker、审阅与协调模板共用凭据过滤，保留既有领取／回报协议。
+受影响离线检查：预算 12 项、SDK 与协调模板 22 项、Codex 自测 31 项、审阅 23 项通过；超时树用例的沙箱权限失败以实际用户上下文单独复核通过。
+路径隔离按操作者决定移至未放行的开发板 #8；真实闭环在 #4 回报，当前等待临时板候选版本由本人确认。
+
 ## 第一百零九批：补齐本机依赖与 CLI 环境报告，2026-10-05
 
 按 T01.01 原三条标准，将已经执行的六个版本检查和三种 CLI 帮助检查整理为 [environment-report.json](environment-report.json)。六个二进制/脚本及三份原帮助输出摘要仍匹配；没有重复执行版本/help、功能回归或真实任务。实际绝对路径和启动参数保留在私有报告，公开文件用路径占位及内容摘要；Zcode 桌面 3.14.4.7912 与 Node CLI 0.16.9 明确区分。
@@ -1252,3 +1261,11 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-10-28 英文标语：README 与 package.json description 由「The acceptance-first kanban for mixed AI fleets.」改为「The acceptance-first kanban for multi-agent AI collaboration.」；README 正文里把 fleet 当普通名词的介绍句与 fleet.config.json、fleet-* 测试脚本等技术标识不改；node/npm 读 package.json 正常；阻塞：无。
 - 2026-10-28 README 正文三处把 fleet 当普通名词的说法按操作者决定改写：a fleet of coding agents → a team of coding agents，mixed fleet (Claude + Codex) → mix of agents (Claude + Codex)，源码闸条目主语 the fleet → the workers（源码闸由 worker_loop／reviewer_loop 在执行线启动时执行，不管看板进程）；剩余 fleet 均为 fleet.config.json 与 examples 的 fleet config 技术标识，不改；阻塞：无。
 - 2026-10-28 README 以外文档里把 fleet 当普通名词的说法按操作者决定改写：CONTRIBUTING 与 GLOSSARY 的 physical fleet → physical two-machine（与 README 现有说法一致），SECURITY 共享机器建议的 run the fleet → run the board and its workers，SECURITY 与 QUICKSTART 源码闸条目主语 the fleet → the workers，SECURITY 的 deployed fleet → production deployment，QUICKSTART 的 fleet vocabulary → line vocabulary，桌面包 README 示例问句改为「请通过 AI 协作看板查询…」；fleet.config.json、fleet config、ai-fleet-board.mcpb、fleet-board、C:/fleet-desktop 等技术标识，以及 docs/INCIDENTS.md、docs/交接说明.md、docs/federation 下其余文件刻意不改；阻塞：无。
+
+- 2026-10-28 Codex CLI 闸裁定补修：生成前只读核实 ChatGPT 登录，API/未知认证拒绝生成且不注销；覆盖旧执行线与审阅线。
+- 协调模板改为显式接收已过滤环境，实际调用统一 prepare 预检；断言 exec/续接之后无 -c，防止顶层只读与认证约束失效。
+- 定向检查 11/11；looptest 72、reviewtest 23 项断言通过；实际 CLI 0.149.1 的假 API 登录预检拒绝生成且保留认证文件，未调用模型。
+
+- 2026-10-29 #4 稳定 CLI 0.165.0 复核：本轮 Windows 单机明确选择无需管理员初始化的 unelevated，保留读写和所有闸；参数不混层级，不作为路径隔离方案。
+- 新增后端/层级断言先红后绿，相关检查12、Codex纯函数31项通过；指定副本的API登录保护、原样本目录可读且拒写均为无模型实测。
+- 后续仍按原8次CLI启动总额顺序验证；认证目录隔离由第8卡与本人处理。
