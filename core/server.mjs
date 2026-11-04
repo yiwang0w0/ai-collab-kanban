@@ -450,6 +450,13 @@ const REVIEW_ANTI_AFFINITY = (() => {
   process.exit(1);
 })();
 
+// ── 远程批准入口(remote_access,默认关闭)。关闭或没写时其余键一概不读,行为与没有这项时完全一样;
+//    打开时配置有一处不合格就拒绝启动:监听地址必须显式写 IP,通配地址要另加 allow_wildcard_listen。
+const REMOTE = (() => {
+  try { return approvals.parseRemoteConfig(CFG.remote_access); }
+  catch (e) { console.error(`拒绝启动:${CONFIG_FILE} 的 remote_access ${e.message}`); process.exit(1); }
+})();
+
 // ⭐ The line menu is BUILT from config (never copied into prose). A hand-copied
 //   list once dropped one line in two places at once — the decomposition model
 //   cannot pick a line missing from its menu, so the omission silently starved that
@@ -3049,6 +3056,124 @@ async function approvalsRoute(req, res, url, p, m, boardRole) {
   return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的批准接口" });
 }
 
+// ── 批准令牌(操作员生成与吊销,只给远程入口用)。本机接口不认它,远程入口只认它。
+async function approvalTokensRoute(req, res, url, p, m) {
+  if (!asOperator(req, res)) return;
+  if (m === "GET" && p === "/api/approval-tokens")
+    return json(res, 200, { tokens: approvals.listTokens(db), remote: remoteStatus(), audit: approvals.listAudit(db, { limit: 20 }) });
+  if (m === "POST" && p === "/api/approval-tokens") {
+    const b = await readBody(req);
+    const r = approvals.createToken(db, { label: b.label });
+    coord.appendJournal(db, "operator", { kind: "approval.token", body: approvals.oneLine(`生成批准令牌 #${r.record.id}:${r.record.label}`, 300) });
+    emit("approval.token", { id: r.record.id, op: "create" });
+    return json(res, 201, r);
+  }
+  const mr = p.match(/^\/api\/approval-tokens\/(\d+)\/revoke$/);
+  if (mr && m === "POST") {
+    const t = approvals.revokeToken(db, Number(mr[1]));
+    coord.appendJournal(db, "operator", { kind: "approval.token", body: approvals.oneLine(`吊销批准令牌 #${t.id}:${t.label}`, 300) });
+    emit("approval.token", { id: t.id, op: "revoke" });
+    return json(res, 200, { token: t });
+  }
+  return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的批准令牌接口" });
+}
+
+// ── 远程入口(可选,默认关闭)。另起监听,只接受 allow_ips 里的来源和批准令牌,只开放批准接口与只读摘要。
+//    没有 TLS:只在 VPN 或可信局域网里用。浏览器请求一律拒绝;每次调用都写 remote_audit。
+const remoteServers = [];
+const remoteState = { listening: [], errors: [] };
+const REMOTE_FAIL_WINDOW_MS = 10 * 60000, REMOTE_FAIL_MAX = 10;
+const remoteFails = new Map();   // ip -> { n, first }:认证失败计数,按来源地址限流
+const remoteThrottled = (ip) => {
+  const f = remoteFails.get(ip);
+  if (f && Date.now() - f.first > REMOTE_FAIL_WINDOW_MS) { remoteFails.delete(ip); return false; }
+  return !!f && f.n >= REMOTE_FAIL_MAX;
+};
+const remoteFail = (ip) => {
+  const f = remoteFails.get(ip);
+  if (!f || Date.now() - f.first > REMOTE_FAIL_WINDOW_MS) { if (remoteFails.size > 1000) remoteFails.clear(); remoteFails.set(ip, { n: 1, first: Date.now() }); }
+  else f.n++;
+};
+const remoteStatus = () => REMOTE.enabled
+  ? { enabled: true, listen: REMOTE.listen.map(approvals.formatListen), allow_ips: REMOTE.allow_ips,
+      listening: [...remoteState.listening], errors: [...remoteState.errors] }
+  : { enabled: false, listen: [], allow_ips: [], listening: [], errors: [] };
+function remoteSummary() {
+  const now = Date.now();
+  return { board: { counts: store.counts(db), version: BOOT_REV, uptime_sec: Math.floor((now - STARTED) / 1000) },
+           approvals: approvalEntries().length, executors: coord.listExecutors(db),
+           locks: coord.listLocks(db, {}, now, COORD_GRACE_MS), journal: coord.journal(db, { limit: 20 }), now: new Date(now).toISOString() };
+}
+async function remoteHandler(req, res) {
+  const ip = approvals.normalizeIp(req.socket.remoteAddress), m = String(req.method || "");
+  let p = "", status = 0, tokenId = null, note = "";
+  const send = (code, body, headers = {}) => {
+    status = code;
+    res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store",
+                          "X-Content-Type-Options": "nosniff", ...headers });
+    res.end(JSON.stringify(body));
+  };
+  try {
+    try { p = new URL(req.url, "http://remote.invalid").pathname; }
+    catch { p = String(req.url || "").slice(0, 200); note = "url"; return send(400, { error: "请求路径无效" }); }
+    if (!REMOTE.allows(ip)) { note = "ip"; return send(403, { error: "来源地址不在允许列表里" }); }
+    // 原生客户端不带这几个头;带了就是浏览器(跨源)发起的,一律拒绝,也不回任何 CORS 头。
+    if (req.headers.origin !== undefined || req.headers["sec-fetch-site"] !== undefined || req.headers["sec-fetch-mode"] !== undefined) {
+      note = "browser"; return send(403, { error: "远程入口不接受浏览器发起的请求" });
+    }
+    if (remoteThrottled(ip)) { note = "throttled"; return send(429, { error: "认证失败次数过多,稍后再试" }, { "Retry-After": "600" }); }
+    const bearer = /^Bearer ([A-Za-z0-9_]{1,128})$/.exec(String(req.headers.authorization || ""));
+    const tok = bearer ? approvals.tokenByValue(db, bearer[1]) : null;
+    if (!tok) { remoteFail(ip); note = "auth"; return send(401, { error: "缺少或无效的批准令牌" }); }
+    tokenId = tok.id;
+    if (m === "GET" && p === "/api/approvals") return send(200, approvalList());
+    if (m === "GET" && p === "/api/summary") return send(200, remoteSummary());
+    const md = p.match(/^\/api\/approvals\/([^/]+)(\/decide)?$/);
+    if (md && !["request", "decisions"].includes(md[1])) {
+      const id = decodeApprovalId(md[1]);
+      if (m === "GET" && !md[2]) return send(200, approvalOne(id));
+      if (m === "POST" && md[2]) {
+        const b = await readSmallJson(req, 4096);
+        if (b === null) { note = "body"; return send(400, { error: "请求正文必须是 4KB 以内的 JSON" }); }
+        let out;
+        try { out = decideApproval(id, b, { actor: `approval-token:${tok.id}`, via: "remote", ip }); }
+        catch (e) { note = "decide"; return send(statusFor(e, "remote.decide"), decisionErrorBody(e)); }
+        send(out.after ? 202 : 200, { decision: out.decision, result: out.result });
+        out.after?.();
+        return;
+      }
+    }
+    note = "path"; return send(403, { error: "远程入口不开放此接口" });
+  } catch (e) {
+    note = note || "error";
+    if (!res.headersSent) send(statusFor(e, "remote"), { error: String(e?.message || e) });
+  } finally {
+    try { approvals.audit(db, { ip, method: m, path: p, status, tokenId, note }); }
+    catch (e) { console.error(`远程入口审计写入失败:${e.message}`); }
+  }
+}
+function startRemote() {
+  if (!REMOTE.enabled) return;
+  for (const l of REMOTE.listen) {
+    const where = approvals.formatListen(l);
+    const srv = http.createServer(remoteHandler);
+    srv.requestTimeout = 15000; srv.headersTimeout = 10000; srv.keepAliveTimeout = 5000; srv.maxHeadersCount = 50;
+    srv.on("error", (e) => {
+      remoteState.errors.push(`${where} ${e.code || e.message}`);
+      console.error(`⚠ 远程批准入口 ${where} 监听失败:${e.message}`);
+    });
+    srv.listen(l.port, l.host, () => {
+      remoteState.listening.push(where);
+      console.log(`远程批准入口 http://${where}  允许来源 ${REMOTE.allow_ips.join(", ")}  只开放批准接口与只读摘要;没有 TLS,只在 VPN 或可信局域网里用`);
+    });
+    remoteServers.push(srv);
+  }
+}
+const closeRemote = () => Promise.all(remoteServers.map((s) => new Promise((r) => {
+  if (!s.listening) return r();
+  s.close(() => r()); s.closeAllConnections?.();
+})));
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
@@ -3571,6 +3696,7 @@ const server = http.createServer(async (req, res) => {
 
     if (p === "/api/coord" || p.startsWith("/api/coord/")) return await coordRoute(req, res, url, p, m, boardRole);
     if (p === "/api/approvals" || p.startsWith("/api/approvals/")) return await approvalsRoute(req, res, url, p, m, boardRole);
+    if (p === "/api/approval-tokens" || p.startsWith("/api/approval-tokens/")) return await approvalTokensRoute(req, res, url, p, m);
 
     // Pick-a-card claim (no id) — this is what the worker loop hits.
     // Empty queue = 204, not an error: the worker should sleep, not retry.
@@ -3966,6 +4092,7 @@ server.listen(PORT, HOST, () => {
   }
   }
   schedulePoolReconcile("server-start");
+  startRemote();
 });
 
 // Taking the board down takes its workers with it — left behind, unattended models
@@ -4003,6 +4130,7 @@ async function restartBoard(trigger) {
                              log_path: RESTART_MODE === "respawn" ? join(store.DATA_DIR, "board.log") : null });
   await new Promise((r) => setTimeout(r, 150));   // let that event and the 202 leave the socket
   for (const c of clients) { try { c.end(); } catch {} }   // open SSE streams would hold close() forever
+  await closeRemote();
   await new Promise((r) => { server.close(() => r()); server.closeAllConnections?.(); });
   if (RESTART_MODE === "exit") {
     // The supervisor cannot know which revision this process ran (it only sees exit 75); leave

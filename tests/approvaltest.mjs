@@ -9,7 +9,7 @@ import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "nod
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { createServer } from "node:net";
+import { createServer, connect } from "node:net";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
@@ -155,5 +155,89 @@ test("待批准事项:六类都列出来,决定路由回原有逻辑,版本冲�
     assert.throws(() => db.prepare("DELETE FROM approval_decisions").run(), /append-only/);
     assert.throws(() => db.prepare("UPDATE approval_requests SET risk='low'").run(), /append-only/);
     db.close();
+  } finally { await B.stop(); }
+});
+
+/** 直接发 HTTP:可指定本端地址(127.0.0.x 回环别名模拟不同来源)。 */
+const raw = (port, { method = "GET", path = "/api/approvals", token, headers = {}, body, local = "127.0.0.2", host = "127.0.0.2" } = {}) =>
+  new Promise((ok, ko) => {
+    const q = http.request({ host, port, path, method, localAddress: local, timeout: 8000,
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body !== undefined ? { "Content-Type": "application/json" } : {}), ...headers } },
+      (r) => { let b = ""; r.setEncoding("utf8"); r.on("data", (c) => { b += c; });
+               r.on("end", () => { let j = null; try { j = JSON.parse(b); } catch {} ok({ status: r.statusCode, body: j }); }); });
+    q.on("error", ko); q.on("timeout", () => q.destroy(new Error("timeout")));
+    if (body !== undefined) q.write(typeof body === "string" ? body : JSON.stringify(body));
+    q.end();
+  });
+const refused = (port, host = "127.0.0.2") => new Promise((ok) => {
+  const s = connect({ host, port }); s.once("connect", () => { s.destroy(); ok(false); }); s.once("error", () => ok(true));
+});
+
+test("远程入口:关闭时不监听;打开后只认白名单来源与批准令牌,越权路径与浏览器请求被拒,每次调用都审计", { timeout: 120000 }, async () => {
+  const rport = await freePort("127.0.0.2");
+  const off = await board({ config: { remote_access: { enabled: false, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2"] } } });
+  try {
+    assert.equal(await refused(rport), true, "关闭时不监听,写了 listen 也不读");
+    assert.equal((await off.api("GET", "/api/approval-tokens", off.operator)).body.remote.enabled, false);
+  } finally { await off.stop(); }
+  const wild = await board({ config: { remote_access: { enabled: true, listen: [`0.0.0.0:${rport}`], allow_ips: ["127.0.0.2"] } }, expectExit: true });
+  assert.equal(wild.exitCode, 1, wild.logs); assert.match(wild.logs, /通配地址/);
+
+  const B = await board({ config: { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32"] } } });
+  try {
+    for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
+    const ex = await B.register("agent-r");
+    const made = await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const tok = made.body.token;
+    assert.match(tok, /^apr_[0-9a-f]{48}$/);
+    assert.equal((await B.api("POST", "/api/approval-tokens", ex, { label: "x" })).status, 403, "执行者不能生成批准令牌");
+    const listed = await B.api("GET", "/api/approval-tokens", B.operator);
+    assert.ok(!JSON.stringify(listed.body).includes(tok), "列表不含明文");
+    assert.deepEqual(listed.body.remote.listening, [`127.0.0.2:${rport}`]);
+    const db = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
+    assert.equal(db.prepare("SELECT token_hash FROM approval_tokens WHERE id=?").get(made.body.record.id).token_hash,
+                 createHash("sha256").update(tok).digest("hex"), "库里只存哈希");
+    db.close();
+    assert.equal((await B.api("GET", "/api/approvals", tok)).status, 401, "本机接口不认批准令牌");
+
+    assert.equal((await raw(rport, { token: tok, local: "127.0.0.3" })).status, 403, "不在白名单的来源被拒");
+    assert.equal((await raw(rport, {})).status, 401);
+    assert.equal((await raw(rport, { token: B.operator })).status, 401, "不接受操作员令牌");
+    assert.equal((await raw(rport, { headers: { "X-Board-Token": B.operator } })).status, 401);
+    assert.equal((await raw(rport, { token: ex })).status, 401, "不接受执行者令牌");
+    const ls = await raw(rport, { token: tok });
+    assert.equal(ls.status, 200, JSON.stringify(ls.body)); assert.ok(Array.isArray(ls.body.approvals));
+    for (const [method, path] of [["GET", "/api/tasks"], ["GET", "/api/coord"], ["GET", "/api/approval-tokens"], ["GET", "/"],
+                                  ["POST", "/api/tasks"], ["POST", "/api/approvals/request"], ["POST", "/api/setup/bless"]])
+      assert.equal((await raw(rport, { token: tok, method, path, ...(method === "POST" ? { body: {} } : {}) })).status, 403, `${method} ${path}`);
+    assert.equal((await raw(rport, { token: tok, headers: { Origin: "http://192.0.2.10" } })).status, 403, "跨源请求被拒");
+    assert.equal((await raw(rport, { token: tok, headers: { "Sec-Fetch-Mode": "cors" } })).status, 403);
+    const sm = await raw(rport, { token: tok, path: "/api/summary" });
+    assert.equal(sm.status, 200);
+    for (const k of ["board", "executors", "locks", "journal"]) assert.ok(k in sm.body, k);
+    assert.ok(sm.body.executors.some((x) => x.id === "agent-r"));
+
+    const rq = (await B.api("POST", "/api/approvals/request", ex, { action: "改共享端口", risk: "medium" })).body.request;
+    const path = `/api/approvals/${encodeURIComponent(rq.approval_id)}/decide`;
+    assert.equal((await raw(rport, { token: tok, method: "POST", path, body: { decision: "approve", source: { client: "phone-app" }, expected_version: 2 } })).status, 409, "版本不符 409");
+    const d = await raw(rport, { token: tok, method: "POST", path, body: { decision: "approve", source: { client: "phone-app", device: "test-device" }, expected_version: 1 } });
+    assert.equal(d.status, 200, JSON.stringify(d.body));
+    assert.equal(d.body.decision.via, "remote"); assert.equal(d.body.decision.ip, "127.0.0.2");
+    assert.equal(d.body.decision.actor, `approval-token:${made.body.record.id}`);
+    assert.deepEqual(d.body.decision.source, { client: "phone-app", device: "test-device" });
+    assert.equal((await raw(rport, { token: tok, method: "POST", path, body: { decision: "reject", source: { client: "phone-app" }, expected_version: 1 } })).status, 409, "不能重复决定");
+    const j = (await B.journal()).find((e) => e.kind === "approval.decided");
+    assert.match(j.body, /来源 phone-app\/test-device,经 remote 127\.0\.0\.2/);
+
+    assert.equal((await B.api("POST", `/api/approval-tokens/${made.body.record.id}/revoke`, B.operator, {})).status, 200);
+    assert.equal((await raw(rport, { token: tok })).status, 401, "吊销后失效");
+    const adb = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
+    const rows = adb.prepare("SELECT * FROM remote_audit ORDER BY id").all(); adb.close();
+    assert.ok(rows.length >= 18, `每次调用都审计:${rows.length}`);
+    assert.ok(rows.some((r) => r.status === 403 && r.note === "ip" && r.ip === "127.0.0.3"));
+    assert.ok(rows.some((r) => r.status === 403 && r.note === "browser"));
+    assert.ok(rows.some((r) => r.status === 403 && r.note === "path" && r.path === "/api/tasks"));
+    assert.ok(rows.some((r) => r.status === 200 && r.method === "POST" && r.token_id === made.body.record.id));
   } finally { await B.stop(); }
 });
