@@ -48,6 +48,7 @@ if (nodeTooOld()) {
 }
 const store = require_("./store.js");
 const coord = require_("./coord.js");
+const approvals = require_("./approvals.js");
 const decision = require_("./decision_lib.js");
 const decompose = require_("./decompose_lib.js");
 const dgate = require_("../gates/deliverable_gate.js");
@@ -416,6 +417,7 @@ const fpContext = () => {
 
 const db = store.open();
 coord.migrate(db);
+approvals.migrate(db);
 // Opt-in trusted local configuration; ordinary view-only startup performs no new migration.
 const fleetActions = process.env.BOARD_FLEET_ACTIONS_CONFIG
   ? openFleetActions(db,{config:loadFleetActionsConfig(process.env.BOARD_FLEET_ACTIONS_CONFIG)}) : null;
@@ -2637,6 +2639,142 @@ async function coordRoute(req, res, url, p, m, boardRole) {
   return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的协作接口" });
 }
 
+// ── 批准接口(/api/approvals)。待批准事项不另存一份:每次从卡片、版本、锁和执行者请求的现状算出来。
+//    事项 id = 类型:对象:版本,expected_version 与 id 的版本段相同;对象一变,旧 id 就不再出现。
+const approvalSeenAt = new Map();   // 版本类事项没有自带时刻,记进程内第一次看到它的时刻
+const seenAt = (id) => {
+  if (!approvalSeenAt.has(id)) { if (approvalSeenAt.size > 200) approvalSeenAt.clear(); approvalSeenAt.set(id, new Date().toISOString()); }
+  return approvalSeenAt.get(id);
+};
+const APPROVE_REJECT = Object.freeze(["approve", "reject"]);
+/** 一张卡对应的待批准事项:等待中且待裁定 / 待验收,或显式执行配置的卡等本人放行。route 是决定时要用的内部数据。 */
+function taskApprovalEntry(t) {
+  if (!t || t.archived_at) return null;
+  const ref = { type: "task", id: t.id, api: `/api/tasks/${t.id}`, panel: `/#task=${t.id}` };
+  const title = approvals.oneLine(`#${t.id} ${t.subject}`);
+  if (t.status === "waiting" && (t.waiting_for === "decision" || t.waiting_for === "review")) {
+    const kind = t.waiting_for === "decision" ? "decision" : "delivery";
+    return { item: { id: approvals.makeId(kind, t.id, t.aggregate_version), kind, title,
+                     summary: approvals.oneLine(t.result_summary || t.summary || t.subject), detail_ref: ref,
+                     created_at: t.updated_at, expected_version: t.aggregate_version, actions: [...APPROVE_REJECT],
+                     labels: kind === "decision" ? { approve: "同意", reject: "否决" } : { approve: "通过", reject: "打回" } },
+             route: { taskId: t.id } };
+  }
+  if (t.status === "not_started" && !t.released) {
+    const pv = taskProfilePreview(t);
+    if (!pv) return null;
+    const rp = taskRepairPreview(t);
+    // 放行确认绑定本人看到的执行配置摘要:配置变了版本段就变,旧 id 批不下去。
+    const version = `${t.aggregate_version}.${pv.profile_digest.slice(0, 16)}.${rp.digest ? rp.digest.slice(0, 16) : "0"}`;
+    return { item: { id: approvals.makeId("release", t.id, version), kind: "release", title,
+                     summary: approvals.oneLine(`${pv.label || pv.execution_profile_id} · ${pv.model} · ${pv.effort}:${t.summary || t.subject}`),
+                     detail_ref: ref, created_at: t.created_at, expected_version: version,
+                     actions: pv.ready ? [...APPROVE_REJECT] : ["reject"], labels: { approve: "按此配置放行", reject: "暂不放行" },
+                     ...(pv.ready ? {} : { blocked: pv.reason }) },
+             route: { taskId: t.id, version: t.aggregate_version, profileDigest: pv.profile_digest, repairDigest: rp.digest } };
+  }
+  return null;
+}
+/** 版本确认:代码已更新待重启(升级)优先;否则看板版本待确认(bless)。 */
+function versionApprovalEntry(op = null) {
+  const up = upgradeState();
+  if (up.pending && up.apply) {
+    if (op && op !== "upgrade") return null;
+    const tree = up.apply.body?.confirm_tree || null;
+    const version = `${up.on_disk}.${tree ? tree.slice(0, 16) : "0"}`;
+    const id = approvals.makeId("version", "upgrade", version);
+    return { item: { id, kind: "version", title: "更新看板代码", summary: `从 ${up.running} 更新到 ${up.on_disk},随后重启看板`,
+                     detail_ref: { type: "setup", api: "/api/setup" }, created_at: seenAt(id), expected_version: version,
+                     actions: [...APPROVE_REJECT], labels: { approve: "更新并重启", reject: "暂不更新" }, in_progress: up.apply.in_progress },
+             route: { op: "upgrade", tree } };
+  }
+  if (op && op !== "bless") return null;
+  const bl = blessStep();
+  if (bl.state !== "todo" || bl.action?.path !== "/api/setup/bless") return null;
+  const tree = bl.action.body.confirm_tree, pv = acceptPreview(tree, readAccepted());
+  const id = approvals.makeId("version", "bless", tree);
+  return { item: { id, kind: "version", title: "确认当前版本",
+                   summary: `确认版本 ${tree.slice(0, 12)}` + (pv.files != null ? `,上次确认后改了 ${pv.files} 个文件` : ",首次确认"),
+                   detail_ref: { type: "setup", api: "/api/setup" }, created_at: seenAt(id), expected_version: tree,
+                   actions: [...APPROVE_REJECT], labels: { approve: "确认此版本", reject: "暂不确认" } },
+           route: { op: "bless", tree } };
+}
+/** 逾期的资源锁:问人要不要强制释放。版本段 = 这次持有的预计结束时刻(毫秒)。 */
+function lockApprovalEntry(l) {
+  if (!l || l.released_at || !l.overdue) return null;
+  const end = Date.parse(l.expected_end);
+  return { item: { id: approvals.makeId("lock", l.id, end), kind: "lock", title: l.resource,
+                   summary: approvals.oneLine(`${l.resource} 已逾期:${l.holder_name} · ${l.purpose}`),
+                   detail_ref: { type: "lock", id: l.id, resource: l.resource, api: "/api/coord/locks" },
+                   created_at: l.overdue_notified_at || new Date(end + COORD_GRACE_MS).toISOString(), expected_version: end,
+                   actions: [...APPROVE_REJECT], labels: { approve: "强制释放", reject: "保留" } },
+           route: { resource: l.resource, lockId: l.id } };
+}
+function requestApprovalEntry(r) {
+  if (!r) return null;
+  return { item: { id: r.approval_id, kind: "request", title: `${r.executor} 请求批准`, summary: approvals.oneLine(r.action),
+                   risk: r.risk, executor: r.executor, detail_ref: { type: "request", id: r.id, api: `/api/approvals/${r.approval_id}` },
+                   created_at: r.created_at, expected_version: 1, actions: [...APPROVE_REJECT], labels: { approve: "批准", reject: "拒绝" } },
+           route: { requestId: r.id } };
+}
+function approvalEntries() {
+  const now = Date.now(), out = [];
+  for (const t of store.list(db, { archived: "false" }).tasks) { const e = taskApprovalEntry(t); if (e) out.push(e); }
+  const v = versionApprovalEntry(); if (v) out.push(v);
+  for (const l of coord.listLocks(db, {}, now, COORD_GRACE_MS)) { const e = lockApprovalEntry(l); if (e) out.push(e); }
+  for (const r of approvals.openRequests(db)) out.push(requestApprovalEntry(r));
+  // 拒绝了的版本、锁、放行确认不改对象状态,靠决定记录不再列出;卡片类决定后版本已变。
+  return out.filter((e) => !approvals.decisionOf(db, e.item.id))
+            .sort((a, b) => String(a.item.created_at).localeCompare(String(b.item.created_at)));
+}
+/** 某一对象当前对应的事项(没有待批准的返回 null);对象本身不存在抛 NOT_FOUND。 */
+function currentApprovalEntry(kind, object) {
+  if (kind === "decision" || kind === "delivery" || kind === "release") {
+    const t = /^\d+$/.test(object) ? store.get(db, Number(object)) : null;
+    if (!t) throw store.err(store.ERR.NOT_FOUND, `卡 #${object} 不存在`);
+    return taskApprovalEntry(t);
+  }
+  if (kind === "version") {
+    if (!["bless", "upgrade"].includes(object)) throw store.err(store.ERR.NOT_FOUND, `没有 ${object} 这种版本确认`);
+    return versionApprovalEntry(object);
+  }
+  if (kind === "lock") {
+    if (!/^\d+$/.test(object) || !db.prepare("SELECT 1 FROM coord_locks WHERE id=?").get(Number(object)))
+      throw store.err(store.ERR.NOT_FOUND, `锁记录 #${object} 不存在`);
+    const l = coord.listLocks(db, {}, Date.now(), COORD_GRACE_MS).find((x) => x.id === Number(object));
+    return lockApprovalEntry(l);
+  }
+  const r = /^\d+$/.test(object) ? approvals.getRequest(db, Number(object)) : null;
+  if (!r) throw store.err(store.ERR.NOT_FOUND, `批准请求 #${object} 不存在`);
+  return requestApprovalEntry(r);
+}
+const approvalList = () => {
+  const items = approvalEntries().map((e) => e.item);
+  return { approvals: items, count: items.length, now: new Date().toISOString() };
+};
+function approvalOne(rawId) {
+  const ref = approvals.parseId(rawId);
+  const decision = approvals.decisionOf(db, rawId);
+  let item = null;
+  if (!decision) {
+    try { const e = currentApprovalEntry(ref.kind, ref.object); if (e && e.item.id === rawId) item = e.item; }
+    catch (e) { if (e.code !== store.ERR.NOT_FOUND) throw e; }
+  }
+  if (!item && !decision) throw store.err(store.ERR.NOT_FOUND, `${rawId} 不在待批准列表里,也没有决定记录`);
+  return { approval: item, decision };
+}
+const decodeApprovalId = (raw) => {
+  try { return decodeURIComponent(raw); } catch { throw store.err(store.ERR.BAD_INPUT, "事项 id 的 URL 编码无效"); }
+};
+async function approvalsRoute(req, res, url, p, m, boardRole) {
+  if (m === "GET" && p === "/api/approvals") return json(res, 200, approvalList());
+  if (m === "GET" && p === "/api/approvals/decisions")
+    return json(res, 200, { decisions: approvals.listDecisions(db, { limit: url.searchParams.get("limit") }) });
+  const md = p.match(/^\/api\/approvals\/([^/]+)$/);
+  if (md && m === "GET") return json(res, 200, approvalOne(decodeApprovalId(md[1])));
+  return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的批准接口" });
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
@@ -3161,6 +3299,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/coord" || p.startsWith("/api/coord/")) return await coordRoute(req, res, url, p, m, boardRole);
+    if (p === "/api/approvals" || p.startsWith("/api/approvals/")) return await approvalsRoute(req, res, url, p, m, boardRole);
 
     // Pick-a-card claim (no id) — this is what the worker loop hits.
     // Empty queue = 204, not an error: the worker should sleep, not retry.
