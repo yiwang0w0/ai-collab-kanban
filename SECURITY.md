@@ -36,6 +36,9 @@ from a named incident (see `docs/INCIDENTS.md`):
   copied `PASS` prose into Codex machine evidence.
   A manually launched legacy loop therefore records an unknown runtime even
   when it actually invokes a Codex CLI; CLI output and usage are still retained.
+  执行者令牌（`exe_…`，见 `docs/多执行者协作.md`）由操作员逐个登记，库里只存 sha256，明文只返回一次；
+  只能读看板、领卡、续租、交付、写自己的状态与流水、加锁与释放自己的锁、确认交接，不能裁定、bless、起停线或改设置。
+  它不证明运行时种类，领卡时不盖运行时徽标。
   **Measured 2026-09-07 with the real CLI on Windows (nine experiments, positive
   controls included):** a Claude worker in `-p` mode can `Read` any absolute path
   on the machine, inside or outside its working directory — so moving the data
