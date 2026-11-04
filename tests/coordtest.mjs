@@ -340,3 +340,27 @@ test("board.py 协作子命令:--token-file 选执行者令牌,旧用法照常",
     assert.notEqual(B.cli("approve", String(t.id), "--version", "1", "--token-file", ta).code, 0, "执行者令牌不能裁定");
   } finally { await B.stop(); }
 });
+
+test("面板协作区:逾期锁与待接手交接标出,外部执行线不出启动按钮", () => {
+  const src = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
+  assert.match(src, /data-toc="set-coord"/);
+  assert.match(src, /fetch\("\/api\/coord"\)/);
+  const a = src.indexOf("function renderCoord(){"), b = src.indexOf("\n}\n", a) + 3;
+  assert.ok(a > 0 && b > a);
+  const box = { innerHTML: "" };
+  const env = { document: { getElementById: () => box }, esc: (x) => String(x ?? "").replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";"),
+    icon: (n) => `[${n}]`, localTime: (i) => i.slice(11, 16), ago: () => "刚才", copyLabel: (l, v, f) => Object.hasOwn(l, v) ? l[v] : f,
+    lineLabel: (l) => l, COORD_KIND: { external: "外部执行" }, COORD_REASON: { heartbeat_stale: "心跳中断" } };
+  const render = new Function(...Object.keys(env), "let coordData;" + src.slice(a, b) + ";return (d) => { coordData = d; renderCoord(); return document.getElementById(\"coord\").innerHTML; };")(...Object.values(env));
+  const t = new Date().toISOString();
+  const html = render({ executors: [{ id: "a", name: "<甲>", kind: "external", active: false, last_seen: t, status: { current: "回归", next: ["跑测试"] } }],
+    locks: [{ resource: "device:test-phone", holder_name: "甲", purpose: "回归", started_at: t, expected_end: t, overdue: true }],
+    handoffs: [{ id: 3, executor: "a", reason: "heartbeat_stale", created_at: t, package: { goal: "回归", next: ["跑测试"] } }],
+    journal: [], external_lines: ["ext"] });
+  assert.match(html, /data-tone="warn"[^]*逾期/);
+  assert.match(html, /心跳中断[^]*待接手/);
+  assert.match(html, /外部执行线：ext/);
+  assert.ok(!html.includes("<甲>"), "执行者名转义");
+  const rig = src.slice(src.indexOf("function renderRig(){"), src.indexOf("let MODELS = []"));
+  assert.match(rig, /w\.external \? `<span class="wk-acts"><\/span><\/div>`/, "外部执行线不渲染齿轮与启动按钮");
+});

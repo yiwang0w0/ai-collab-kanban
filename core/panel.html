@@ -606,6 +606,32 @@
   .wk-acts{display:flex;gap:var(--sp-2);justify-content:flex-end}
   .settings-view .wk.miss{display:block;color:var(--warn)}
   .wk.miss .ic{margin-right:var(--sp-1)}
+  /* 协作区:执行者状态卡、锁表、流水、待接手的交接。 */
+  .coord{padding:var(--sp-3) var(--sp-4) var(--sp-4);display:grid;gap:var(--sp-4);min-width:0}
+  .coord h4{margin:0 0 var(--sp-2);font-size:var(--fs-xs);letter-spacing:.06em;color:var(--dim);font-weight:600}
+  .coord .set-empty{padding:0}
+  .coord .mono{font-family:var(--mono)}
+  .coord .dim{color:var(--dim)}
+  .coord-execs{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:var(--sp-2)}
+  .coord-ex{border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);padding:var(--sp-2) var(--sp-3);min-width:0;font-size:var(--fs-sm)}
+  .coord-ex .hd{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);font-size:var(--fs-md);font-weight:500;min-width:0}
+  .coord-ex .hd > span:first-child{min-width:0;overflow-wrap:anywhere}
+  .coord-ex dl{margin:var(--sp-1) 0 0;display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px var(--sp-2)}
+  .coord-ex dt{color:var(--dim)}
+  .coord-ex dd{margin:0;overflow-wrap:anywhere}
+  .coord-row{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,.8fr) minmax(0,1.6fr) auto auto;gap:var(--sp-2);align-items:center;
+    padding:var(--sp-1) 0;border-bottom:1px solid var(--line);font-size:var(--fs-sm);min-width:0}
+  .coord-row > span{min-width:0;overflow-wrap:anywhere}
+  .coord-row[data-tone="warn"]{box-shadow:inset 3px 0 0 var(--warn);padding-left:var(--sp-2)}
+  .coord-j{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:var(--sp-2);padding:var(--sp-1) 0;border-bottom:1px solid var(--line);font-size:var(--fs-sm)}
+  .coord-j > span{min-width:0;overflow-wrap:anywhere}
+  .coord-j .arts{display:block;color:var(--dim);font-family:var(--mono);font-size:var(--fs-xs)}
+  @media (max-width:620px){
+    .coord{padding:var(--sp-3)}
+    .coord-row{grid-template-columns:minmax(0,1fr) auto}
+    .coord-j{grid-template-columns:auto minmax(0,1fr)}
+    .coord-j > span:nth-child(3){grid-column:1/-1}
+  }
   @media (max-width:620px){
     .settings-view .wk{grid-template-columns:auto minmax(0,1fr) auto;padding:var(--sp-2) var(--sp-3)}
     .settings-view .wk > .tail,.wk-state{grid-column:2}
@@ -1062,6 +1088,7 @@
   <nav class="set-toc" id="set-toc" aria-label="设置目录">
     <button type="button" data-toc="guide">上手引导</button>
     <button type="button" data-toc="set-lines">执行线与自动拉取</button>
+    <button type="button" data-toc="set-coord">协作</button>
     <button type="button" data-toc="set-add">加线</button>
     <button type="button" data-toc="set-quick">请你的 Claude 代劳</button>
     <button type="button" data-toc="set-ctx">最近会话</button>
@@ -1073,6 +1100,11 @@
       <p>启动后,这条线才会领取交给它、已放行的任务。齿轮里是执行器、模型、推理强度和智能体数量。</p></div>
     <div class="rig" id="rig"></div>
     <div class="cfg" id="cfg"></div>
+  </section>
+  <section class="set-sec set-target" id="set-coord" aria-labelledby="set-coord-h">
+    <div class="set-h"><h3 id="set-coord-h"><svg class="ic" aria-hidden="true"><use href="#i-board"/></svg>协作</h3>
+      <p>各执行者的状态、资源锁、最近流水和待接手的交接。</p></div>
+    <div class="coord" id="coord"><p class="set-empty">正在读取协作状态…</p></div>
   </section>
   <section class="set-sec set-target" id="set-add" aria-labelledby="set-add-h">
     <div class="set-h"><h3 id="set-add-h"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>加线</h3>
@@ -1092,6 +1124,7 @@
       <div class="fld fld-checks">
         <label class="chk" title="勾上=这条线的 执行器不能修改工作目录 —— 这是 命令参数与沙箱层面的限制,不是提示词请求;证据文件照常能写"><input type="checkbox" id="line-add-ro"> 只读</label>
         <label class="chk" title="勾上=这条线交付的卡不用你点「通过」,交付即完成(交付物闸照常检查);要你决定的卡照样进等待中"><input type="checkbox" id="line-add-auto"> 交付即完成</label>
+        <label class="chk" title="勾上=这条线的卡由持执行者令牌的外部执行者领取,看板不启动它"><input type="checkbox" id="line-add-ext"> 外部执行</label>
       </div>
       <div class="fld-foot"><button type="submit" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>加入</button>
         <span class="note" id="line-add-note" aria-live="polite"></span></div>
@@ -2942,13 +2975,14 @@ function renderRig(){
     const extra = slots.filter((sl) => sl.slot > 1)
       .map((sl) => `<span class="tail">${"⓪①②③④"[sl.slot] || "#" + sl.slot}${esc(sl.tail || "")}</span>`).join("");
     const open = cfg.classList.contains("show") && cfgLine === w.line;
-    const state = w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止";
+    const state = w.external ? "外部执行" : w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止";
     return `<div class="wk${w.running ? " on" : ""}${open ? " editing" : ""}" title="${esc((w.last_log||[]).join(String.fromCharCode(10)))}">` +
            `<span class="st" aria-hidden="true"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}${xN}</span>` +
-           roleBadge(w) + `<span class="wk-state">${state}</span>` +
+           roleBadge(w) + (w.external ? `<span class="badge" data-tone="quiet" title="由持执行者令牌的外部执行者领卡">外部执行</span>` : `<span class="wk-state">${state}</span>`) +
            `<span class="wk-log"><span class="tail">${esc(tail)}</span>${extra}</span>` +
+           (w.external ? `<span class="wk-acts"></span></div>` :
            `<span class="wk-acts"><button class="icon-btn gear" data-cfg="${w.line}" title="执行器设置：模型、推理强度与并行数量" aria-label="${esc(label)}的执行器设置" aria-expanded="${open}">${icon("gear")}</button>` +
-           `<button data-wk="${w.line}" data-op="${w.running ? "stop" : "start"}">${icon(w.running ? "stop" : "play")}${w.running ? "停止" : "启动"}</button></span></div>`;
+           `<button data-wk="${w.line}" data-op="${w.running ? "stop" : "start"}">${icon(w.running ? "stop" : "play")}${w.running ? "停止" : "启动"}</button></span></div>`);
   }).join("")
   // claim_misses onto the face — the API emitted them long before anyone read them
   // (installed ≠ armed). Slot keys (alpha@2) match by root name; a root missing
@@ -2961,6 +2995,46 @@ function renderRig(){
              `<span class="tail"${known ? "" : ' style="color:var(--bad)"'}>${icon("warn")}${esc(m.worker)} 连续 ${m.n} 次空领` +
              ` (≈${mins} 分)${known ? "" : " · 执行器名称可能有误"}</span></div>`;
     }).join("");
+}
+
+// ── 协作区:数据来自 /api/coord,随每次 refresh 重画。
+let coordData = null;
+const COORD_KIND = { line: "执行线", external: "外部执行", other: "其他执行者" };
+const COORD_REASON = { stop: "主动停止", heartbeat_stale: "心跳中断" };
+function renderCoord(){
+  const box = document.getElementById("coord");
+  const d = coordData;
+  if (!d){ box.innerHTML = `<p class="set-empty">协作状态暂时读不到，看板恢复后自动刷新。</p>`; return; }
+  const execs = d.executors || [], locks = d.locks || [], handoffs = d.handoffs || [];
+  const journal = (d.journal || []).slice(-10).reverse();
+  const at = (iso) => iso ? localTime(iso) : "–";
+  const ext = (d.external_lines || []).map((l) => esc(lineLabel(l))).join(" · ");
+  const exCard = (x) => {
+    const st = x.status || {}, seen = x.last_seen ? Date.parse(x.last_seen) : null;
+    return `<div class="coord-ex"><div class="hd"><span>${esc(x.name)} <span class="mono dim">${esc(x.id)}</span></span>` +
+      `<span class="badge" data-tone="${x.active ? "ok" : "quiet"}">${icon(x.active ? "success" : "stop")}${x.active ? "活动" : "已停止"}</span></div>` +
+      `<dl><dt>种类</dt><dd>${esc(copyLabel(COORD_KIND, x.kind, x.kind))}</dd>` +
+      `<dt>当前</dt><dd>${esc(st.current || "–")}</dd>` +
+      `<dt>下一步</dt><dd>${esc(st.next?.[0] || "–")}${st.next?.length > 1 ? ` <span class="dim">共 ${st.next.length} 项</span>` : ""}</dd>` +
+      `<dt>最后心跳</dt><dd>${seen != null ? esc(ago(seen)) : "未心跳"}</dd></dl></div>`;
+  };
+  const lockRow = (l) => `<div class="coord-row"${l.overdue ? ' data-tone="warn"' : ""}>` +
+    `<span class="mono">${esc(l.resource)}</span><span>${esc(l.holder_name)}</span><span>${esc(l.purpose)}</span>` +
+    `<span class="dim">${esc(at(l.started_at))} → ${esc(at(l.expected_end))}</span>` +
+    (l.overdue ? `<span class="badge" data-tone="warn">${icon("warn")}逾期</span>` : `<span class="badge" data-tone="run">${icon("wait")}持有中</span>`) + `</div>`;
+  const jRow = (e) => `<div class="coord-j"><span class="dim">${esc(at(e.at))}</span><span class="mono">${esc(e.executor)}</span>` +
+    `<span>${esc(e.body)}${e.artifacts?.length ? `<span class="arts">${e.artifacts.map((a) => esc(a.type + ":" + a.value)).join(" ")}</span>` : ""}</span></div>`;
+  const hRow = (h) => { const p = h.package || {};
+    const nx = (p.next || []).find((x) => typeof x === "string");
+    return `<div class="coord-row"><span class="mono">#${h.id} ${esc(h.executor)}</span><span>${esc(copyLabel(COORD_REASON, h.reason, h.reason))}</span>` +
+      `<span>${esc(p.goal || "–")}${nx ? ` <span class="dim">下一步：${esc(nx)}</span>` : ""}</span>` +
+      `<span class="dim">${esc(at(h.created_at))}</span><span class="badge" data-tone="need">${icon("wait")}待接手</span></div>`; };
+  box.innerHTML =
+    `<div><h4>执行者${ext ? ` · 外部执行线：${ext}` : ""}</h4>` +
+    (execs.length ? `<div class="coord-execs">${execs.map(exCard).join("")}</div>` : `<p class="set-empty">用 board.py exec register 登记第一个执行者。</p>`) + `</div>` +
+    `<div><h4>资源锁 ${locks.length}</h4>` + (locks.length ? locks.map(lockRow).join("") : `<p class="set-empty">没有被锁的资源。</p>`) + `</div>` +
+    `<div><h4>待接手的交接 ${handoffs.length}</h4>` + (handoffs.length ? handoffs.map(hRow).join("") : `<p class="set-empty">没有待接手的交接。</p>`) + `</div>` +
+    `<div><h4>最近流水</h4>` + (journal.length ? journal.map(jRow).join("") : `<p class="set-empty">执行者用 board.py journal add 记第一条流水。</p>`) + `</div>`;
 }
 
 let MODELS = [], EFFORTS = [], RUNTIMES = [], MAXP = 0;  // MAXP=0 ⇒ old server, no parallel
@@ -3482,7 +3556,7 @@ async function loadTaskEvents(){
 async function refresh(){
   const started = Date.now();
   try{
-    const [r, mres, wres, cres, eres, ures, qres, sres] = await Promise.all([
+    const [r, mres, wres, cres, eres, ures, qres, sres, kres] = await Promise.all([
       fetch("/api/tasks?archived=false").then((x) => x.json()),
       fetch("/api/meta").then((x) => x.json()),
       fetch("/api/workers").then((x) => x.json()),
@@ -3491,6 +3565,7 @@ async function refresh(){
       fetch("/api/usage").then((x) => x.json()).catch(() => ({ cards: {} })),
       fetch("/api/requests?open=1").then((x) => x.json()).catch(() => ({ requests: [] })),
       fetch("/api/setup").then((x) => x.json()).catch(() => null),
+      fetch("/api/coord").then((x) => x.ok ? x.json() : null).catch(() => null),
     ]);
     const wasDown = !!boardDown;
     boardDown = null; lastGoodRead = Date.now();
@@ -3521,7 +3596,8 @@ async function refresh(){
     tasks = r.tasks; taskEvents = eres; usageByCard = (ures && ures.cards) || {};
     meta = { ...mres, archived_count: r.archived_count, caps: r.caps || {} };
     byId.clear(); for (const t of tasks) byId.set(t.id, t);
-    render(); renderRig(); renderCtx(); homeAfterRefresh(); tocSync();
+    coordData = kres;
+    render(); renderRig(); renderCoord(); renderCtx(); homeAfterRefresh(); tocSync();
     sideAfterRefresh();
     if (wasDown) loadHomeExtras(true);   // 断开前的多电脑与运行检查结果需要重新读取。
   }catch(e){
@@ -4044,6 +4120,7 @@ document.getElementById("line-add").addEventListener("submit", async (e) => {
   const kindEl = document.getElementById("line-add-kind");
   const roEl = document.getElementById("line-add-ro");
   const charterEl = document.getElementById("line-add-charter");
+  const extEl = document.getElementById("line-add-ext");
   const note = document.getElementById("line-add-note");
   const id = idEl.value.trim(), hint = hintEl.value.trim(), label = labelEl.value.trim();
   if (!id) return;
@@ -4055,13 +4132,13 @@ document.getElementById("line-add").addEventListener("submit", async (e) => {
   note.className = "note";
   note.textContent = "写入中…";
   try {
-    const r = await post("/api/config/lines", { id, hint, label, accept: autoEl.checked ? "auto" : "human", ...(role ? { role } : {}) });
+    const r = await post("/api/config/lines", { id, hint, label, accept: autoEl.checked ? "auto" : "human", ...(role ? { role } : {}), ...(extEl.checked ? { external: true } : {}) });
     note.className = "note ok";
     const rl = r.line.role;
     note.textContent = `已加入线「${r.line.label || r.line.id}」${r.line.accept === "auto" ? "(交付即完成)" : ""}` +
       (rl ? `(${rl.kind === "review" ? "评审" : "实现"}${rl.tools === "read-only" ? "·只读" : ""}${rl.charter ? "·章程 " + rl.charter : ""})` : "") +
-      ",配置已写盘,自动拉取行可直接启动";
-    idEl.value = ""; hintEl.value = ""; labelEl.value = ""; autoEl.checked = false;
+      (r.line.external ? ",配置已写盘,外部执行者持令牌领卡" : ",配置已写盘,自动拉取行可直接启动");
+    idEl.value = ""; hintEl.value = ""; labelEl.value = ""; autoEl.checked = false; extEl.checked = false;
     kindEl.value = "implement"; roEl.checked = false; charterEl.value = "";
     await refresh();
   } catch (err) {
