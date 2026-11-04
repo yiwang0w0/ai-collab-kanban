@@ -1,4 +1,4 @@
-// 多执行者协作:执行者身份与令牌、心跳、各方状态、资源锁、事件流水。
+// 多执行者协作:执行者身份与令牌、心跳、各方状态、资源锁、事件流水、交接包。
 // 执行者可以是看板的执行线,也可以是看板外的 AI 会话。令牌只存哈希,明文只在登记时返回一次。
 // 表只由看板服务创建(server.mjs 打开库后调用 migrate),store 的其他调用方不受影响。
 const crypto = require("crypto");
@@ -28,6 +28,9 @@ const ARTIFACT_CHECK = Object.freeze({
   url: (v) => { try { const u = new URL(v); return ["http:", "https:"].includes(u.protocol) && v.length <= 500 && !u.username && !u.password; }
                catch { return false; } },
 });
+// 交接包里 done / next 各自的字数预算。超出预算的项整项换成指向 full_status 的指针,不从中间截断。
+const HANDOFF_LIST_BUDGET = 2000;
+const HANDOFF_RECENT_JOURNAL = 10;
 // 看板自己写流水时用的执行者名;不允许登记成执行者 id。
 const RESERVED_IDS = ["operator", "system"];
 
@@ -75,6 +78,26 @@ function migrate(db) {
            BEGIN SELECT RAISE(ABORT, 'coord journal is append-only'); END`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS coord_journal_no_delete BEFORE DELETE ON coord_journal
            BEGIN SELECT RAISE(ABORT, 'coord journal is append-only'); END`);
+  // 交接记录只追加:同一执行者的同一次停止(stop_seq)只有一份;确认接手另记一张只追加的表。
+  db.exec(`CREATE TABLE IF NOT EXISTS coord_handoffs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    executor TEXT NOT NULL REFERENCES coord_executors(id),
+    stop_seq INTEGER NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    package TEXT NOT NULL,
+    full_status TEXT NOT NULL,
+    UNIQUE(executor, stop_seq)
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS coord_handoff_acks (
+    handoff_id INTEGER PRIMARY KEY REFERENCES coord_handoffs(id),
+    by TEXT NOT NULL,
+    at TEXT NOT NULL
+  )`);
+  for (const t of ["coord_handoffs", "coord_handoff_acks"]) {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
+  }
   db.exec(`CREATE TABLE IF NOT EXISTS coord_status (
     executor_id TEXT PRIMARY KEY REFERENCES coord_executors(id),
     status TEXT NOT NULL,
@@ -277,6 +300,95 @@ function journal(db, { since = null, executor = null, limit = 50 } = {}) {
   return rows.map(journalOut);
 }
 
+/** 列表整项取舍:按方向逐项放入预算,第一项放不下就停;其余整项换成指针。 */
+function pickWhole(list, field, budget, fromEnd) {
+  const idx = list.map((_, i) => i);
+  if (fromEnd) idx.reverse();
+  const keep = new Set(); let used = 0;
+  for (const i of idx) {
+    const n = chars(list[i]);
+    if (used + n > budget) break;
+    keep.add(i); used += n;
+  }
+  return list.map((x, i) => keep.has(i) ? x : { omitted: true, see: `full_status.${field}[${i}]`, chars: chars(x) });
+}
+
+function handoffOut(db, r, { full = false } = {}) {
+  if (!r) return null;
+  const ack = db.prepare("SELECT by, at FROM coord_handoff_acks WHERE handoff_id=?").get(r.id);
+  let pkg = {}; try { pkg = JSON.parse(r.package); } catch {}
+  return { id: Number(r.id), executor: r.executor, stop_seq: Number(r.stop_seq), reason: r.reason, created_at: r.created_at,
+           package: pkg, ack: ack ? { by: ack.by, at: ack.at } : null,
+           ...(full ? { full_status: JSON.parse(r.full_status) } : {}) };
+}
+
+/** 停止执行者并生成交接记录。已停止(未再心跳)时返回那一次的记录,不再生成。 */
+function stop(db, executorId, reason = "stop", now = Date.now(), graceMs) {
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT coord_stop");
+  try {
+    const r = getRow(db, executorId);
+    if (!r) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
+    let created = false;
+    if (r.stopped_at == null) {
+      const seq = Number(r.stop_seq) + 1;
+      db.prepare("UPDATE coord_executors SET stopped_at=?, stop_seq=? WHERE id=?").run(now, seq, r.id);
+      const st = statusOf(db, r.id);
+      const recent = db.prepare("SELECT id FROM coord_journal WHERE executor=? ORDER BY id DESC LIMIT ?")
+        .all(r.id, HANDOFF_RECENT_JOURNAL).map((x) => Number(x.id)).reverse();
+      const pkg = {
+        executor: { id: r.id, name: r.name, kind: r.kind }, reason, stopped_at: iso(now), status_updated_at: st.updated_at,
+        goal: st.current,
+        done: pickWhole(st.done, "done", HANDOFF_LIST_BUDGET, true),
+        next: pickWhole(st.next, "next", HANDOFF_LIST_BUDGET, false),
+        journal: { recent_ids: recent, last_id: recent.length ? recent[recent.length - 1] : null },
+        locks: listLocks(db, { holder: r.id }, now, graceMs).map((l) =>
+          ({ resource: l.resource, purpose: l.purpose, started_at: l.started_at, expected_end: l.expected_end, overdue: l.overdue })),
+      };
+      db.prepare(`INSERT INTO coord_handoffs (executor, stop_seq, reason, created_at, package, full_status) VALUES (?,?,?,?,?,?)`)
+        .run(r.id, seq, reason, iso(now), JSON.stringify(pkg), JSON.stringify({ current: st.current, done: st.done, next: st.next }));
+      created = true;
+    }
+    const h = db.prepare("SELECT * FROM coord_handoffs WHERE executor=? ORDER BY stop_seq DESC LIMIT 1").get(r.id);
+    db.exec(own ? "COMMIT" : "RELEASE coord_stop");
+    return { handoff: handoffOut(db, h), created };
+  } catch (e) {
+    try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO coord_stop; RELEASE coord_stop"); } catch {}
+    throw e;
+  }
+}
+
+/** 心跳超过 staleMs 的活动执行者:按停止处理,各生成一份交接记录。从未心跳过的不算。 */
+function sweepStale(db, now = Date.now(), staleMs = 20 * 60000, graceMs) {
+  const rows = db.prepare(`SELECT id FROM coord_executors WHERE stopped_at IS NULL AND last_seen IS NOT NULL AND last_seen + ? < ?`)
+    .all(staleMs, now);
+  return rows.map((x) => stop(db, x.id, "heartbeat_stale", now, graceMs)).filter((x) => x.created).map((x) => x.handoff);
+}
+
+function listHandoffs(db, { pending = false, limit = 50 } = {}) {
+  const lim = Math.max(1, Math.min(500, Number(limit) || 50));
+  const rows = pending
+    ? db.prepare(`SELECT h.* FROM coord_handoffs h LEFT JOIN coord_handoff_acks a ON a.handoff_id=h.id
+                  WHERE a.handoff_id IS NULL ORDER BY h.id DESC LIMIT ?`).all(lim)
+    : db.prepare("SELECT * FROM coord_handoffs ORDER BY id DESC LIMIT ?").all(lim);
+  return rows.map((r) => handoffOut(db, r));
+}
+
+function getHandoff(db, id) {
+  const r = db.prepare("SELECT * FROM coord_handoffs WHERE id=?").get(Number(id));
+  if (!r) throw err(ERR.NOT_FOUND, `交接记录 #${id} 不存在`);
+  return handoffOut(db, r, { full: true });
+}
+
+/** 下一个执行者确认接手。每份交接只确认一次。 */
+function ackHandoff(db, executorId, id, now = Date.now()) {
+  getHandoff(db, id);
+  const have = db.prepare("SELECT by, at FROM coord_handoff_acks WHERE handoff_id=?").get(Number(id));
+  if (have) throw err(ERR.CONFLICT, `交接记录 #${id} 已由 ${have.by} 于 ${have.at} 确认接手`);
+  db.prepare("INSERT INTO coord_handoff_acks (handoff_id, by, at) VALUES (?,?,?)").run(Number(id), String(executorId), iso(now));
+  return getHandoff(db, id);
+}
+
 function listExecutors(db) {
   return db.prepare("SELECT * FROM coord_executors ORDER BY id").all()
     .map((r) => ({ ...executorOut(r), status: statusOf(db, r.id) }));
@@ -315,5 +427,6 @@ module.exports = {
   statusOf, setStatus, STATUS_LIMITS,
   acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN,
   appendJournal, journal, ARTIFACT_CHECK, JOURNAL_BODY_MAX, RESERVED_IDS,
+  stop, sweepStale, listHandoffs, getHandoff, ackHandoff, HANDOFF_LIST_BUDGET,
   EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN,
 };

@@ -2539,6 +2539,8 @@ function claimIdentity(body, role, seat=null) {
 const envMinutes = (name, dflt) => { const n = Number(process.env[name]); return process.env[name] && Number.isFinite(n) && n >= 0 ? n : dflt; };
 // 锁超过预计结束多久算逾期(默认 30 分钟)。
 const COORD_GRACE_MS = envMinutes("BOARD_COORD_OVERDUE_GRACE_MIN", 30) * 60000;
+// 执行者心跳中断多久按停止处理并生成交接记录(默认 20 分钟)。
+const COORD_STALE_MS = envMinutes("BOARD_COORD_STALE_MIN", 20) * 60000;
 const asExecutor = (req, res) => {
   if (req.boardRole === "executor") return req.executor;
   json(res, 403, { error: "此操作需要执行者令牌", role: req.boardRole });
@@ -2553,7 +2555,8 @@ async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();
   if (m === "GET" && p === "/api/coord")
     return json(res, 200, { executors: coord.listExecutors(db), locks: coord.listLocks(db, {}, now, COORD_GRACE_MS),
-                            journal: coord.journal(db, { limit: 30 }),
+                            journal: coord.journal(db, { limit: 30 }), handoffs: coord.listHandoffs(db, { pending: true }),
+                            stale_min: COORD_STALE_MS / 60000,
                             overdue_grace_min: COORD_GRACE_MS / 60000, external_lines: LINES.filter((l) => LINE_EXTERNAL[l]),
                             executor_max_lease_min: coord.EXECUTOR_MAX_LEASE_MIN, status_limits: coord.STATUS_LIMITS, now: Date.now() });
   if (m === "GET" && p === "/api/coord/executors") return json(res, 200, { executors: coord.listExecutors(db) });
@@ -2605,6 +2608,22 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     const entry = coord.appendJournal(db, ex.id, { kind: b.kind, body: b.body, artifacts: b.artifacts });
     emit("coord.journal", { id: entry.id, executor: ex.id });
     return json(res, 201, { entry });
+  }
+  if (m === "POST" && p === "/api/coord/stop") {
+    const ex = asExecutor(req, res); if (!ex) return;
+    const r = coord.stop(db, ex.id, "stop", now, COORD_GRACE_MS);
+    if (r.created) emit("coord.handoff", { id: r.handoff.id, executor: ex.id, reason: "stop" });
+    return json(res, r.created ? 201 : 200, r);
+  }
+  if (m === "GET" && p === "/api/coord/handoffs")
+    return json(res, 200, { handoffs: coord.listHandoffs(db, { pending: url.searchParams.get("pending") === "1", limit: url.searchParams.get("limit") }) });
+  const mh = p.match(/^\/api\/coord\/handoffs\/(\d+)(\/ack)?$/);
+  if (mh && m === "GET" && !mh[2]) return json(res, 200, { handoff: coord.getHandoff(db, Number(mh[1])) });
+  if (mh && m === "POST" && mh[2]) {
+    const ex = asExecutor(req, res); if (!ex) return;
+    const h = coord.ackHandoff(db, ex.id, Number(mh[1]), now);
+    emit("coord.ack", { id: h.id, by: ex.id });
+    return json(res, 200, { handoff: h });
   }
   if (m === "POST" && p === "/api/coord/status") {
     const ex = asExecutor(req, res); if (!ex) return;
@@ -3558,6 +3577,10 @@ setInterval(() => {
   try {
     const n = store.reapExpired(db);
     if (n) { console.log(`租约到期 ${n} 件 回收至未开始`); emit("task.reaped", { count: n }); }
+    for (const h of coord.sweepStale(db, Date.now(), COORD_STALE_MS, COORD_GRACE_MS)) {
+      console.log(`执行者 ${h.executor} 心跳中断,已生成交接记录 #${h.id}`);
+      emit("coord.handoff", { id: h.id, executor: h.executor, reason: h.reason });
+    }
     for (const l of coord.sweepOverdue(db, Date.now(), COORD_GRACE_MS)) {
       console.log(`协作锁逾期: ${l.resource}(持有者 ${l.holder},预计结束 ${l.expected_end})—— 不自动释放`);
       coord.appendJournal(db, "system", { kind: "lock.overdue", body: `${l.resource} 已逾期,持有者 ${l.holder}` });

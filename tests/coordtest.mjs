@@ -238,3 +238,63 @@ test("事件流水:只追加,产物按格式校验,数据库层挡住改写与�
     assert.equal((await B.api("GET", "/api/coord/journal", a)).body.entries[0].body, "界面测试通过");
   } finally { await B.stop(); }
 });
+
+test("交接包:显式 stop 只生成一份,列表整项保留或整项换成指针,下一个执行者 ack 一次", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const a = await B.register("agent-i"), b = await B.register("agent-j");
+    const done = Array.from({ length: 10 }, (_, i) => String(i).repeat(300));
+    const next = ["先核对设备配置", "再跑界面测试"];
+    assert.equal((await B.api("POST", "/api/coord/status", a, { current: "完成界面回归", done, next })).status, 200);
+    const j = (await B.api("POST", "/api/coord/journal", a, { kind: "note", body: "跑到一半" })).body.entry;
+    assert.equal((await B.api("POST", "/api/coord/locks", a, { resource: "device:test-phone", minutes: 30, purpose: "回归" })).status, 201);
+    const s1 = await B.api("POST", "/api/coord/stop", a, {});
+    assert.equal(s1.status, 201, JSON.stringify(s1.body));
+    const pkg = s1.body.handoff.package;
+    assert.equal(pkg.goal, "完成界面回归");
+    assert.deepEqual(pkg.next, next);
+    const kept = pkg.done.filter((x) => typeof x === "string"), ptr = pkg.done.filter((x) => typeof x !== "string");
+    assert.equal(pkg.done.length, 10);
+    assert.ok(kept.length > 0 && ptr.length > 0);
+    assert.deepEqual(kept, done.slice(10 - kept.length), "保留的是最近的整项,一字不改");
+    assert.deepEqual(ptr.map((x) => x.see), done.slice(0, ptr.length).map((_, i) => `full_status.done[${i}]`));
+    assert.deepEqual(pkg.journal.recent_ids, [j.id]);
+    assert.deepEqual(pkg.locks.map((l) => l.resource), ["device:test-phone"]);
+    const s2 = await B.api("POST", "/api/coord/stop", a, {});
+    assert.equal(s2.status, 200);
+    assert.equal(s2.body.created, false);
+    assert.equal(s2.body.handoff.id, s1.body.handoff.id, "同一次停止只生成一份");
+    const full = (await B.api("GET", `/api/coord/handoffs/${s1.body.handoff.id}`, b)).body.handoff;
+    assert.deepEqual(full.full_status.done, done, "指针指向的整份状态完整保存");
+    assert.equal((await B.api("GET", "/api/coord/handoffs?pending=1", b)).body.handoffs.length, 1);
+    assert.equal((await B.api("POST", `/api/coord/handoffs/${s1.body.handoff.id}/ack`, B.operator, {})).status, 403);
+    const ack = await B.api("POST", `/api/coord/handoffs/${s1.body.handoff.id}/ack`, b, {});
+    assert.equal(ack.status, 200, JSON.stringify(ack.body));
+    assert.equal(ack.body.handoff.ack.by, "agent-j");
+    assert.equal((await B.api("POST", `/api/coord/handoffs/${s1.body.handoff.id}/ack`, b, {})).status, 409, "只确认一次");
+    assert.equal((await B.api("GET", "/api/coord/handoffs?pending=1", b)).body.handoffs.length, 0);
+    const db = new DatabaseSync(join(B.dir, "board.db"));
+    db.exec("PRAGMA busy_timeout=5000");
+    assert.throws(() => db.prepare("UPDATE coord_handoffs SET reason='x'").run(), /append-only/);
+    assert.throws(() => db.prepare("DELETE FROM coord_handoff_acks").run(), /append-only/);
+    db.close();
+  } finally { await B.stop(); }
+});
+
+test("交接包:心跳超过 N 分钟自动生成,只生成一份;再次心跳后重新计", { timeout: 60000 }, async () => {
+  const B = await board({ BOARD_COORD_STALE_MIN: "0.02", BOARD_REAP_MS: "200" });
+  try {
+    const a = await B.register("agent-k");
+    await B.register("agent-never");
+    assert.equal((await B.api("POST", "/api/coord/heartbeat", a, {})).status, 200);
+    await delay(3000);
+    let hs = (await B.api("GET", "/api/coord/handoffs", a)).body.handoffs;
+    assert.deepEqual(hs.map((h) => [h.executor, h.reason, h.stop_seq]), [["agent-k", "heartbeat_stale", 1]], "从未心跳过的执行者不算中断");
+    assert.equal((await B.api("POST", "/api/coord/heartbeat", a, {})).status, 200);
+    const ex = (await B.api("GET", "/api/coord", a)).body.executors.find((x) => x.id === "agent-k");
+    assert.equal(ex.active, true, "再次心跳回到活动");
+    await delay(3000);
+    hs = (await B.api("GET", "/api/coord/handoffs", a)).body.handoffs;
+    assert.deepEqual(hs.map((h) => h.stop_seq), [2, 1]);
+  } finally { await B.stop(); }
+});
