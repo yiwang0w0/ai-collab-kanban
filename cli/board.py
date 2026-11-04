@@ -25,6 +25,19 @@
   $P bless                                   # accept THIS tree: write the gated subtree's hash to
                                              #   <data>/accepted_rev (the revision gate compares against it)
 
+多执行者协作(docs/多执行者协作.md)。--token-file <文件> 改用执行者令牌,其余命令照旧;不给则用 board_token:
+  $P exec register <id> [--kind line|external|other] [--name 名] [--file payload.json] [--save 令牌文件]   # 操作员
+  $P exec status [--file status.json]        # 有 --file = 写自己的 {current,done,next};没有 = 列出各执行者
+  $P exec heartbeat [--task <id>] [--lease <分钟>]
+  $P exec stop                               # 停下并生成交接包
+  $P lock acquire <资源> --minutes <分钟> (--purpose <用途> | --file purpose.txt)
+  $P lock release <资源> [--force --file reason.txt]   # --force 只属于操作员,必须写理由
+  $P lock ls [--all]
+  $P journal add --kind <种类> --file body.txt [--artifact sha256:<hex>|commit:<sha>|path:<路径>|url:<地址>]...
+  $P journal ls [--since <编号或时刻>] [--executor <id>] [--limit <n>]
+  $P handoff ls [--all] | handoff show <id> | handoff ack <id>
+  take / claim 可带 --lease <分钟>(执行者令牌上限 240);持执行者令牌时 --as 可省略
+
 Task control writes (take/edit/approve/reject/reopen/release/hold/archive) require
 --version <aggregate_version from show>; a JSON edit payload may carry expected_version.
 
@@ -85,6 +98,12 @@ DATA = os.environ.get("BOARD_DATA_DIR") or os.path.join(os.path.dirname(HERE), "
 def _board_token():
     """Unreadable -> empty string: the request then fails 401 loudly rather than
     pretending auth was optional."""
+    tf = arg("--token-file")
+    if tf:
+        try:
+            return io.open(tf, encoding="utf-8").read().strip()
+        except Exception as e:
+            sys.exit(f"读不到 --token-file {tf}:{e}")
     try:
         return io.open(os.path.join(DATA, "board_token"), encoding="utf-8").read().strip()
     except Exception:
@@ -125,6 +144,154 @@ def arg(flag, default=None):
 def readfile(p):
     return io.open(p, encoding="utf-8").read() if p else ""
 
+def args_of(flag):
+    """同一个 flag 可给多次(--artifact)。"""
+    out, i = [], 0
+    while i < len(sys.argv):
+        if sys.argv[i] == flag:
+            if i + 1 >= len(sys.argv): sys.exit(f"{flag} 后面要跟一个值")
+            out.append(sys.argv[i + 1]); i += 2
+        else:
+            i += 1
+    return out
+
+def lease_arg(body):
+    v = arg("--lease")
+    if v is None: return body
+    if not v.isascii() or not v.isdigit() or not (1 <= int(v) <= 1440):
+        sys.exit("--lease 必须是 1..1440 的整数分钟")
+    body["lease_minutes"] = int(v)
+    return body
+
+def as_worker(body, who):
+    """持执行者令牌时 --as 可省略,由服务端按令牌认定身份。"""
+    if who: body["worker"] = who
+    return {k: v for k, v in body.items() if v is not None}
+
+def pos(i):
+    return sys.argv[i] if len(sys.argv) > i and not sys.argv[i].startswith("--") else None
+
+def coord_cmd(cmd):
+    sub = pos(2) or ""
+    if cmd == "exec":
+        if sub == "register":
+            eid = pos(3)
+            if not eid: sys.exit("exec register <id> [--kind line|external|other] [--name 名] [--file payload.json] [--save 令牌文件]")
+            body = json.loads(readfile(arg("--file"))) if arg("--file") else {}
+            body["id"] = eid
+            if arg("--kind"): body["kind"] = arg("--kind")
+            if arg("--name"): body["name"] = arg("--name")
+            if "--rotate" in sys.argv: body["rotate"] = True
+            save = arg("--save")
+            if save and os.path.exists(save): sys.exit(f"{save} 已存在,不覆盖")
+            s, d = call("POST", "/api/coord/executors", body)
+            if s >= 400: die(s, d)
+            ex = d["executor"]
+            if save:
+                with io.open(save, "x", encoding="utf-8") as f: f.write(d["token"] + chr(10))
+                print(f"已登记执行者 {ex['id']}({ex['name']},{ex['kind']});令牌已写入 {save}")
+            else:
+                print(f"已登记执行者 {ex['id']}({ex['name']},{ex['kind']})")
+                print(f"令牌(只显示这一次):{d['token']}")
+        elif sub == "status":
+            if arg("--file"):
+                s, d = call("POST", "/api/coord/status", json.loads(readfile(arg("--file"))))
+                if s >= 400: die(s, d)
+                st = d["status"]
+                print(f"状态已写入 {st['updated_at']}:当前 {st['current'] or '-'} · 已完成 {len(st['done'])} 项 · 下一步 {len(st['next'])} 项")
+            else:
+                s, d = call("GET", "/api/coord/executors")
+                if s >= 400: die(s, d)
+                for ex in d["executors"]:
+                    st = ex["status"]
+                    print(f"  {ex['id']:<16} {'活动' if ex['active'] else '已停止'} 心跳 {ex['last_seen'] or '-'}  当前 {st['current'] or '-'}"
+                          + (f"  下一步 {st['next'][0]}" if st["next"] else ""))
+        elif sub == "heartbeat":
+            body = lease_arg({})
+            if arg("--task"): body["task_id"] = int(arg("--task"))
+            s, d = call("POST", "/api/coord/heartbeat", body)
+            if s >= 400: die(s, d)
+            print(f"心跳 {d['executor']['last_seen']};续租 {len(d['renewed'])} 张" +
+                  "".join(f" #{r['id']}" for r in d["renewed"]))
+        elif sub == "stop":
+            s, d = call("POST", "/api/coord/stop", {})
+            if s >= 400: die(s, d)
+            h = d["handoff"]
+            print(f"已停止;交接记录 #{h['id']}" + ("" if d.get("created") else "(此前已生成,未重复生成)"))
+        else:
+            sys.exit("exec register|status|heartbeat|stop")
+    elif cmd == "lock":
+        if sub == "acquire":
+            res, mins = pos(3), arg("--minutes")
+            purpose = arg("--purpose") or readfile(arg("--file")).strip()
+            if not res or not mins or not purpose: sys.exit("lock acquire <资源> --minutes <分钟> (--purpose <用途> | --file purpose.txt)")
+            try: mins = float(mins)
+            except ValueError: sys.exit("--minutes 必须是数字")
+            s, d = call("POST", "/api/coord/locks", {"resource": res, "minutes": mins, "purpose": purpose})
+            if s == 409:
+                h = d["holder"]
+                sys.exit(f"409 {res} 已被 {h['holder_name']}({h['holder']})占用:{h['purpose']},开始 {h['started_at']},预计结束 {h['expected_end']}")
+            if s >= 400: die(s, d)
+            print(f"已加锁 {res},预计结束 {d['lock']['expected_end']}")
+        elif sub == "release":
+            res = pos(3)
+            if not res: sys.exit("lock release <资源> [--force --file reason.txt]")
+            body = {"resource": res}
+            if "--force" in sys.argv: body.update({"force": True, "reason": readfile(arg("--file")).strip()})
+            s, d = call("POST", "/api/coord/locks/release", body)
+            if s >= 400: die(s, d)
+            print(f"已释放 {res}" + (f"(强制:{d['lock']['release_reason']})" if d["lock"]["released_by"] == "operator" else ""))
+        elif sub == "ls":
+            s, d = call("GET", "/api/coord/locks" + ("?all=1" if "--all" in sys.argv else ""))
+            if s >= 400: die(s, d)
+            if not d["locks"]: print("没有被锁的资源")
+            for l in d["locks"]:
+                state = "已释放" if l["released_at"] else ("逾期" if l["overdue"] else "持有中")
+                print(f"  {l['resource']:<28} {state:<4} {l['holder']:<16} 预计结束 {l['expected_end']}  {l['purpose']}")
+        else:
+            sys.exit("lock acquire|release|ls")
+    elif cmd == "journal":
+        if sub == "add":
+            kind, body = arg("--kind"), readfile(arg("--file")).strip()
+            if not kind or not body: sys.exit("journal add --kind <种类> --file body.txt [--artifact 类型:值]...")
+            arts = []
+            for a in args_of("--artifact"):
+                t, sep, v = a.partition(":")
+                if not sep: sys.exit(f"--artifact 要写成 类型:值,收到 {a}")
+                arts.append({"type": t, "value": v})
+            s, d = call("POST", "/api/coord/journal", {"kind": kind, "body": body, "artifacts": arts})
+            if s >= 400: die(s, d)
+            print(f"已记流水 #{d['entry']['id']} {d['entry']['at']}")
+        elif sub == "ls":
+            qs = [f"{k}={arg('--' + k)}" for k in ("since", "executor", "limit") if arg("--" + k)]
+            s, d = call("GET", "/api/coord/journal" + ("?" + "&".join(qs) if qs else ""))
+            if s >= 400: die(s, d)
+            for e in d["entries"]:
+                arts = " ".join(f"{a['type']}:{a['value']}" for a in e["artifacts"])
+                print(f"  #{e['id']:<5} {e['at']} {e['executor']:<16} {e['kind']:<16} {e['body']}" + (f"  [{arts}]" if arts else ""))
+        else:
+            sys.exit("journal add|ls")
+    elif cmd == "handoff":
+        hid = pos(3)
+        if sub == "ls":
+            s, d = call("GET", "/api/coord/handoffs" + ("" if "--all" in sys.argv else "?pending=1"))
+            if s >= 400: die(s, d)
+            if not d["handoffs"]: print("没有待接手的交接")
+            for h in d["handoffs"]:
+                p = h["package"]
+                print(f"  #{h['id']:<4} {h['executor']:<16} {h['reason']:<16} {h['created_at']}  目标 {p.get('goal') or '-'}"
+                      + (f"  已由 {h['ack']['by']} 接手" if h["ack"] else ""))
+        elif sub == "show" and hid:
+            s, d = call("GET", f"/api/coord/handoffs/{hid}")
+            if s >= 400: die(s, d)
+            print(json.dumps(d["handoff"], ensure_ascii=False, indent=1))
+        elif sub == "ack" and hid:
+            s, d = call("POST", f"/api/coord/handoffs/{hid}/ack", {})
+            if s >= 400: die(s, d)
+            print(f"已确认接手交接 #{hid}")
+        else:
+            sys.exit("handoff ls [--all] | handoff show <id> | handoff ack <id>")
+
 _META = None
 def meta():
     """GET /api/meta, once per process. The display labels for status / waiting_for have
@@ -147,7 +314,10 @@ def main():
     fp = arg("--file")
     tid = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2].isdigit() else None
 
-    if cmd == "ls":
+    if cmd in ("exec", "lock", "journal", "handoff"):
+        coord_cmd(cmd)
+
+    elif cmd == "ls":
         qs = []
         for k, f in (("status", "--status"), ("line", "--line"), ("route", "--route")):
             if arg(f): qs.append(f"{k}={arg(f)}")
@@ -188,15 +358,15 @@ def main():
         print(f"已建 #{d['task']['id']}: {d['task']['subject']}")
 
     elif cmd == "claim":
-        if not who: sys.exit("claim 需要 --as <线名>")
-        s, d = call("POST", "/api/claim",
-                    {"worker": who, "line": who,
+        if not who and not arg("--token-file"): sys.exit("claim 需要 --as <线名>")
+        s, d = call("POST", "/api/claim", lease_arg(as_worker(
+                    {"line": arg("--line", who),
                      "route": arg("--route", os.environ.get("BOARD_DEFAULT_ROUTE", "default")),
                      # Badge self-report: whoever runs this CLI by hand IS the
                      # runtime doing the work. Without stamping it, a card taken
                      # over by the coordinator keeps the previous automated
                      # worker's runtime badge (measured).
-                     "runtime": os.environ.get("BOARD_CLI_RUNTIME", "cli")})
+                     "runtime": os.environ.get("BOARD_CLI_RUNTIME", "cli")}, who)))
         if s == 204 or not d.get("task"):
             print("没有可认领的卡(路由/放行/依赖/锁 都会挡住,不是错误)"); return
         if s >= 400: die(s, d)
@@ -213,23 +383,23 @@ def main():
         # only the CLI mouth was missing. This exists so nobody reaches for raw
         # curl — it does NOT loosen any gate: released/deps/lock/human_gate are
         # all enforced server-side in claimById; this is a pass-through.
-        if not tid or not who: sys.exit("take <id> --as <线名>")
-        s, d = call("POST", f"/api/tasks/{tid}/claim",
-                    {"worker": who, "line": who,
-                     "runtime": os.environ.get("BOARD_CLI_RUNTIME", "cli")})  # badge: same rule as claim
+        if not tid or not (who or arg("--token-file")): sys.exit("take <id> --as <线名>")
+        s, d = call("POST", f"/api/tasks/{tid}/claim", lease_arg(as_worker(
+                    {"line": who,
+                     "runtime": os.environ.get("BOARD_CLI_RUNTIME", "cli")}, who)))  # badge: same rule as claim
         if s >= 400: die(s, d)
         t = d["task"]
         print(f"已领 #{t['id']}(第 {t['attempts']}/{t['max_attempts']} 次): {t['subject']}")
-        print(f"  → 交付: board.py done {t['id']} --as {who} --run {t['run_id']} --file <证据>")
+        print(f"  租约到 {t.get('lease_until')};→ 交付: board.py done {t['id']} --as {t['worker']} --run {t['run_id']} --file <证据>")
 
     elif cmd in ("done", "wait"):
         run_id = arg("--run")
         if not run_id: sys.exit("交付必须带领取回执的 --run <run_id>，不能自动查找当前执行 ID")
-        if not tid or not who: sys.exit(f"{cmd} <id> --as <线名> --file <证据/原因>")
+        if not tid or not (who or arg("--token-file")): sys.exit(f"{cmd} <id> --as <线名> --file <证据/原因>")
         ev = readfile(fp)
         if not ev.strip(): sys.exit("必须用 --file 附证据(改了什么/跑了什么/输出是什么)")
         s, d = call("POST", f"/api/tasks/{tid}/report",
-                    {"worker": who, "run_id": run_id, "outcome": cmd, "evidence": ev})
+                    as_worker({"run_id": run_id, "outcome": cmd, "evidence": ev}, who))
         if s >= 400: die(s, d)
         t = d["task"]
         print(f"#{tid} → {LABEL_of(t['status'])}/{WF_of(t['waiting_for'])}")

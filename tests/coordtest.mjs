@@ -12,6 +12,7 @@ import { createServer } from "node:net";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
+import { spawnSync } from "node:child_process";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 
@@ -52,7 +53,12 @@ async function board(env = {}) {
     return api("POST", `/api/tasks/${id}/claim`, token, { expected_version: t.aggregate_version, ...extra });
   };
   const stop = async () => { child.kill(); await closed; try { rmSync(dir, { recursive: true, force: true }); } catch {} };
-  return { dir, base, api, operator, worker, register, card, take, stop, logs: () => logs };
+  const cli = (...argv) => {
+    const r = spawnSync(HOST_ENV.PYTHON || "python", [join(ROOT, "cli", "board.py"), ...argv], { encoding: "utf8", windowsHide: true, cwd: dir, timeout: 60000,
+      env: { ...HOST_ENV, BOARD_URL: base, BOARD_DATA_DIR: dir, BOARD_CONFIG: config, PYTHONIOENCODING: "utf-8" } });
+    return { code: r.status, out: (r.stdout || "") + (r.stderr || "") };
+  };
+  return { dir, base, api, operator, worker, register, card, take, cli, stop, logs: () => logs };
 }
 
 test("执行者令牌:只存哈希、只显示一次,权限只到执行面", { timeout: 60000 }, async () => {
@@ -296,5 +302,41 @@ test("交接包:心跳超过 N 分钟自动生成,只生成一份;再次心跳�
     await delay(3000);
     hs = (await B.api("GET", "/api/coord/handoffs", a)).body.handoffs;
     assert.deepEqual(hs.map((h) => h.stop_seq), [2, 1]);
+  } finally { await B.stop(); }
+});
+
+test("board.py 协作子命令:--token-file 选执行者令牌,旧用法照常", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const ta = join(B.dir, "a.tok"), tb = join(B.dir, "b.tok"), body = join(B.dir, "body.txt"), why = join(B.dir, "why.txt");
+    writeFileSync(body, "设备上的界面测试跑完", "utf8"); writeFileSync(why, "演练结束", "utf8");
+    let r = B.cli("exec", "register", "cli-a", "--kind", "external", "--name", "agent-one", "--save", ta);
+    assert.equal(r.code, 0, r.out);
+    const tok = readFileSync(ta, "utf8").trim();
+    assert.match(tok, /^exe_/); assert.ok(!r.out.includes(tok), "存文件时不在屏幕上显示令牌");
+    assert.equal(B.cli("exec", "register", "cli-b", "--save", tb).code, 0);
+    assert.equal((r = B.cli("lock", "acquire", "device:test-phone", "--minutes", "10", "--purpose", "ui-test", "--token-file", ta)).code, 0, r.out);
+    r = B.cli("lock", "acquire", "device:test-phone", "--minutes", "5", "--purpose", "reconfig", "--token-file", tb);
+    assert.notEqual(r.code, 0); assert.match(r.out, /409.*cli-a.*ui-test/);
+    assert.equal((r = B.cli("journal", "add", "--kind", "test.run", "--file", body, "--artifact", "commit:abc1234", "--artifact", "path:out/r.txt", "--token-file", ta)).code, 0, r.out);
+    assert.notEqual(B.cli("journal", "add", "--kind", "x", "--file", body, "--artifact", "sha256:zz", "--token-file", ta).code, 0);
+    assert.match(B.cli("journal", "ls", "--executor", "cli-a", "--token-file", tb).out, /设备上的界面测试跑完.*commit:abc1234/);
+    const t = await B.card("命令行领卡");
+    r = B.cli("take", String(t.id), "--version", String(t.aggregate_version), "--lease", "45", "--token-file", ta);
+    assert.equal(r.code, 0, r.out); assert.match(r.out, /已领 #/);
+    assert.match((r = B.cli("exec", "heartbeat", "--lease", "60", "--token-file", ta)).out, new RegExp(`续租 1 张 #${t.id}`), r.out);
+    writeFileSync(join(B.dir, "st.json"), JSON.stringify({ current: "回归", done: ["装包"], next: ["跑测试"] }), "utf8");
+    assert.equal((r = B.cli("exec", "status", "--file", join(B.dir, "st.json"), "--token-file", ta)).code, 0, r.out);
+    assert.match(B.cli("exec", "status").out, /cli-a.*回归.*跑测试/);
+    r = B.cli("exec", "stop", "--token-file", ta);
+    assert.equal(r.code, 0, r.out);
+    const hid = r.out.match(/交接记录 #(\d+)/)[1];
+    assert.match(B.cli("handoff", "ls", "--token-file", tb).out, new RegExp(`#${hid}.*cli-a.*回归`));
+    assert.equal((r = B.cli("handoff", "ack", hid, "--token-file", tb)).code, 0, r.out);
+    assert.notEqual(B.cli("lock", "release", "device:test-phone", "--token-file", tb).code, 0, "非持有者不能释放");
+    assert.equal((r = B.cli("lock", "release", "device:test-phone", "--force", "--file", why)).code, 0, r.out);
+    assert.match(B.cli("lock", "ls", "--all").out, /device:test-phone\s+已释放/);
+    assert.equal(B.cli("ls").code, 0, "旧用法照常");
+    assert.notEqual(B.cli("approve", String(t.id), "--version", "1", "--token-file", ta).code, 0, "执行者令牌不能裁定");
   } finally { await B.stop(); }
 });
