@@ -155,3 +155,50 @@ test("各方状态:整份写入带 updated_at,超限拒绝且不截断", { timeo
     assert.equal((await B.api("POST", "/api/coord/status", B.operator, { current: "x" })).status, 403, "操作员不代写执行者状态");
   } finally { await B.stop(); }
 });
+
+test("资源锁:占用返回 409 带持有者,只有持有者能释放,操作员强制释放必须写理由", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const a = await B.register("agent-d"), b = await B.register("agent-e");
+    const got = await B.api("POST", "/api/coord/locks", a, { resource: "device:test-phone", minutes: 20, purpose: "跑界面测试" });
+    assert.equal(got.status, 201, JSON.stringify(got.body));
+    assert.ok(Math.abs(Date.parse(got.body.lock.started_at) - Date.now()) < 5000, "开始时刻由服务端测");
+    const clash = await B.api("POST", "/api/coord/locks", b, { resource: "device:test-phone", minutes: 5, purpose: "改设备配置" });
+    assert.equal(clash.status, 409);
+    assert.equal(clash.body.holder.holder, "agent-d");
+    assert.equal(clash.body.holder.purpose, "跑界面测试");
+    assert.ok(clash.body.holder.expected_end);
+    assert.equal((await B.api("POST", "/api/coord/locks/release", b, { resource: "device:test-phone" })).status, 403, "非持有者不能释放");
+    assert.equal((await B.api("POST", "/api/coord/locks", B.operator, { resource: "build:apk", minutes: 5, purpose: "x" })).status, 403, "加锁需要执行者令牌");
+    assert.equal((await B.api("POST", "/api/coord/locks/release", a, { resource: "device:test-phone" })).status, 200);
+    assert.equal((await B.api("POST", "/api/coord/locks", b, { resource: "device:test-phone", minutes: 5, purpose: "改设备配置" })).status, 201, "释放后另一方可加锁");
+    assert.equal((await B.api("POST", "/api/coord/locks/release", B.operator, { resource: "device:test-phone", force: true })).status, 400, "强制释放必须写理由");
+    const forced = await B.api("POST", "/api/coord/locks/release", B.operator, { resource: "device:test-phone", force: true, reason: "持有者会话已结束" });
+    assert.equal(forced.status, 200, JSON.stringify(forced.body));
+    assert.equal(forced.body.lock.released_by, "operator");
+    assert.equal(forced.body.lock.release_reason, "持有者会话已结束");
+    const all = (await B.api("GET", "/api/coord/locks?all=1", a)).body.locks;
+    assert.ok(all.some((l) => l.released_by === "operator" && l.release_reason === "持有者会话已结束"), "强制释放留有记录");
+    assert.equal((await B.api("POST", "/api/coord/locks", a, { resource: "bad name", minutes: 5, purpose: "x" })).status, 400);
+  } finally { await B.stop(); }
+});
+
+test("资源锁逾期:标出、只发一次通知、不自动释放", { timeout: 60000 }, async () => {
+  const B = await board({ BOARD_COORD_OVERDUE_GRACE_MIN: "0", BOARD_REAP_MS: "200" });
+  const ctl = new AbortController();
+  try {
+    const a = await B.register("agent-f");
+    let sse = "";
+    const ev = await fetch(B.base + "/api/events", { headers: { "X-Board-Token": B.operator }, signal: ctl.signal });
+    const reading = (async () => { const rd = ev.body.getReader(); const dec = new TextDecoder();
+      try { for (;;) { const { value, done } = await rd.read(); if (done) break; sse += dec.decode(value); } } catch {} })();
+    assert.equal((await B.api("POST", "/api/coord/locks", a, { resource: "build:apk", minutes: 0.01, purpose: "打包" })).status, 201);
+    await delay(2500);
+    const held = (await B.api("GET", "/api/coord/locks", a)).body.locks;
+    assert.equal(held.length, 1, "逾期不自动释放");
+    assert.equal(held[0].overdue, true);
+    assert.ok(held[0].overdue_notified_at);
+    ctl.abort(); await reading;
+    assert.equal(sse.split("coord.lock_overdue").length - 1, 1, "逾期通知只发一次");
+  } finally { ctl.abort(); await B.stop(); }
+});

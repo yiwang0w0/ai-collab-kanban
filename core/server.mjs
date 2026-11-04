@@ -2536,6 +2536,9 @@ function claimIdentity(body, role, seat=null) {
 }
 
 // ── 多执行者协作(/api/coord/*)。读:任何已认证角色;写:见 EXECUTOR_WRITES 与各分支的角色要求。
+const envMinutes = (name, dflt) => { const n = Number(process.env[name]); return process.env[name] && Number.isFinite(n) && n >= 0 ? n : dflt; };
+// 锁超过预计结束多久算逾期(默认 30 分钟)。
+const COORD_GRACE_MS = envMinutes("BOARD_COORD_OVERDUE_GRACE_MIN", 30) * 60000;
 const asExecutor = (req, res) => {
   if (req.boardRole === "executor") return req.executor;
   json(res, 403, { error: "此操作需要执行者令牌", role: req.boardRole });
@@ -2547,8 +2550,10 @@ const asOperator = (req, res) => {
   return false;
 };
 async function coordRoute(req, res, url, p, m, boardRole) {
+  const now = Date.now();
   if (m === "GET" && p === "/api/coord")
-    return json(res, 200, { executors: coord.listExecutors(db), external_lines: LINES.filter((l) => LINE_EXTERNAL[l]),
+    return json(res, 200, { executors: coord.listExecutors(db), locks: coord.listLocks(db, {}, now, COORD_GRACE_MS),
+                            overdue_grace_min: COORD_GRACE_MS / 60000, external_lines: LINES.filter((l) => LINE_EXTERNAL[l]),
                             executor_max_lease_min: coord.EXECUTOR_MAX_LEASE_MIN, status_limits: coord.STATUS_LIMITS, now: Date.now() });
   if (m === "GET" && p === "/api/coord/executors") return json(res, 200, { executors: coord.listExecutors(db) });
   if (m === "POST" && p === "/api/coord/executors") {
@@ -2562,6 +2567,28 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     const ex = asExecutor(req, res); if (!ex) return;
     const b = await readBody(req);
     return json(res, 200, coord.heartbeat(db, ex.id, { taskId: b.task_id ?? null, leaseMin: b.lease_minutes }));
+  }
+  if (m === "GET" && p === "/api/coord/locks")
+    return json(res, 200, { locks: coord.listLocks(db, { all: url.searchParams.get("all") === "1",
+                            holder: url.searchParams.get("holder"), limit: url.searchParams.get("limit") }, now, COORD_GRACE_MS),
+                            overdue_grace_min: COORD_GRACE_MS / 60000 });
+  if (m === "POST" && p === "/api/coord/locks") {
+    const ex = asExecutor(req, res); if (!ex) return;
+    const b = await readBody(req);
+    const r = coord.acquire(db, ex.id, { resource: b.resource, minutes: b.minutes, purpose: b.purpose }, now, COORD_GRACE_MS);
+    if (!r.ok) return json(res, 409, { error: `资源 ${r.holder.resource} 已被 ${r.holder.holder_name} 占用`, holder: r.holder });
+    emit("coord.lock", { resource: r.lock.resource, holder: ex.id, op: "acquire" });
+    return json(res, 201, { lock: r.lock });
+  }
+  if (m === "POST" && p === "/api/coord/locks/release") {
+    if (boardRole !== "operator" && !asExecutor(req, res)) return;
+    const b = await readBody(req);
+    const actor = boardRole === "operator" ? { role: "operator" } : { role: "executor", id: req.executor.id };
+    const r = coord.release(db, actor, { resource: b.resource, force: b.force, reason: b.reason }, now, COORD_GRACE_MS);
+    if (!r.ok) return json(res, 403, { error: `只有持有者 ${r.holder.holder_name} 能释放 ${r.holder.resource}`, holder: r.holder });
+    if (actor.role === "operator") console.log(`协作锁 ${r.lock.resource} 被操作员强制释放(持有者 ${r.lock.holder}):${r.lock.release_reason}`);
+    emit("coord.lock", { resource: r.lock.resource, holder: r.lock.holder, op: actor.role === "operator" ? "force_release" : "release" });
+    return json(res, 200, { lock: r.lock });
   }
   if (m === "POST" && p === "/api/coord/status") {
     const ex = asExecutor(req, res); if (!ex) return;
@@ -3515,6 +3542,10 @@ setInterval(() => {
   try {
     const n = store.reapExpired(db);
     if (n) { console.log(`租约到期 ${n} 件 回收至未开始`); emit("task.reaped", { count: n }); }
+    for (const l of coord.sweepOverdue(db, Date.now(), COORD_GRACE_MS)) {
+      console.log(`协作锁逾期: ${l.resource}(持有者 ${l.holder},预计结束 ${l.expected_end})—— 不自动释放`);
+      emit("coord.lock_overdue", { resource: l.resource, holder: l.holder, expected_end: l.expected_end });
+    }
     // Complement pair — always swept in THIS order.
     const dr = store.deferToRearm(db);
     if (dr.length) { console.log(`子任务卡未齐 → 转入等待重审: #${dr.join(" #")}`); emit("task.deferred", { ids: dr }); }

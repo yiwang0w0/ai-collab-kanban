@@ -1,4 +1,4 @@
-// 多执行者协作:执行者身份与令牌、心跳、各方状态。
+// 多执行者协作:执行者身份与令牌、心跳、各方状态、资源锁。
 // 执行者可以是看板的执行线,也可以是看板外的 AI 会话。令牌只存哈希,明文只在登记时返回一次。
 // 表只由看板服务创建(server.mjs 打开库后调用 migrate),store 的其他调用方不受影响。
 const crypto = require("crypto");
@@ -12,6 +12,11 @@ const NAME_MAX = 40;
 const EXECUTOR_MAX_LEASE_MIN = 240;
 // 各方状态 {current, done[], next[]} 的上限。超出即拒绝写入,不截断。
 const STATUS_LIMITS = Object.freeze({ current: 300, item: 300, done: 50, next: 20, total: 16000 });
+// 资源名是中性字符串(如 device:test-phone、build:apk);看板不解释它指什么。
+const RESOURCE_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/@-]{0,79}$/;
+const LOCK_MAX_MIN = 1440;
+const PURPOSE_MAX = 120;
+const REASON_MAX = 300;
 
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const iso = (ms) => ms == null ? null : new Date(Number(ms)).toISOString();
@@ -29,6 +34,20 @@ function migrate(db) {
     stopped_at INTEGER,
     stop_seq INTEGER NOT NULL DEFAULT 0
   )`);
+  // 锁:一行一次持有。未释放的行对同一资源唯一(部分唯一索引 = 库层互斥)。时刻都由服务端测。
+  db.exec(`CREATE TABLE IF NOT EXISTS coord_locks (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource TEXT NOT NULL,
+    holder TEXT NOT NULL REFERENCES coord_executors(id),
+    purpose TEXT NOT NULL,
+    started_at INTEGER NOT NULL,
+    expected_end INTEGER NOT NULL,
+    released_at INTEGER,
+    released_by TEXT,
+    release_reason TEXT,
+    overdue_notified_at INTEGER
+  )`);
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS ux_coord_lock_held ON coord_locks(resource) WHERE released_at IS NULL");
   db.exec(`CREATE TABLE IF NOT EXISTS coord_status (
     executor_id TEXT PRIMARY KEY REFERENCES coord_executors(id),
     status TEXT NOT NULL,
@@ -110,6 +129,77 @@ function byToken(db, token) {
   return executorOut(db.prepare("SELECT * FROM coord_executors WHERE token_hash=?").get(sha256(token)));
 }
 
+function lockOut(db, r, now = Date.now(), graceMs = 30 * 60000) {
+  if (!r) return null;
+  const name = db.prepare("SELECT name FROM coord_executors WHERE id=?").get(r.holder)?.name ?? r.holder;
+  return { id: Number(r.id), resource: r.resource, holder: r.holder, holder_name: name, purpose: r.purpose,
+           started_at: iso(r.started_at), expected_end: iso(r.expected_end),
+           released_at: iso(r.released_at), released_by: r.released_by ?? null, release_reason: r.release_reason ?? null,
+           overdue: r.released_at == null && now > Number(r.expected_end) + graceMs,
+           overdue_notified_at: iso(r.overdue_notified_at) };
+}
+const heldRow = (db, resource) =>
+  db.prepare("SELECT * FROM coord_locks WHERE resource=? AND released_at IS NULL").get(String(resource));
+
+/** 加锁。已被占用 → {ok:false, holder};不抢锁、不排队。 */
+function acquire(db, executorId, { resource, minutes, purpose } = {}, now = Date.now(), graceMs) {
+  if (!getRow(db, executorId)) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
+  const res = String(resource ?? "");
+  if (!RESOURCE_RE.test(res))
+    throw err(ERR.BAD_INPUT, `资源名只允许字母、数字和 . _ : / @ -,1-80 位,以字母或数字开头 —— 收到 ${JSON.stringify(resource)}`);
+  const mins = Number(minutes);
+  if (!Number.isFinite(mins) || mins <= 0 || mins > LOCK_MAX_MIN)
+    throw err(ERR.BAD_INPUT, `预计时长 minutes 必须是 0 到 ${LOCK_MAX_MIN} 之间的分钟数`);
+  const why = String(purpose ?? "").trim();
+  if (!why) throw err(ERR.BAD_INPUT, "加锁必须写用途 purpose");
+  if (chars(why) > PURPOSE_MAX) throw err(ERR.BAD_INPUT, `用途最多 ${PURPOSE_MAX} 字`);
+  try {
+    const r = db.prepare("INSERT INTO coord_locks (resource, holder, purpose, started_at, expected_end) VALUES (?,?,?,?,?)")
+      .run(res, String(executorId), why, now, Math.round(now + mins * 60000));
+    return { ok: true, lock: lockOut(db, db.prepare("SELECT * FROM coord_locks WHERE id=?").get(r.lastInsertRowid), now, graceMs) };
+  } catch (e) {
+    if (!/UNIQUE constraint/.test(String(e.message))) throw e;
+    return { ok: false, holder: lockOut(db, heldRow(db, res), now, graceMs) };
+  }
+}
+
+/** 释放。执行者只能释放自己持有的锁;操作员必须 force:true 并写理由。 */
+function release(db, actor, { resource, force = false, reason } = {}, now = Date.now(), graceMs) {
+  const row = heldRow(db, resource);
+  if (!row) throw err(ERR.NOT_FOUND, `资源 ${JSON.stringify(resource)} 当前没有被锁`);
+  if (actor.role === "operator") {
+    const why = String(reason ?? "").trim();
+    if (force !== true || !why) throw err(ERR.BAD_INPUT, "操作员强制释放需要 force:true 和理由 reason");
+    if (chars(why) > REASON_MAX) throw err(ERR.BAD_INPUT, `理由最多 ${REASON_MAX} 字`);
+    db.prepare("UPDATE coord_locks SET released_at=?, released_by='operator', release_reason=? WHERE id=? AND released_at IS NULL")
+      .run(now, why, row.id);
+  } else {
+    if (row.holder !== actor.id) return { ok: false, holder: lockOut(db, row, now, graceMs) };
+    db.prepare("UPDATE coord_locks SET released_at=?, released_by=? WHERE id=? AND released_at IS NULL").run(now, actor.id, row.id);
+  }
+  return { ok: true, lock: lockOut(db, db.prepare("SELECT * FROM coord_locks WHERE id=?").get(row.id), now, graceMs) };
+}
+
+function listLocks(db, { holder = null, all = false, limit = 50 } = {}, now = Date.now(), graceMs) {
+  const rows = all
+    ? db.prepare("SELECT * FROM coord_locks ORDER BY id DESC LIMIT ?").all(Math.max(1, Math.min(500, Number(limit) || 50)))
+    : holder == null ? db.prepare("SELECT * FROM coord_locks WHERE released_at IS NULL ORDER BY started_at, id").all()
+    : db.prepare("SELECT * FROM coord_locks WHERE released_at IS NULL AND holder=? ORDER BY started_at, id").all(String(holder));
+  return rows.map((r) => lockOut(db, r, now, graceMs));
+}
+
+/** 超过预计结束 graceMs 仍未释放的锁:每把只标记一次(overdue_notified_at),返回本次新标记的。不自动释放。 */
+function sweepOverdue(db, now = Date.now(), graceMs = 30 * 60000) {
+  const rows = db.prepare(`SELECT * FROM coord_locks WHERE released_at IS NULL AND overdue_notified_at IS NULL
+                             AND expected_end + ? < ? ORDER BY id`).all(graceMs, now);
+  const out = [];
+  for (const r of rows) {
+    const u = db.prepare("UPDATE coord_locks SET overdue_notified_at=? WHERE id=? AND overdue_notified_at IS NULL").run(now, r.id);
+    if (u.changes) out.push(lockOut(db, { ...r, overdue_notified_at: now }, now, graceMs));
+  }
+  return out;
+}
+
 function listExecutors(db) {
   return db.prepare("SELECT * FROM coord_executors ORDER BY id").all()
     .map((r) => ({ ...executorOut(r), status: statusOf(db, r.id) }));
@@ -146,5 +236,6 @@ function heartbeat(db, executorId, { taskId = null, leaseMin } = {}, now = Date.
 module.exports = {
   migrate, register, byToken, listExecutors, heartbeat, touch, executorLease, executorOut,
   statusOf, setStatus, STATUS_LIMITS,
+  acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN,
   EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN,
 };
