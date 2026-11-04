@@ -18,6 +18,15 @@ def usage_of(value):
             and value[key] >= 0 else None for key in keys}
 
 
+def effort_metadata(job):
+    """只适配已知不支持 effort 的型号；运行身份仍保留原请求标签。"""
+    if job["model"] in ("claude-haiku-4-5", "claude-haiku-4-5-20251001"):
+        return {"effective_effort": None,
+                "capability_note": f"Haiku 4.5 的 effort 不适用；requested_effort={job['effort']} 仅为兼容身份标签，"
+                                   "SDK effort=None，不发送 --effort。"}
+    return {"effective_effort": job["effort"]}
+
+
 async def run_job(job, emit, *, sdk=None, environment=None):
     validate_job(job)
     if job["channel"] != "claude_agent_sdk":
@@ -25,6 +34,8 @@ async def run_job(job, emit, *, sdk=None, environment=None):
     environment = provider_environment(os.environ if environment is None else environment, job["channel"])
     if not environment.get("ANTHROPIC_API_KEY") or not environment.get("CLAUDE_CONFIG_DIR"):
         raise ValueError("SDK_CREDENTIAL_REQUIRED")
+    # 单卡不重试也覆盖 SDK 内层 API 请求；固定值不放开宿主的任意环境控制。
+    environment["CLAUDE_CODE_MAX_RETRIES"] = "0"
     if sdk is None:
         import claude_agent_sdk as sdk
     denied = []
@@ -43,7 +54,8 @@ async def run_job(job, emit, *, sdk=None, environment=None):
                 "permissionDecisionReason": "文件越界、凭据文件或未获准工具；需操作者确认。"}}
 
     tools = ["Read", "Glob", "Grep"] + ([] if job["read_only"] else ["Write", "Edit"])
-    options = sdk.ClaudeAgentOptions(cwd=job["cwd"], model=job["model"], effort=job["effort"],
+    capability = effort_metadata(job)
+    options = sdk.ClaudeAgentOptions(cwd=job["cwd"], model=job["model"], effort=capability["effective_effort"],
         permission_mode="dontAsk", tools=tools, allowed_tools=tools, can_use_tool=permission,
         hooks={"PreToolUse": [sdk.HookMatcher(hooks=[pre_tool_use])]}, setting_sources=[], plugins=[],
         strict_mcp_config=True, mcp_servers={}, skills=[], max_turns=int(job["budget"]["max_turns"]),
@@ -52,7 +64,7 @@ async def run_job(job, emit, *, sdk=None, environment=None):
         system_prompt="你是 Kanban 单任务开发执行器。只处理当前卡；先读取工作仓内的 AGENTS.md/CLAUDE.md（如有）。"
                       "不得读取凭据、请求新增权限、执行 shell、派生智能体或自行验收。正式验证由宿主在你退出后执行。"
                       "最后用中文回报实际修改、产物位置与尚未执行的检查，不能冒充测试已经通过。")
-    emit(event(job, "started", budget_enforcement="sdk_budget_and_turns"))
+    emit(event(job, "started", budget_enforcement="sdk_budget_and_turns", **capability))
     terminal = None
     try:
         async for message in sdk.query(prompt=job["prompt"], options=options):
@@ -79,7 +91,7 @@ async def run_job(job, emit, *, sdk=None, environment=None):
         raise
     except Exception:
         terminal = {"status": "failed", "diagnostic": "SDK_PROTOCOL_OR_PROVIDER_ERROR", "report": None, "usage": None, "cost_usd": None}
-    emit(event(job, "terminal", **terminal))
+    emit(event(job, "terminal", **terminal, **capability))
     return terminal["status"] == "success"
 
 
@@ -94,10 +106,10 @@ async def main(path):
         async with asyncio.timeout(float(job["budget"]["timeout_sec"])):
             return 0 if await run_job(job, emit) else 1
     except TimeoutError:
-        emit(event(job, "terminal", status="timeout", diagnostic="SDK_TIMEOUT", report=None, usage=None, cost_usd=None))
+        emit(event(job, "terminal", status="timeout", diagnostic="SDK_TIMEOUT", report=None, usage=None, cost_usd=None, **effort_metadata(job)))
         return 1
     except asyncio.CancelledError:
-        emit(event(job, "terminal", status="cancelled", diagnostic="SDK_CANCELLED", report=None, usage=None, cost_usd=None))
+        emit(event(job, "terminal", status="cancelled", diagnostic="SDK_CANCELLED", report=None, usage=None, cost_usd=None, **effort_metadata(job)))
         return 1
 
 
