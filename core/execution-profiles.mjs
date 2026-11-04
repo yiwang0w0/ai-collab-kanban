@@ -23,6 +23,10 @@ const envValue=(env,name)=>Object.entries(env||{}).find(([key])=>key.toUpperCase
 const valuePresent=value=>typeof value==="string"&&value.trim().length>0;
 const inside=(parent,child)=>{const r=relative(resolve(parent),resolve(child));return r===""||r!==".."&&!r.startsWith("..\\")&&!r.startsWith("../")&&!isAbsolute(r);};
 const completeBudget=budget=>!!budget&&Object.values(budget).every(value=>typeof value==="number"&&Number.isFinite(value)&&value>0);
+// Codex 订阅 CLI 只强制执行时限；不能为了通过配置门填入并不存在的金额或内部轮次硬帽。
+const profileBudgetReady=profile=>profile.channel==="codex_cli"
+ ? typeof profile.budget?.timeout_sec==="number"&&Number.isFinite(profile.budget.timeout_sec)&&profile.budget.timeout_sec>0
+ : completeBudget(profile.budget);
 function budgetOf(value){
  if(value==null)return null;
  if(!record(value)||Object.keys(value).some(key=>!BUDGET_FIELDS.has(key)))fail("执行配置的预算字段无效");
@@ -95,10 +99,10 @@ export function publicExecutionProfiles(profiles,{env=process.env,runtimes=[],re
   const configured=api(profile)?valuePresent(envValue(env,profile.credential_env)):commandConfigured;
   const enabled=profile.enabled&&(api(profile)||unlocked);
   const separated=!repoRoot||!inside(repoRoot,profile.auth_home)&&!inside(profile.auth_home,repoRoot);
-  const hasBudget=completeBudget(profile.budget);
+  const hasBudget=profileBudgetReady(profile);
   const providerLimit=profile.channel!=="codex_sdk_api"||profile.provider_spend_limit_confirmed;
   const ready=enabled&&configured&&separated&&hasBudget&&providerLimit;
-  const reason=!enabled?"尚未启用；需操作者明确许可":!configured?api(profile)?"尚未配置本通道的独立 API 凭据":"尚未配置本机 CLI":!separated?"认证目录与工作仓重叠，需要分离":!hasBudget?"尚未确认金额上限、时限和轮次预算":!providerLimit?"本地 SDK 仅控制时限与步数；金额须在供应商项目设置上限后由操作者确认":"配置齐全；登录、模型可用性与真实任务仍待核实";
+  const reason=!enabled?"尚未启用；需操作者明确许可":!configured?api(profile)?"尚未配置本通道的独立 API 凭据":"尚未配置本机 CLI":!separated?"认证目录与工作仓重叠，需要分离":!hasBudget?profile.channel==="codex_cli"?"尚未确认正数执行时限预算":"尚未确认金额上限、时限和轮次预算":!providerLimit?"本地 SDK 仅控制时限与步数；金额须在供应商项目设置上限后由操作者确认":profile.channel==="codex_cli"?"时限配置齐全；CLI 不能硬控金额或内部轮次；未知用量与费用须待核实，登录、模型可用性与真实任务仍待核实":"配置齐全；登录、模型可用性与真实任务仍待核实";
   return {id:profile.id,label:profile.label,runtime:profile.runtime,channel:profile.channel,auth_kind:profile.auth_kind,billing_kind:profile.billing_kind,
    budget_enforcement:profile.budget_enforcement,provider_spend_limit_confirmed:profile.provider_spend_limit_confirmed,
    enabled,configured,ready,reason,budget:profile.budget?{...profile.budget}:null};
@@ -116,7 +120,7 @@ export function profileEnvironment(profile,{env=process.env,repoRoot,dataDir,pro
  }
  if(!profile.enabled)fail("所选执行配置尚未启用");
  if(repoRoot&&(inside(repoRoot,profile.auth_home)||inside(profile.auth_home,repoRoot)))fail("认证目录与工作仓必须分离");
- if(!completeBudget(profile.budget))fail("所选执行配置尚未确认金额上限、时限和轮次预算，未启动调用");
+ if(!profileBudgetReady(profile))fail(profile.channel==="codex_cli"?"Codex CLI 尚未确认正数执行时限预算，未启动调用":"所选执行配置尚未确认金额上限、时限和轮次预算，未启动调用");
  if(api(profile)&&!valuePresent(envValue(env,profile.credential_env)))fail("API 通道缺少独立凭据，未启动调用");
  if(profile.channel==="codex_sdk_api"&&!profile.provider_spend_limit_confirmed)fail("本地 SDK 仅控制时限与步数；请先在供应商项目设置金额上限并由操作者明确确认，未启动调用");
  if(profile.channel==="codex_cli"&&(envValue(env,"BOARD_CODEX_RELEASED")!=="1"||!valuePresent(envValue(env,"BOARD_CODEX_CMD"))))fail("Codex CLI 尚未获原订阅座席许可或缺少命令配置");

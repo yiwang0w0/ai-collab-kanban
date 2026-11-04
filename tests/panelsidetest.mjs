@@ -97,6 +97,25 @@ function fixture(extra = {}) {
     body: document.getElementById("task-side-body"), state: () => document.getElementById("task-side-state") };
 }
 
+test("放行前的核对与放行按钮直接可见，执行者材料继续折叠", () => {
+  const f = fixture({ status: "not_started", released: false, execution_profile: {
+    channel: "codex_cli", label: "订阅执行", model: "fixture-model", effort: "high",
+    auth_kind: "chatgpt", billing_kind: "subscription", workspace: { path: "C:/fixture/project" },
+    tools: "write", budget: { timeout_sec: 600 }, profile_digest: "fixture-digest", ready: true,
+  } });
+  Object.assign(f.context, { executionChannelName: (v) => v, executionAuthName: (v) => v,
+    executionBillingName: (v) => v, effortName: (v) => v, executionBudgetText: () => "600 秒" });
+  f.context.renderSide();
+  const execution = f.document.getElementById("task-side-execution");
+  const detail = f.document.getElementById("task-side-detail");
+  assert.ok(f.body.children.includes(execution), "当前放行核对不能藏在关闭的详细说明中");
+  assert.match(execution.textContent, /C:\/fixture\/project.*权限.*预算.*600 秒.*放行此任务/);
+  assert.ok(execution.querySelector('[data-a="release"]'));
+  assert.ok(!detail.open && !detail.querySelector("#task-side-execution"));
+  f.task.released = true; f.task.aggregate_version++; f.context.renderSide();
+  assert.ok(f.document.getElementById("task-side-detail").querySelector("#task-side-execution"), "放行后逐项记录回到详细说明中");
+});
+
 test("同一任务版本下，侧栏随时钟和心跳恢复更新而不重建内容", () => {
   const f = fixture(); f.context.renderSide();
   const state = f.state(), next = f.document.getElementById("task-side-next"), changes = f.body.replacements;

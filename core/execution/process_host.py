@@ -231,8 +231,11 @@ class AppContainer:
                 try:
                     shutil.rmtree(self.root)
                     self.report['staging_removed'] = True
-                except OSError:
-                    pass
+                except OSError as error:
+                    self.report['staging_cleanup_error'] = {
+                        'errno': error.errno if type(error.errno) is int else None,
+                        'winerror': error.winerror if type(getattr(error, 'winerror', None)) is int else None,
+                    }
         if self.sid.value:
             self.a.FreeSid(self.sid)
             self.sid = ctypes.c_void_p()
@@ -244,6 +247,7 @@ class WindowsProcess:
     def __init__(self, request):
         import msvcrt
         from ctypes import wintypes as w
+        self.closed = False
         k = ctypes.WinDLL("kernel32", use_last_error=True)
         self.k = k
         size = ctypes.c_size_t
@@ -409,6 +413,9 @@ class WindowsProcess:
                 setattr(self, key, None)
 
     def close(self):
+        if self.closed:
+            return
+        self.closed = True
         for key in ("stdin", "stdout", "stderr"):
             handle = getattr(self, key, None)
             if handle:
@@ -500,7 +507,8 @@ def main():
         writer_thread.join(timeout=2)
         finished.set()
         if process.sandbox and cleanup == 'job_empty':
-            process.sandbox.close()
+            # 先释放进程与 Job 句柄，再删除暂存程序；终态不再提前回报。
+            process.close()
         emit({"kind": "done", "exit_code": code, "stop_reason": stop, "cleanup": cleanup, **({"sandbox": process.sandbox.report} if process.sandbox else {})})
         # Parent closes control stdin after the receipt; let its reader release
         # the buffered input lock before Python finalization.

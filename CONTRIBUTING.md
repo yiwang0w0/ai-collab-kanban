@@ -24,6 +24,8 @@ they clear is the same one the codebase already holds itself to.
    24 and Python 3.12; local command examples assume PowerShell. A local pass
    is not evidence that the exact pushed commit passed CI.
 
+   Windows CI 将完整测试分成四组并行，组内仍按原顺序执行；分片使用独立 runner，任一失败不会取消其余分片。聚合检查保留 `harness (windows-latest)` 名称，只有全部分片成功才通过；独立的全历史 gitleaks 仍阻塞交付。npm/pip 仅缓存下载内容，依赖继续按锁文件及固定 requirements 安装，不复用 `node_modules` 或虚拟环境。分组只缩短等待时间，不减少原检查、改变测试时限或放宽断言。
+
 2. **The GLOSSARY is frozen.** `docs/GLOSSARY.md`: renaming any `machine`-layer
    term (wire values, JSON keys, env names, exit codes, event kinds) is a
    breaking change and needs a migration story, not just a rename. Display

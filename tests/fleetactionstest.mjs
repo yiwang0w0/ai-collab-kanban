@@ -1,3 +1,4 @@
+import {harnessEnvironment} from "./harness-env.mjs";
 import {issueCredential,listenPeerServer,fixtureEndpoint} from "./helpers/peer-network.mjs";
 import {readFleetHealth} from '../core/fleet-health.mjs';
 import {authenticate} from "../core/federation/peers.mjs";
@@ -101,7 +102,7 @@ test("real board HTTP action endpoints enforce operator, origin and coordinator 
  writeFileSync(actionPath,JSON.stringify(f.a.config));
  const probe=createNetServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
  let output="";const root=fileURLToPath(new URL("../",import.meta.url));
- const proc=spawn(process.execPath,[join(root,"core/server.mjs")],{cwd:f.a.dir,windowsHide:true,env:{...process.env,BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:configPath,BOARD_DATA_DIR:f.a.dir,BOARD_DB:f.a.dbPath,BOARD_REPO:f.a.dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_FLEET_ACTIONS_CONFIG:actionPath},stdio:["ignore","pipe","pipe"]});
+ const proc=spawn(process.execPath,[join(root,"core/server.mjs")],{cwd:f.a.dir,windowsHide:true,env:{...harnessEnvironment(),BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:configPath,BOARD_DATA_DIR:f.a.dir,BOARD_DB:f.a.dbPath,BOARD_REPO:f.a.dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_FLEET_ACTIONS_CONFIG:actionPath},stdio:["ignore","pipe","pipe"]});
  proc.stdout.on("data",b=>output+=b);proc.stderr.on("data",b=>output+=b);
  const request=(path,options={})=>fetch("http://127.0.0.1:"+port+path,{...options,signal:AbortSignal.timeout(5000)});
  try{
@@ -128,7 +129,7 @@ test("real board HTTP action endpoints enforce operator, origin and coordinator 
 test("default board leaves action storage uninitialized and rejects operator writes",{timeout:40000},async()=>{
  const n=node(),configPath=join(n.dir,"board-config.json");writeFileSync(configPath,JSON.stringify({lines:[{id:"fixture",label:"fixture"}],roles:[],routes:["default"],repo:n.dir}));
  const probe=createNetServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
- let output="";const proc=spawn(process.execPath,[fileURLToPath(new URL("../core/server.mjs",import.meta.url))],{cwd:n.dir,windowsHide:true,env:{...process.env,BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:configPath,BOARD_DATA_DIR:n.dir,BOARD_DB:n.dbPath,BOARD_REPO:n.dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_FLEET_ACTIONS_CONFIG:""},stdio:["ignore","pipe","pipe"]});
+ let output="";const proc=spawn(process.execPath,[fileURLToPath(new URL("../core/server.mjs",import.meta.url))],{cwd:n.dir,windowsHide:true,env:{...harnessEnvironment(),BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:configPath,BOARD_DATA_DIR:n.dir,BOARD_DB:n.dbPath,BOARD_REPO:n.dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_FLEET_ACTIONS_CONFIG:""},stdio:["ignore","pipe","pipe"]});
  proc.stdout.on("data",b=>output+=b);proc.stderr.on("data",b=>output+=b);
  const request=(path,options={})=>fetch("http://127.0.0.1:"+port+path,{...options,signal:AbortSignal.timeout(5000)});
  try{

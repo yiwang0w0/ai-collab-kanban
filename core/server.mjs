@@ -119,6 +119,7 @@ if (existsSync(CONFIG_FILE)) {
     if (!Array.isArray(CFG.lines) || !CFG.lines.length) throw new Error("lines[] must be a non-empty array");
     if (!Array.isArray(CFG.routes) || !CFG.routes.length) throw new Error("routes[] must be a non-empty array");
     if (!Array.isArray(CFG.runtimes) || !CFG.runtimes.length) throw new Error("runtimes[] must be a non-empty array");
+    if (CFG.host_auto_commit != null && typeof CFG.host_auto_commit !== "boolean") throw new Error("host_auto_commit 必须是布尔值");
   } catch (e) {
     console.error(`拒绝启动:${CONFIG_FILE} 存在但不可用 —— ${e.message}`);
     process.exit(1);
@@ -298,9 +299,12 @@ const unnamedOf = (t) => {
 
 // SQL repo paths resolve only inside the server. The browser-facing object carries
 // file names, hashes and controlled download endpoints — never source paths.
-const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t);return {
+const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
   ...t,
+  history_refs:store.taskHistoryRefs(db,t.id),
   execution_trace: taskExecutionView(db, t),
+  verification_repair:repair.policy,
+  ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
   ...(profile ? {execution_profile:profile} : {}),
   progress_blockers: store.stuckWhy(db,t),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
@@ -691,13 +695,12 @@ function blessStep() {
     const d = diskConfig();
     if (d && d.gated_subtree)
       return { state: "todo",
-               detail: "配置已经写好了,但看板是在那之前起的 —— 重启一次让它读到",
-               hint: "端口、工作仓路径、要盯住的代码范围这三项只在启动时读一次;加线不用重启",
+               detail: "配置已经写好了,但看板是在那之前起的",
                action: { type: "api", method: "POST", path: "/api/setup/restart", label: "重启看板",
                          confirm: "重启看板,让它读到新配置。\n\n卡、事件、账本都在库里,不会丢;在跑的线会先停下,起来后照原样恢复。" } };
     return { state: "blocked",
              detail: "先做第二步生成配置,再重启看板",
-             hint: '生成的示例配置已经带了 "gated_subtree": "."(意思是:盯住整棵代码树)。看板重启读到它之后,这一步才能做' };
+             hint: '配置里要有 "gated_subtree" 这个键' };
   }
   const revFile = join(store.DATA_DIR, "accepted_rev");
   let head = null;
@@ -707,17 +710,16 @@ function blessStep() {
                         { encoding: "utf8", windowsHide: true }).trim();
   } catch (e) {
     return { state: "unknown", detail: `读不到代码的版本(${String(e.message).slice(0, 60)})`,
-             hint: "看板目录得是一个 git 仓库 —— 「确认版本」就是记下它当前的 git 树哈希" };
+             hint: "看板目录需要是一个 git 仓库" };
   }
   let accepted = null;
   try { accepted = readFileSync(revFile, "utf8").trim(); } catch {}
   if (!accepted)
-    return { state: "todo", detail: "点一下,表示「这个版本我认可」—— 点之前会先列出版本号",
-             hint: "看板只用你确认过的代码运行执行线:开始干活前确认一次,以后每次更新看板代码再确认一次 —— 这道门(源码闸)挡的是没人确认过的代码,所以得你本人来点。命令行也行:python cli/board.py bless",
+    return { state: "todo", detail: "这个版本还没确认过",
+             hint: "命令行也行:python cli/board.py bless",
              action: acceptAction(acceptPreview(head, accepted)) };
   if (accepted !== head)
-    return { state: "todo", detail: "代码有更新,确认记录还停在旧版本 —— 看一眼改动,再确认一次",
-             hint: "在这之前自动拉取会拒绝起线(exit 3)—— 那是门在挡没确认过的代码,不是故障",
+    return { state: "todo", detail: "代码有更新,确认记录还停在旧版本",
              action: acceptAction(acceptPreview(head, accepted)) };
   return { state: "done", detail: `已确认版本 ${accepted.slice(0, 12)}` + (CFG_GATED_SUBTREE === "." ? "" : `(${CFG_GATED_SUBTREE})`) };
 }
@@ -761,10 +763,10 @@ function acceptPreview(tree, prev) {
   const files = prev && prev !== tree ? Math.max(0, stat.length - 1) : (prev ? 0 : null);   // last stat line = summary
   const shown = stat.slice(0, 14).map((l) => "  " + l);
   const confirm = [
-    `你正在确认版本 ${tree.slice(0, 12)}` + (CFG_GATED_SUBTREE === "." ? "" : `(${CFG_GATED_SUBTREE})`) +
+    `确认版本 ${tree.slice(0, 12)}` + (CFG_GATED_SUBTREE === "." ? "" : `(${CFG_GATED_SUBTREE})`) +
       (prev ? `(上次确认的是 ${prev.slice(0, 12)})` : "(首次确认)"),
     ...(prev && prev !== tree ? ["", "上次确认 → 这次,改了什么:", ...shown, ...(stat.length > 14 ? [`  …还有 ${stat.length - 14} 行`] : [])] : []),
-    "", "确认 = 你说「这个版本我认可」。执行线只用你确认过的代码起跑。",
+    "", "确认之后执行线才会用这个版本起跑。",
   ].join("\n");
   return { tree, prev, files, stat, confirm };
 }
@@ -808,7 +810,7 @@ function upgradeState() {
     return { measurable: true, pending: stale.length > 0, running: BOOT_REV, on_disk: onDisk, apply: null,
              steps: stale.length ? [{ key: "sentries", title: "有通知进程还在跑旧代码", state: "todo",
                detail: `${stale.length} 个的版本是 ${[...new Set(stale.map((s) => s.rev))].join("/")},磁盘上是 ${onDisk}`,
-               hint: "看板已经告诉它们了:新版的通知进程会自己换成新代码;老版的会把这件事打给挂它的 Claude,由它停掉重跑" }] : [] };
+               hint: "老版的通知进程由挂它的 Claude 停掉重跑" }] : [] };
   }
   const bl = blessStep();
   const g = gatedTree();
@@ -826,18 +828,18 @@ function upgradeState() {
   const steps = [
     { key: "bless", title: "确认新版本", state: bl.state === "done" ? "done" : bl.state === "blocked" ? "blocked" : "todo",
       detail: bl.state === "done" ? bl.detail
-            : pv && pv.files != null ? `上次确认 → 这次改了 ${pv.files} 个文件,按「更新」时会先列给你看`
-            : pv ? "首次确认,按「更新」时会先列出版本" : bl.detail },
+            : pv && pv.files != null ? `上次确认 → 这次改了 ${pv.files} 个文件`
+            : pv ? "首次确认" : bl.detail },
     { key: "restart", title: "重启看板", state: "todo",
       detail: `进程跑的是 ${BOOT_REV},磁盘上已经是 ${onDisk}`, hint: keep + (interrupt ? "。" + interrupt : "") },
     ...(sentries.size ? [{ key: "sentries", title: "通知进程", state: "done",
-      detail: `${sentries.size} 个连着 —— 重启后会自动重连并换成新代码` }] : []),
+      detail: `${sentries.size} 个连着,重启后会自动重连并换成新代码` }] : []),
   ];
   const apply = {
     path: needAccept ? "/api/upgrade/apply" : "/api/setup/restart", label: "更新到新代码",
     body: needAccept ? { confirm_tree: pv.tree } : {}, in_progress: c.in_progress, lines: { stop: live, resume: want },
     confirm: [`把看板从 ${BOOT_REV} 更新到 ${onDisk}。`, "",
-              ...(needAccept ? [pv.confirm] : bl.state === "done" ? ["新代码已经确认过了。"] : [`(${bl.detail})`]),
+              ...(needAccept ? [pv.confirm] : bl.state === "done" ? ["新代码已经确认过了。"] : [bl.detail]),
               "", `接着看板会自己重启:${keep}。`, ...(interrupt ? ["", interrupt] : [])].join("\n"),
   };
   return { measurable: true, pending: true, running: BOOT_REV, on_disk: onDisk, steps, apply };
@@ -851,26 +853,25 @@ function setupState() {
   const hasConfig = existsSync(CONFIG_FILE);
   const steps = [
     { key: "board", title: "看板已经起来了", state: "done",
-      detail: `你正在看它 —— 端口 ${PORT}` },
+      detail: `端口 ${PORT}` },
     { key: "config", title: "有一份属于你的配置", ...(hasConfig
         ? (() => { const drift = configDrift();
                    return drift
-                     ? { state: "done", detail: `${CONFIG_FILE} —— ⚠ ${drift.join("/")} 改过了,看板还在用启动时读到的旧值`,
-                         hint: "重启看板让新值生效 —— 这几项只在启动时读一次;加线不用重启",
+                     ? { state: "done", detail: `${CONFIG_FILE} ⚠ ${drift.join("/")} 改过了,看板还在用启动时读到的旧值`,
+                         hint: "重启看板让新值生效",
                          drift: true, action: { type: "api", method: "POST", path: "/api/setup/restart", label: "重启看板",
                                                 confirm: "重启看板,让它读到改过的配置。\n\n卡、事件、账本都在库里,不会丢;在跑的线会先停下,起来后照原样恢复。" } }
                      : { state: "done", detail: CONFIG_FILE }; })()
-        : { state: "todo", detail: "点下面的按钮,生成一份属于你的配置文件",
-            hint: "执行线、端口和工作目录路径都会写入此配置；配置已排除在版本控制之外，只保存在本机。当前使用内置默认配置，只有「开发」「协调」两条占位线。",
+        : { state: "todo", detail: "生成一份属于你的配置文件",
             action: { type: "api", method: "POST", path: "/api/setup/init-config", label: "生成配置文件" } }) },
     { key: "lines", title: "定义你自己的线", ...(custom
         ? { state: "done", detail: `线: ${LINES.join(" / ")}` }
         : !hasConfig
-          ? { state: "blocked", detail: "先做上一步 —— 你的线就写在那份配置里" }
+          ? { state: "blocked", detail: "先做上一步生成配置" }
           : { state: "todo", detail: `内置的 ${builtinNames} 只是占位,换成你自己的活分几条`,
-              hint: "「线」= 一条自动领卡、一张接一张干下去的流水线,按你的工作切:比如 后端 / 前端 / 文档。用上面的「加线」框直接加,或按下面的按钮让你的 Claude 看看你最近在忙什么、替你起草几条",
+              hint: "用上面的「加线」框直接加,或按下面的按钮让你的 Claude 替你起草几条",
               action: { type: "quick", kind: "propose-lines", label: "让我的 Claude 替我起草线路" } }) },
-    { key: "bless", title: "确认当前版本(开始干活前需要)", ...blessStep() },
+    { key: "bless", title: "确认当前版本", ...blessStep() },
   ];
   const doneN = steps.filter((s) => s.state === "done").length;
   return { steps, done: doneN, total: steps.length, complete: doneN === steps.length,
@@ -971,17 +972,16 @@ const CRASH_BACKOFF_MS = Math.max(1, Number(process.env.BOARD_CRASH_BACKOFF_MS) 
 const SETTINGS_FILE = join(store.DATA_DIR, "worker_settings.json");
 
 // ── Per-card token usage, aggregated from the loop's ledger ──────────────────
-// usage_ledger.jsonl is APPEND-ONLY (the loop writes one row per attempt), which
-// makes incremental reading exact: remember the byte offset of the last COMPLETE
-// line and fold only what's new. Re-reading the whole file on every panel refresh
-// would grow linearly with fleet age for no reason.
+// usage_ledger.jsonl 每次调用轮追加一行；同一尝试的续修不能算作新尝试。
+// 账本仅追加：记住末个完整行的字节位置，只归并新行，避免每次刷新重读全文件。
 const USAGE_FILE = join(store.DATA_DIR, "usage_ledger.jsonl");
 let usageByCard = new Map();
+let usageAttemptKeys = new Map();
 let usageOffset = 0;
 function refreshUsage() {
   let size;
   try { size = statSync(USAGE_FILE).size; } catch { return; }   // no ledger yet = no usage
-  if (size < usageOffset) { usageByCard = new Map(); usageOffset = 0; }  // replaced/truncated → refold
+  if (size < usageOffset) { usageByCard = new Map(); usageAttemptKeys = new Map(); usageOffset = 0; }  // replaced/truncated → refold
   if (size === usageOffset) return;
   let buf;
   try {
@@ -1003,9 +1003,12 @@ function refreshUsage() {
     if (j.card == null) continue;                               // compact events carry no card
     const id = Number(j.card);
     const c = usageByCard.get(id) || { rows: 0, calls: 0, in: 0, cc: 0, cr: 0, out: 0 };
-    c.rows++; c.calls += Number(j.calls) || 0;
-    c.in += Number(j["in"]) || 0; c.cc += Number(j.cc) || 0;
-    c.cr += Number(j.cr) || 0; c.out += Number(j.out) || 0;
+    c.rows++; c.rounds = c.rows;
+    const attempts=usageAttemptKeys.get(id)||new Set();
+    attempts.add(Number.isSafeInteger(j.attempt) ? `${j.run_id||"legacy"}:${j.attempt}` : `unknown:${c.rows}`);
+    usageAttemptKeys.set(id,attempts);c.attempts=attempts.size;
+    for(const key of ["calls","in","cc","cr","out"])
+      c[key] = c[key]===null || j[key]===null || j[key]===undefined ? null : c[key]+(Number(j[key])||0);
     usageByCard.set(id, c);
   }
 }
@@ -1034,6 +1037,17 @@ function taskProfilePreview(task){
     else{ready=false;reason="执行线已更换配置，请核对任务原先选择的通道与模型";}
   }
   return {...shown,ready,reason,configuration_changed:shown.profile_digest!==fixed.profile_digest};
+}
+// 只有本人核对本次预览后，才把新默认轮数写进放行记录；旧调用保持一轮。
+function taskRepairPreview(task) {
+  if (task.status === "not_started" && !task.released) {
+    const configured=Number(process.env.BOARD_VERIFY_REPAIR_ROUNDS ?? 3);
+    const maxChars=Number(process.env.BOARD_EVIDENCE_MAX_CHARS ?? 4000);
+    const policy={max_rounds:Number.isSafeInteger(configured)&&configured>0?configured:1,legacy_retry:false,
+      evidence_contract:{version:1,max_chars:Number.isSafeInteger(maxChars)&&maxChars>0?maxChars:4000}};
+    return {policy,digest:createHash("sha256").update(JSON.stringify(policy)).digest("hex")};
+  }
+  return {policy:store.taskVerificationRepair(db,task,{fromRun:task.status!=="not_started"})};
 }
 const DECOMPOSE_MODELS = CFG.decompose_models;
 // Natural language for GENERATED content (decomposed cards today; other generators
@@ -1462,6 +1476,9 @@ async function decomposeGoal(goalId, model, forced = false) {
     }
     made[i] = store.add(db, {
       subject: String(t.subject || "(无题)"), description,
+      // 给人看的「要做什么」:拆解计划里带就带上,没带就是 null(退路在 store.cardBrief)。
+      //   schema 里它是可选项 —— 旧模型、旧计划不出这个字段也不该让整次拆解失败。
+      summary: t.summary,
       acceptance: String(t.acceptance || ""), line,
       needsBash: !!t.needs_bash, blockedBy: deps, kind: "task", parentId: goalId,
       // The release valve moved to worker start/stop (ruling): decomposed children
@@ -1745,6 +1762,8 @@ function slotEnv(line, k, ag, isReview) {
            // BOARD_GATED_SUBTREE was a measured cold-walkthrough trap).
            ...(CFG_GATED_SUBTREE ? { BOARD_GATED_SUBTREE: CFG_GATED_SUBTREE } : {}),
            BOARD_REPO: REPO_ROOT,
+           // 仅宿主配置显式启用；旧部署与审阅循环始终保持关闭。
+           WORKER_HOST_COMMIT: !isReview && CFG.host_auto_commit === true ? "1" : "0",
            WORKER_PROTECTED_PATHS:JSON.stringify([store.DATA_DIR,CONFIG_FILE,
              process.env.BOARD_VERIFY_REGISTRY||join(CODE_ROOT,"core","verify_registry.json"),
              ...EXECUTION_PROFILES.map(p=>p.auth_home),process.env.BOARD_FLEET_ACTIONS_CONFIG,
@@ -2485,6 +2504,7 @@ function claimIdentity(body, role, seat=null) {
     return { role_id:roleId, role_kind:role.kind, tools:role.tools,
       charter:role.charter, charter_sha256:LINE_CHARTER_HASH[roleId] ?? null,
       seat:role.seat, enforcement:"unattested", worker_protocol_version:body.worker_protocol_version ?? null,
+      verification_repair:store.taskVerificationRepair(db,task,{fromRun:false}),
       ...(seat?.executionProfile?{execution_profile:seat.executionProfile}:{}) };
   }};
 }
@@ -2630,7 +2650,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: "after 必须是非负整数" });
       if (!Number.isInteger(limit) || limit < 1 || limit > 50000)
         return json(res, 400, { error: "limit 必须是 1..50000" });
-      const evs = store.events(db, { taskId, after, limit });
+      const evs = store.events(db, { taskId, after, limit, metadataOnly:true });
       // `last_id` is the cursor for the next page; echoing `after` when the page is
       // empty is what lets a caller detect "no progress" instead of looping forever.
       return json(res, 200, { events: evs, last_id: evs.length ? evs[evs.length - 1].id : after });
@@ -2738,29 +2758,35 @@ const server = http.createServer(async (req, res) => {
 
     if (m === "POST" && p === "/api/tasks") {
       const b = await readBody(req);
-      // 执行快照只从宿主的已声明配置生成，客户端不能夹带凭据或伪造快照。
-      delete b.executionProfile;
+      if(!b||typeof b!=="object"||Array.isArray(b))throw store.err(store.ERR.BAD_INPUT,"建卡请求必须是 JSON 对象");
+      // 先保留执行配置的角色闸；白名单外字段统一丢弃，不成为 store 的内部参数。
+      if(b.execution_profile_id!==undefined&&boardRole!=="operator")return json(res,403,{error:"任务执行配置只能由操作者选择"});
+      const allowed=boardRole==="operator"
+        ? ["subject","summary","description","acceptance","line","route","parentId","parent_id","blockedBy","verifyCmd","needsBash","kind","execution_profile_id","model","effort"]
+        : ["subject","summary","description","acceptance","line","parentId","parent_id","parent_run_id","worker"];
+      const fields=Object.fromEntries(allowed.filter(key=>Object.hasOwn(b,key)).map(key=>[key,b[key]]));
+      fields.actor=boardRole;
       if(b.execution_profile_id!==undefined){
-        if(boardRole!=="operator")return json(res,403,{error:"任务执行配置只能由操作者选择"});
-        if(!b.line)throw store.err(store.ERR.BAD_INPUT,"选择执行配置时必须指定执行线");
-        const agent=settingsOf(b.line).agents.find(a=>a.execution_profile_id===b.execution_profile_id&&a.model===b.model&&a.effort===b.effort);
+        if(!fields.line)throw store.err(store.ERR.BAD_INPUT,"选择执行配置时必须指定执行线");
+        const agent=settingsOf(fields.line).agents.find(a=>a.execution_profile_id===fields.execution_profile_id&&a.model===fields.model&&a.effort===fields.effort);
         if(!agent)throw store.err(store.ERR.BAD_INPUT,"所选执行配置、模型和强度不属于该执行线");
-        b.executionProfile=profileForAgent(agent,b.line);b.released=0;b.maxAttempts=1;
+        fields.executionProfile=profileForAgent(agent,fields.line);fields.released=0;fields.maxAttempts=1;
       }
       // Worker-token creation is for DERIVED cards only (the out-of-scope-work
       // channel): a parent is mandatory. A worker minting root goals would be a
       // worker re-scoping the board.
-      if (boardRole === "worker" && b.parentId == null && b.parent_id == null)
+      if (boardRole === "worker" && fields.parentId == null && fields.parent_id == null)
         return json(res, 403, { error: "worker 令牌只能创建派生卡(必须带 parentId)—— 立根目标是 operator 的动作" });
-      if (b.parentId != null && b.parent_id != null && Number(b.parentId) !== Number(b.parent_id))
+      if (fields.parentId != null && fields.parent_id != null && Number(fields.parentId) !== Number(fields.parent_id))
         throw store.err(store.ERR.BAD_INPUT, "parentId 与 parent_id 不一致");
-      b.parentId = b.parentId ?? b.parent_id;
+      fields.parentId = fields.parentId ?? fields.parent_id;
       if (boardRole === "worker") {
-        b.parentRunId = b.parent_run_id ?? null;
-        b.parentWorker = b.worker ?? null;
+        fields.parentRunId = fields.parent_run_id ?? null;
+        fields.parentWorker = fields.worker ?? null;
+        fields.workerDerived = true;
       }
-      if (badRoutable(res, b)) return;   // creation entrance for route/line domains (ONE criterion)
-      const id = store.add(db, b);
+      if (badRoutable(res, fields)) return;   // creation entrance for route/line domains (ONE criterion)
+      const id = store.add(db, fields);
       emit("task.created", { id });
       return json(res, 201, { task: taskOut(store.get(db, id)) });
     }
@@ -2788,9 +2814,9 @@ const server = http.createServer(async (req, res) => {
       //   line configured there is nothing to wait for, and this is a no-op.
       const pending = store.openChildrenOnLines(db, Number(mg[1]), REVIEW_LINES);
       if (pending.length && !b.force)
-        return json(res, 409, { error: `目标 #${mg[1]} 下还有未完成的评审卡 #${pending.join(" #")} —— 方案还没审完就拆解 = 实现一个没人接受的方案`,
+        return json(res, 409, { error: `目标 #${mg[1]} 下还有未完成的评审卡 #${pending.join(" #")}`,
                                 needs_force: true, pending_review: pending,
-                                hint: "等评审卡通过、改好方案再拆;确实要现在拆,带 force 重发(正史会记下这次是强制的)" });
+                                hint: "等评审卡通过、改好方案再拆;确实要现在拆,带 force 重发" });
       if (pending.length) console.log(`目标 #${mg[1]} 强制拆解:评审卡 #${pending.join(" #")} 未完成(操作者 force)`);
       return json(res, 200, await decomposeGoal(Number(mg[1]), b.model, pending.length > 0));
     }
@@ -2833,7 +2859,7 @@ const server = http.createServer(async (req, res) => {
       const rt = url.searchParams.get("runtime") || reviewSeatRuntime();
       const all = store.pendingReview(db);
       const isHeld = (t) => !!REVIEW_ANTI_AFFINITY && !!t.last_runtime && t.last_runtime === rt;
-      return json(res, 200, { tasks: all.filter((t) => !isHeld(t)),
+      return json(res, 200, { tasks: all.filter((t) => !isHeld(t)).map(t=>({...t,history_refs:store.taskHistoryRefs(db,t.id)})),
                               held: all.filter(isHeld).map((t) => ({ id: t.id, last_runtime: t.last_runtime })),
                               anti_affinity: REVIEW_ANTI_AFFINITY, reviewer_runtime: rt });
     }
@@ -3066,6 +3092,14 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    const historyPath=p.match(/^\/api\/tasks\/(\d+)\/(decisions|evidence)\/(\d+)$/);
+    if(historyPath){
+      if(m!=="GET")return json(res,405,{error:"方法不允许"});
+      const id=Number(historyPath[1]);
+      if(!store.get(db,id))return json(res,404,{error:"不存在"});
+      const record=store.taskHistoryRecord(db,{id,kind:historyPath[2],seq:Number(historyPath[3])});
+      return record?json(res,200,{[historyPath[2]==="decisions"?"decision":"evidence"]:record}):json(res,404,{error:"不存在"});
+    }
     const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs))?$/);
     if (mt) {
       const id = Number(mt[1]);
@@ -3103,7 +3137,7 @@ const server = http.createServer(async (req, res) => {
         // the alarm.
         if (!r.ok) return json(res, statusFor({ code: r.code, message: r.why }, "claim"), { error: r.why, id });
         emit("task.claimed", { id, worker: b.worker });
-        return json(res, 200, { task: r.task });
+        return json(res, 200, { task: taskOut(r.task) });
       }
       if (action === "heartbeat") {
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: b.lease_minutes });
@@ -3351,7 +3385,13 @@ const server = http.createServer(async (req, res) => {
           if(b.confirm_execution_profile_digest!==preview.profile_digest)throw store.err(store.ERR.CONFLICT,"执行配置已变化，请重新核对通道、工作目录和预算后放行");
           const {ready,reason,configuration_changed,...fixed}=preview;executionProfile=fixed;
         }
-        const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile });
+        let verificationRepair=null;
+        if(task&&b.released!==false&&!task.released&&b.confirm_verification_repair_digest!==undefined){
+          const repair=taskRepairPreview(task);
+          if(b.confirm_verification_repair_digest!==repair.digest)throw store.err(store.ERR.CONFLICT,"验证续修轮数已变化，请重新核对后放行");
+          verificationRepair=repair.policy;
+        }
+        const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile,verificationRepair });
         emit("task.released", r);
         return json(res, 200, { task: taskOut(store.get(db, id)) });
       }

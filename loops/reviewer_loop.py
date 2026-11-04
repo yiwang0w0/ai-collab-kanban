@@ -13,18 +13,20 @@
    不能靠"上一张我批了所以这张也批"的惯性。上下文不累积,也就不会被污染。
 
 2) **不给 Edit / Bash**——审阅者改不了现有代码,也跑不了命令。这两条是结构上的:
-   工具没放行就是没放行。
-   ⚠ 但 Write **是**放行的(判决文件得写得出来),而 Write 在 --add-dir 范围内哪都能写。
-   "只写判决文件"是**提示词约束,不是结构约束**。别把它当成保证。
-   真正兜底的是:审阅者改不了代码(无 Edit)、执行不了任何东西(无 Bash),
-   且它的判决只有经过 /resolve 才会变成状态——那一步在服务端,
+   工具不在 `--tools` 白名单里就不存在。
+   ⭐ Write 仍然放行(判决文件得写得出来),但 v0.24.0 起**写的范围也是结构约束**:
+   `--permission-mode dontAsk` 下没有放行规则就写不出去,而放行规则只有判决目录一条
+   (`cli_write_allow_rules([OUTDIR])`)⇒ 工作仓是只读的。此前这里是提示词约束,
+   注释原话是"别把它当成保证" —— 现在它是机器保证了(argv 形状由 reviewtest §2b 钉住;
+   真 CLI 的越界读/越界写实测记在卡 #1 的证据里)。
+   另外兜底的还是:它的判决只有经过 /resolve 才会变成状态——那一步在服务端,
    而它持有的 review_token **只能**以 resolved_by=auto 裁定(server 强制)。
 
 3) **不确定就升级**。判决只有三种:approve / reject / escalate。
    碰到生产数据、migration、push、删除、花钱、或者需要人拍板的取舍,一律 escalate。
    宁可多留给人看,也不能替人批掉一个错的。
 """
-import json, os, re, subprocess, sys, time, datetime, urllib.request, urllib.error, io, shutil, threading
+import json, os, re, subprocess, sys, time, datetime, urllib.request, urllib.error, io, shutil, threading, hashlib
 
 HERE   = os.path.dirname(os.path.abspath(__file__))
 CODE_ROOT = os.path.abspath(os.path.join(HERE, ".."))
@@ -38,8 +40,10 @@ board_env.apply()
 import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,勿各自复写)
 import codex_runtime
 import context_lib
+from prompt_items import whole_text, retrieval_hint
 from pool_state import report_exhausted
-from verify_lib import run_verify, fmt_verify, verify_registry, cli_deny_rules, auth_home_deny_rules
+from verify_lib import (run_verify, fmt_verify, save_verify_log, verify_registry, cli_deny_rules, auth_home_deny_rules,
+                        cli_write_allow_rules)
 
 BASE = os.environ.get("BOARD_URL") or (
     "http://127.0.0.1:" + os.environ["BOARD_PORT"] if os.environ.get("BOARD_PORT")
@@ -48,6 +52,10 @@ REPO   = os.environ.get("BOARD_REPO", CODE_ROOT)
 LOADED_TREE, LOADED_TREE_ERROR = gates_lib.gated_tree(CODE_ROOT, gates_lib.DEFAULT_SUBTREE)
 DATA   = os.environ.get("BOARD_DATA_DIR") or os.path.join(CODE_ROOT, "core", ".data")
 OUTDIR = os.path.join(DATA, "review")
+# 审阅座席可用的全部内置工具(`--tools` 白名单,v0.24.0):读三件 + Write(判决文件)。没有 Edit、
+#   没有 Bash;新版本 CLI 新增的工具不在白名单里就不会出现。写的**范围**另由放行规则限住
+#   (cli_write_allow_rules([OUTDIR]):只有判决目录)。
+REVIEW_TOOLS = ["Read", "Glob", "Grep", "Write"]
 RUNTIME = os.environ.get("WORKER_RUNTIME", "claude")
 CODEX_CLI = os.environ.get("BOARD_CODEX_CMD") or ""
 CODEX_RELEASED = os.environ.get("BOARD_CODEX_RELEASED") == "1"
@@ -58,8 +66,7 @@ EFFORT = os.environ.get("REVIEWER_EFFORT", "high")
 REVIEWER_PARALLEL = max(1, int(os.environ.get("REVIEWER_PARALLEL", "3")))
 # 美元帽:与 worker 移植版同一立场 —— 默认关(订阅池部署按 token 记账,美元帽会虚报)。
 REVIEWER_BUDGET = os.environ.get("REVIEWER_MAX_BUDGET_USD", "0")
-# 超长证据的头部逐字保留段。origin 在此接过本地小模型做溢出段摘要;开源版不携带
-# 那套私有基建 —— 超长走响亮截断,截断本身写明原文字数(沉默截断曾是实害)。
+# 证据正文预算只保留完整段落；省略项指回真实原卡或历史记录，不切半句补摘要。
 VERBATIM = int(os.environ.get("REVIEWER_VERBATIM", "12000"))
 # 反亲和(v0.23,fleet.config `review.anti_affinity`,server 经 slotEnv 告知)。判据在 server 侧
 #   (/api/review/pending 按 ?runtime= 把同家族交付的卡列为 held);这里只负责**出声**:被留住的卡
@@ -69,13 +76,15 @@ _HELD_SAID = set()
 
 
 def result_for_prompt(t):
-    """≤VERBATIM 字=原样逐字。超长=头部逐字 + 响亮截断标记(说明还剩多少、去哪读全文)。"""
-    r = str(t.get("result") or "(没有证据)")
-    if len(r) <= VERBATIM:
-        return r
-    return (r[:VERBATIM] + chr(10) + chr(10) +
-            f"—— 证据超长,此处截断(原文共 {len(r)} 字,以上为前 {VERBATIM} 字;"
-            "逐字核对请 Read 卡面原文/相关文件)——")
+    """短证据原样交给模型；超预算时按完整段落选取并标明取回来源。"""
+    return whole_text(str(t.get("result") or "(没有证据)"), VERBATIM,
+                      retrieval_hint(t, "evidence", "result"), unit="证据段落")
+
+
+def _whole_reason(reason, budget):
+    # 原判文件会被后续审阅替换，缺少可持久取回的来源时必须保留全文。
+    # 不借用上一条裁定 seq，不制造取回指针；实际模型提示仍经过原 argv 30000 闸。
+    return str(reason or "")
 
 
 def log(m): print(f"[{datetime.datetime.now():%H:%M:%S}] {m}", flush=True)
@@ -220,7 +229,8 @@ def coverage_block(t, vr=None):
         L.append("(卡面没有验收标准 —— 这本身值得在判决里说一句)")
     for i, it in enumerate(items, 1):
         tg = demand_tags(it)
-        one = " ".join(str(it).split())[:110]
+        one = whole_text(str(it), 110, f"原验收第 {i} 条。" + retrieval_hint(t, field="acceptance"),
+                         unit=f"第 {i} 条验收", mode="item")
         L.append(f"[{i}] {one}" + (f"    ⚙要机器验证({'/'.join(tg)})" if tg else ""))
     n_dem = sum(1 for it in items if demand_tags(it))
     L.append(f"共 {len(items)} 条,其中要机器验证的 {n_dem} 条。")
@@ -263,7 +273,7 @@ def _gate_core(t, d, vr=None):
         d["reason"] = ("【机械闸·空验收】卡上没有验收标准,机器没有判据可对 ⇒ 不能自动通过。"
                        + ("  模型原判 approve:" + orig if orig else ""))
         d["summary"] = ("这张卡没有写验收标准。自动审阅只能对着「说明」判断,而说明不是判据。\n"
-                        "自动审阅本来判的是「通过」,理由是:%s" % (orig[:200] or "(没写理由)"))
+                        "自动审阅本来判的是「通过」,理由是:%s" % (_whole_reason(orig, 200) or "(没写理由)"))
         d["options"] = [
             {"key": "A", "title": "补写验收标准后复审",
              "detail": "在卡面补上可核对的验收条目(哪些要机器验证就写明),下一轮审阅按条目判。",
@@ -297,7 +307,7 @@ def _gate_core(t, d, vr=None):
         "(没有循环代跑的验证块,也没有 PASS/rc 之类的实际输出)。\n"
         "自动审阅本来判的是「通过」,理由是:%s\n"
         "这种情况**不能算验收闭合**——不是活没做,是「谁去跑」没定。"
-        % (len(demand), nos, orig[:200] or "(没写理由)"))
+        % (len(demand), nos, _whole_reason(orig, 200) or "(没写理由)"))
     if ev["muted"]:
         d["summary"] += "\n⚠证据里是有数字的(" + "、".join(ev["muted"]) + \
                         "),但未执行声明或非执行交付身份使这些文本不能作为本轮机器产出。"
@@ -347,12 +357,12 @@ def _confirm_wall(t, d, vr):
             return _to_reject(d, "【机械闸·confirm】用户的执行回执是**自述**,不是机器产出;"
                 "本轮也没有绿色的机器验证(本卡 verify_cmd=%s)⇒ 不能凭它结案。"
                 "请在原线跑出机器产出再送审。审阅原判 approve:%s"
-                % (t.get("verify_cmd") or "无", ((d or {}).get("reason") or "")[:200]))
+                % (t.get("verify_cmd") or "无", _whole_reason((d or {}).get("reason"), 200)))
         if v == "escalate":
             return _to_reject(d, "【机械闸·confirm】人刚刚给过最终裁定(方案 %s,回执已附),"
                 "同一个问题不再回问 ⇒ 交回原线补齐机器产出。审阅原判 escalate:%s"
                 % ((t.get("decision_receipt") or {}).get("option") or "?",
-                   ((d or {}).get("reason") or "")[:300]))
+                   _whole_reason((d or {}).get("reason"), 300)))
     return d
 
 
@@ -393,7 +403,7 @@ def human_decision_block(t):
 
 
 def line_anchor_block(t):
-    """把卡所在线对应的**线压缩锚**的开头放进提示词(lineage.json —— 形状见
+    """把卡所在线对应的**线压缩锚**按完整段落放进提示词(lineage.json —— 形状见
     examples/lineage.example.json)。是材料不是门 —— 读不出来/该线没有 anchor
     时返回 ""(fail-open 是正确极性:这是追加判定材料,不是安全判定)。"""
     line = t.get("line") or ""
@@ -403,9 +413,14 @@ def line_anchor_block(t):
         path = ((lg.get(line) or {}).get("anchor")) or ""
         if not path:
             return ""
-        with open(os.path.join(REPO, path), encoding="utf-8") as f:
-            head = f.read(1600)
-        return ("\n—— 该线的压缩锚(域记忆·%s 冒头)——\n" % path) + head + "\n(…锚点全文在仓库,可 Read)\n"
+        source = os.path.realpath(os.path.join(REPO, path))
+        with open(source, "rb") as f:
+            raw = f.read()
+        identity = "锚点原文：%s；sha256=%s。" % (source, hashlib.sha256(raw).hexdigest())
+        selected = whole_text(raw.decode("utf-8"), 1600,
+                              identity + "请协调者按原权限取回，必需正文未取得时原卡等待；不授予额外读写或网络权限。",
+                              unit="锚点段落")
+        return ("\n—— 该线的压缩锚(域记忆·%s)——\n" % path) + selected + "\n"
     except Exception:
         return ""
 # ══════════════════════════════════════════════════════════════════════════
@@ -563,7 +578,8 @@ def family_block(t):
             st = k["status"] + ("/" + k["waiting_for"] if k.get("waiting_for") else "")
             L.append("  #%s [%s] %s" % (k["id"], st, str(k["subject"])[:60]))
             if k["status"] == "done" and k.get("result"):
-                L.append("    结果摘录: " + " ".join(str(k["result"]).split())[:300])
+                L.append("    结果摘录: " + whole_text(str(k["result"]), 300,
+                         retrieval_hint(k, "evidence", "result"), unit="子卡证据段落"))
     return (chr(10) + chr(10) + "—— 派生关系 ——" + chr(10) + chr(10).join(L)) if L else ""
 
 
@@ -624,6 +640,10 @@ def review_one(t, vr=None):
     env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
     if RUNTIME == "codex":
         try:
+            env = codex_runtime.subscription_environment(env)
+            login_error = codex_runtime.subscription_login_gate(CODEX_CLI, env, workdir=REPO)
+            if login_error:
+                return None, login_error
             argv = codex_runtime.argv(CODEX_CLI, MODEL, EFFORT, out, REPO,
                                        mode="read-only", schema=CODEX_SCHEMA)
             r = subprocess.run(argv, input=prompt, capture_output=True, text=True, encoding="utf-8",
@@ -645,11 +665,23 @@ def review_one(t, vr=None):
         argv = cli + ["-p", prompt, "--model", MODEL, "--effort", EFFORT,
                       *(["--max-budget-usd", REVIEWER_BUDGET]
                         if REVIEWER_BUDGET not in ("0", "") else []),
-                      "--output-format", "json", "--permission-mode", "acceptEdits",
-                      "--allowedTools", "Read", "Glob", "Grep", "Write",
+                      "--output-format", "json",
+                      # ⭐ 读写边界(v0.24.0,按 2026-10-28 spike 实测改;与 worker 座席、拆解器同一组合,
+                      #   逐条依据见 verify_lib.cli_write_allow_rules 与 loops/worker_loop.py 的 cli_argv):
+                      #   dontAsk + --tools 白名单 —— 不再给不带路径的 `--allowedTools Read …`,那等于
+                      #   放行任意路径的读取(spike P1 实测越界读成功)。读范围 = cwd(工作仓)+ 下面两个
+                      #   --add-dir;越界读被拒,不靠提示词。
+                      "--permission-mode", "dontAsk",
+                      "--setting-sources", "",     # 用户/项目/本地设置里的 allow 规则与 hooks 不进来
+                      "--strict-mcp-config",       # 且不给 --mcp-config ⇒ 用户的 MCP 一个都不加载
+                      "--tools", *REVIEW_TOOLS,
                       "--add-dir", REPO, "--add-dir", OUTDIR,
+                      # ⭐ 写只放行判决目录:dontAsk 下没有放行规则就写不出去,所以「只写判决文件」
+                      #   从 v0.24.0 起是**结构约束**(此前只是提示词约束 —— 见本模块文件头第 2 条)。
+                      "--allowedTools", *cli_write_allow_rules([OUTDIR]),
                       # ⭐ v0.17.0:令牌目录与登记簿对审阅模型不可读不可写(verify_lib.cli_deny_rules,实测有效)。
                       #   全部执行配置的认证目录同样不可读不可写(verify_lib.auth_home_deny_rules)。
+                      #   拒绝胜过放行 ⇒ 它们落在判决目录的兄弟位置也仍然读不得写不得。
                       "--disallowedTools", *cli_deny_rules(DATA), *auth_home_deny_rules()]
         # ⭐ 提示词走 argv(-p)的 Windows 32767 天花板:与 worker 侧/zcode 闸同一预算口径,
         #   超限响亮拒发而不是让 spawn 死于 WinError 206(外部审计 2026-10-05)。
@@ -695,6 +727,10 @@ def judge_one(t):
       ② 模型读(把绿的验证输出与逐条清点一并递给它)。
       ③ 给模型的 approve 套上机器产出闸 —— 判据不够就降为转人工(escalate)。"""
     vr = run_verify(t)
+    if vr:
+        # 复用既有宿主验证日志目录，不扩大审阅模型的 Write 目录。
+        path = os.path.join(DATA, "evidence", "verify_runs", f"review-task-{int(t['id'])}-{time.time_ns()}.log")
+        save_verify_log(vr, path)
     if vr and not vr.get("ok"):
         return "mech_reject", vr, None, vr
     d, err = review_one(t, vr)
@@ -787,16 +823,100 @@ def apply_verdict(t, d, vr=None):
     return "escalate"
 
 
+def context_supplement_selftest():
+    """审阅增量回归：只用本地文件与函数桩，不访问服务或模型。"""
+    import tempfile
+    import hashlib
+    checks = []
+    def check(label, passed):
+        checks.append(bool(passed)); print(("PASS" if passed else "FAIL") + " " + label)
+    reason = "必须完整保留的原判理由：" + "条件" * 500
+    task = {"id": 42, "acceptance": "", "confirm_pending": True, "decision_receipt": {"option": "A"}}
+    gated = _gate_core(task, {"verdict": "approve", "reason": reason})
+    rejected = [_confirm_wall(task, {"verdict": verdict, "reason": reason}, None) for verdict in ("approve", "escalate")]
+    check("没有持久原件的模型理由完整保留，确认壁不产生伪取回引用",
+          reason in gated["summary"] and all(reason in row["reason"] for row in rejected)
+          and _whole_reason(reason, 200) == reason)
+    prior = {name: globals()[name] for name in ("DATA", "REPO", "OUTDIR", "run_verify", "review_one")}
+    try:
+        with tempfile.TemporaryDirectory(prefix="reviewer-context-") as root:
+            globals()["DATA"] = globals()["REPO"] = root
+            anchor = os.path.join(root, "anchor.md")
+            content = "首个完整段落。\n\n不能留下半段的锚点正文：" + "条款" * 2000
+            raw = content.encode("utf-8")
+            with open(anchor, "wb") as out: out.write(raw)
+            with open(os.path.join(root, "lineage.json"), "w", encoding="utf-8") as out:
+                json.dump({"fixture": {"anchor": "anchor.md"}}, out)
+            block = line_anchor_block({"line": "fixture"})
+            check("锚点整读整段选择，真实路径和文件哈希可核实",
+                  "首个完整段落。" in block and "不能留下半段" not in block and "省略" in block
+                  and os.path.realpath(anchor) in block and hashlib.sha256(raw).hexdigest() in block)
+            full = "完整机器输出：" + "输出" * 3000
+            def verify(*args):
+                return {"ok": True, "key": "fixture", "cmd": "函数桩", "rc": 0, "out": "有界输出", "full_out": full}
+            globals()["run_verify"] = verify
+            globals()["OUTDIR"] = os.path.join(root, "review")
+            reviewed = []
+            def review(t, vr):
+                path = vr.get("log_path")
+                reviewed.append(bool(path and os.path.isfile(path) and open(path, encoding="utf-8").read() == full))
+                return {"verdict": "approve", "reason": "已核对", "checked": []}, None
+            globals()["review_one"] = review
+            _, _, _, vr = judge_one({"id": 42, "acceptance": "静态核对"})
+            check("模型审阅前保存完整验证输出，格式化材料指向实际日志",
+                  reviewed == [True] and vr.get("log_path", "") in fmt_verify(vr)
+                  and vr.get("log_bytes") == len(full.encode("utf-8")))
+            blocked = os.path.join(root, "cannot-be-directory")
+            with open(blocked, "w", encoding="utf-8") as out: out.write("occupied")
+            globals()["DATA"] = blocked
+            reviewed.clear()
+            kind, _, _, vr = judge_one({"id": 42, "acceptance": "静态核对"})
+            check("验证原文保存失败就停止本卡，不调用审阅函数或伪造日志路径",
+                  kind == "mech_reject" and not reviewed and vr.get("code") == "VERIFY_LOG_UNAVAILABLE"
+                  and not vr.get("log_path"))
+    finally:
+        for name, value in prior.items(): globals()[name] = value
+    print("supplement: %d PASS / %d FAIL" % (sum(checks), len(checks) - sum(checks)))
+    return checks
+
+
 def digest_selftest():
-    """超长证据的截断路径检收:头部逐字保留 + 响亮标记(不许沉默截断)。"""
-    fake = {"result": "头部逐字段。" * 3000}
-    out1 = result_for_prompt(fake)
-    ok1 = out1.startswith("头部逐字段。") and "此处截断" in out1 and str(len(fake["result"])) in out1
-    print(("PASS" if ok1 else "FAIL") + " ① 超长证据 → 头部逐字 + 响亮截断标记(报原文字数)")
-    short = {"result": "短证据原样。"}
-    ok2 = result_for_prompt(short) == "短证据原样。"
-    print(("PASS" if ok2 else "FAIL") + " ② 短证据逐字直通")
-    sys.exit(0 if (ok1 and ok2) else 1)
+    """只测上下文整项选择；不访问看板、不调用模型。"""
+    checks = []
+    def check(label, passed):
+        checks.append(bool(passed)); print(("PASS" if passed else "FAIL") + " " + label)
+    huge = "不可切开的完整证据。" + "正文" * VERBATIM
+    fake = {"id": 42, "result": "完整小段。\n\n" + huge}
+    out = result_for_prompt(fake)
+    check("证据按完整段落选择，省略项说明指回原卡且不改变原文",
+          "完整小段。" in out and "不可切开的" not in out and "省略" in out and "42" in out
+          and fake["result"].endswith(huge))
+    check("短证据逐字直通", result_for_prompt({"result": "短证据原样。"}) == "短证据原样。")
+    fenced = result_for_prompt({"id": 42, "result": "完整小段。\n\n```text\n" + huge + "\n\n末尾\n```"})
+    check("超大代码围栏整块省略，不留下半个围栏", "完整小段。" in fenced and "```" not in fenced and "省略" in fenced)
+    acceptance = "运行测试：" + "完整验收约束" * 40
+    covered = coverage_block({"id": 42, "acceptance": acceptance, "result": ""})
+    check("验收条目超长时整条取舍", "运行测试：" not in covered and "省略" in covered and "acceptance" in covered)
+    reason = "不可切开的完整理由：" + "理由" * 400
+    gated = _gate_core({"id": 42, "acceptance": ""}, {"verdict": "approve", "reason": reason})
+    check("没有持久原件时人看摘要与原字段完整保留裁定理由",
+          reason in gated["summary"] and reason in gated["reason"])
+    confirmed = {"id": 42, "confirm_pending": True, "decision_receipt": {"option": "A"}}
+    for verdict in ("approve", "escalate"):
+        d = {"verdict": verdict, "reason": reason}
+        rejected = _confirm_wall(confirmed, d, None)
+        check("确认壁保留机械裁定与不可持久取回的完整原理由：" + verdict,
+              rejected["verdict"] == "reject" and reason in rejected["reason"] and d["reason"] == reason)
+    prior_call = globals()["call"]
+    try:
+        globals()["call"] = lambda *a, **k: (200, {"tasks": [{"id": 43, "parent_id": 42, "status": "done", "subject": "已完成子卡", "result": "子卡原证据：" + "证据" * 400}]})
+        family = family_block({"id": 42})
+    finally:
+        globals()["call"] = prior_call
+    check("子卡证据整段取舍，按真实卡号指回原文", "子卡原证据：" not in family and "省略" in family and "43" in family)
+    checks.extend(context_supplement_selftest())
+    print("result: %d PASS / %d FAIL" % (sum(checks), len(checks) - sum(checks)))
+    sys.exit(0 if all(checks) else 1)
 
 
 def main():
@@ -812,8 +932,15 @@ def main():
             auth_home_deny_rules()
         except ValueError as e:
             print(f"[reviewer] ⛔ {e} —— 认证目录的拒绝规则组不出来,拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
+        # dontAsk 下写要显式放行;判决目录的放行规则组不出来 = 判决写不出去,不许起跑。
+        try:
+            cli_write_allow_rules([OUTDIR])
+        except ValueError as e:
+            print(f"[reviewer] ⛔ {e} —— 判决目录的写放行规则组不出来(查 BOARD_DATA_DIR),拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     if RUNTIME == "codex":
         cg = codex_runtime.gate(CODEX_CLI)
+        if not cg:
+            cg = codex_runtime.subscription_login_gate(CODEX_CLI, os.environ, workdir=REPO)
         if cg: print(cg, flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     cgate = context_lib.context_gate(REPO, None, RUNTIME)
     if cgate:

@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // Pure-function regression for the goal-decomposition prompt.
 // Touches no board, no database, no CLI: the prompt builder is a pure function
 // precisely so this surface can be measured at all (see core/decompose_lib.js).
@@ -6,11 +8,19 @@
 
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { dirname, join } from "node:path";
-import { readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { readFileSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { execFileSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const HOST_DATA = mkdtempSync(join(tmpdir(), "decompose-host-"));
+Object.assign(HOST_ENV, { BOARD_CONFIG: join(HOST_DATA, "missing-config.json"), BOARD_REPO: join(__dirname, ".."),
+  BOARD_DATA_DIR: HOST_DATA, BOARD_VERIFY_REGISTRY: join(HOST_DATA, "verify_registry.json") });
+process.once("exit", () => {
+  if (resolve(dirname(HOST_DATA)) !== resolve(tmpdir())) throw new Error("拒绝清理非临时宿主目录");
+  rmSync(HOST_DATA, { recursive: true, force: true });
+});
 const require_ = createRequire(import.meta.url);
 const { buildDecomposePrompt, lineMenu, DECOMPOSE_PLAN_SCHEMA } = require_(join(__dirname, "..", "core", "decompose_lib.js"));
 let C = null, cliImportError = null;
@@ -104,9 +114,24 @@ console.log("\n[③ a goal that continues an earlier goal decomposes WITH its re
   ok("⭐a non-goal parent is NOT treated as a continuation",
      !/衔接既往目标/.test(base({ prev: { id: 9, kind: "task", subject: "普通卡", status: "done" } })));
   ok("no predecessor ⇒ no continuation block at all", !/衔接既往目标/.test(base()));
-  ok("a very long record is truncated (the prompt travels as one argv element)",
-     base({ prev: { ...prev, result: "x".repeat(5000) } }).includes("x".repeat(1200)) &&
-     !base({ prev: { ...prev, result: "x".repeat(5000) } }).includes("x".repeat(1201)));
+  const oversized = { ...prev, result: "不可切开的前作证据：" + "x".repeat(5000) };
+  const omitted = base({ prev: oversized });
+  ok("超长单段前作证据整体省略，指回原卡且不改原文",
+     !omitted.includes("不可切开的前作证据：") && omitted.includes("省略") && omitted.includes("历史编号未知") && oversized.result.endsWith("x".repeat(5000)));
+  const latest = "最新的完整证据段落。", old = "较早的完整段落：" + "x".repeat(1190);
+  const selected = base({ prev: { ...prev, result: old + "\n\n" + latest } });
+  ok("前作预算优先最新完整段落，并标原省略项号",
+     selected.includes(latest) && !selected.includes("较早的完整段落：") && /原文项号[：:]\s*1/.test(selected));
+  const code = "```text\n不可拆的围栏块\n\n" + "x".repeat(1500) + "\n```";
+  const fence = base({ prev: { ...prev, result: "保留的小段。\n\n" + code } });
+  ok("代码围栏不会按空行拆开或留下半块", fence.includes("保留的小段。") && !fence.includes("不可拆的围栏块") && !fence.includes("```text"));
+  const literalFence = base({ prev: { ...prev, result: "```text\n围栏开头\n```literal\n\n" + "x".repeat(2000) + "\n```" } });
+  ok("带文字后缀的同类标记不是闭围栏，超长围栏仍整块省略",
+     !literalFence.includes("围栏开头") && !literalFence.includes("```literal") && literalFence.includes("省略"));
+  const emoji = "😀".repeat(700) + "完整结尾。";
+  ok("前作预算按Unicode字符计数，不把emoji的UTF16长度误当正文长度", base({ prev: { ...prev, result: emoji } }).includes(emoji));
+  const numbered = base({ prev: { ...oversized, history_refs: { evidence: { seq: 7, source: "report" } } } });
+  ok("仅引用输入中真实存在的历史序号", numbered.includes("GET /api/tasks/3/evidence/7") && !omitted.includes("/evidence/"));
 }
 
 console.log("\n[④ the output contract the server depends on]");
@@ -125,6 +150,13 @@ console.log("\n[④ the output contract the server depends on]");
   let shapeErrors = ["(示例不是 JSON)"];
   try { shapeErrors = DECOMPOSE_PLAN_SCHEMA && schemaErrorsOf ? schemaErrorsOf(JSON.parse(shape), DECOMPOSE_PLAN_SCHEMA) : ["(schema 或校验函数缺失)"]; } catch {}
   ok("⭐提示词里的 JSON 示例符合 DECOMPOSE_PLAN_SCHEMA(字段一致)", Array.isArray(shapeErrors) && shapeErrors.length === 0, shapeErrors.join(" · ").slice(0, 160));
+  let sample = null; try { sample = JSON.parse(shape).tasks[0]; } catch {}
+  ok("执行者说明保留五段入口，验收命令与预期不挤入给人看的摘要",
+     !!sample && ["goal:", "ctx(file:line):", "do:", "accept(cmd -> expect):", "limits:"].every(label => sample.description.split(String.fromCharCode(10)).some(line => line.startsWith(label))) &&
+     sample.acceptance.includes(" -> ") && !sample.summary.includes("file:line"), sample?.description);
+  ok("拆解说明要求未核实位置待定位，沿用登记验证、权限与放行闸",
+     p.includes("不伪造位置") && p.includes("verifyCmd 仍只使用已登记键") &&
+     p.includes("不改变既有权限、放行、父任务绑定或去重规则"));
   ok("it is told not to wrap the JSON in a code block (the server parses the final answer)",
      /不要包代码块/.test(p));
   ok("the goal's own subject and background are present",
@@ -263,8 +295,8 @@ if (C) {
 
 console.log("\n[⑨ 路径拒绝规则与执行线(loops/verify_lib.py)等价]");
 if (C) {
-  const PY = [process.env.BOARD_PYTHON, process.env.PYTHON, "python", "py", "python3"].filter(Boolean).find((c) => {
-    try { execFileSync(c, ["-c", "print(1)"], { stdio: "ignore", windowsHide: true }); return true; } catch { return false; }
+  const PY = [HOST_ENV.PYTHON, "python", "py", "python3"].filter(Boolean).find((c) => {
+    try { execFileSync(c, ["-c", "print(1)"], { stdio: "ignore", windowsHide: true, env: HOST_ENV }); return true; } catch { return false; }
   });
   ok("找到 Python 解释器(对照执行线的规则需要它)", !!PY);
   if (PY) {
@@ -273,7 +305,7 @@ if (C) {
     const script = "import sys,json\nsys.path.insert(0,sys.argv[1])\nimport verify_lib as v\ns=json.loads(sys.argv[2])\n" +
       "print(json.dumps({'deny_path':[v.deny_path(p) for p in s['paths']],'auth':v.auth_home_deny_rules({'WORKER_AUTH_HOMES':json.dumps(s['homes'])}),'cli':v.cli_deny_rules(s['data'],s['registry'])}))";
     const py = JSON.parse(execFileSync(PY, ["-I", "-c", script, join(__dirname, "..", "loops"), JSON.stringify({ paths, homes, data: DATA, registry: REG })],
-      { encoding: "utf8", windowsHide: true }));
+      { encoding: "utf8", windowsHide: true, env: HOST_ENV }));
     ok("⭐denyPath 与 verify_lib.deny_path 逐条相同", JSON.stringify(paths.map(C.denyPath)) === JSON.stringify(py.deny_path),
        JSON.stringify(paths.map(C.denyPath)) + " vs " + JSON.stringify(py.deny_path));
     ok("⭐认证目录规则与 verify_lib.auth_home_deny_rules 逐条相同(含去重、去尾斜杠)",

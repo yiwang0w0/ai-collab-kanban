@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // 临时 HTTP 看板与受管 Python 替身；不启动 SDK、供应商 CLI 或真实模型。
 import test,{before,after} from "node:test";
 import assert from "node:assert/strict";
@@ -18,7 +20,7 @@ import {fixtureVersion} from "./http-version-fixture.mjs";
 
 const ROOT=fileURLToPath(new URL("../",import.meta.url)),TMP=mkdtempSync(join(tmpdir(),"kanban-four-http-")),CONTROL=join(TMP,"宿主控制.json");
 let REPO=join(TMP,"工作仓");
-const PY=process.env.BOARD_PYTHON||process.env.PYTHON||"python",require=createRequire(import.meta.url),store=require("../core/store.js");
+const PY=HOST_ENV.PYTHON||"python",require=createRequire(import.meta.url),store=require("../core/store.js");
 const budget={timeout_sec:120,max_turns:4,max_cost_usd:0.5};
 const cases=[
  {line:"claudecli",runtime:"claude",model:"claude-haiku-4-5",effort:"high",profile:"claude-cli"},
@@ -26,7 +28,7 @@ const cases=[
  {line:"claudeapi",runtime:"claude",model:"claude-haiku-4-5",effort:"high",profile:"claude-api"},
  {line:"gptapi",runtime:"codex",model:"gpt-5.3-codex-spark",effort:"xhigh",profile:"gpt-api"},
 ];
-const seats=new Map(),spawnCounts=new Map(),customCredential=new Map(),kanbanCredential=new Map(),authHomes=new Map();let child,callback,base,operator,shared,output="";
+const seats=new Map(),spawnCounts=new Map(),customCredential=new Map(),kanbanCredential=new Map(),authHomes=new Map(),hostCommit=new Map();let child,callback,base,operator,shared,output="";
 // 无执行配置的旧线与审阅线：同一宿主组装点（slotEnv），只换成替身。
 const extraLines=[{line:"legacycli",runtime:"claude",model:"claude-haiku-4-5",effort:"high"},{line:"review",runtime:"claude",model:"claude-haiku-4-5",effort:"high"}];
 const profileConfig=[{id:"claude-cli",budget},{id:"codex-cli",budget},{id:"claude-api",enabled:true,budget},{id:"gpt-api",enabled:true,budget,provider_spend_limit_confirmed:true,credential_env:"GPT_PROJECT_KEY"}];
@@ -47,21 +49,21 @@ before(async()=>{
  mkdirSync(REPO);
  REPO=directoryIdentity(REPO).root;
  writeFileSync(CONTROL,"{}");
- callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);customCredential.set(value.worker,value.custom_credential);kanbanCredential.set(value.worker,value.kanban_credential);authHomes.set(value.worker,value.auth_homes);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
+ callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);customCredential.set(value.worker,value.custom_credential);kanbanCredential.set(value.worker,value.kanban_credential);authHomes.set(value.worker,value.auth_homes);hostCommit.set(value.worker,value.host_commit);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
  await new Promise(r=>callback.listen(0,"127.0.0.1",r));
  const stub=join(TMP,"受管替身.py");
- writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN',''),'custom_credential':'GPT_PROJECT_KEY' in os.environ,'kanban_credential':'KANBAN_ANTHROPIC_API_KEY' in os.environ,'auth_homes':os.environ.get('WORKER_AUTH_HOMES')}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
+ writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN',''),'custom_credential':'GPT_PROJECT_KEY' in os.environ,'kanban_credential':'KANBAN_ANTHROPIC_API_KEY' in os.environ,'auth_homes':os.environ.get('WORKER_AUTH_HOMES'),'host_commit':os.environ.get('WORKER_HOST_COMMIT')}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
  const original=join(ROOT,"core/server.mjs"),source=readFileSync(original,"utf8"),anchor='[loopScriptOf(line), "--as", line,',reviewAnchor='? [loopScriptOf(line), "--interval", "300",';
  assert.equal(source.split(anchor).length,2,"精确替换唯一宿主入口后才允许运行夹具");assert.equal(source.split(reviewAnchor).length,2,"审阅线入口同样唯一");
  const fixture=join(TMP,"server.mjs");
  writeFileSync(fixture,source.replace(anchor,`[${JSON.stringify(stub)}, "--as", line,`).replace(reviewAnchor,`? [${JSON.stringify(stub)}, "--as", "review", "--interval", "300",`).replaceAll("import.meta.url",JSON.stringify(pathToFileURL(original).href)).replace(/from\s+(['"])\.\/([^'"]+)\1/g,(_,q,path)=>"from "+JSON.stringify(pathToFileURL(join(dirname(original),path)).href)));
  const listener=netServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));const port=listener.address().port;await new Promise(r=>listener.close(r));base=`http://127.0.0.1:${port}`;
  const config=join(TMP,"fleet.json");
- writeFileSync(config,JSON.stringify({lines:[...cases,extraLines[0]].map(row=>({id:row.line})),roles:["review"],routes:["default"],repo:REPO,max_parallel:1,
+ writeFileSync(config,JSON.stringify({lines:[...cases,extraLines[0]].map(row=>({id:row.line})),roles:["review"],routes:["default"],repo:REPO,max_parallel:1,host_auto_commit:true,
   execution_profiles:profileConfig}));
  // 保留锁定时已有的 CLI 选择；设置接口仍须拒绝未经许可的新订阅配置。
  writeFileSync(join(TMP,"worker_settings.json"),JSON.stringify(Object.fromEntries([...cases,...extraLines].map(row=>[row.line,{rev:0,desired_running:false,agents:[{runtime:row.runtime,model:row.model,effort:row.effort,window:false,...(row.profile?{execution_profile_id:row.profile}:{})}]}]))));
- const environment=Object.fromEntries(Object.entries(process.env).filter(([key])=>!/^(BOARD_|WORKER_|REVIEWER_|REORG_)/.test(key)));
+ const environment=Object.fromEntries(Object.entries(HOST_ENV).filter(([key])=>!/^(BOARD_|WORKER_|REVIEWER_|REORG_)/.test(key)));
  child=spawn(process.execPath,[fixture],{windowsHide:true,stdio:["ignore","pipe","pipe"],env:{...environment,
   BOARD_CONFIG:config,BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"board.db"),BOARD_REPO:REPO,BOARD_PORT:String(port),BOARD_PYTHON:PY,
   BOARD_ALLOW_UNPINNED:"1",BOARD_NO_RESTORE:"1",BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_CODEX_RELEASED:"0",BOARD_CODEX_CMD:process.execPath,
@@ -106,6 +108,11 @@ test("无执行配置的旧线与审阅线同样拿不到任何配置登记的�
  }
 });
 
+test("宿主逐卡提交开关经真实受管入口传给写入线，审阅循环保持关闭",()=>{
+ for(const line of ["claudecli","claudeapi","gptapi","legacycli"])assert.equal(hostCommit.get(line),"1",line);
+ assert.equal(hostCommit.get("review"),"0");
+});
+
 test("每条执行线（显式配置、旧线、审阅线）都收到全部配置的认证目录清单",()=>{
  const expected=loadExecutionProfiles(profileConfig,{dataDir:TMP}).map(profile=>resolve(profile.auth_home));
  assert.equal(expected.length,4);
@@ -116,14 +123,20 @@ test("本人确认摘要后才放行，受管绑定领取并把 SDK 观察和报
  const row=cases.find(row=>row.line==="gptapi"),created=await create(row),path=`/api/tasks/${created.id}`,token=seats.get(row.line);
  const wrong=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:"f".repeat(64)});assert.equal(wrong.status,409);
  assert.equal((await task(created.id)).body.task.released,false);
- const released=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:created.execution_profile.profile_digest});assert.equal(released.status,200,JSON.stringify(released.body));
+ const repairPolicy={max_rounds:3,legacy_retry:false,evidence_contract:{version:1,max_chars:4000}};
+ assert.deepEqual(created.verification_repair,repairPolicy);
+ const badRepair=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:created.execution_profile.profile_digest,confirm_verification_repair_digest:"f".repeat(64)});assert.equal(badRepair.status,409);
+ const released=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:created.execution_profile.profile_digest,confirm_verification_repair_digest:created.verification_repair_digest});assert.equal(released.status,200,JSON.stringify(released.body));
  const fixed=(await task(created.id)).body.task.execution_profile;assert.deepEqual(fixed.workspace,created.execution_profile.workspace);assert.equal(fixed.tools,"write");assert.equal(fixed.profile_digest,created.execution_profile.profile_digest);
  assert.equal(fixed.workspace.path,REPO);assert.match(fixed.workspace.device,/^\d+$/);assert.match(fixed.workspace.inode,/^[1-9]\d*$/);
  const other=cases.find(row=>row.line==="claudeapi");assert.equal((await api(seats.get(other.line),"POST","/api/claim",{worker:other.line,line:row.line,runtime:other.runtime,worker_protocol_version:2,agent_instance_id:randomUUID()})).status,409);
  const unbound=await api(shared,"POST","/api/claim",{worker:"manual",line:row.line,runtime:row.runtime,worker_protocol_version:2,agent_instance_id:randomUUID()});assert.equal(unbound.status,204,"共享旧凭据不能领取绑定 API 卡");
  const instance=randomUUID(),picked=await claim(row,token,instance);assert.equal(picked.status,200,JSON.stringify(picked.body));assert.equal(picked.body.task.id,created.id);
+ assert.deepEqual(picked.body.task.verification_repair,repairPolicy);
  assert.deepEqual(picked.body.task.execution_profile.workspace,fixed.workspace);assert.equal(picked.body.task.execution_profile.tools,fixed.tools);
  const runProfile=(await api(operator,"GET",path+"/runs")).body.runs.find(run=>run.run_id===picked.body.task.run_id).policy.context.execution_profile;
+ const runRepair=(await api(operator,"GET",path+"/runs")).body.runs.find(run=>run.run_id===picked.body.task.run_id).policy.context.verification_repair;
+ assert.deepEqual(runRepair,repairPolicy);
  assert.deepEqual(runProfile.workspace,fixed.workspace);assert.equal(runProfile.tools,fixed.tools);assert.equal(runProfile.profile_digest,fixed.profile_digest);
  const running=picked.body.task,profile=created.execution_profile;
  const started=await api(token,"POST",path+"/process-started",{worker:row.line,run_id:running.run_id,agent_instance_id:instance,runtime:row.runtime,attempt:running.attempts,pid:12345,model:row.model,effort:row.effort});assert.equal(started.status,200,JSON.stringify(started.body));
@@ -166,6 +179,7 @@ test("独立执行配置宿主异常退出后停线且不自动重启，在途�
  const row=cases.find(row=>row.line==="claudecli"),created=await create(row),path=`/api/tasks/${created.id}`,token=seats.get(row.line),instance=randomUUID();
  const released=await api(operator,"POST",path+"/release",{released:true,expected_version:created.aggregate_version,confirm_execution_profile_digest:created.execution_profile.profile_digest});assert.equal(released.status,200,JSON.stringify(released.body));
  const picked=await claim(row,token,instance);assert.equal(picked.status,200,JSON.stringify(picked.body));assert.equal(picked.body.task.id,created.id);
+ assert.deepEqual(picked.body.task.verification_repair,{max_rounds:1,legacy_retry:false},"旧客户端未确认续修摘要只授权首轮");
  const running=picked.body.task,started=await api(token,"POST",path+"/process-started",{worker:row.line,run_id:running.run_id,agent_instance_id:instance,runtime:row.runtime,attempt:running.attempts,pid:23456,model:row.model,effort:row.effort});assert.equal(started.status,200,JSON.stringify(started.body));
  const count=spawnCounts.get(row.line);assert.equal(count,1);writeFileSync(CONTROL,JSON.stringify({[row.line]:17}));
  let stopped;for(let i=0;i<100;i++){stopped=(await state()).body.workers.find(worker=>worker.line===row.line);if(!stopped.running&&!stopped.desired_running)break;await delay(50);}

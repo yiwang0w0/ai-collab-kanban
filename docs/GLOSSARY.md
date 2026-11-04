@@ -220,12 +220,17 @@ section exists to prevent.
 Every flag below is passed by `loops/worker_loop.py` or `loops/reviewer_loop.py`,
 spelled as `claude --help` spells it. Values likewise: `--effort` takes
 `low` / `medium` / `high` / `xhigh` / `max` (exactly the five rungs a seat may declare),
-`--permission-mode` takes `acceptEdits` (the only mode we pass), `--output-format`
+`--permission-mode` takes `dontAsk` (the only mode we pass since v0.24.0 — never
+`plan`, which swaps the model, and never `acceptEdits`), `--output-format`
 takes `json` for the reviewer. `--model` receives a full model id, not an alias.
+`--tools` is the tool **whitelist** (the set that exists at all); `--allowedTools`
+carries only *path-scoped* write rules (`Edit(<abs>/**)`) — a tool name without a
+path there would allow that tool on any path, measured.
 
 ```
--p/--print  --model  --effort  --permission-mode  --allowedTools  --disallowedTools
---add-dir  --output-format  --resume  --session-id  --fork-session  --max-budget-usd
+-p/--print  --model  --effort  --permission-mode  --tools  --allowedTools
+--disallowedTools  --add-dir  --setting-sources  --strict-mcp-config
+--output-format  --resume  --session-id  --fork-session  --max-budget-usd
 ```
 
 The loops pass `-p`, the short form; `--allowedTools` is the camelCase spelling

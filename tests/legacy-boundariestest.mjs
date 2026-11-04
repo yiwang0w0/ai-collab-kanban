@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 import test,{after} from "node:test";
 import assert from "node:assert/strict";
 import {spawnSync} from "node:child_process";
@@ -11,7 +13,7 @@ after(()=>rmSync(TMP,{recursive:true,force:true}));
 function python(script){
  const registry=join(TMP,"registry-"+(seq++)+".json");
  writeFileSync(registry,JSON.stringify({"fixture":["python","-c","print('ORIGINAL')"]}));
- const r=spawnSync(PY,["-c","import os,sys,json,pathlib\nsys.path.insert(0,os.path.join(os.environ['TEST_ROOT'],'loops'))\n"+script],{cwd:ROOT,env:{...process.env,TEST_ROOT:ROOT,BOARD_CONFIG:join(TMP,"missing-config.json"),BOARD_VERIFY_REGISTRY:registry,BOARD_DATA_DIR:TMP,BOARD_REPO:ROOT,PYTHONUTF8:"1",PYTHONDONTWRITEBYTECODE:"1"},encoding:"utf8",windowsHide:true,timeout:30000});
+ const r=spawnSync(PY,["-c","import os,sys,json,pathlib\nsys.path.insert(0,os.path.join(os.environ['TEST_ROOT'],'loops'))\n"+script],{cwd:ROOT,env:{...HOST_ENV,TEST_ROOT:ROOT,BOARD_CONFIG:join(TMP,"missing-config.json"),BOARD_VERIFY_REGISTRY:registry,BOARD_DATA_DIR:TMP,BOARD_REPO:ROOT,PYTHONUTF8:"1",PYTHONDONTWRITEBYTECODE:"1"},encoding:"utf8",windowsHide:true,timeout:30000});
  assert.equal(r.status,0,r.stdout+r.stderr);return r.stdout;
 }
 test("H9a startup-pinned registry rejects changed commands before a verification process starts",()=>{
@@ -64,7 +66,7 @@ test("H9a unavailable startup registry stays closed and published command lists 
 });
 test("H9b doctor emits native CLI identity and a drift warning without a model call",()=>{
  const registry=join(TMP,"doctor-registry.json");writeFileSync(registry,"{}");
- const r=spawnSync(process.execPath,[join(ROOT,"cli/doctor.mjs")],{cwd:ROOT,env:{...process.env,WORKER_CLAUDE_CLI:process.execPath,BOARD_CODEX_CMD:"",BOARD_CONFIG:join(TMP,"missing-config.json"),BOARD_VERIFY_REGISTRY:registry,BOARD_DATA_DIR:TMP,BOARD_REPO:ROOT,BOARD_PORT:"0",PYTHON:PY,BOARD_PYTHON:PY,PYTHONUTF8:"1",PYTHONDONTWRITEBYTECODE:"1"},encoding:"utf8",windowsHide:true,timeout:30000});
+ const r=spawnSync(process.execPath,[join(ROOT,"cli/doctor.mjs")],{cwd:ROOT,env:{...HOST_ENV,WORKER_CLAUDE_CLI:process.execPath,BOARD_CODEX_CMD:"",BOARD_CONFIG:join(TMP,"missing-config.json"),BOARD_VERIFY_REGISTRY:registry,BOARD_DATA_DIR:TMP,BOARD_REPO:ROOT,BOARD_PORT:"0",PYTHON:PY,BOARD_PYTHON:PY,PYTHONUTF8:"1",PYTHONDONTWRITEBYTECODE:"1"},encoding:"utf8",windowsHide:true,timeout:30000});
  assert.ok(r.status===0||r.status===1,r.stderr);
  const line=r.stdout.split(/\r?\n/).find(x=>x.includes("seat-cli-evidence: "));
  assert.ok(line,r.stdout+r.stderr);const receipt=JSON.parse(line.split("seat-cli-evidence: ")[1]);

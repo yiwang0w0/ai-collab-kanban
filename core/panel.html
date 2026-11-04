@@ -411,12 +411,21 @@
   .side-trace dt{color:var(--dim)}
   .side-trace dd{margin:0;overflow-wrap:anywhere}
   .side-links{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin:var(--sp-2) 0}
-  .side-next{border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--r-md);padding:var(--sp-3);margin-bottom:var(--sp-3)}
-  .side-next[data-tone="quiet"]{border-left-color:var(--line)}
-  .side-next h3{margin:0 0 var(--sp-2);font-size:14px}
-  .side-next p{margin:var(--sp-2) 0 0;color:var(--dim);font-size:13px}
-  .side-next textarea{width:100%;box-sizing:border-box;margin-bottom:var(--sp-2)}
   .side-acts{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-2)}
+  /* 卡片最上面给人看的小块(卡 #14):标签在左、内容在右;窄屏标签换到上一行。
+     强调色只给「要你做什么」那一行 —— 整块都强调等于没有重点(style-guide §一.2)。 */
+  .side-brief{display:grid;gap:var(--sp-3);border:1px solid var(--line);border-radius:var(--r-md);
+              padding:var(--sp-3);margin-bottom:var(--sp-3)}
+  .side-brief-row{display:grid;grid-template-columns:5.5em minmax(0,1fr);gap:var(--sp-1) var(--sp-3);align-items:start}
+  .side-brief-row[data-tone="need"]{border-left:3px solid var(--accent);padding-left:var(--sp-3);margin-left:calc(-1 * var(--sp-3))}
+  .side-brief-k{color:var(--dim);font-size:var(--fs-xs);letter-spacing:.06em;padding-top:2px}
+  .side-brief-v{margin:0;font-size:13px;line-height:1.5;white-space:pre-line;overflow-wrap:anywhere}
+  .side-brief-v[data-tone="warn"]{color:var(--warn)}
+  .side-brief-next{color:var(--dim)}
+  .side-brief-stack{display:grid;gap:var(--sp-1)}
+  .side-brief textarea{width:100%;box-sizing:border-box;margin-bottom:var(--sp-2)}
+  .side-brief button{margin-top:var(--sp-1)}
+  .side-detail > summary{font-size:13px}
   .side-sec{margin-top:var(--sp-3)}
   .side-sec h3{font-size:13px;color:var(--dim);margin:0 0 var(--sp-2)}
   .side-sec summary{cursor:pointer;color:var(--dim);font-size:13px}
@@ -739,7 +748,7 @@
   .side{box-shadow:-12px 0 32px rgba(0,0,0,.18)}
   .side-head{align-items:center}
   .side-head h2{font-size:var(--fs-xl);font-weight:600}
-  .side-next textarea{min-height:64px}
+  .side-brief textarea{min-height:64px}
   .side-acts button{min-width:6em}
   .steps{list-style:none;margin:var(--sp-2) 0 var(--sp-3);padding:0;display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}
   .step{position:relative;display:flex;flex-direction:column;align-items:center;gap:2px;padding:0 2px;text-align:center;min-width:0}
@@ -879,6 +888,8 @@
     .seg.board-seg{display:flex;flex-wrap:nowrap;width:auto;margin:var(--sp-3) var(--sp-4) 0}
     .board-seg .seg-o span{flex-wrap:wrap;gap:0 var(--sp-1);line-height:1.25;text-align:center}
     .cols[data-col] > .col:not(.on){display:none}
+    /* 390 宽放不下 5.5em 的标签列:标签换到内容上一行,四行照旧按顺序读下来 */
+    .side-brief-row{grid-template-columns:minmax(0,1fr);gap:2px}
   }
 
   /* ── 触摸:窄屏与粗指针上可点目标至少 40px(放在最后,压过上面的桌面尺寸) */
@@ -898,7 +909,7 @@
  <p>也可以填它给出的 6 位配对码，或者粘贴看板数据目录里 <code>board_token</code> 文件中的操作员令牌。</p>
  <form id="board-pair-form"><label for="board-pair-token">配对码或操作员令牌</label>
   <input id="board-pair-token" type="password" autocomplete="off" spellcheck="false" required style="display:block;width:100%;box-sizing:border-box;margin:12px 0" />
-  <label style="display:flex;gap:8px;align-items:center;margin:0 0 12px"><input type="checkbox" id="board-pair-remember" checked />在这台电脑上记住（点「退出连接」即清除）</label>
+  <label style="display:flex;gap:8px;align-items:center;margin:0 0 12px"><input type="checkbox" id="board-pair-remember" checked />在这台电脑上记住;「退出连接」即清除</label>
   <button type="submit" class="pri">连接看板</button>
  </form>
  <p id="board-pair-note" role="status">请勿把令牌填到网址里。</p>
@@ -1088,7 +1099,7 @@
   </section>
   <section class="set-sec set-target" id="set-quick" aria-labelledby="set-quick-h">
     <div class="set-h"><h3 id="set-quick-h">请你的 Claude 代劳</h3>
-      <p>这些按钮不是马上执行:它们在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没人接手时请求会一直等着(5 分钟后变黄提醒你)。</p></div>
+      <p>按下只是在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没人接手就一直等着。</p></div>
     <!-- v0.5: shortcut requests to the coordinator seat. A press writes a durable
          row and wakes the seat through its SSE sentry; the seat acks/dones via
          board.py and the list below shows the loop closing — or NOT closing. -->
@@ -1223,9 +1234,9 @@ const rtColor = (rt) => rt === "codex" ? "#b07dd8" : "var(--cc)";
 //   separately, only one gets fixed — measured, twice, including a hint that
 //   promised an action this panel cannot perform). It states only who releases and
 //   what happens here, which is correct for every reader.
-const HOLD_HINT = `拆出的子卡已就位,但**目标未放行前,一张也不会被领**(祖先放行不变量)。
-放行整链 = 放行这个目标(board.py release <目标id>);只想放行一部分,将其余子任务设为暂缓领取（hold）。
-在此检查内容;有问题就在输入框写明(=回原线继续),或用 [编辑]。`;
+const HOLD_HINT = `拆出的子卡已就位,但**目标未放行前,一张也不会被领**。
+放行整链 = 放行这个目标(board.py release <目标id>);只想放行一部分,将其余子任务设为暂缓领取。
+在此检查内容;有问题就在输入框写明,或用 [编辑]。`;
 // 显式执行配置卡(服务端附 execution_profile)退回原线时会收回放行(store resolveInner 的 revokeRelease):
 // 打回、决定类、方案确认、侧栏「通过」这些会退回原线的提示共用这一句,只加在真会退回的分支上,其他卡不加。
 const PROFILE_RELEASE_NOTE = "显式执行配置卡会同时取消放行，你重新核对放行后才会再次计费运行。";
@@ -1347,7 +1358,7 @@ function openDecisionModal(t){
           `<span>执行成功<small>${successNote}</small></span></label>` +
         `<label class="failure"><input type="radio" name="hf-outcome-${t.id}" data-handoff-outcome="${t.id}" value="failure">` +
           `<span>执行失败<small>算已尝试;未应用;交回智能体修正</small></span></label></div>` +
-      `<label for="hf-receipt-${t.id}">执行回执(必填,原文保留)</label>` +
+      `<label for="hf-receipt-${t.id}">执行回执(必填)</label>` +
       `<textarea id="hf-receipt-${t.id}" data-handoff-receipt="${t.id}" rows="3" ` +
         `placeholder="粘贴你应用之处返回的原始回执;成功或报错都可以。请另补执行时间、环境和影响范围。"></textarea>` +
       // 句末回执去向由 syncDecision 按执行结果与 confirm_destination 填写(回执区只有它会取消隐藏,填写与显示同处)。
@@ -1670,10 +1681,11 @@ function cardParts(t){
   let usage = "";
   {
     const u = usageByCard[t.id];
-    if (u && (u.in || u.out || u.cr || u.cc)) {
+    if (u && (u.rows || u.in || u.out || u.cr || u.cc)) {
+      const shown = value => value == null ? "待核实" : value;
       usage = `<span class="tok" title="本卡累计模型用量（词元）
-输入 ${u["in"]} · 输出 ${u.out} · 缓存读 ${u.cr} · 缓存写 ${u.cc} · 调用 ${u.calls} 次">` +
-        `词元 ${fmtTok(u["in"] + u.out)}` + (u.cr ? `<small>+缓存读${fmtTok(u.cr)}</small>` : ``) + `</span>`;
+输入 ${shown(u["in"])} · 输出 ${shown(u.out)} · 缓存读 ${shown(u.cr)} · 缓存写 ${shown(u.cc)} · 调用 ${shown(u.calls)} 次 · 尝试 ${u.attempts} 次 · 执行 ${u.rounds} 轮">` +
+        `词元 ${u["in"] == null || u.out == null ? "待核实" : fmtTok(u["in"] + u.out)}` + (u.cr ? `<small>+缓存读${fmtTok(u.cr)}</small>` : ``) + `</span>`;
     }
   }
 
@@ -1928,9 +1940,9 @@ function syncHandoff(scope){
   if (h) h.textContent = isQ
     ? (on ? "同意=按这段指示交回原智能体 执行;否决=退回,写一句为什么更好" + releaseNote
           : "同意=按建议执行(卡完成);否决=退回原线,写一句为什么更好" + releaseNote)
-    : (on ? "按下=**打回** —— 这段文字作为指令交回原智能体 继续;卡回到原线,下次认领按新一轮派发计算尝试预算(attempts 累计不清零,预算锚在认领时重打)" +
+    : (on ? "按下=**打回**:这段文字作为指令交回原智能体 继续;卡回到原线,下次认领按新一轮派发计算尝试预算(attempts 累计不清零,预算锚在认领时重打)" +
             releaseNote
-          : "空白提交=**通过**(计入已完成)。需修改或继续:先在上方写明指示再提交 —— 未写指示不会产生后续动作");
+          : "空白提交=**通过**(计入已完成)。需修改或继续:先在上方写明指示再提交。");
 }
 
 function syncDecision(scope, t){
@@ -2775,8 +2787,8 @@ function renderNow(){
       for (const t of frozen) items.push(upsert(t, wanted));
       if (candAll.length){
         const folded = foldHead(divider, "cand",
-          `队外(未放行/祖先未放行/待人工)${candAll.length} 张(已收起)`,
-          `队外(未放行/祖先未放行/待人工)${candAll.length} 张 —— 放行链根/人裁后才进队`);
+          `队外 ${candAll.length} 张(已收起)`,
+          `队外 ${candAll.length} 张,放行链根或人裁后才进队`);
         items.push(divider);
         if (!folded) for (const t of cand) items.push(upsert(t, wanted));
       }
@@ -3107,9 +3119,9 @@ function renderCfg(){
                 `<label class="seg-o"><input type="radio" name="${sid}-effort" value="${k}" data-i="${i}" data-k="effort"${k === ei ? " checked" : ""} aria-label="${esc(effortName(v))}"><span>${esc(effortName(v))}</span></label>`).join("")}</div>`
             // ⭐ Single-rung models show NO choice. A control with one position is a decoration that
             //   does nothing when pressed — the worst kind of UI.
-            : `<div class="seg seg-one"><span class="seg-o on">${esc(effortName(dom[0] || a.effort))}</span><span class="ends">此模型固定单档(座席裁定)</span></div>`}
+            : `<div class="seg seg-one"><span class="seg-o on">${esc(effortName(dom[0] || a.effort))}</span><span class="ends">此模型固定单档</span></div>`}
           </div>
-          <label class="switch af-wide"><input type="checkbox" role="switch" data-i="${i}" data-k="window"${a.window ? " checked" : ""}><span>在单独的控制台窗口里运行（便于直接看执行过程）</span></label>
+          <label class="switch af-wide"><input type="checkbox" role="switch" data-i="${i}" data-k="window"${a.window ? " checked" : ""}><span>在单独的控制台窗口里运行</span></label>
         </div>
         <div class="agent-side">
           ${profile ? `<dl class="runtime-facts"><dt>通道</dt><dd>${esc(executionChannelName(profile.channel))}</dd><dt>认证</dt><dd>${esc(executionAuthName(profile.auth_kind))}</dd><dt>计费</dt><dd>${esc(executionBillingName(profile.billing_kind))}</dd><dt>预算</dt><dd>${esc(executionBudgetText(profile.budget, profile.budget_enforcement))}</dd></dl>` : ""}
@@ -3143,7 +3155,7 @@ function renderCfg(){
     <div class="cfg-agents">${blocks}</div>
     <div class="cfg-foot">${cfgSingle ? `<span class="ends">${esc(lineLabel(cfgLine))}仅配置一个智能体</span>` : `
       <button type="button" id="cfg-add"${cfgAgents.length >= (MAXP || 1) || cfgLegacy ? " disabled" : ""}>${ic("plus")}添加智能体</button>
-      <span class="ends">${cfgLegacy ? "服务器旧版 —— 重启看板进程后可用 · " : ""}上限 ${MAXP || 3} 个(全线共享额度)；新加的智能体照抄智能体 1 的设置</span>`}</div>
+      <span class="ends">${cfgLegacy ? "服务器旧版,重启看板进程后可用 · " : ""}全线共享,上限 ${MAXP || 3} 个；新加的智能体照抄智能体 1 的设置</span>`}</div>
     <div class="note" id="cfg-note">${w.running && w.stale_settings ? "当前进程仍用旧设置,停止再启动才生效" : ""}</div>`;
   // 停靠在设置页的执行线列表下方(不再按齿轮位置浮动)。
   cfg.classList.add("show");
@@ -3187,7 +3199,7 @@ async function probeCfgAgent(index){
  *  state (no partial success left behind). */
 async function saveAgents(){
   const n = document.getElementById("cfg-note");
-  if (cfgLegacy){ if (n) n.textContent = "服务器旧版 —— 重启看板进程后可用"; return false; }
+  if (cfgLegacy){ if (n) n.textContent = "服务器旧版,重启看板进程后可用"; return false; }
   setCfgSave("saving");
   try {
     const r = await post(`/api/workers/${cfgLine}/settings`, { agents: cfgAgents, rev: cfgRev });
@@ -3334,7 +3346,7 @@ function openEdit(anchor, taskId){
       <input type="range" min="1" max="9" step="1" value="${ma}" data-eid="${t.id}" data-k="maxAttempts" aria-label="自行尝试次数上限">
       <div class="ends"><span>1</span><span>9</span></div>
     </div>
-    <div class="note" id="edit-note">已尝试 ${Number(t.attempts) || 0} 次 —— 改上限不会清空它。</div>`;
+    <div class="note" id="edit-note">已尝试 ${Number(t.attempts) || 0} 次。</div>`;
   const r = anchor.getBoundingClientRect();
   // Measure after showing: a card near the viewport bottom must not hide errors.
   epop.classList.add("show");
@@ -3355,7 +3367,7 @@ async function saveEdit(id, k, v){
     if (n) n.textContent = r.notice ? r.notice
       : r.changed
       ? `已保存(${r.changed} 项)`
-      : "服务端接受了请求,但一列都没改动 —— 键名或值可能不对";
+      : "服务端接受了请求,但一列都没改动,键名或值可能不对";
     await refresh();
   }catch(err){
     // Show the reason VERBATIM (post() carries the server's `error` in the message).
@@ -3579,7 +3591,7 @@ document.addEventListener("click", async (e) => {
       const r = await postDecompose(`/api/goals/${dec.dataset.dec}/decompose`,
                                     { model: (DECOMP[0] || {}).id });
       await refresh();
-      if (r) alert(`拆出 ${r.count} 张子任务卡(${r.model})${r.forced ? "(强制:评审卡未完成,正史已记)" : ""}
+      if (r) alert(`拆出 ${r.count} 张子任务卡(${r.model})${r.forced ? "(强制)" : ""}
 ` + HOLD_HINT);
     }catch(err){ alert("拆解失败:" + copyError(err)); }
     finally{ dec.disabled = false; dec.textContent = lab; }
@@ -3798,8 +3810,8 @@ ${r.memo}`);
       await post(`/api/tasks/${id}/resolve`, { verdict: a, note, resolved_by: "human" });
       verdictDraft.delete(Number(id));
     }
-    // 仅显式执行配置的新卡提供放行按钮，沿用原放行接口与首次确认时的版本。
-    else if (a === "release") await post(`/api/tasks/${id}/release`, { released: true, expected_version: Number(b.dataset.version), confirm_execution_profile_digest: b.dataset.executionProfileDigest });
+    // 放行沿用首次确认的任务版本与预览摘要。
+    else if (a === "release") await post(`/api/tasks/${id}/release`, { released: true, expected_version: Number(b.dataset.version), confirm_execution_profile_digest: b.dataset.executionProfileDigest || undefined, confirm_verification_repair_digest: b.dataset.verificationRepairDigest });
     else if (a === "hold")    await post(`/api/tasks/${id}/release`, { released: false });
     else if (a === "archive") await post(`/api/tasks/${id}/archive`, {expected_version:Number(b.dataset.version)});
     await refresh();
@@ -3851,7 +3863,7 @@ async function postDecompose(url, body){
   catch (err){
     if (!err.body?.needs_force || !Array.isArray(err.body?.pending_review)) throw err;
     const ids = err.body.pending_review.map((i) => "#" + i).join(" ");
-    if (!confirm(`目标下的评审卡 ${ids} 还没通过。现在拆解 = 实现一个没人接受的方案。\n\n等评审通过再拆,就按「取消」。\n\n仍要现在拆?(正史会记下这次是强制的)`)) return null;
+    if (!confirm(`目标下的评审卡 ${ids} 还没通过。\n\n等评审通过再拆,就按「取消」。\n\n仍要现在拆?`)) return null;
     return post(url, { ...body, force: true });
   }
 }
@@ -3867,20 +3879,20 @@ function showRevBar(rev, why){
   const el = document.getElementById("rev-bar");
   if (!el) return;
   el.hidden = false;
-  el.innerHTML = `<div class="uh">${esc(why || `看板已更新到 ${rev}`)} —— 这页还是旧的。你有没保存的输入,所以没有自动刷新。 <button class="pri" data-rev-reload>刷新页面</button></div>`;
+  el.innerHTML = `<div class="uh">${esc(why || `看板已更新到 ${rev}`)},这页还是旧的。 <button class="pri" data-rev-reload>刷新页面</button></div>`;
 }
 document.addEventListener("click", (e) => { if (e.target.closest("[data-rev-reload]")) location.reload(); });
 // The board is restarting on our request (or told us so): hold, then reload when it is back.
 function noteRestart(r){
   restartPending = { at: Date.now(), mode: r?.mode || null, log_path: r?.log_path || null, hinted: false };
-  live(false, "看板正在重启…(新版本起来后这页会自己刷新)");
+  live(false, "看板正在重启…新版本起来后这页会自己刷新");
 }
 setInterval(() => {
   if (!restartPending || restartPending.hinted || Date.now() - restartPending.at < 30000) return;
   restartPending.hinted = true;
   live(false, restartPending.mode === "respawn"
-    ? `看板还没回来(超过 30 秒)—— 看它的日志:${restartPending.log_path || "<数据目录>/board.log"}`
-    : "看板还没回来(超过 30 秒)—— 去起它的终端看看(npm start 那个窗口;后台起的看 <数据目录>/board.log)");
+    ? `看板还没回来(超过 30 秒)。看它的日志:${restartPending.log_path || "<数据目录>/board.log"}`
+    : "看板还没回来(超过 30 秒)。去起它的终端看看:npm start 那个窗口;后台起的看 <数据目录>/board.log");
 }, 5000);
 
 // v0.6: the setup guide. Every step's state is MEASURED by the server on each
@@ -3897,7 +3909,7 @@ function renderUpgrade(up){
   el.hidden = false;
   const MARK = { done: "✓", todo: "▸", blocked: "·", unknown: "?" };
   const head = up.running && up.on_disk && up.running !== up.on_disk
-    ? `⬆ 代码更新了 —— 跑着的是 ${esc(up.running)},磁盘上已经是 ${esc(up.on_disk)}。`
+    ? `⬆ 代码更新了:跑着的是 ${esc(up.running)},磁盘上已经是 ${esc(up.on_disk)}。`
     : `⬆ 有通知进程还在跑旧代码:`;
   // v0.18: ONE button. The confirm text (server-written) lists what changed, says data is kept
   // and names the in-flight cards a restart would interrupt; force rides only after that text.
@@ -3941,7 +3953,7 @@ function renderGuide(su){
   const MARK = { done: "✓", todo: "▸", blocked: "·", unknown: "?" };
   const firstOpen = su.steps.find((s) => s.state !== "done");
   const head = su.complete
-    ? `<b>配置完成 ✓</b><span class="gp">${su.done}/${su.total} —— 板已经可以正常用了</span>`
+    ? `<b>配置完成 ✓</b><span class="gp">${su.done}/${su.total}</span>`
     : `<b>上手引导</b><span class="gp">${su.done}/${su.total} 完成 · 下一步:${esc(firstOpen ? firstOpen.title : "")}</span>`;
   const body = !open ? "" : `<div class="gsteps">` + su.steps.map((s) => {
     const isNow = firstOpen && s.key === firstOpen.key;
@@ -3999,7 +4011,7 @@ function renderQuick(list){
     // ⭐ Pending too long is the ALARM: silence is not health. Five minutes is
     //   longer than any sentry wake-up and shorter than "I forgot about it".
     const late = r.status === "pending" && ageMin >= 5;
-    const st = r.status === "pending" ? (late ? `等了 ${ageMin} 分无人应答 —— 没有 Claude 在接通知?按上面「让 Claude 持续接收板上通知」` : "已发出,等你的 Claude 接手")
+    const st = r.status === "pending" ? (late ? `等了 ${ageMin} 分无人应答。按上面「让 Claude 持续接收板上通知」` : "已发出,等你的 Claude 接手")
              : `Claude 已接手${r.acked_at ? "(" + ago(Date.parse(r.acked_at)) + ")" : ""}`;   // ago() takes epoch ms (measured: NaNhNaNm 前)
     return `<div class="rq${late ? " late" : ""}${r.status === "acked" ? " acked" : ""}">#${r.id} ${esc(QUICK_LABEL[r.kind] || r.kind)}${r.params?.days ? "(近 " + esc(String(r.params.days)) + " 天)" : ""} · ${st}</div>`;
   }).join("");
@@ -4013,7 +4025,7 @@ document.getElementById("quick").addEventListener("click", async (e) => {
   b.disabled = true;
   try {
     const r = await post("/api/requests", { kind, params });
-    note.textContent = `已发出 #${r.request.id} —— 接着通知的 Claude 会收到,接手后这里会变`;
+    note.textContent = `已发出 #${r.request.id},等接通知的 Claude 接手`;
     await refresh();
   } catch (err) {
     note.textContent = "发送失败:" + copyError(err);
@@ -4048,7 +4060,7 @@ document.getElementById("line-add").addEventListener("submit", async (e) => {
     const rl = r.line.role;
     note.textContent = `已加入线「${r.line.label || r.line.id}」${r.line.accept === "auto" ? "(交付即完成)" : ""}` +
       (rl ? `(${rl.kind === "review" ? "评审" : "实现"}${rl.tools === "read-only" ? "·只读" : ""}${rl.charter ? "·章程 " + rl.charter : ""})` : "") +
-      "—— 配置已写盘,自动拉取行可直接启动";
+      ",配置已写盘,自动拉取行可直接启动";
     idEl.value = ""; hintEl.value = ""; labelEl.value = ""; autoEl.checked = false;
     kindEl.value = "implement"; roEl.checked = false; charterEl.value = "";
     await refresh();
@@ -4376,10 +4388,16 @@ function executionBillingName(value){
   return ({ __proto__: null, subscription: "订阅额度", claude_subscription: "Claude 订阅额度", chatgpt_subscription: "ChatGPT 订阅额度", api: "API 用量计费", api_usage: "API 用量计费", anthropic_api: "Claude API 余额（促销归属待账单确认）", openai_api: "OpenAI API 用量计费", api_credits: "API 余额（促销归属待账单确认）", promotional_unverified: "API 余额（促销归属待账单确认）" })[value] || "计费来源待核实";
 }
 function executionBudgetText(budget, enforcement = ""){
+  if (enforcement === "cli_timeout_only") {
+    if (!budget || !Number.isSafeInteger(budget.timeout_sec) || budget.timeout_sec <= 0)
+      return "待你确认时限；不能派发真实调用";
+    const amount = Number.isFinite(budget.max_cost_usd) && budget.max_cost_usd > 0 ? `金额参考 ${budget.max_cost_usd} 美元 · ` : "";
+    const turns = Number.isSafeInteger(budget.max_turns) && budget.max_turns > 0 ? `，不能视为已满足 ${budget.max_turns} 轮授权` : "";
+    return `${amount}总时限 ${budget.timeout_sec} 秒 · 单次执行；内部轮次与金额上限无法强制${turns}`;
+  }
   if (!budget || !Number.isFinite(budget.max_cost_usd) || budget.max_cost_usd <= 0 || !Number.isFinite(budget.timeout_sec) || budget.timeout_sec <= 0 || !Number.isSafeInteger(budget.max_turns) || budget.max_turns <= 0)
     return "待你确认金额、时限和轮次；不能派发真实调用";
   const constraint = enforcement === "provider_spend_limit_required" ? "；金额须由供应商项目花费限制约束，本机不提供金额硬封顶" : "";
-  if (enforcement === "cli_timeout_only") return `金额参考 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 单次执行；内部轮次与金额上限无法强制，不能视为已满足 ${budget.max_turns} 轮授权`;
   if (enforcement === "provider_spend_limit_required") return `金额预算 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 工具步骤预算 ${budget.max_turns}（不是模型请求次数${constraint}）`;
   return `金额预算 ${budget.max_cost_usd} 美元 · 总时限 ${budget.timeout_sec} 秒 · 最多 ${budget.max_turns} 轮（实际扣费以供应商为准${constraint}）`;
 }
@@ -4524,6 +4542,59 @@ function sideSection(title, text){
   sec.append(homeEl("h3", title), homeEl("pre", String(text)));
   return sec;
 }
+/** 卡片最上面给人看的小块(卡 #14):要做什么 / 现在 / 结果 / 要你做什么。
+ *  ⭐ 这四行里没有一句是面板自己想出来的:
+ *    · 要做什么 = 服务端算好的 t.brief(store.cardBrief:summary 优先,其次「【一句话】」,都没有 ⇒ 不出这一行;
+ *      标题本来就在上面,**不截长正文充数**)。
+ *    · 现在     = 五步条同一个判断(sideTaskStep → homeStep),状态与下一步两个节点的 id 不变,
+ *      updateSideLive 每秒只改这两处文字。
+ *    · 结果     = 交付时宿主从证据里取出的 t.result_summary。交付了却取不到 ⇒ 说出来,并给证据入口;
+ *      看板不替交付方总结。
+ *    · 要你做什么 = 轮到人时才出现,就一个操作框(sideControlsBox),不轮到人时它收进「更多操作」。 */
+function sideBrief(t, step, item, ctlBox, ctl){
+  const box = homeEl("section", undefined, "side-brief");
+  const briefRow = (label, text) => {
+    const row = homeEl("div", undefined, "side-brief-row");
+    row.append(homeEl("span", label, "side-brief-k"), homeEl("p", text, "side-brief-v"));
+    return row;
+  };
+  if (t?.brief) box.append(briefRow("要做什么", t.brief));
+  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
+  const nowRow = homeEl("div", undefined, "side-brief-row");
+  const state = homeEl("p", [where, step?.state || item?.state].filter(Boolean).join(" · "), "side-brief-v");
+  state.id = "task-side-state"; state.dataset.tone = step?.tone || "";
+  const nextText = step?.next || item?.next || (t ? "无需操作" : "在它所属的电脑上处理");
+  const next = homeEl("p", "下一步：" + nextText, "side-brief-v side-brief-next");
+  next.id = "task-side-next";
+  const stack = homeEl("div", undefined, "side-brief-stack");
+  stack.append(state, next);
+  nowRow.append(homeEl("span", "现在", "side-brief-k"), stack);
+  box.append(nowRow);
+  // 交付之后才有「结果」这一行。t.result 有、result_summary 没有 = 交付了但没写那一节。
+  if (t && t.result) {
+    if (t.result_summary) box.append(briefRow("结果", t.result_summary));
+    else {
+      const row = briefRow("结果", "交付里没有给人看的摘要");
+      const go = homeEl("button", "看完整证据"); go.type = "button"; go.dataset.sideOpenDetail = "1";
+      go.addEventListener("click", () => {
+        const d = document.getElementById("task-side-detail");
+        if (!d) return;
+        d.open = true;
+        d.scrollIntoView?.({ block: "nearest" });
+      });
+      row.append(go);
+      box.append(row);
+    }
+  }
+  if (t && ctlBox && ctl?.primary) {
+    const row = homeEl("div", undefined, "side-brief-row");
+    row.dataset.tone = "need";          // 强调色只给这一行:轮到你了
+    row.append(homeEl("span", "要你做什么", "side-brief-k"), ctlBox);
+    box.append(row);
+  }
+  if (!t) box.append(homeEl("p", item ? "这是其他电脑的任务缓存,这里只能查看。" : "这张卡不在本机看板里:可能已归档,或属于另一台电脑。", "side-brief-v"));
+  return box;
+}
 function sideControlsBox(t, ctl){
   const box = homeEl("div");
   if (ctl.kind === "package") {
@@ -4564,12 +4635,14 @@ function updateSideLive(){
 function sideExecution(t){
   const section = homeEl("section", undefined, "side-sec");
   section.id = "task-side-execution";
-  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by]);
-  const checking = !!(t.execution_profile && t.status === "not_started" && !t.released);
+  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by]);
+  const checking = t.status === "not_started" && !t.released;
   section.append(homeEl("h3", checking ? "放行前核对执行配置" : "派发与领取"));
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
   section.append(sideSteps(t, trace));
   const rows = [
+    ["验证续修", `最多 ${t.verification_repair?.max_rounds || 1} 轮（含首轮）；同一会话与原档位，环境异常转等待`],
+    ["证据正文", t.verification_repair?.evidence_contract ? `固定四节，最多 ${t.verification_repair.evidence_contract.max_chars} Unicode 字符；宿主附录另计` : "沿原证据合同"],
     ["最近放行", trace.released_at ? localTime(trace.released_at) : t.released ? "时间未记录" : "尚未放行"],
     ["本轮领取", trace.claimed_at ? localTime(trace.claimed_at) : t.run_id ? "时间待核实" : "尚无领取记录"],
   ];
@@ -4598,14 +4671,15 @@ function sideExecution(t){
     rec.append(homeEl("summary", "逐项记录"), dl);
     section.append(rec);
   }
-  if (t.execution_profile && t.status === "not_started" && !t.released) {
+  if (checking) {
     const release = homeEl("button", "放行此任务", "pri"); release.type = "button";
     release.dataset.a = "release"; release.dataset.id = String(t.id); release.dataset.version = String(t.aggregate_version);
-    release.dataset.executionProfileDigest = t.execution_profile.profile_digest || "";
-    if (t.execution_profile.ready === false || !release.dataset.executionProfileDigest) release.disabled = true;
+    release.dataset.executionProfileDigest = t.execution_profile?.profile_digest || "";
+    release.dataset.verificationRepairDigest = t.verification_repair_digest || "";
+    if (!release.dataset.verificationRepairDigest || t.execution_profile && (t.execution_profile.ready === false || !release.dataset.executionProfileDigest)) release.disabled = true;
     section.append(homeEl("p", "先核对以上目录、通道、权限与预算；按两次后才会放行。", "side-state"), release);
-    if (t.execution_profile.configuration_changed) section.append(homeEl("p", "执行配置已变化，请重新核对以上配置后再放行；第二次确认不会自动接受另一份配置。", "side-state"));
-    if (t.execution_profile.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
+    if (t.execution_profile?.configuration_changed) section.append(homeEl("p", "执行配置已变化，请重新核对以上配置后再放行；第二次确认不会自动接受另一份配置。", "side-state"));
+    if (t.execution_profile?.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
   }
   return section;
 }
@@ -4674,29 +4748,29 @@ function renderSide(){
   const step = sideTaskStep(t, item), ctl = sideControls(t, { remote: !t, mine: step?.lane === "mine" });
   const sig = JSON.stringify(t ? [t.id, t.status, t.waiting_for, t.aggregate_version, t.human_gate, t.result,
                                   t.verdict_note, t.description, t.acceptance, (t.decision_package?.options || []).length,
-                                  ctl.kind, ctl.primary]
+                                  ctl.kind, ctl.primary, t.brief, t.result_summary]
                                : ["remote", sideRef.uid, item?.title, item?.state, item?.next]);
   if (sig === sideSig) { updateSideLive(); updateSideContext(t); return; }
   sideSig = sig;
   const body = document.getElementById("task-side-body"), out = [];
   document.getElementById("task-side-title").textContent = t ? t.subject : (item?.title || "任务");
-  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
-  const state = homeEl("p", [where, step?.state || item?.state].filter(Boolean).join(" · "), "side-state");
-  state.id = "task-side-state"; state.dataset.tone = step?.tone || ""; out.push(state);
-  // 唯一的下一步
-  const next = homeEl("div", undefined, "side-next");
-  if (!ctl.primary) next.dataset.tone = "quiet";
-  const nextText = step?.next || item?.next || (t ? "无需操作" : "在它所属的电脑上处理");
-  const nextTitle = homeEl("h3", "下一步：" + nextText); nextTitle.id = "task-side-next"; next.append(nextTitle);
-  if (!t) next.append(homeEl("p", item ? "这是其他电脑的任务缓存,这里只能查看。" : "这张卡不在本机看板里:可能已归档,或属于另一台电脑。"));
+  // ⭐ 最上面是给人看的小块(卡 #14)。原来的各节不是删了,是收进下面那个默认折叠的
+  //   「给执行者看的详细说明」—— 操作者的原话是「这三个都像给 agent 看的,我看得太吃力」。
   const ctlBox = ctl.kind === "none" ? null : sideControlsBox(t, ctl);
-  if (ctlBox && ctl.primary) next.append(ctlBox);
-  out.push(next);
+  out.push(sideBrief(t, step, item, ctlBox, ctl));
   if (t) {
-    out.push(sideExecution(t), sideRelationshipBox(t));
+    const execution = sideExecution(t);
+    const checking = t.status === "not_started" && !t.released;
+    if (checking) out.push(execution);
+    const detail = homeEl("details", undefined, "side-sec side-detail");
+    detail.id = "task-side-detail";
+    detail.append(homeEl("summary", "给执行者看的详细说明"));
+    if (!checking) detail.append(execution);
+    detail.append(sideRelationshipBox(t));
     for (const [title, text] of [["任务说明", t.description], ["验收条件", t.acceptance], ["执行结果", t.result], ["裁定记录", t.verdict_note]]) {
-      const sec = sideSection(title, text); if (sec) out.push(sec);
+      const sec = sideSection(title, text); if (sec) detail.append(sec);
     }
+    out.push(detail);
     // 其余操作: 不是「我」这一步时的手动处理、编辑、归档——收起来,不抢下一步
     const more = homeEl("details", undefined, "side-sec");
     more.append(homeEl("summary", ctlBox && !ctl.primary ? "仍要手动处理" : "更多操作"));

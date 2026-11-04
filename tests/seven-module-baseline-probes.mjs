@@ -1,3 +1,5 @@
+import { harnessEnvironment } from "./harness-env.mjs";
+const HOST_ENV = harnessEnvironment();
 // Opt-in vulnerability reproduction, not the normal regression suite. No real providers.
 // node tests/seven-module-baseline-probes.mjs --code-root <frozen checkout> --revision <full SHA> --output <new JSON file>
 import assert from 'node:assert/strict';
@@ -15,7 +17,7 @@ import http from 'node:http';
 const args=process.argv.slice(2),o={};for(let i=0;i<args.length;i+=2){assert.ok(['--code-root','--revision','--output'].includes(args[i])&&args[i+1]);o[args[i].slice(2)]=args[i+1];}
 const ROOT=resolve(o['code-root']),revision=execFileSync('git',['-c','safe.directory='+ROOT,'-C',ROOT,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true}).trim();assert.equal(revision,o.revision);assert.match(revision,/^[a-f0-9]{40}$/);
 const clean=execFileSync('git',['-c','safe.directory='+ROOT,'-C',ROOT,'status','--porcelain','--untracked-files=all'],{encoding:'utf8',windowsHide:true}).trim();assert.equal(clean,'','Audit source must start clean');
-const TMP=mkdtempSync(join(tmpdir(),'fleet-seven-review-')),dbs=[],children=[],servers=[],findings=[],env=Object.fromEntries(Object.entries(process.env).filter(([k])=>!k.startsWith('BOARD_')));
+const TMP=mkdtempSync(join(tmpdir(),'fleet-seven-review-')),dbs=[],children=[],servers=[],findings=[],env=HOST_ENV;
 process.env.BOARD_DEFAULT_ROUTE='main';
 const store=createRequire(pathToFileURL(join(ROOT,'core/store.js')))('./store.js');
 const mod=p=>import(pathToFileURL(join(ROOT,p)).href);

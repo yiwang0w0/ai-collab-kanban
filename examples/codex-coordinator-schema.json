@@ -1,0 +1,34 @@
+{
+  "type": "object",
+  "properties": {
+    "reply": { "type": "string" },
+    "plan": {
+      "type": ["object", "null"],
+      "properties": {
+        "goal": { "type": "string" },
+        "tasks": {
+          "type": "array",
+          "maxItems": 8,
+          "items": {
+            "type": "object",
+            "properties": {
+              "title": { "type": "string" },
+              "line": { "type": "string" },
+              "channel": { "type": "string", "enum": ["claude_cli", "codex_cli", "claude_agent_sdk", "codex_sdk_api"] },
+              "budget_usd": { "type": ["number", "null"] },
+              "after": { "type": "array", "items": { "type": "integer" } },
+              "acceptance": { "type": "string" },
+              "needs_confirm": { "type": "boolean" }
+            },
+            "required": ["title", "line", "channel", "budget_usd", "after", "acceptance", "needs_confirm"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["goal", "tasks"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["reply", "plan"],
+  "additionalProperties": false
+}

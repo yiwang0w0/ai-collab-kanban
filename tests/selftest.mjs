@@ -1,3 +1,4 @@
+import { harnessEnvironment } from "./harness-env.mjs";
 // Board-engine selftest. `node tests/selftest.mjs`
 //
 // Criteria are imported from store.js, never hand-written here a second time —
@@ -87,7 +88,8 @@ process.stdout.write(JSON.stringify({ v, margin, late: margin < 0 }));
     const kids = Array.from({ length: N }, () =>
       new Promise((resolve) => {
         const pr = spawn(process.execPath, [child, storePath, String(startAt)],
-                         { env: { ...process.env } });
+                         { env: { ...harnessEnvironment(), BOARD_DATA_DIR: TMP, BOARD_DB: join(TMP, "t.db"),
+                           BOARD_DEFAULT_ROUTE: "main", BOARD_VERIFY_REGISTRY: join(TMP, "verify_registry.json") } });
         let out = "";
         pr.stdout.on("data", (b) => out += b);
         pr.on("close", () => {
@@ -1975,7 +1977,7 @@ section("㉗ normalizeDeps — write-path validation (no half-writes, cycles, no
 
 
 // ────────────────────────────────────────────────────────────────
-// ㉘ Immutable task_events — every transition appends exactly one entry, and the
+// ㉘ 不可变 task_events：每次转换追加一条业务事件，交付与裁定另有一条内容记录；
 //   history never reroutes itself when a card is later moved or re-hung.
 // ────────────────────────────────────────────────────────────────
 section("㉘ immutable task_events");
@@ -1991,16 +1993,17 @@ section("㉘ immutable task_events");
      store.events(db).length === total0 + 1 &&
      store.events(db, { taskId: id }).filter((e) => e.kind === "add").length === 1);
 
-  /** One transition -> exactly one event of the expected kind. Counting the TOTAL as
-   *  well as the per-kind count catches "wrote two" and "wrote none but something
-   *  else moved" separately. */
+  /** 每次转换只追加一条原业务事件；交付/裁定另有一条内容历史，数量和序号都精确核对。 */
   const one = (label, kind, fn) => {
     const before = store.events(db, { taskId: id });
     const n = before.filter((e) => e.kind === kind).length;
     fn();
     const after = store.events(db, { taskId: id });
+    const recordKind=({report:"evidence.recorded",resolve:"decision.recorded"})[kind];
+    const recordsBefore=recordKind?before.filter(e=>e.kind===recordKind).length:0;
+    const recordMatches=!recordKind||(after.filter(e=>e.kind===recordKind).length===recordsBefore+1&&after.at(-1).detail.seq===recordsBefore+1);
     ok(`㉘ ${label} appends exactly one ${kind} event`,
-       after.length === before.length + 1 && after.filter((e) => e.kind === kind).length === n + 1,
+       after.length === before.length + 1 + (recordKind?1:0) && after.filter((e) => e.kind === kind).length === n + 1 && recordMatches,
        `${before.length}→${after.length}`);
   };
 
@@ -2042,7 +2045,7 @@ section("㉘ immutable task_events");
   const kinds = store.events(db, { taskId: id }).map((e) => e.kind);
   ok("㉘ ⭐the whole bounce → re-claim → move → re-hang → reap run is in order",
      JSON.stringify(kinds) === JSON.stringify([
-       "add", "claim", "report", "resolve", "claim", "report", "resolve", "reopen",
+       "add", "claim", "report", "evidence.recorded", "resolve", "decision.recorded", "claim", "report", "evidence.recorded", "resolve", "decision.recorded", "reopen",
        "set_line", "set_parent", "claim", "reap", "release",
      ]), kinds.join("→"));
 

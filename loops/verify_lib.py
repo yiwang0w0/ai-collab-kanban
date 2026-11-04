@@ -3,8 +3,9 @@
 """verify_lib —— 卡指名验证的**唯一**执行器(worker_loop 与将来的 reviewer_loop 共用)。
 写在两处必有一处腐烂。登记簿 = verify_registry.json(与 core/store.js 读**同一个文件**)。
 审阅在烧模型之前也先打这里的确定性验证 —— 红了就机器打回,不烧模型。"""
-import json, os, re, subprocess, sys, io, datetime, hashlib
+import json, os, re, subprocess, sys, io, datetime, hashlib, time
 from types import MappingProxyType
+from prompt_items import whole_text
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # ⭐两个「仓」要分开(与 worker_loop.py / reviewer_loop.py 同一约定):
@@ -84,6 +85,35 @@ def cli_deny_rules(data_dir, registry=None):
         rules += [f"Read({data}/{name})", f"Edit({data}/{name})"]
     reg = deny_path(registry or REGISTRY)
     rules += [f"Read({reg})", f"Edit({reg})"]
+    return rules
+
+
+def cli_write_allow_rules(dirs):
+    """dontAsk 下「还能往哪写」的放行规则(`--allowedTools`),执行线与审阅线共用。
+
+    为什么需要:v0.24.0 两条 loop 从 `acceptEdits` + 不带路径的 `--allowedTools Read …` 换成
+    `--permission-mode dontAsk` + `--tools` 白名单(不带路径的 `Read` 放行规则 = 放行任意路径的
+    读取,2026-10-28 spike P1 实测越界读成功)。dontAsk 下 cwd 与 `--add-dir` 范围内的**读**不需要
+    放行规则(同日 spike P2/P4),但**写**要显式放行 —— 不给就连证据文件都写不出来。
+
+    为什么只产 `Edit(<abs>/**)` 一种:
+      · CLI 明说 `Write(path)` / `Glob(path)` 两种写法「不被文件权限检查匹配」,只认 `Edit(path)`
+        与 `Read(path)`;`Edit` 规则覆盖所有写文件工具(2026-09-28 实测,与 cli_deny_rules 同一结论)。
+        放行侧沿用同一写法与同一 deny_path 拼法(`//…` / 盘符形),不另造一套。
+      · 一条**不带路径**的 `Edit` / `Write` 会把写放行到任意路径 —— 正是本次要消灭的形,所以这里
+        只产带路径的规则,一个不带路径的工具名都不产。
+    拒绝规则(cli_deny_rules / auth_home_deny_rules)在 CLI 里胜过放行规则 ⇒ 令牌、登记簿、认证目录
+    即便落在放行目录之内也仍然写不得。
+    不是绝对路径就抛 ValueError(未知值落拒绝侧,调用方在启动门上拒绝启动)。"""
+    rules, seen = [], set()
+    for item in dirs:
+        if not (isinstance(item, str) and item.strip() and os.path.isabs(item)):
+            raise ValueError(f"写放行目录必须是绝对路径:{item!r}")
+        path = deny_path(item).rstrip("/")
+        if path in seen:
+            continue
+        seen.add(path)
+        rules.append(f"Edit({path}/**)")
     return rules
 
 
@@ -287,15 +317,34 @@ def run_verify(t):
         real[0] = sys.executable
     shown = " ".join(real)      # ★证据里写**实际跑的东西**(照抄 argv 就成了谎)
     try:
+        timeout = min(VERIFY_TIMEOUT, t.get("_verify_timeout", VERIFY_TIMEOUT))
+        if t.get("_attempt_deadline") is not None:
+            timeout = min(timeout, max(0, t["_attempt_deadline"] - time.monotonic()))
+        if timeout <= 0:
+            raise subprocess.TimeoutExpired(real, timeout)
         w = subprocess.run(real, shell=False, cwd=REPO, capture_output=True, env=venv,
-                           text=True, encoding="utf-8", errors="replace", timeout=VERIFY_TIMEOUT)
+                           text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        output = (w.stdout or "") + (w.stderr or "")
         return {"registry_sha256": _REGISTRY_SHA256, "ok": w.returncode == 0, "key": key, "cmd": shown, "rc": w.returncode,
-                "out": ((w.stdout or "") + (w.stderr or ""))[-4000:]}
+                "out": whole_text(output, 4000, "本轮 full_out 保留全文；由宿主保存完整验证日志后取回。", unit="输出行", mode="lines"), "full_out": output}
     except subprocess.TimeoutExpired:
         return {"ok": False, "registry_sha256": _REGISTRY_SHA256, "key": key, "cmd": shown, "rc": -1,
                 "out": f"({VERIFY_TIMEOUT}s 超时中止)"}
     except Exception as e:
         return {"ok": False, "registry_sha256": _REGISTRY_SHA256, "key": key, "cmd": shown, "rc": -2, "out": f"(无法启动: {e})"}
+
+def save_verify_log(vr, path):
+    """先保存本轮完整机器输出，再在提示和回报中使用有界的完整项。"""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(path, "w", encoding="utf-8", newline="") as output:
+            output.write(str(vr.get("full_out", vr.get("out")) or ""))
+        vr["log_path"], vr["log_bytes"] = path, os.path.getsize(path)
+        return True
+    except OSError:
+        vr["code"], vr["ok"] = "VERIFY_LOG_UNAVAILABLE", False
+        return False
+
 
 def fmt_verify(vr):
     return chr(10).join([
@@ -304,6 +353,7 @@ def fmt_verify(vr):
         f"结果: {'通过' if vr['ok'] else '失败'}   rc={vr.get('rc')}",
         "登记簿 SHA-256: " + (vr.get("registry_sha256") or "未固定") +
         ("   code=" + vr["code"] if vr.get("code") else ""),
+        "输出按完整行取舍；省略项不代表已核验。" + ("完整日志：" + vr["log_path"] if vr.get("log_path") else "全文由宿主保留；尚无落盘日志编号。"),
         "```",
         (vr.get("out") or "").rstrip(),
         "```",

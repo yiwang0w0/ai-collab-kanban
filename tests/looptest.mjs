@@ -1,3 +1,4 @@
+import { harnessEnvironment } from "./harness-env.mjs";
 import { fixtureVersion } from "./http-version-fixture.mjs";
 // Loop-layer harness. `node tests/looptest.mjs`
 //
@@ -24,15 +25,46 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createRequire } from "node:module";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const TMP = mkdtempSync(join(tmpdir(), "looptest-"));
+// store 的默认路径在加载时固定；只绑定本夹具临时库，随后恢复宿主环境。
+const store = (() => {
+  const previous = { BOARD_DATA_DIR: process.env.BOARD_DATA_DIR, BOARD_DB: process.env.BOARD_DB };
+  Object.assign(process.env, { BOARD_DATA_DIR: TMP, BOARD_DB: join(TMP, "t.db") });
+  try { return createRequire(import.meta.url)("../core/store.js"); }
+  finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+})();
 const PORT = 48200 + Math.floor((Date.now() / 1000) % 60);
 const BASE = `http://127.0.0.1:${PORT}`;
 const PY = process.env.PYTHON || "python";
 const WIN = process.platform === "win32";
 const LINE = "alpha";                       // built-in config's first line
+
+// ⭐ 这个 harness 会被当作 **verify 键**从另一条线的 loop 进程里跑起来(卡的 `verify_cmd=harness-loop`;
+//   `verify_lib.verify_environment` 明确把 BOARD_* / WORKER_* 原样传给验证命令)。继承下来的部署面 env
+//   会把「隔离板」悄悄变成「部署板的配置」—— 2026-10-28 实测的样子:继承的 `BOARD_CONFIG` 让隔离板加载了
+//   部署的 fleet.config.json(线表成了 claude-dev/codex-dev/coord),于是 ① 的
+//   `POST /api/tasks {line:"alpha"}` 被 `badRoutable` 以 400 拒掉,harness 死在 `body.task` 为 undefined:
+//     the harness itself fell over: TypeError: Cannot read properties of undefined (reading 'id')
+//   结果是 0 PASS / 1 FAIL —— 看起来像被测代码坏了,其实是 harness 不隔离。
+//   ⇒ 先把 BOARD_ / WORKER_ / REVIEWER_ / REVIEW_ / KANBAN_ **整族**剔掉(将来新增的部署变量自动落在隔离侧),
+//     再逐项写回本 harness 自己的值。`BOARD_CONFIG` 指向一个**不存在**的文件 = 用内置缺省配置
+//     (alpha 线在那里),与 clitest / sdkrunnerstest / legacy-boundariestest 同一做法。
+const HOST_ENV = harnessEnvironment();
+const NO_CONFIG = join(TMP, "none.json");   // 故意不建:缺省 = 内置线表
+// BOARD_REPO 也要钉:⑭⑮ 断言 argv 里的 --add-dir 与写放行规则就是**这个仓**,继承别处的值会红。
+// 本文件专测旧阶梯、失败重开与限流等待，显式启用兼容；新默认续修另有纯桩回归。
+const BASE_ENV = { ...HOST_ENV, BOARD_CONFIG: NO_CONFIG, BOARD_REPO: ROOT, WORKER_LEGACY_RETRY: "1" };
+// 旧阶梯层使用共享令牌，不能冒充受管宿主的启动证明。这里只注入宿主观察桩；
+// 拒收后杀进程由 verificationrepairtest 和真实 HTTP 身份边界测试另行验证。
+const LEGACY_HOST = `import sys\nsys.path.insert(0,${JSON.stringify(join(ROOT, "loops"))})\nimport worker_loop as w\nw.record_process_started=lambda *args,**kwargs:True\nw.main()\n`;
 
 let pass = 0, fail = 0;
 const ok = (name, cond, detail = "") => {
@@ -40,10 +72,23 @@ const ok = (name, cond, detail = "") => {
   else { fail++; console.log(`  FAIL  ${name}${detail ? " — " + detail : ""}`); }
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// flag 后面紧跟的取值(到下一个 -- 开头的元素为止);同一 flag 出现多次时合并。
+// ⚠ --tools / --allowedTools / --disallowedTools 都是可变长的,只看「下一个元素」会漏。
+const valuesOf = (args, flag) => {
+  const out = [];
+  args.forEach((a, i) => {
+    if (a !== flag) return;
+    for (let j = i + 1; j < args.length && !String(args[j]).startsWith("--"); j++) out.push(args[j]);
+  });
+  return out;
+};
+// Windows: python 经 abspath/realpath 拼路径,盘符大小写可能与 Node 的不同 —— 那边比对不分大小写。
+const sameList = (a, b) => WIN ? JSON.stringify(a.map((s) => String(s).toLowerCase())) === JSON.stringify(b.map((s) => String(s).toLowerCase()))
+                               : JSON.stringify(a) === JSON.stringify(b);
 
 // ── isolated board ──────────────────────────────────────────────────────────
 const srv = spawn(process.execPath, [join(ROOT, "core", "server.mjs")], {
-  env: { ...process.env, BOARD_PORT: String(PORT), BOARD_DATA_DIR: TMP,
+  env: { ...BASE_ENV, BOARD_PORT: String(PORT), BOARD_DATA_DIR: TMP,
          BOARD_DB: join(TMP, "t.db"),
          BOARD_ALLOW_UNPINNED: "1",   // isolated harness only: revision-gate escape
          // Pool sweep in ISOLATED form. Default is a 5h window + a real CLI recheck:
@@ -77,6 +122,13 @@ const api = async (method, path, body) => {
   return { status: r.status, body: j };
 };
 const getTask = async (id) => (await api("GET", `/api/tasks/${id}`)).body?.task;
+// 旧阶梯测试需要精确布置档位/尝试帽/未放行状态；这些已不是公开建卡输入。
+// 在本 harness 的临时库中原子布置，避免活跃 loop 抢在 HTTP create→hold/update 之间领走。
+function createFixtureTask(fields){
+  // 复用生产打开路径的 WAL、写锁等待与事务语义，避免裸连接立即撞上活跃 worker 的写锁。
+  const db=store.open();
+  try{return store.get(db,store.add(db,{...fields,actor:"looptest-fixture"}));}finally{db.close();}
+}
 
 /** Why the loop is not running at all (python missing from PATH / died early).
  *  null = it should be running. ⭐ Without this every wait spins to its timeout and
@@ -137,6 +189,21 @@ try {
   }
   TOKEN = readFileSync(join(TMP, "board_token"), "utf8").trim();
 
+  // ⭐ 隔离前提自检。不自检的代价实测过(2026-10-28):继承的 BOARD_CONFIG 让隔离板加载了部署的
+  //   配置,线表里没有 alpha,① 的建卡被 badLine 以 400 拒掉,harness 死在 `body.task` 的
+  //   `Cannot read properties of undefined (reading 'id')` —— 看起来像被测代码坏了,白烧一次尝试。
+  //   一句话说清「板的线表是什么、它加载了哪份配置」,比十三处建卡各自防一遍便宜。
+  {
+    const probe = await api("GET", "/api/workers");
+    const lines = probe.body?.lines;
+    if (Array.isArray(lines) && !lines.includes(LINE))
+      throw new Error(`隔离板的线表里没有「${LINE}」(线表 = ${lines.join("/") || "(空)"})`
+        + " —— 多半是继承了部署的 BOARD_CONFIG;板启动行:"
+        + (srvOut.match(/^配置:.*$/m) || ["(没抓到)"])[0]);
+    if (!Array.isArray(lines))
+      console.log(`  (隔离前提没自检成 —— /api/workers status=${probe.status};不是通过,是没测)`);
+  }
+
   // ── stub CLI: writes nothing, exits non-zero ──────────────────────────────
   //   ⚠ Producing NO output is the point. If it wrote an evidence file the card
   //     would be done on attempt 1 and the retry path would never be entered.
@@ -176,14 +243,14 @@ try {
 
   console.log("[① place one card that always fails]");
   // ⭐ weight=light on purpose, for two reasons:
-  //   ① proves the create-card entry accepts weight (start rung comes from the card)
+  //   ① 隔离布置 light 档，验证执行循环确实从卡面读取起点
   //   ② light starts at L1, so the three attempts are medium → high → max = all
   //     DIFFERENT rungs, making "did it escalate?" readable off a single card.
-  const A = (await api("POST", "/api/tasks",
+  const A = createFixtureTask(
     { subject: "必ず失败する卡(looptest)", line: LINE, maxAttempts: 3, weight: "light",
-      description: "桩不写证据,所以三次都交不了活。" })).body.task.id;
+      description: "桩不写证据,所以三次都交不了活。" }).id;
   ok("card created (attempts=0, not_started)", (await getTask(A)).attempts === 0, `#${A}`);
-  ok("⭐create-card entry accepts weight (light survives onto the card)",
+  ok("⭐隔离夹具的 light 起点已原子写入卡面",
      (await getTask(A)).weight === "light", `weight=${(await getTask(A)).weight}`);
 
   /** Read "which rung attempt n of card X used" out of the loop log. ⭐ The anchor
@@ -197,8 +264,8 @@ try {
 
   // ── start the loop, isolated ──────────────────────────────────────────────
   console.log("\n[② start worker_loop.py against the isolated board]");
-  loop = spawn(PY, [join(ROOT, "loops", "worker_loop.py"), "--as", LINE, "--interval", "1"], {
-    env: { ...process.env,
+  loop = spawn(PY, ["-c", LEGACY_HOST, "--as", LINE, "--interval", "1"], {
+    env: { ...BASE_ENV,
            BOARD_URL: BASE,
            BOARD_ALLOW_UNPINNED: "1",        // isolated harness only
            BOARD_DATA_DIR: TMP,              // ⭐ token AND evidence to the temp side
@@ -219,8 +286,8 @@ try {
            //   attempt outlives every wait below and turns into a WRONG red.
            WORKER_TIMEOUT_SEC: "20",
            // ⭐ Pin the slot config explicitly. Relying on defaults lets a stray
-           //   WORKER_EFFORT in the caller's shell shift the ladder start silently
-           //   (`...process.env` is spread first, so the parent's values come through).
+           //   WORKER_EFFORT shift the ladder start silently — BASE_ENV already drops the
+           //   whole WORKER_ family, and pinning here says what this harness means to use.
            WORKER_MODEL: "claude-opus-5", WORKER_EFFORT: "high",
            // Policy env too: the cap is "how high we are willing to go", separate from
            //   the ladder mechanism. 99 = no policy cap; worker_loop clamps with
@@ -327,10 +394,10 @@ try {
   //     three-rung ladder a standard start would reach the top on attempt 2 and
   //     branch A would have no room to be observed.
   writeFileSync(join(TMP, "static.on"), "1", "utf8");
-  const F = (await api("POST", "/api/tasks",
+  const F = createFixtureTask(
     { subject: "同因失败卡(looptest)", line: LINE, maxAttempts: 3, released: 0, weight: "light",
       description: "桩转同因失败 —— 第 2 次同指纹但还有档可提 ⇒ 不刹车;第 3 次到顶档仍同指纹 ⇒ 刹车。"
-    })).body.task.id;
+    }).id;
   mkdirSync(join(TMP, "evidence"), { recursive: true });
   writeFileSync(join(TMP, "evidence", `spawn-${F}.json`),
     JSON.stringify({ tasks: [{ subject: "失败路径的提案(不该立卡)" }] }), "utf8");
@@ -396,9 +463,9 @@ try {
   //   so it must stop on attempt 2, BEFORE the max_attempts=3 limit ⇒ what stopped it
   //   was the brake, not exhaustion.
   console.log("\n[⑤b ⭐branch B: heavy start → top rung on #1 → brake on #2, before exhaustion]");
-  const H = (await api("POST", "/api/tasks",
+  const H = createFixtureTask(
     { subject: "heavy 同因失败卡(looptest)", line: LINE, maxAttempts: 3, weight: "heavy",
-      description: "起点=顶档。第 2 次同指纹 ⇒ 在到达上限 3 之前刹车。" })).body.task.id;
+      description: "起点=顶档。第 2 次同指纹 ⇒ 在到达上限 3 之前刹车。" }).id;
   const parkedH = await until(async () => {
     const t = await getTask(H);
     return t && t.status === "waiting" ? t : null;
@@ -444,9 +511,9 @@ try {
     //   never ends, finally never runs, and the harness hangs silently — the worst
     //   failure mode of all. Close it from all three sides.
     const fin = (code) => { if (done) return; done = true; clearTimeout(timer); resolve({ code, out }); };
-    const p = spawn(PY, [join(ROOT, "loops", "worker_loop.py"), "--as", LINE,
+    const p = spawn(PY, ["-c", LEGACY_HOST, "--as", LINE,
                          "--interval", "1", ...(once ? ["--once"] : [])], {
-      env: { ...process.env, BOARD_URL: BASE, BOARD_DATA_DIR: TMP,
+      env: { ...BASE_ENV, BOARD_URL: BASE, BOARD_DATA_DIR: TMP,
              BOARD_ALLOW_UNPINNED: "1",
              WORKER_CLAUDE_CLI: "", WORKER_CLI_ARGV: "", WORKER_ALLOW_BATCH_CLI: "",
              WORKER_RUNTIME: "claude",
@@ -477,9 +544,9 @@ try {
       writeFileSync(rateStub, "#!/bin/sh\necho 'rate limit reached - try again later' 1>&2\nexit 3\n", "utf8");
       chmodSync(rateStub, 0o755);
     }
-    const R = (await api("POST", "/api/tasks",
+    const R = createFixtureTask(
       { subject: "限流卡(looptest)", line: LINE, maxAttempts: 1,
-        description: "桩自称限流 —— 尝试次数与档位都不该动。" })).body.task.id;
+        description: "桩自称限流 —— 尝试次数与档位都不该动。" }).id;
     const rr = await runLoopOnce({ WORKER_CLAUDE_CLI: rateStub,
                                    ...(WIN ? { WORKER_ALLOW_BATCH_CLI: "1" } : {}),
                                    WORKER_RATE_WAIT_SEC: "1", WORKER_RATE_MAX_WAITS: "2" }, 60000);
@@ -526,6 +593,8 @@ try {
     const seatRepo = join(TMP, "codex-stub-repo");
     const seatHit = join(TMP, "codex-stub-hit.json");
     mkdirSync(seatRepo, { recursive: true });
+    // 只读登录预检也由同一个本地 Node 替身响应，不读取任何真实认证。
+    writeFileSync(join(seatRepo, "login"), 'console.log("Logged in using ChatGPT");\n', "utf8");
 
     // The stub does not persist the prompt; it extracts only the hand-off path and
     // writes the evidence file. The hit file records argv structure, never card text.
@@ -570,10 +639,10 @@ process.stdin.on("end", () => {
     const seatCli = WIN ? process.execPath : join(seatRepo, "node-codex-stub.exe");
     if (!WIN) symlinkSync(process.execPath, seatCli);
 
-    const C = (await api("POST", "/api/tasks", {
+    const C = createFixtureTask({
       subject: "第二座席桩の端到端卡(looptest)", line: LINE, maxAttempts: 1,
       description: "本地假 CLI 产出 evidence 与 JSONL,不呼叫任何外部服务。",
-    })).body.task.id;
+    }).id;
     const seatPromise = runLoopOnce({
       WORKER_RUNTIME: "codex", BOARD_CODEX_RELEASED: "1", BOARD_CODEX_CMD: seatCli,
       BOARD_REPO: seatRepo, WORKER_MODEL: "gpt-5.6-sol", WORKER_EFFORT: "xhigh",
@@ -593,7 +662,7 @@ process.stdin.on("end", () => {
       : [];
     const seatRows = ledgerRows.filter((r) => r.card === C);
 
-    ok("⭐the stub launched local Node exactly once (no external service called)",
+    ok("⭐替身的生成入口只调用一次（登录预检仅返回固定状态，无外部服务）",
        hit?.kind === "local-node-codex-stub" && hit?.valid === true && seatRows.length === 1,
        `stub=${hit?.kind || "(no hit)"} ledger rows=${seatRows.length}`);
     ok("⭐the real argv path (--json / -o / stdin / workspace-write) reached the stub",
@@ -642,9 +711,9 @@ process.stdin.on("end", () => {
   //   under which the old instrument misses 100% of the time. The trace-based
   //   instrument must still be able to say "it was claimed".
   console.log("\n[②bis ⭐a fast card is not missed]");
-  const Q = (await api("POST", "/api/tasks",
+  const Q = createFixtureTask(
     { subject: "速攻で終わる卡(looptest)", line: LINE, maxAttempts: 1,
-      description: "maxAttempts=1 + 即死桩 ⇒ claim→失败→park 一瞬结束。" })).body.task.id;
+      description: "maxAttempts=1 + 即死桩 ⇒ claim→失败→park 一瞬结束。" }).id;
   const rq = await runLoopOnce(stubEnv);
   const tq = await getTask(Q);
   const cq = claimTrace(Q, tq, rq.out);
@@ -655,8 +724,8 @@ process.stdin.on("end", () => {
 
   // ── ②ter ⭐converse: when it genuinely was NOT claimed, red with matching wording ──
   console.log("\n[②ter ⭐not claimed ⇒ red, but for the right reason]");
-  const N = (await api("POST", "/api/tasks",
-    { subject: "未放行的卡(谁都领不到·looptest)", line: LINE, released: 0 })).body.task.id;
+  const N = createFixtureTask(
+    { subject: "未放行的卡(谁都领不到·looptest)", line: LINE, released: 0 }).id;
   const rn = await runLoopOnce(stubEnv, 45000);
   const tn = await getTask(N);
   const cn = claimTrace(N, tn, rn.out);
@@ -726,9 +795,9 @@ process.stdin.on("end", () => {
       //   green for the wrong reason is one keystroke away here). ⑥d's assertions are
       //   already made, so retire it from the queue first.
       await api("POST", `/api/tasks/${G}/release`, { released: false });
-      const P2 = (await api("POST", "/api/tasks",
+      const P2 = createFixtureTask(
         { subject: "阴性对照 .exe 路径(looptest)", line: LINE, maxAttempts: 1,
-          description: "同一 payload 走 .exe —— 不该发火。" })).body.task.id;
+          description: "同一 payload 走 .exe —— 不该发火。" }).id;
       const r2 = await runLoopOnce({ WORKER_CLAUDE_CLI: WHERE, WORKER_EFFORT: 'max" & exit 7' });
       const t2 = await getTask(P2);
       const ev2 = String(t2?.result || "");
@@ -756,7 +825,7 @@ process.stdin.on("end", () => {
   console.log("\n[⑬ 连续交不成 → 线级熔断(真的会退出)]");
   {
     for (let i = 0; i < 4; i++)
-      await api("POST", "/api/tasks",
+      createFixtureTask(
                 { subject: `熔断用卡 ${i}(交不成)`, line: LINE, maxAttempts: 1 });
     // A stub that exits cleanly and writes NO evidence file: each card uses its one
     // attempt and parks. That is the systemic-failure shape without a real CLI.
@@ -779,16 +848,18 @@ process.stdin.on("end", () => {
        `领到 ${(rb.out.match(/领到 #/g) || []).length} 张`);
   }
 
-  // ── ⑭ the Claude seat's argv carries path-scoped deny rules (v0.17.0) ────────
+  // ── ⑭ the Claude seat's argv carries the read/write boundary: path-scoped deny
+  //    rules (v0.17.0) plus the v0.24.0 lockdown (--tools whitelist + dontAsk +
+  //    --setting-sources "" + --strict-mcp-config + path-scoped write allows).
   //    A python stub stands in for the CLI (WORKER_CLI_ARGV), dumps its argv to a file
   //    and fails — so this is the REAL loop composing the REAL argv, not a unit test.
-  console.log("\n[⑭ Claude 座席的 argv 带 --disallowedTools(令牌目录 / 登记簿)]");
+  console.log("\n[⑭ Claude 座席的 argv:--tools 白名单 + dontAsk + 路径拒绝规则(令牌 / 登记簿)]");
   {
     const dump = join(TMP, "argvdump.py"), argvFile = join(TMP, "argv.json");
     writeFileSync(dump, ["import sys, json, io",
       "io.open(" + JSON.stringify(argvFile) + ", 'w', encoding='utf-8').write(json.dumps(sys.argv))",
       "sys.exit(3)"].join("\n"), "utf8");
-    await api("POST", "/api/tasks", { subject: "argv-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
+    createFixtureTask({ subject: "argv-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
     await runLoopOnce({ WORKER_CLAUDE_CLI: "", WORKER_ALLOW_BATCH_CLI: "", WORKER_CLI_ARGV: JSON.stringify([PY, dump]) }, 60000);
     let argv = []; try { argv = JSON.parse(readFileSync(argvFile, "utf8")); } catch {}
     const i = argv.indexOf("--disallowedTools"); const rules = i >= 0 ? argv.slice(i + 1) : [];
@@ -803,10 +874,33 @@ process.stdin.on("end", () => {
        rules.filter((r) => /verify_registry\.json\)$/.test(r)).length === 2, rules.slice(0, 3).join(" "));
     ok("⭐只有 Read / Edit 两种规则(Write/Glob/Grep 写法 CLI 明说不匹配)",
        rules.length > 0 && rules.every((r) => /^(Read|Edit)\(/.test(r)), rules.filter((r) => !/^(Read|Edit)\(/.test(r)).slice(0, 2).join(" "));
-    ok("⭐没有一条规则盖住证据目录(整目录的 Read deny 连 Write 证据都拒 —— 实测)",
-       rules.every((r) => !r.includes(`${dataFwd}/evidence/`) && !r.endsWith(`${dataFwd}/evidence)`)
+    const verifyLogDeny=`Edit(${dataFwd}/evidence/verify_runs/**)`;
+    ok("⭐验证日志只拒写；证据目录其余部分可读写，不使用整目录Read拒绝",
+       rules.includes(verifyLogDeny) && !rules.includes(`Read(${dataFwd}/evidence/verify_runs/**)`)
+       && rules.every((r) => r===verifyLogDeny || !r.includes(`${dataFwd}/evidence/`) && !r.endsWith(`${dataFwd}/evidence)`)
                           && !r.endsWith(`${dataFwd}/**)`) && !r.endsWith(`${dataFwd}/*)`)));
     ok("规则里没有反斜杠(正斜杠绝对路径,两平台一致)", rules.length > 0 && rules.every((r) => !r.includes("\\")));
+    // ── v0.24.0:读写边界的 argv 形状(2026-10-28 spike 实测:不带路径的 `--allowedTools Read`
+    //    等于放行任意路径的读取;dontAsk 下 cwd 与 --add-dir 内的读不需要放行规则)。
+    const evid = join(TMP, "evidence");
+    const fwd = (p) => (WIN ? "" : "/") + p.replace(/\\/g, "/");
+    ok("⑭ ⭐可用工具由 --tools 白名单给出(Read/Write/Edit/Glob/Grep)",
+       sameList(valuesOf(argv, "--tools"), ["Read", "Write", "Edit", "Glob", "Grep"]), JSON.stringify(valuesOf(argv, "--tools")));
+    ok("⑭ ⭐权限模式是 dontAsk;argv 里没有 acceptEdits / plan / --dangerously-*",
+       sameList(valuesOf(argv, "--permission-mode"), ["dontAsk"]) && !argv.includes("acceptEdits")
+       && !argv.includes("plan") && !argv.some((a) => String(a).startsWith("--dangerously")),
+       JSON.stringify(valuesOf(argv, "--permission-mode")));
+    ok("⑭ ⭐--allowedTools 里没有任何不带路径的工具名(裸 Read 会放行任意路径的读取 —— spike P1 实测越界读成功)",
+       argv.length > 0 && valuesOf(argv, "--allowedTools").every((r) => /^(?:Read|Edit)\(.+\)$/.test(r)),
+       JSON.stringify(valuesOf(argv, "--allowedTools")));
+    ok("⑭ ⭐写放行只有工作仓与证据目录各一条 Edit(…/**)",
+       sameList(valuesOf(argv, "--allowedTools"), [`Edit(${fwd(ROOT)}/**)`, `Edit(${fwd(evid)}/**)`]),
+       JSON.stringify(valuesOf(argv, "--allowedTools")));
+    ok("⑭ ⭐读范围 = 工作仓 + 证据目录(证据目录在 split 部署里在仓外,不挂就交不出证据)",
+       sameList(valuesOf(argv, "--add-dir"), [ROOT, evid]), JSON.stringify(valuesOf(argv, "--add-dir")));
+    ok("⑭ ⭐不读用户/项目/本地设置(--setting-sources \"\"),不加载任何 MCP(--strict-mcp-config 且无 --mcp-config)",
+       sameList(valuesOf(argv, "--setting-sources"), [""]) && argv.includes("--strict-mcp-config") && !argv.includes("--mcp-config"),
+       JSON.stringify(valuesOf(argv, "--setting-sources")));
   }
 
   // ── ⑮ line identity (v0.22): the tools profile reaches the argv, the charter reaches
@@ -818,16 +912,22 @@ process.stdin.on("end", () => {
     writeFileSync(dump, ["import sys, json, io",
       "io.open(" + JSON.stringify(argvFile) + ", 'w', encoding='utf-8').write(json.dumps(sys.argv))",
       "sys.exit(3)"].join("\n"), "utf8");
-    await api("POST", "/api/tasks", { subject: "identity-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
+    createFixtureTask({ subject: "identity-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
     const r = await runLoopOnce({ WORKER_CLAUDE_CLI: "", WORKER_ALLOW_BATCH_CLI: "", WORKER_CLI_ARGV: JSON.stringify([PY, dump]),
                                   WORKER_ROLE_KIND: "review", WORKER_TOOL_PROFILE: "read-only",
                                   WORKER_CHARTER: "examples/roles/astra.md" }, 60000);
     let argv = []; try { argv = JSON.parse(readFileSync(argvFile, "utf8")); } catch {}
-    const allowed = argv.slice(argv.indexOf("--allowedTools") + 1, argv.indexOf("--add-dir"));
+    const tools = valuesOf(argv, "--tools");
     const prompt = argv[argv.indexOf("-p") + 1] || "";
     const rootFwd = (WIN ? "" : "/") + ROOT.replace(/\\/g, "/");
-    ok("⑮ ⭐只读档:allowedTools 没有 Edit(Write 留给证据文件)",
-       argv.length > 0 && !allowed.includes("Edit") && allowed.includes("Write"), allowed.join(",") || "(argv 未落盘)");
+    const evidFwd = (WIN ? "" : "/") + join(TMP, "evidence").replace(/\\/g, "/");
+    ok("⑮ ⭐只读档:--tools 没有 Edit(Write 留给证据文件)",
+       argv.length > 0 && !tools.includes("Edit") && tools.includes("Write"), tools.join(",") || "(argv 未落盘)");
+    // v0.24.0:dontAsk 下写要显式放行 ⇒ 只读档「写不了工作仓」先由「没有放行规则」挡住,
+    //          下一条的 Edit deny 是纵深。此前只有 deny 一道。
+    ok("⑮ ⭐只读档:写放行只有证据目录一条,工作仓一条都没有(dontAsk ⇒ 仓里写不了)",
+       sameList(valuesOf(argv, "--allowedTools"), [`Edit(${evidFwd}/**)`]),
+       JSON.stringify(valuesOf(argv, "--allowedTools")));
     // Python spells the repo through realpath (drive-letter case may differ from Node's
     // on Windows) — compare case-insensitively there; POSIX stays exact.
     const sameRule = (r) => WIN ? r.toLowerCase() === `Edit(${rootFwd}/**)`.toLowerCase() : r === `Edit(${rootFwd}/**)`;

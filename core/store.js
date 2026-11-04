@@ -267,6 +267,16 @@ const ADDED_COLUMNS = [
   //   with an annotated approve ran around as "not_started yet verdict='approve'"
   //   (measured: 8 cards), lying to everything that reads verdict for "did it pass"
   //   (reports / review pre-filters / archive rules / future automation).
+  // ⭐ 给人看的两段白话(操作者 2026-10-28:「任务说明/执行条件/验收结果都像给 agent 看的,我看得太吃力」)。
+  //   summary        = 作者写的「要做什么」(建卡时带上;两行以内)。
+  //   result_summary = 交付那一刻从证据里**取出来**的「结论 / 改了什么 / 需要你做什么」(三行以内)。
+  //   两者都可以是 NULL,而 NULL 的含义是「没有」,不是「去算一个」:
+  //   · 没有 summary 时的退路只有一条 —— 说明以「【一句话】」开头就取那一行,否则只显示标题。
+  //     **不从长正文里截一段充数**:截出来的第一段通常是背景,读起来像摘要却不是结论(那比没有更坏)。
+  //   · 取不到 result_summary 时显示「交付里没有给人看的摘要」并给出证据入口,**不由模型另行总结** ——
+  //     另行总结等于让一个没干这活的模型替交付方表态。
+  ["summary", "TEXT"],
+  ["result_summary", "TEXT"],
   ["verdict", "TEXT"],
   // ⭐ `last_verdict` is THIS ROUND's ruling = what a human/auto-review last pressed.
   //   Survives without closing. It is the only marker of "came back through a
@@ -663,6 +673,7 @@ function migrate(db) {
     migrateNodeIdentity(db);
     migrateRuns(db);
     migrateTaskVersions(db);
+    migrateTaskRecords(db);
     migrateLifecycle(db);
     db.exec(ownsTransaction ? "COMMIT TRANSACTION" : "RELEASE store_migrate");
   } catch (e) {
@@ -1041,12 +1052,14 @@ function appendEvent(db, { taskId, kind, actor = "system", detail = {} }) {
 
 /** Ordered by the autoincrement id, NOT by `at`: several migrations inside one
  *  millisecond share a timestamp and would come back shuffled. */
-function events(db, { taskId = null, after = 0, limit = 20000 } = {}) {
+function events(db, { taskId = null, after = 0, limit = 20000, metadataOnly = false } = {}) {
   const lim = Math.max(1, Math.min(50000, Number(limit) || 20000));
+  // 旧时间轴只接收原业务事件；正文记录在 SQL 分页前排除，避免短页漏掉后续事件。
+  const metadata=metadataOnly?" AND kind NOT IN ('decision.recorded','evidence.recorded')":"";
   const rows = taskId == null
-    ? db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? ORDER BY id LIMIT ?")
+    ? db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>?"+metadata+" ORDER BY id LIMIT ?")
         .all(Number(after) || 0, lim)
-    : db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? AND task_id=? ORDER BY id LIMIT ?")
+    : db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? AND task_id=?"+metadata+" ORDER BY id LIMIT ?")
         .all(Number(after) || 0, Number(taskId), lim);
   return rows.map((r) => {
     let detail = {};
@@ -1054,6 +1067,75 @@ function events(db, { taskId = null, after = 0, limit = 20000 } = {}) {
     return { id: Number(r.id), at: r.at, task_id: Number(r.task_id),
              kind: r.kind, actor: r.actor, detail };
   });
+}
+
+// 裁定与证据复用原事件库，各自按卡编号；不改变 tasks 上供既有读取方使用的最新投影。
+const TASK_RECORD_KINDS = Object.freeze({decisions:"decision.recorded",evidence:"evidence.recorded"});
+function appendTaskRecord(db,id,kind,detail,actor){
+  const eventKind=TASK_RECORD_KINDS[kind];
+  if(!eventKind||!db.isTransaction)throw err(ERR.INTERNAL,"历史记录必须在原任务写事务中追加");
+  const prior=Number(db.prepare("SELECT COALESCE(MAX(json_extract(detail,'$.seq')),0) AS seq FROM task_events WHERE task_id=? AND kind=?").get(Number(id),eventKind).seq);
+  if(!Number.isSafeInteger(prior)||prior>=Number.MAX_SAFE_INTEGER)throw err(ERR.CONFLICT,"历史序号不可继续递增");
+  const task=db.prepare("SELECT id,line,parent_id,status,kind,released FROM tasks WHERE id=?").get(Number(id));
+  if(!task)throw err(ERR.NOT_FOUND,"任务不存在");
+  return appendEvent(db,{taskId:id,kind:eventKind,actor,detail:eventState(task,{...detail,seq:prior+1})});
+}
+function taskHistoryRecord(db,{id,kind,seq}){
+  if(!Object.hasOwn(TASK_RECORD_KINDS,kind))throw err(ERR.BAD_INPUT,"未知历史类型");
+  if(!Number.isSafeInteger(seq)||seq<1)return null;
+  const row=db.prepare("SELECT id,at,task_id,actor,detail FROM task_events WHERE task_id=? AND kind=? AND json_extract(detail,'$.seq')=?").get(Number(id),TASK_RECORD_KINDS[kind],seq);
+  return row?{event_id:Number(row.id),task_id:Number(row.task_id),at:row.at,actor:row.actor,...JSON.parse(row.detail)}:null;
+}
+function taskHistoryRefs(db,id){
+  const refs={};
+  for(const [kind,eventKind] of Object.entries(TASK_RECORD_KINDS)){
+    // 恢复说明等路径会追加最新投影；只有正文仍对应原记录才可把它标成这个序号。
+    const record=db.prepare(`WITH latest AS (
+      SELECT detail FROM task_events WHERE task_id=? AND kind=? ORDER BY json_extract(detail,'$.seq') DESC LIMIT 1
+    ) SELECT json_extract(detail,'$.seq') AS seq,json_extract(detail,'$.source') AS source,
+      length(json_extract(detail,'$.note'))>0 AS has_note,
+      CASE WHEN ?='evidence' THEN json_extract(detail,'$.evidence')=coalesce(t.result,'')
+      WHEN json_extract(detail,'$.source')='resolve' THEN length(json_extract(detail,'$.note'))>0 AND json_extract(detail,'$.note')=coalesce(t.last_note,'')
+      ELSE json_extract(detail,'$.note')=coalesce(t.verdict_note,'') END AS matches_current
+      FROM latest JOIN tasks t ON t.id=?`).get(Number(id),eventKind,kind,Number(id));
+    if(record&&record.matches_current===1&&Number.isSafeInteger(record.seq)&&record.seq>0)
+      refs[kind]={seq:record.seq,source:record.source??"unknown",...(kind==="decisions"?{has_note:record.has_note===1}:{})};
+  }
+  return refs;
+}
+function decisionRecordSnapshot(t,source,{note=null,verdict=null,resolvedBy=null}={}){
+  return {source,run_id:source==="legacy"?null:t.run_id??null,
+    note:note??String(t.last_note??""),verdict,resolved_by:resolvedBy,
+    status:t.status,waiting_for:t.waiting_for??null,
+    decision_json:t.decision_json??null,decision_choice:t.decision_choice??null,
+    decision_sql_archive:t.decision_sql_archive??null,decision_receipt:t.decision_receipt??null,
+    verify_ok:t.verify_ok==null?null:Number(t.verify_ok)===1};
+}
+function migrateTaskRecords(db){
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_task_record_seq ON task_events(task_id,kind,json_extract(detail,'$.seq'))
+    WHERE kind IN ('decision.recorded','evidence.recorded');
+    CREATE TRIGGER IF NOT EXISTS task_record_no_update BEFORE UPDATE ON task_events
+    WHEN OLD.kind IN ('decision.recorded','evidence.recorded') OR NEW.kind IN ('decision.recorded','evidence.recorded')
+      OR EXISTS (SELECT 1 FROM task_events WHERE id=NEW.id AND kind IN ('decision.recorded','evidence.recorded'))
+    BEGIN SELECT RAISE(ABORT,'task records are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS task_record_no_replace BEFORE INSERT ON task_events
+    WHEN EXISTS (SELECT 1 FROM task_events WHERE id=NEW.id AND kind IN ('decision.recorded','evidence.recorded'))
+    BEGIN SELECT RAISE(ABORT,'task records are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS task_record_no_delete BEFORE DELETE ON task_events
+    WHEN OLD.kind IN ('decision.recorded','evidence.recorded')
+    BEGIN SELECT RAISE(ABORT,'task records are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS task_record_sequence BEFORE INSERT ON task_events
+    WHEN NEW.kind IN ('decision.recorded','evidence.recorded') AND (
+      json_type(NEW.detail,'$.seq') IS NOT 'integer' OR json_extract(NEW.detail,'$.seq')>9007199254740991 OR
+      json_extract(NEW.detail,'$.seq')<>1+COALESCE((SELECT MAX(json_extract(detail,'$.seq')) FROM task_events WHERE task_id=NEW.task_id AND kind=NEW.kind),0))
+    BEGIN SELECT RAISE(ABORT,'task record sequence must advance by one'); END;`);
+  const recorded=new Set(db.prepare("SELECT DISTINCT task_id,kind FROM task_events WHERE kind IN ('decision.recorded','evidence.recorded')").all().map(r=>`${r.task_id}:${r.kind}`));
+  for(const t of db.prepare("SELECT * FROM tasks ORDER BY id").all()){
+    if(t.result!==null&&!recorded.has(`${t.id}:evidence.recorded`))
+      appendTaskRecord(db,t.id,"evidence",{source:"legacy",run_id:null,worker:null,outcome:null,evidence:String(t.result),original_updated_at:t.updated_at},"migration");
+    if((t.verdict_note!=null||t.last_verdict!=null||t.verdict!=null||t.decision_json!=null||t.auto_review_at!=null||t.decision_receipt!=null)&&!recorded.has(`${t.id}:decision.recorded`))
+      appendTaskRecord(db,t.id,"decisions",{...decisionRecordSnapshot(t,"legacy",{note:String(t.verdict_note??t.last_note??""),verdict:t.last_verdict??t.verdict??null,resolvedBy:t.resolved_by??null}),original_updated_at:t.updated_at},"migration");
+  }
 }
 
 /** Work spans: claim opens a span. If a span is still open (crash, re-claim), close
@@ -1166,12 +1248,22 @@ function add(db, args) {
         throw err(ERR.CONFLICT, "父卡已不属于本执行器");
       requireRun(parent, args.parentRunId);
     }
+    // 仅 HTTP worker 入口注入此内部标志；来源、首案判定与建卡在同一事务内完成。
+    // 归档或重新发送不会抹掉 add 历史，不能把第二案伪成首案。
+    if(args.workerDerived===true){
+      if(args.parentRunId==null||args.parentWorker==null)throw err(ERR.BAD_INPUT,"派生卡缺少父运行身份");
+      const prior=db.prepare("SELECT 1 FROM task_events WHERE kind='add' AND json_extract(detail,'$.parent_run_id')=? LIMIT 1").get(args.parentRunId);
+      // 升级前的子卡没有运行来源，不能把未知历史当成尚未派生过首案。
+      const unknown=db.prepare("SELECT 1 FROM tasks child WHERE child.parent_id=? AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id=child.id AND e.kind='add' AND json_extract(e.detail,'$.parent_run_id') IS NOT NULL) LIMIT 1").get(args.parentId);
+      args={...args,kind:"task",needsBash:0,released:prior||unknown?0:1};
+    }
     const id = addInner(db, args);
     const t = db.prepare(
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(id);
     appendEvent(db, {
       taskId: id, kind: "add", actor: args.actor || "system", detail: eventState(t,
-        args.executionProfile ? { execution_profile: args.executionProfile } : {}),
+        {...(args.executionProfile ? { execution_profile: args.executionProfile } : {}),
+         ...(args.workerDerived===true ? { parent_run_id:args.parentRunId } : {})}),
     });
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_add");
     return id;
@@ -1191,6 +1283,35 @@ function taskExecutionProfile(db, id) {
   return profile;
 }
 
+// 新放行策略只从该次授权事件或运行快照取；历史记录缺失时只有首轮。
+function verificationRepairPolicy(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value) ||
+      !Number.isSafeInteger(value.max_rounds) || value.max_rounds < 1 || value.legacy_retry !== false)
+    return {max_rounds:1,legacy_retry:false};
+  const contract=value.evidence_contract;
+  const fixed=contract&&contract.version===1&&Number.isSafeInteger(contract.max_chars)&&contract.max_chars>0
+    ? {evidence_contract:{version:1,max_chars:contract.max_chars}} : {};
+  return {max_rounds:value.max_rounds,legacy_retry:false,...fixed};
+}
+function taskVerificationRepair(db, task, {fromRun = true} = {}) {
+  if (fromRun && task.run_id) {
+    const run=db.prepare("SELECT policy_json,policy_sha256 FROM task_runs WHERE run_id=? AND task_id=?").get(task.run_id,Number(task.id));
+    if (run) {
+      try {
+        if (crypto.createHash("sha256").update(run.policy_json).digest("hex") !== run.policy_sha256)
+          return verificationRepairPolicy(null);
+        return verificationRepairPolicy(JSON.parse(run.policy_json).context?.verification_repair);
+      } catch { return verificationRepairPolicy(null); }
+    }
+  }
+  for (const event of db.prepare("SELECT detail FROM task_events WHERE task_id=? AND kind='release' ORDER BY id DESC").iterate(Number(task.id))) {
+    let detail;try { detail=JSON.parse(event.detail); } catch { continue; }
+    if (detail.action === "release" && detail.from === false && detail.to === true)
+      return verificationRepairPolicy(detail.verification_repair);
+  }
+  return verificationRepairPolicy(null);
+}
+
 function matchesExecutionProfile(db, task, profile) {
   const expected = taskExecutionProfile(db, task.id);
   if (!expected || !profile) return expected === null && profile == null;
@@ -1206,7 +1327,7 @@ function matchesExecutionProfile(db, task, profile) {
 }
 
 function addInner(db, {
-  subject, description = "", acceptance = "", blockedBy = [],
+  subject, description = "", acceptance = "", summary = null, blockedBy = [],
   route = DEFAULT_ROUTE, line = null, lockKey = null, needsBash = 0,
   released = 1, maxAttempts = 3, evidencePath = null,
   kind = "task", parentId = null, treeMode, verifyCmd = null, weight = "standard",
@@ -1243,12 +1364,15 @@ function addInner(db, {
   const ownerNodeId = localNode(db).node_id;
   const taskUid = ownerNodeId + "/" + crypto.randomUUID();
   const r = db.prepare(
-    `INSERT INTO tasks (subject, description, acceptance, blocked_by, created_at, updated_at,
+    `INSERT INTO tasks (subject, description, acceptance, summary, blocked_by, created_at, updated_at,
                         route, line, lock_key, needs_bash, released, max_attempts, evidence_path,
                         kind, parent_id, tree_mode, verify_cmd, weight, oneof_key, proves_parent,
                         human_gate, human_gate_src, task_uid, owner_node_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(String(subject), String(description), String(acceptance),
+        // 给人看的「要做什么」。空白与只有空格的输入都落成 NULL ⇒ 读的一侧只有「有」和「没有」两种,
+        //   不会出现空字符串这第三种(空字符串会让退路判断多一个分支,而分支就是将来分叉的地方)。
+        String(summary ?? "").trim() || null,
         // Dep edges go through the SAME single validator as update (plugging only
         // one entrance is the classic hole — goal decomposition pours model-emitted
         // deps straight in here). selfId=null: the row doesn't exist yet, so
@@ -1922,6 +2046,54 @@ function recordExecutionEvent(db, {id,worker,runId,agentInstanceId,executionProf
   }catch(e){try{db.exec(own?"ROLLBACK":"ROLLBACK TO store_execution_event; RELEASE store_execution_event");}catch{}throw e;}
 }
 
+// ── 给人看的两段白话(卡 #14)────────────────────────────────────────────────
+//  纯函数、不碰状态机。放在这里是因为 report() 是证据的**唯一**写入口:摘要在那一刻取出来,
+//  别处(面板、CLI、审阅)就都读同一份,不会各自再解析一遍证据(两处解析必有一处腐烂)。
+const BRIEF_LINE_MAX = 160;              // 单行上限;超了截断并留「…」
+const BRIEF_ONELINER = /^【一句话】[\s:：]*/;   // 没有 summary 时唯一的退路
+/** 固定标题,执行线的提示词里写的就是这一个(loops/worker_loop.py 的 delivery_block)。
+ *  容忍 Markdown 的 #、本仓常用的「—— … ——」包边与结尾冒号;除此之外不猜。 */
+const RESULT_SUMMARY_HEAD = "给人看的结果";
+const RESULT_HEAD_RE = new RegExp(`^\\s*(?:#{1,6}\\s*|—{2,}\\s*|\\*\\*)?${RESULT_SUMMARY_HEAD}(?:\\*\\*)?(?:\\s*—{2,})?\\s*[:：]?\\s*$`);
+const RESULT_STOP_RE = /^\s*(?:#{1,6}\s|—{2,}|```|\*\*[^*]+\*\*\s*$)/;   // 下一节开始
+
+/** 最多 max 行(空行丢掉);被截掉过就在末尾留一个「…」—— 沉默截断读起来像全文。 */
+function clipLines(text, max) {
+  const lines = String(text || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines.length) return null;
+  const kept = lines.slice(0, max).map((l) => (l.length > BRIEF_LINE_MAX ? l.slice(0, BRIEF_LINE_MAX) + "…" : l));
+  if (lines.length > max) kept[kept.length - 1] += "…";
+  return kept.join("\n");
+}
+
+/** 卡片最上面那行「要做什么」。作者写的 summary 优先;没有就只认「【一句话】…」这一条退路;
+ *  都没有返回 null = 不显示这一行(标题本来就在上面),**不截长正文充数**。 */
+function cardBrief(t) {
+  const own = clipLines(t?.summary, 2);
+  if (own) return own;
+  const first = String(t?.description || "").split(/\r?\n/).map((l) => l.trim()).find(Boolean) || "";
+  if (!BRIEF_ONELINER.test(first)) return null;
+  return clipLines(first.replace(BRIEF_ONELINER, ""), 2);
+}
+
+/** 从证据里取出「给人看的结果」那一节(固定标题之后最多三行)。取不到返回 null ——
+ *  调用方显示「交付里没有给人看的摘要」,**不替交付方总结**。 */
+function resultSummaryOf(evidence) {
+  const lines = String(evidence || "").split(/\r?\n/);
+  const at = lines.findIndex((l) => RESULT_HEAD_RE.test(l));
+  if (at < 0) return null;
+  const out = [];
+  for (let i = at + 1; i < lines.length && out.length < 8; i++) {
+    if (RESULT_STOP_RE.test(lines[i])) break;
+    // 列表符号去掉(「- 结论:…」与「结论:…」是同一句);标题前的空行跳过,正文后的空行收尾。
+    const line = lines[i].replace(/^\s*(?:[-*+•]|\d+[.)])\s*/, "").trim();
+    if (!line) { if (out.length) break; continue; }
+    out.push(line);
+  }
+  // 截断规则与 summary 共用一条(多于三行就留「…」),不在两个地方各写一套。
+  return clipLines(out.join("\n"), 3);
+}
+
 function report(db, { id, worker, outcome, evidence = "", runId }) {
   if (!["done", "wait"].includes(outcome)) throw err(ERR.BAD_INPUT, "outcome 必须是 done 或 wait");
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
@@ -1951,9 +2123,11 @@ function report(db, { id, worker, outcome, evidence = "", runId }) {
     //   refuted for the single-process topology (external review 2026-09-07); the gate is
     //   here so the invariant stops depending on that topology.
     const r = db.prepare(
-      `UPDATE tasks SET status='waiting', waiting_for=?, result=?, lease_until=NULL, updated_at=?
+      `UPDATE tasks SET status='waiting', waiting_for=?, result=?, result_summary=?, lease_until=NULL, updated_at=?
         WHERE id=? AND status='in_progress' AND worker=? AND run_id=?`
-    ).run(waitingFor, String(evidence), now(), Number(id), String(worker), runId);
+      // ⭐ 摘要与证据同一条 UPDATE 落盘:分两步写,中间崩一次就会留下「证据是这轮的、摘要是上轮的」。
+      //   取不到就是 NULL(上一轮的旧摘要也必须被清掉 —— 留着它等于用旧结论说明新证据)。
+    ).run(waitingFor, String(evidence), resultSummaryOf(evidence), now(), Number(id), String(worker), runId);
     if (!r.changes)
       throw err(ERR.CONFLICT, `卡 #${id} 在交付期间被回收或改手,本次交付未落盘`);
     appendEvent(db, {
@@ -1962,6 +2136,7 @@ function report(db, { id, worker, outcome, evidence = "", runId }) {
         run_id: runId, outcome: String(outcome), waiting_for: waitingFor,
       }),
     });
+    appendTaskRecord(db,id,"evidence",{source:"report",run_id:runId,worker:String(worker),outcome:String(outcome),evidence:String(evidence)},worker);
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_report");
   } catch (e) { try { db.exec(ownsTransaction ? "ROLLBACK" : "ROLLBACK TO store_report; RELEASE store_report"); } catch {} throw e; }
   return { id: Number(id), status: "waiting", waiting_for: waitingFor };
@@ -2065,6 +2240,7 @@ function resolve(db, args) {
     const before = db.prepare(
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(Number(args.id));
     const out = resolveInner(db, {...args,...(args.prepareResolution ? args.prepareResolution() : {})});
+    const disposition=out.status==="done"?"close":out.status==="waiting"?"hold_for_review":"hand_back";
     const t = db.prepare(
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(Number(args.id));
     appendEvent(db, {
@@ -2072,19 +2248,19 @@ function resolve(db, args) {
       detail: eventState(t, {
         from_status: before ? before.status : null,
         verdict: String(args.verdict),
-        disposition: out.status === "done" ? "close"
-          : out.status === "waiting" ? "hold_for_review" : "hand_back",
+        disposition,
       }),
     });
+    appendTaskRecord(db,args.id,"decisions",{...decisionRecordSnapshot(db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(args.id)),"resolve",{verdict:String(args.verdict),resolvedBy:args.resolvedBy||"human"}),disposition},args.resolvedBy||"human");
     // A linked closure is a state transition caused by this ruling too — each closed
     // card gets its OWN history entry, or its close has no record on its own timeline.
     for (const cid of out.cascade?.closed || []) {
-      const ct = db.prepare(
-        "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(Number(cid));
+      const ct = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(cid));
       appendEvent(db, {
         taskId: cid, kind: "resolve", actor: "cascade",
         detail: eventState(ct, { from_status: null, verdict: "approve", cause_task_id: Number(args.id) }),
       });
+      appendTaskRecord(db,cid,"decisions",{...decisionRecordSnapshot(ct,"cascade",{note:String(ct.verdict_note??""),verdict:"approve",resolvedBy:"cascade"}),cause_task_id:Number(args.id)},"cascade");
     }
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_resolve");
     return out;
@@ -2349,6 +2525,7 @@ function markAutoReviewedInner(db, { id, note = "", decisionPackage = null, expe
          decisionPackage == null ? null : JSON.stringify(decisionPackage),
          receipt, receipt, Number(id), expectUpdatedAt, expectUpdatedAt);
   if (!r.changes) throw err(ERR.CONFLICT, `卡 #${id} 在审阅落盘的瞬间变了 —— 本轮判决作废`);
+  appendTaskRecord(db,id,"decisions",decisionRecordSnapshot(db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id)),"autoreview",{note:note?defuseRulingHeads(String(note)):"",resolvedBy:"auto"}),"auto");
   // Return what was written — not a second now() (the file's own rule).
   return { id: Number(id), auto_review_at: ts };
 }
@@ -2748,7 +2925,7 @@ function update(db, args) {
 
 function updateInner(db, fields) {
   const { id, line, route, maxAttempts, lockKey, needsBash, verifyCmd,
-          subject, description, acceptance, parentId, weight, humanGate,
+          subject, description, acceptance, summary, parentId, weight, humanGate,
           oneofKey, provesParent, blockedBy } = fields;
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
   if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
@@ -2797,6 +2974,9 @@ function updateInner(db, fields) {
   }
   if (description !== undefined){ sets.push("description=?"); args.push(String(description)); }
   if (acceptance !== undefined){  sets.push("acceptance=?");  args.push(String(acceptance)); }
+  // 给人看的摘要也能改:写错一句若只能「归档重建」,历史(尝试、派生、裁定)就断了 —— 与上面三项同一理由。
+  //   清空(传空串)= 回到「没有摘要」的退路,不是留一个空摘要。
+  if (summary !== undefined){     sets.push("summary=?");     args.push(String(summary ?? "").trim() || null); }
   if (line !== undefined)        { sets.push("line=?");         args.push(line ? String(line) : null); }
   if (route !== undefined)       { sets.push("route=?");        args.push(String(route || DEFAULT_ROUTE)); }
   if (maxAttempts != null) { sets.push("max_attempts=?"); args.push(assertMaxAttempts(maxAttempts)); }
@@ -2881,7 +3061,7 @@ function setPinnedInner(db, { id, pinned }) {
 
 /** Release / hold (the old "backlog"). What moves is a COLUMN, not a status — no
  *  fifth state. */
-function setReleased(db, { id, released, actor = "human", expectedVersion, executionProfile = null }) {
+function setReleased(db, { id, released, actor = "human", expectedVersion, executionProfile = null, verificationRepair = null }) {
   const ownsTransaction = !db.isTransaction;
   db.exec(ownsTransaction ? "BEGIN IMMEDIATE" : "SAVEPOINT store_set_released");
   try {
@@ -2903,6 +3083,7 @@ function setReleased(db, { id, released, actor = "human", expectedVersion, execu
       taskId: id, kind: "release", actor,
       detail: eventState({ ...before, released: value }, {
         action: value ? "release" : "hold", from: Boolean(before.released), to: Boolean(value),
+        ...(value && !before.released ? {verification_repair:verificationRepairPolicy(verificationRepair)} : {}),
       }),
     });
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_set_released");
@@ -3053,6 +3234,12 @@ function row(r) {
     // the MIDDLE (neither stronger nor weaker).
     weight: r.weight || "standard",
     acceptance: r.acceptance, result: r.result, verdict_note: r.verdict_note,
+    // ── 给人看的两段白话(卡 #14)。summary / result_summary 是**原值**(没有就是 null);
+    //   brief 是「最上面那行要显示什么」的结论,算在这里一处:面板自己算就是第二份判据,
+    //   哪天退路改了,屏幕上和 API 里会各说一套。
+    summary: r.summary || null,
+    result_summary: r.result_summary || null,
+    brief: cardBrief(r),
     lock_key: r.lock_key, evidence_path: r.evidence_path,
     needs_bash: Number(r.needs_bash) === 1, released: Number(r.released) === 1,
     verify_cmd: r.verify_cmd || null,
@@ -3234,14 +3421,16 @@ function openChildrenOnLines(db, parentId, lines) {
 module.exports = {
   UUID_RE, migrateLifecycle, resolveWithPreparation,
   localNode, renameNode, assertLocalIdentityInput, requireRun, runs, requireExpectedVersion, assertExpectedVersion,
-  open, migrate, add, claim, heartbeat, recordProcessStarted, recordExecutionEvent, taskExecutionProfile, matchesExecutionProfile, bumpAttempt, report, resolve, update, setReleased, archive,
+  open, migrate, add, claim, heartbeat, recordProcessStarted, recordExecutionEvent, taskExecutionProfile, taskVerificationRepair, matchesExecutionProfile, bumpAttempt, report, resolve, update, setReleased, archive,
   addRequest, getRequest, listRequests, ackRequest, doneRequest, REQUEST_KINDS, REQUEST_STATUS,
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,
   reopen, rearmDone, deferToRearm, completeGoals, stuckWhy,
-  list, get, counts, events, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
+  list, get, counts, events, taskHistoryRecord, taskHistoryRefs, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
   DEFAULT_ROUTE,
   verifyRegistry, assertVerify,
+  // 给人看的两段白话:判据各一处(面板只渲染,不自己解析证据、不自己算退路)。
+  cardBrief, resultSummaryOf, RESULT_SUMMARY_HEAD,
   // Ruling destinations. **The legacy criterion's canon is this one function**
   // (the server's hand-written copy is deleted).
   legacyDisposition, DISPOSITIONS, confirmDestination,

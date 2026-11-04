@@ -30,6 +30,38 @@ function lineMenu(lines, hints = {}, labels = {}) {
   }).join(", ");
 }
 
+// 只处理拆解提示中的前作记录；整段取舍并保留代码围栏，不读取文件或扩大工具权限。
+function previousRecord(prev) {
+  const value = String(prev.result || "(无完成记录)"), budget = 1200;
+  const size = (text) => Array.from(text).length;
+  if (size(value) <= budget) return value;
+  const items = []; let current = [], fence = null;
+  for (const line of value.match(/[^\n]*\n|[^\n]+$/g) || []) {
+    const mark = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (mark) {
+      const token = mark[1];
+      if (!fence) fence = [token[0], token.length];
+      else if (token[0] === fence[0] && token.length >= fence[1] && !line.slice(mark[0].length).trim()) fence = null;
+    }
+    if (!line.trim() && !fence) {
+      if (current.length) { items.push(current.join("").trim()); current = []; }
+    } else current.push(line);
+  }
+  if (current.length) items.push(current.join("").trim());
+  const kept = new Set(); let used = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const length = size(items[i]) + (kept.size ? 2 : 0);
+    if (used + length <= budget) { kept.add(i); used += length; }
+  }
+  const omitted = items.map((_, i) => i + 1).filter((i) => !kept.has(i - 1));
+  const body = items.filter((_, i) => kept.has(i)).join(NL + NL);
+  const seq = prev.history_refs?.evidence?.seq;
+  const known = Number.isSafeInteger(prev.id) && prev.id > 0 && Number.isSafeInteger(seq) && seq > 0;
+  const reference = known ? `任务 #${prev.id} 的 evidence seq=${seq}；请协调者按编号取回 GET /api/tasks/${prev.id}/evidence/${seq}。`
+    : `任务 #${prev.id} 的 result 字段；历史编号未知，请协调者读取原字段。`;
+  return body + (body ? NL + NL : "") + `[省略 ${omitted.length} 个完整段落，原文项号：${omitted.join("、")}；未截取任何半项。${reference}执行必需的全文未取得时原卡等待；此指引不授予命令或网络权限。]`;
+}
+
 /**
  * @param goal     the goal card (subject/description/id required)
  * @param prev     the goal this one continues, or null. Only a card whose kind is
@@ -58,13 +90,19 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
          `⭐本目标衔接既往目标 #${prev.id}「${prev.subject}」(${prev.status === "done" ? "已完成" : prev.status})。`,
          "拆解时接着它的成果想:已完成的事不要重做,新子任务要说清与前作产出的衔接点。",
          "前作完成记录:",
-         String(prev.result || "(无完成记录)").slice(0, 1200)]
+         previousRecord(prev)]
       : []),
     "",
     "拆解规则:",
     "- **一张卡 = 一个可独立验收的产出**。复合的要切开。",
+    // 给人看的那一行:人看卡时最先看到它,所以要求白话、不写文件行号。没写也能建卡(schema 里是可选),
+    //   但那张卡在面板上就只剩标题 —— 说清这件事,比默默替它从 description 截一段好。
+    "- 每张卡写一句 summary:给人看的「要做什么」,一两行白话,不写文件行号、不写实现细节。",
     "- 顺序有依赖就用 after 指出前置(填同一批里的序号,从 1 开始);没有就不填。",
-    "- 每张卡要写清 acceptance:怎么判这活干没干成,能给可执行命令就给。",
+    "- description 使用执行者五段模板，保留这些标签：goal: / ctx(file:line): / do: / accept(cmd -> expect): / limits:。",
+    "- goal 写本卡唯一交付目标；ctx(file:line) 只列必要文件与行号入口，未核实时写待定位，不伪造位置；do 写本卡具体动作。",
+    "- accept(cmd -> expect) 与 acceptance 使用同一验收口径：命令 -> 预期退出码、断言或产物；未具备验证条件时明确缺什么。verifyCmd 仍只使用已登记键，不能靠正文新增执行权。",
+    "- limits 写允许修改的范围、预算与需要另行确认的动作；模板不改变既有权限、放行、父任务绑定或去重规则。",
     `- line 从这些里选(填「」前面的标识):${lineMenu(lines, hints, labels)};拿不准就填 null,谁都能领。`,
     "- 要跑命令的卡把 needs_bash 设成 true;只读写文件的不要设。",
     "- 涉及生产数据、DB migration、删除、push、花钱的,**在 description 里显式写明需要人确认**。",
@@ -74,8 +112,10 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
     "只做一件事:用结构化输出交回结果(结构见下),不写任何文件。",
     "",
     "内容是 JSON,不要包代码块:",
-    '{"tasks":[{"subject":"...","description":"...","acceptance":"...","line":"' +
-      lines.join("|") + '|null","needs_bash":false,"after":[]}]}',
+    JSON.stringify({tasks:[{subject:"...",summary:"一句话说明交付结果",
+      description:"goal: 一个交付目标" + NL + "ctx(file:line): 必要入口，未核实则写待定位" + NL +
+        "do: 本卡具体动作" + NL + "accept(cmd -> expect): 与 acceptance 同一口径" + NL + "limits: 修改范围与原有授权",
+      acceptance:"已登记验证命令 -> 预期退出码、断言或产物",line:lines.join("|") + "|null",needs_bash:false,after:[]}]}),
   ].filter(Boolean).join(NL);
 }
 
@@ -97,6 +137,9 @@ const DECOMPOSE_PLAN_SCHEMA = freeze({
         required: ["subject", "description", "acceptance", "line", "needs_bash", "after"],
         properties: {
           subject: { type: "string", minLength: 1 },
+          // 给人看的「要做什么」。**可选**(不进 required):旧计划、旧模型不出这个字段时整次拆解照旧成立,
+          //   卡上只剩标题(退路在 store.cardBrief),不该为一行文案把整批卡废掉。
+          summary: { type: "string" },
           description: { type: "string" },
           acceptance: { type: "string" },
           line: { type: ["string", "null"] },
