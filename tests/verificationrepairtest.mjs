@@ -102,6 +102,89 @@ red={'ok':False,'out':'AssertionError: 预期 2，实际 1'}
 green={'ok':True,'out':'PASS 本地桩验证'}
 `;
 
+test("提示正文整项取舍保留最新完整项、围栏与真实裁定编号", () => {
+  python(`import worker_loop as w
+from prompt_items import whole_text
+assert whole_text('旧段落长长长'+chr(10)*2+'最新完整',5).startswith('最新完整')
+fence=''+chr(96)*3+'txt'+chr(10)+'甲'+chr(10)+chr(96)*3+'literal'+chr(10)*2+'乙'+chr(10)+chr(96)*3
+assert whole_text(fence,8).startswith('[省略 1 个完整段落'),whole_text(fence,8)
+assert 'abcdef' not in w.cut_to('abcdef',3,7)
+assert '任务 #7' in w.cut_to('abcdef',3,7) and '协调者' in w.cut_to('abcdef',3,7)
+assert 'board.py show' not in w.cut_to('abcdef',3,7)
+head='—— 你的决定(2026-11-04T00:00:00Z · 打回)——'
+card={'id':7,'last_verdict':'reject','verdict_note':head+chr(10)+'裁定原文'*2000,'last_note':'裁定原文'*2000,
+      'history_refs':{'decisions':{'seq':9,'source':'resolve','has_note':True}}}
+block=chr(10).join(w.verdict_block(card))
+assert '裁定原文' not in block and '/decisions/9' in block,block
+card['history_refs']['decisions']['has_note']=False
+assert '/decisions/9' not in chr(10).join(w.verdict_block(card))
+prompt=w.build_prompt(w._fake_card('旧说明'*3000+chr(10)*2+'最新完整说明','验收全文'*1000),'fixture',str(folder/'证据.md'))
+assert '最新完整说明' in prompt and '旧说明' not in prompt and '验收全文' not in prompt,prompt
+`);
+});
+
+test("选项围栏里的同名依据标题不能触发半块预裁剪", () => {
+  python(`import worker_loop as w
+fence=chr(96)*3
+options='### 方案 A'+chr(10)+fence+'md'+chr(10)+'说明'+chr(10)+'### 判断依据(原文)'+chr(10)+'完整示例'*1000+chr(10)+fence
+out=w._trim_options(options,{'id':7})
+assert fence not in out and '完整示例' not in out,out
+assert '省略 1 个完整选项块' in out and '任务 #7 的 verdict_note' in out and '协调者' in out,out
+`);
+});
+
+test("完整人工备注里的引用抬头不能把本轮裁定拆半", () => {
+  python(`import worker_loop as w
+fence=chr(96)*3
+note='本轮必须保留权限。'+chr(10)*2+fence+'text'+chr(10)+'—— 你的决定(2026-11-03 · 打回)——'+chr(10)+'这里只是引用旧话'+chr(10)+fence+chr(10)+'最后执行测试。'
+card={'id':7,'last_note':note,'last_verdict':'reject','verdict_note':'—— 你的决定(2026-11-04 · 打回)——'+chr(10)+note,
+      'history_refs':{'decisions':{'seq':9,'source':'resolve','has_note':True}}}
+tail=w.verdict_tail(card['verdict_note'],card)
+assert tail['decision'].endswith(note) and tail['decision'].startswith('—— 你的决定(2026-11-04'),tail
+assert tail['skipped']==0,tail
+legacy=dict(card);legacy.pop('last_note');legacy['history_refs']={}
+old=w.verdict_tail(legacy['verdict_note'],legacy)
+assert old['decision']==legacy['verdict_note'] and old['skipped']==0,old
+`);
+});
+
+test("派生溢出与失败候选保留完整原件而非半段JSON", () => {
+  python(`import worker_loop as w
+w.EVID=str(folder); w.log=lambda *args:None
+raw=json.dumps({'tasks':[{'subject':str(i),'description':'完整候选'*1000} for i in range(4)]},ensure_ascii=False)
+path=pathlib.Path(w.spawn_path_for(7)); path.write_text(raw,encoding='utf-8')
+memo=w.stash_spawn(7,'本地桩失败')
+assert not path.exists() and '截断' not in memo
+saved=list(folder.glob('spawn-7-retained-*.json'))
+assert len(saved)==1 and saved[0].read_text(encoding='utf-8')==raw and str(saved[0]) in memo,memo
+path.write_text(raw,encoding='utf-8'); made=[]
+def call(method,path,body=None):
+ if method=='GET':return 200,{'tasks':[]}
+ made.append(body);return 200,{'task':{'id':10+len(made),'parent_id':7,'released':len(made)==1}}
+w.call=call
+ids,memo=w.harvest_spawned({'id':7,'run_id':str(uuid.uuid4())},'fixture')
+assert len(ids)==2 and len(made)==2 and not path.exists()
+saved=list(folder.glob('spawn-7-retained-*.json'))
+assert len(saved)==2 and all(p.read_text(encoding='utf-8')==raw for p in saved)
+assert '2 项' in memo and any(str(p) in memo for p in saved),memo
+`);
+});
+
+test("验证提示按完整输出行与段取舍并保存可取回原日志", () => {
+  python(`import worker_loop as w,verify_lib as v,verification_repair as repair
+full='旧输出'*2000+chr(10)+'最新完整输出'
+v._registry_error=lambda:None; v._REGISTRY_COMMANDS={'fixture':('fixture',)}
+v.subprocess.run=lambda *args,**kwargs:types.SimpleNamespace(returncode=1,stdout=full,stderr='')
+vr=v.run_verify({'verify_cmd':'fixture'})
+assert vr['full_out']==full and '旧输出' not in vr['out'] and '最新完整输出' in vr['out'],vr['out']
+target=folder/'验证日志'/'完整.log'
+assert w.save_verify_log(vr,str(target)) is True
+assert target.read_text(encoding='utf-8')==full and vr['log_bytes']==len(full.encode('utf-8'))
+text=repair.repair_prompt({'full_out':'旧段落'*2000+chr(10)*2+'最新完整失败','key':'fixture','rc':1},str(target),'交付.md',2)
+assert '旧段落' not in text and '最新完整失败' in text and '省略 1 个完整' in text and str(target) in text,text
+`);
+});
+
 test("纯分类只允许明确测试红，环境故障、未知和模型卡住均停止", () => {
   python(`import verification_repair as v
 assert v.classify(0,'完成',{'ok':False,'rc':1,'out':'AssertionError: expected 2'},'交付')=='test_failure'

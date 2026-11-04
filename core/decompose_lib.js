@@ -30,6 +30,38 @@ function lineMenu(lines, hints = {}, labels = {}) {
   }).join(", ");
 }
 
+// 只处理拆解提示中的前作记录；整段取舍并保留代码围栏，不读取文件或扩大工具权限。
+function previousRecord(prev) {
+  const value = String(prev.result || "(无完成记录)"), budget = 1200;
+  const size = (text) => Array.from(text).length;
+  if (size(value) <= budget) return value;
+  const items = []; let current = [], fence = null;
+  for (const line of value.match(/[^\n]*\n|[^\n]+$/g) || []) {
+    const mark = /^\s*(`{3,}|~{3,})/.exec(line);
+    if (mark) {
+      const token = mark[1];
+      if (!fence) fence = [token[0], token.length];
+      else if (token[0] === fence[0] && token.length >= fence[1] && !line.slice(mark[0].length).trim()) fence = null;
+    }
+    if (!line.trim() && !fence) {
+      if (current.length) { items.push(current.join("").trim()); current = []; }
+    } else current.push(line);
+  }
+  if (current.length) items.push(current.join("").trim());
+  const kept = new Set(); let used = 0;
+  for (let i = items.length - 1; i >= 0; i--) {
+    const length = size(items[i]) + (kept.size ? 2 : 0);
+    if (used + length <= budget) { kept.add(i); used += length; }
+  }
+  const omitted = items.map((_, i) => i + 1).filter((i) => !kept.has(i - 1));
+  const body = items.filter((_, i) => kept.has(i)).join(NL + NL);
+  const seq = prev.history_refs?.evidence?.seq;
+  const known = Number.isSafeInteger(prev.id) && prev.id > 0 && Number.isSafeInteger(seq) && seq > 0;
+  const reference = known ? `任务 #${prev.id} 的 evidence seq=${seq}；请协调者按编号取回 GET /api/tasks/${prev.id}/evidence/${seq}。`
+    : `任务 #${prev.id} 的 result 字段；历史编号未知，请协调者读取原字段。`;
+  return body + (body ? NL + NL : "") + `[省略 ${omitted.length} 个完整段落，原文项号：${omitted.join("、")}；未截取任何半项。${reference}执行必需的全文未取得时原卡等待；此指引不授予命令或网络权限。]`;
+}
+
 /**
  * @param goal     the goal card (subject/description/id required)
  * @param prev     the goal this one continues, or null. Only a card whose kind is
@@ -58,7 +90,7 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
          `⭐本目标衔接既往目标 #${prev.id}「${prev.subject}」(${prev.status === "done" ? "已完成" : prev.status})。`,
          "拆解时接着它的成果想:已完成的事不要重做,新子任务要说清与前作产出的衔接点。",
          "前作完成记录:",
-         String(prev.result || "(无完成记录)").slice(0, 1200)]
+         previousRecord(prev)]
       : []),
     "",
     "拆解规则:",

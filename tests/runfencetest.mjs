@@ -30,6 +30,21 @@ function callback(db,id,runId,op="report") {
 }
 after(()=>{for(const db of handles)db.close();rmSync(TMP,{recursive:true,force:true});});
 
+test("history references require the current projection to match the numbered original",()=>{
+  const {db}=fixture();
+  const profile={execution_profile_id:"fixture",profile_digest:"a".repeat(64),model:"fixture",effort:"high",tools:"write",workspace:{path:TMP,device:"1",inode:"2"}};
+  const id=store.add(db,{subject:"显式配置恢复引用夹具",executionProfile:profile});
+  const task=claim(db,id,{executionProfile:profile});callback(db,id,task.run_id);
+  assert.equal(store.taskHistoryRefs(db,id).evidence.seq,1);
+  store.resolve(db,{id,verdict:"reject",note:"真实人工备注"});
+  assert.match(store.get(db,id).result,/当前运行状态/);
+  assert.equal(store.taskHistoryRefs(db,id).evidence,undefined,"恢复追加后的结果不能借旧证据编号");
+  assert.equal(store.taskHistoryRecord(db,{id,kind:"evidence",seq:1}).evidence,"accepted");
+  assert.equal(store.taskHistoryRefs(db,id).decisions.seq,1);
+  db.prepare("UPDATE tasks SET last_note=? WHERE id=?").run("旧投影不再匹配",id);
+  assert.equal(store.taskHistoryRefs(db,id).decisions,undefined,"不能把不匹配的旧话称为最新人工备注");
+});
+
 test("same-name reclaim receives a new ID; old report changes no row or history",()=>{
   const {db,id}=fixture(), first=claim(db,id);
   store.releaseHeldBy(db,"worker-a"); const second=claim(db,id);
@@ -340,12 +355,17 @@ test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat w
     const delivered=await api("POST",path+"/report",{worker:"worker-a",run_id:a.run_id,outcome:"done",evidence:"old round"},wk);
     assert.equal(delivered.status,200);
     const evidenceRecord=await api("GET",path+"/evidence/1",undefined,wk);assert.equal(evidenceRecord.status,200);assert.equal(evidenceRecord.body.evidence.evidence,"old round");
+    const evidenceRefs=(await api("GET",path)).body.task.history_refs;
+    assert.deepEqual(evidenceRefs.evidence,{seq:1,source:"report"});assert.equal(JSON.stringify(evidenceRefs).includes("old round"),false);
     assert.equal((await api("GET",path+"/evidence/2")).status,404);assert.equal((await api("GET","/api/tasks/999999/evidence/1")).status,404);
     const anonymous=await fetch(base+path+"/evidence/1");assert.equal(anonymous.status,401);
     const foreign=await fetch(base+path+"/evidence/1",{headers:{"X-Board-Token":op,Origin:"https://foreign.invalid"}});assert.equal(foreign.status,403);
     const rejected=await api("POST",path+"/resolve",{verdict:"reject",note:"new input"});
     assert.equal(rejected.status,200,JSON.stringify(rejected));
     const decisionRecord=await api("GET",path+"/decisions/1",undefined,wk);assert.equal(decisionRecord.status,200);assert.equal(decisionRecord.body.decision.note,"new input");
+    const refs=(await api("GET",path)).body.task.history_refs;assert.deepEqual(refs.decisions,{seq:1,source:"resolve",has_note:true});
+    assert.equal(JSON.stringify(refs).includes("new input"),false);
+    assert.deepEqual((await api("GET","/api/review/pending")).body.tasks.find(t=>t.id===id)?.history_refs,undefined,"已退回的卡不冒称待审");
     assert.equal((await api("GET",path+"/decisions/2")).status,404);
     const next=await api("POST",path+"/claim",{worker:"worker-a",force:true});
     assert.equal(next.status,200,JSON.stringify(next));assert.notEqual(next.body.task.run_id,a.run_id);

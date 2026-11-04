@@ -5,6 +5,7 @@
 审阅在烧模型之前也先打这里的确定性验证 —— 红了就机器打回,不烧模型。"""
 import json, os, re, subprocess, sys, io, datetime, hashlib, time
 from types import MappingProxyType
+from prompt_items import whole_text
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # ⭐两个「仓」要分开(与 worker_loop.py / reviewer_loop.py 同一约定):
@@ -325,12 +326,25 @@ def run_verify(t):
                            text=True, encoding="utf-8", errors="replace", timeout=timeout)
         output = (w.stdout or "") + (w.stderr or "")
         return {"registry_sha256": _REGISTRY_SHA256, "ok": w.returncode == 0, "key": key, "cmd": shown, "rc": w.returncode,
-                "out": output[-4000:], "full_out": output}
+                "out": whole_text(output, 4000, "本轮 full_out 保留全文；由宿主保存完整验证日志后取回。", unit="输出行", mode="lines"), "full_out": output}
     except subprocess.TimeoutExpired:
         return {"ok": False, "registry_sha256": _REGISTRY_SHA256, "key": key, "cmd": shown, "rc": -1,
                 "out": f"({VERIFY_TIMEOUT}s 超时中止)"}
     except Exception as e:
         return {"ok": False, "registry_sha256": _REGISTRY_SHA256, "key": key, "cmd": shown, "rc": -2, "out": f"(无法启动: {e})"}
+
+def save_verify_log(vr, path):
+    """先保存本轮完整机器输出，再在提示和回报中使用有界的完整项。"""
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with io.open(path, "w", encoding="utf-8", newline="") as output:
+            output.write(str(vr.get("full_out", vr.get("out")) or ""))
+        vr["log_path"], vr["log_bytes"] = path, os.path.getsize(path)
+        return True
+    except OSError:
+        vr["code"], vr["ok"] = "VERIFY_LOG_UNAVAILABLE", False
+        return False
+
 
 def fmt_verify(vr):
     return chr(10).join([
@@ -339,6 +353,7 @@ def fmt_verify(vr):
         f"结果: {'通过' if vr['ok'] else '失败'}   rc={vr.get('rc')}",
         "登记簿 SHA-256: " + (vr.get("registry_sha256") or "未固定") +
         ("   code=" + vr["code"] if vr.get("code") else ""),
+        "输出按完整行取舍；省略项不代表已核验。" + ("完整日志：" + vr["log_path"] if vr.get("log_path") else "全文由宿主保留；尚无落盘日志编号。"),
         "```",
         (vr.get("out") or "").rstrip(),
         "```",

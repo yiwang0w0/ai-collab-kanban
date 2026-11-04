@@ -53,7 +53,8 @@ from host_git_commit import HostCommitGuard, HostCommitError
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
-from verify_lib import (run_verify, fmt_verify, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules,  # noqa: F401
+from prompt_items import whole_text, retrieval_hint
+from verify_lib import (run_verify, fmt_verify, save_verify_log, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules,  # noqa: F401
                         deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules)
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
@@ -491,17 +492,24 @@ def harvested_flag(tid):
     return os.path.join(EVID, f"harvested-{tid}.flag")
 
 
+def retain_spawn(tid):
+    """同目录原子移走完整原件，避免下一轮误收割失败路线上的建议。"""
+    source = spawn_path_for(tid)
+    target = os.path.join(EVID, f"spawn-{tid}-retained-{uuid.uuid4()}.json")
+    os.replace(source, target)
+    return target
+
+
 def stash_spawn(tid, why):
-    """父卡没成功时:建议**不立卡**但也不丢 —— 折进证据、删掉文件
+    """父卡没成功时:建议**不立卡**但也不丢 —— 原件留档并引用
     (放着不管的话,下次成功时会把"失败路线上的建议"立成卡)。"""
     p2 = spawn_path_for(tid)
     if not os.path.isfile(p2): return None
-    try: raw = io.open(p2, encoding="utf-8", errors="replace").read()
-    except Exception: raw = "(读不出来)"
-    try: os.remove(p2)
-    except Exception: pass
+    raw = io.open(p2, encoding="utf-8", errors="replace").read()
+    saved = retain_spawn(tid)
     return ("—— 候选发现(" + why + ",按派生闸不立卡;内容留档,要立项由人/协调裁定)——"
-            + chr(10) + "```json" + chr(10) + raw[:2000] + chr(10) + "```")
+            + chr(10) + whole_text(raw, 2000, f"完整候选原件：{saved}；请协调者按文件名取回。", unit="候选原件", mode="item")
+            + f"\n完整候选原件：{saved}（{os.path.getsize(saved)} bytes）")
 
 
 def harvest_spawned(t, worker):
@@ -576,12 +584,13 @@ def harvest_spawned(t, worker):
                     f"、released={nt.get('released')})")
         else:
             log(f"  派生建卡失败 {s2} {r2.get('error','')}")
-    memo = None
+    saved = retain_spawn(t["id"])
+    memo = f"完整派生原件：{saved}（{os.path.getsize(saved)} bytes）；请协调者按文件名取回。"
     if extra:
-        memo = ("—— 候选发现·超出每卡 2 案上限的部分(不立卡留档)——" + chr(10) +
-                "```json" + chr(10) + json.dumps({"tasks": extra}, ensure_ascii=False)[:1500] + chr(10) + "```")
-    try: os.remove(p)
-    except Exception: pass
+        # 整个候选集合是一个可解析 JSON 项，超预算不贴残缺前缀；原文中的序号可由原件核对。
+        memo += (f"\n—— 候选发现·超出每卡 2 案上限的 {len(extra)} 项(不立卡留档)——\n" +
+                 whole_text(json.dumps({"tasks": extra}, ensure_ascii=False), 1500,
+                            f"原件 {saved} 的 tasks 数组，按原顺序的最后 {len(extra)} 项；请协调者取回。", unit="候选集合", mode="item"))
     try: io.open(harvested_flag(t["id"]), "w", encoding="utf-8").write(datetime.datetime.now().isoformat())
     except Exception as e: log(f"  收割 flag 写不了({e})—— 生涯一次的保证被削弱")
     if made: log(f"  派生 {len(made)} 件: {made}(放行 {released_made},其余候选池)")
@@ -689,34 +698,13 @@ OPT_BUDGET = 2600   # 选项块允许的字数(提示词经 argv 传递,Windows 
 DEC_BUDGET = 4000   # 人写的裁定正文允许的字数
 
 
-def _trim_options(s):
-    """把选项块削到 worker 需要的部分。**### 方案(A/B/C)留到最后**
-    —— 人的那一个「A」字,读不到 A 是什么就不成其为指令。
-    削的顺序从后往前:给人的操作说明 → 判断依据 → 核对一览 → 最后才是硬截字数。"""
-    # 「下面的输入框里**写点什么再点通过/打回**…」是给操作面板的人看的说明。
-    # 对 worker 无意义,而且会被读成**还没裁定**。
-    i = s.find("\n—— 自动审阅(")
-    if i > 0: s = s[:i].rstrip()
-    for mark in ("\n### 判断依据(原文)", "\n### 我核对过什么"):
-        if len(s) <= OPT_BUDGET: break
-        j = s.find(mark)
-        if j > 0: s = s[:j].rstrip() + "\n(…「" + mark.strip() + "」以下省略)"
-    if len(s) > OPT_BUDGET:
-        s = s[:OPT_BUDGET].rstrip() + ("\n(…此处截断 %d 字,全文在看板卡片的「裁定记录」栏)"
-                                       % (len(s) - OPT_BUDGET))
-    return s
+def _trim_options(s, card=None):
+    """选项块完整留或舍；标题也可能是围栏示例正文，不能据它预剪裁。"""
+    return whole_text(s, OPT_BUDGET, retrieval_hint(card, field="verdict_note（本轮选项）"), unit="选项块", mode="item")
 
 
-def verdict_tail(note):
-    """从 verdict_note 里只抽**尾段**(没有可抽的返 None)。
-
-    不贴全文 —— verdict_note 是追记式的,每转一轮提示词就膨胀一圈。返回的是:
-      · options  = 第一个裁定抬头之前(= 审阅摆出的「## 需要你确认 / ### 方案」)。
-                   markAutoReviewed 会**覆盖** verdict_note,所以这里躺着的永远是
-                   **本轮**的选项,不是过去某一轮的。
-      · decision = 从最后一个裁定抬头到结尾。人写的话和时刻戳整段进来。
-      · skipped  = 夹在中间的**更早**裁定块的个数。
-    旧的不贴,但不静默丢弃,而是留一行省略 —— 用"看起来全都在"的方式截断最危险。"""
+def verdict_tail(note, card=None):
+    """只按当前 last_note 的完整尾部确定本轮；旧文边界未知时整块留或舍。"""
     s = str(note or "").replace("\r\n", "\n").strip()
     if not s: return None
     heads = list(VERDICT_HEAD.finditer(s))
@@ -724,13 +712,16 @@ def verdict_tail(note):
         # 没有裁定追记 = 人的话不在这里。每次都把审阅全文搬运并不是本机制的目的
         # (那只会让提示词膨胀),所以什么都不载。
         return None
-    dec = s[heads[-1].start():].strip()
-    if len(dec) > DEC_BUDGET:
-        # 人的话要求**逐字**。要截就把"截了"写大(不静默地截)。
-        dec = dec[:DEC_BUDGET].rstrip() + ("\n(…裁定正文过长,截断 %d 字。全文在看板卡片的"
-                                           "「裁定记录」栏)" % (len(dec) - DEC_BUDGET))
-    return {"options": _trim_options(s[:heads[0].start()].strip()),
-            "decision": dec, "skipped": len(heads) - 1}
+    ref = ((card or {}).get("history_refs") or {}).get("decisions") or {}
+    current_note = str((card or {}).get("last_note") or "").replace("\r\n", "\n").strip()
+    prefix = s[:-len(current_note)].rstrip() if current_note and s.endswith(current_note) else ""
+    # 正文里的引用抬头没有结构身份；只认完整备注前、紧邻它的服务端抬头。
+    boundary = next((head for head in reversed(list(VERDICT_HEAD.finditer(prefix))) if head.end() == len(prefix)), None)
+    dec = s[boundary.start():] if boundary else s
+    options = _trim_options(prefix[:boundary.start()].strip(), card) if boundary else ""
+    numbered = ref.get("source") in ("legacy", "cascade", "autoreview") or (boundary is not None and ref.get("source") == "resolve" and ref.get("has_note") is True)
+    dec = whole_text(dec, DEC_BUDGET, retrieval_hint(card, "decisions" if numbered else None, "verdict_note"), unit="裁定", mode="item")
+    return {"options": options, "decision": dec, "skipped": 0}
 
 
 def verdict_block(t):
@@ -744,7 +735,7 @@ def verdict_block(t):
       就是「人的指示到不了 worker」= 代价最高的坏法。"""
     if not str(t.get("last_verdict") or t.get("verdict") or "").strip():
         return []
-    tail = verdict_tail(t.get("verdict_note"))
+    tail = verdict_tail(t.get("verdict_note"), t)
     # ⭐人**结构化**确认过的选择。散文里也许写着「用方案 B」,但那要 worker 去读、去推;
     #   `decision_choice` 是卡上的**字段**,无歧义,所以能用祈使句写死。
     #   ⚠ 它和 tail 分开判断:人在面板上选了方案却没有写话时 tail 是空的,旧结构
@@ -756,16 +747,16 @@ def verdict_block(t):
     L = []
     if tail:
         L += ["",
-              "【上一轮裁定记录(verdict_note 尾段)】",
+              "【上一轮裁定记录】",
               "这张卡上一轮被裁过,并**带着下面这段话**回到了你的线上。"
               "把它当成指令读:**下面的裁定优先于上面的说明与验收标准**"
               "——已经定了的不要再猜,已经答过的不要再问一遍。",
-              "(只贴尾段:verdict_note 是追记式,全文会随轮次膨胀。全文在看板卡片的「裁定记录」栏。)"]
+              "(本轮备注有完整边界时优先保留；旧文无法辨认边界时整块保留或给出原字段取回指引。)"]
         if tail["options"]:
-            L += ["", "--- 裁定前,审阅摆在人面前的选项 ---", tail["options"]]
+            L += ["", "--- 本轮裁定前的原文(选项及已有记录，整块取舍) ---", tail["options"]]
         if tail["skipped"]:
-            L += ["", "(中间还有 %d 段更早的裁定记录,未贴 —— 最新的一段在下面)" % tail["skipped"]]
-        L += ["", "--- 最近一次裁定(逐字,含时刻戳)---", tail["decision"]]
+            L += ["", "(省略 %d 条更早的完整裁定；这些旧文本的历史编号未知。%s)" % (tail["skipped"], retrieval_hint(t, field="verdict_note"))]
+        L += ["", "--- 最近一次裁定(完整保留或整条取回指引)---", tail["decision"]]
     if choice:
         L += ["",
               "--- 已经定下来的选择(卡上的字段,不是从上面的文字里读出来的)---",
@@ -813,14 +804,9 @@ CARD_ACC_BUDGET = int(os.environ.get("WORKER_ACC_BUDGET", "2000"))
 PROMPT_WARN_CHARS = int(os.environ.get("WORKER_PROMPT_WARN", "20000"))
 
 
-def cut_to(v, n, card_id):
-    """超预算就截断,并**在截断处说清楚**:还有多少字、去哪看全文。
-    沉默截断是这个仓库反复吃过亏的形状 —— 被截掉的那一半不会喊疼。"""
-    v = str(v or "")
-    if len(v) <= n:
-        return v
-    return v[:n] + (f"…[正文还有 {len(v) - n} 字,这里按 {n} 字预算截断。"
-                    f"全文用 `python cli/board.py show {card_id}`]")
+def cut_to(v, n, card_id, field="description"):
+    """按完整段落取舍，不把取回指引误写成执行者已有命令权限。"""
+    return whole_text(v, n, retrieval_hint({"id": card_id}, field=field))
 
 
 def _fake_card(desc, acc, **kw):
@@ -875,9 +861,9 @@ def prompt_selftest():
             fail_n += 1; print("FAIL " + name + (" — " + detail if detail else ""))
 
     huge = build_prompt(_fake_card("x" * 40000, "y" * 9000), "alpha", "C:/tmp/e.md")
-    ok("⭐超长说明被截断(此前一个字都不截,直奔 argv 天花板)", len(huge) < 32767, f"{len(huge)} 字")
-    ok("截断处说清楚还剩多少字", "正文还有" in huge)
-    ok("截断处指路怎么看全文(沉默截断=被截掉的那半不会喊疼)", "board.py show 42" in huge)
+    ok("⭐超长说明整段省略,不撞 argv 天花板", len(huge) < 32767, f"{len(huge)} 字")
+    ok("省略处说清完整项数量与原文位置", "省略 1 个完整段落，原文项号：1" in huge)
+    ok("省略处由协调者按原卡字段取回,不扩执行权限", "任务 #42 的 description 字段" in huge and "协调者" in huge and "board.py show" not in huge)
     ok("验收也有预算", ("y" * (CARD_ACC_BUDGET + 1)) not in huge)
     normal = build_prompt(_fake_card("短说明。", "① 一条验收"), "alpha", "C:/tmp/e.md")
     ok("正常卡一个字都不动(预算只挡异常,不改日常)",
@@ -896,7 +882,7 @@ def prompt_selftest():
     ok("(对照)典型提示词的 argv 远在预算内",
        argv_budgeted(["claude", "-p", normal, "--model", "claude-opus-5", "--effort", "high"]) < 30000,
        f"{argv_budgeted(['claude', '-p', normal, '--model', 'claude-opus-5', '--effort', 'high'])}")
-    ok("cut_to 截长内容且带指路", cut_to("abcdef", 3, 7).startswith("abc") and "show 7" in cut_to("abcdef", 3, 7))
+    ok("cut_to 不留半句且有真实卡号", "abc" not in cut_to("abcdef", 3, 7) and "任务 #7" in cut_to("abcdef", 3, 7))
 
     # ── 已确认的选择必须原样到达 worker(v0.11.3)────────────────────────────
     # 人在面板上选了方案,这件事是**卡上的字段**;让 worker 从裁定散文里去猜,
@@ -1226,7 +1212,7 @@ def build_prompt(t, worker, evidence_path, prev_tail=None, attempt=1):
             "说明:\n" + cut_to(t.get("description", ""), CARD_DESC_BUDGET, t["id"]),
         ]
     if t.get("acceptance"):
-        p.append("验收标准:\n" + cut_to(t["acceptance"], CARD_ACC_BUDGET, t["id"]))
+        p.append("验收标准:\n" + cut_to(t["acceptance"], CARD_ACC_BUDGET, t["id"], "acceptance"))
     # ⭐ 章程紧跟卡面:它说的是「你是谁、你怎么干」,与卡面同等效力(没配置 = 空)。
     p += charter_block()
     if ROLE_KIND == "review":
@@ -1303,7 +1289,7 @@ def build_prompt(t, worker, evidence_path, prev_tail=None, attempt=1):
             p.append(f"  {mark} #{x['id']} {label} [{kind}] {str(x.get('subject') or '')[:52]}")
         p += ["",
               "怎么用这份清单:①`done` 只表示流程已经关闭,**不是事实已经被证明**;不要重做,"
-              "但只要它的结论会影响本卡,就必须先运行 `python cli/board.py show <id>`,"
+              "但只要它的结论会影响本卡,就必须先请协调者按卡号取回全文,"
               "核对 result、最新 verdict_note 和机器验证信息,并在本卡证据写明采用了 #几 的哪条证据。"
               "证据为空、只有主观判断或与当前实物冲突时,不得把它当可信前提,也不得擅自重做——转等待说明缺口。 "
               "②等待中的正在等待人工裁定,不要替它下结论 ③别的线的卡不要碰 "
@@ -1320,20 +1306,19 @@ def build_prompt(t, worker, evidence_path, prev_tail=None, attempt=1):
             # ⚠**正文为空也一定要出**。曾有目标 description 0 字、全文写在 subject 里
             #   —— 上面的一览把 subject 切到 52 字,作业者看到的只是半截。
             #   ∴ 条件写成「有正文才出」的话,**说明最不足的目标反而会掉**。
-            cut = lambda v, n: cut_to(v, n, goal["id"])
+            cut = lambda v, n, field: cut_to(v, n, goal["id"], field)
             p += ["", f"【这条链的目标 #{goal['id']} —— 本卡是它的一部分,不是独立的活】",
                   "目标(标题是**全文**,不是上面一览的 52 字截断):" + chr(10) + str(goal.get("subject") or "")]
-            if gd: p.append("目标的说明:" + chr(10) + cut(gd, 2000))
-            if ga: p.append("目标的验收:" + chr(10) + cut(ga, 800))
+            if gd: p.append("目标的说明:" + chr(10) + cut(gd, 2000, "description"))
+            if ga: p.append("目标的验收:" + chr(10) + cut(ga, 800, "acceptance"))
             if not gd and not ga:
                 p.append("(这个目标正文为空 —— 要求全在上面的标题里。"
                          "含糊处不要擅自补全,把『目标的哪里读不出来』写进证据)")
             p.append("⚠ 即使满足了本卡的验收,只要那个改动会**破坏目标的验收**就不许交付。"
                      "发现冲突就写进证据转等待(不要擅自偏向任何一边)。")
         if RUNTIME == "codex":
-            p += ["", "【链上其他卡你自己能读】"
-                  "`python cli/board.py show <id>` 可以拉同链任意卡的全文"
-                  "(只读、板在 localhost。⚠外向通信被阻断,到不了外部系统)。"
+            p += ["", "【链上其他卡的正文取回】"
+                  "请协调者按同链卡号取回全文；此说明不授予看板命令或网络权限。"
                   "上面的一览**只有标题**,涉及依赖或既有裁定时**必须拉现物**。"
                   "尤其是:依赖方『依据什么』那样决定,从标题绝对看不出来。"]
 
@@ -1347,9 +1332,9 @@ def build_prompt(t, worker, evidence_path, prev_tail=None, attempt=1):
         p += ["", "【⚠工作区已经有未提交的改动 —— 动手前先看】",
               "这些改动**不一定是你写的**:可能是上一次尝试留下的半成品,也可能是别的线正在做的活。",
               "共享 worktree,所以先读再动手——**不要假设文件是干净的**。",
-              "", "```", st[:1500], "```"]
+              "", "```", whole_text(st, 1500, "完整工作区状态请协调者重新读取 git status。", unit="状态行", mode="lines"), "```"]
         if stat:
-            p += ["", "```", stat[:800], "```"]
+            p += ["", "```", whole_text(stat, 800, "完整工作区统计请协调者重新读取 git diff --stat。", unit="统计行", mode="lines"), "```"]
         p += ["", "怎么办:①先读相关文件的现状 ②如果是你这张卡该做的、且已经做对了,"
               "就在证据里说明「这部分上一轮已完成」并继续剩下的 ③如果不是你的活,别碰。"]
     out = "\n".join(p)
@@ -2360,6 +2345,7 @@ def handle_legacy(t, worker):
             #   有产出但验证挂了就不算交付(把真实输出交给下一次尝试)。
             vr = run_verify(t) if ev else None
             if vr:
+                save_verify_log(vr, os.path.join(EVID, "verify_runs", run_id, f"attempt-{attempt}-legacy.log"))
                 ev += chr(10) + chr(10) + fmt_verify(vr)
                 log(f"  验证 {vr['key']}: " + ("通过" if vr["ok"] else f"失败 rc={vr.get('rc')}"))
 
@@ -2386,7 +2372,8 @@ def handle_legacy(t, worker):
                 return "wait"
             if vr and not vr["ok"]:
                 tails.append(f"[第 {attempt} 次 验证 {vr['key']} 失败 rc={vr.get('rc')}]" + chr(10) +
-                             (vr.get("out") or "")[-1500:])
+                             whole_text(vr.get("full_out", vr.get("out")), 1500,
+                                        "完整验证日志：" + (vr.get("log_path") or "保存失败，请协调者处理"), unit="输出行", mode="lines"))
             else:
                 tails.append(f"[第 {attempt} 次 rc={rc}]" + chr(10) + str(tail))
             # ⭐失败指纹刹车: 同一指纹**连续 2 次**就不再烧。
@@ -2562,13 +2549,8 @@ def handle(t, worker):
                 reason = "evidence_contract"
             log_path = os.path.join(log_dir, f"attempt-{attempt}-round-{number}.log")
             if vr:
-                try:
-                    with io.open(log_path, "w", encoding="utf-8", newline="") as output:
-                        output.write(str(vr.get("full_out", vr.get("out")) or ""))
-                    vr["log_path"] = log_path
-                    vr["log_bytes"] = os.path.getsize(log_path)
-                except OSError:
-                    vr["code"], vr["ok"], reason = "VERIFY_LOG_UNAVAILABLE", False, "environment"
+                if not save_verify_log(vr, log_path):
+                    reason = "environment"
                 if contract:
                     appendix = (f"—— 宿主验证附录 ——\n{vr.get('cmd') or vr.get('key')} -> pass {1 if vr['ok'] else 0} / fail {0 if vr['ok'] else 1}（命令数）\n"
                                 + (f"日志：{log_path}（{vr['log_bytes']} UTF-8 bytes）" if vr.get("log_path") else "日志保存失败"))

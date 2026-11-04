@@ -1086,6 +1086,23 @@ function taskHistoryRecord(db,{id,kind,seq}){
   const row=db.prepare("SELECT id,at,task_id,actor,detail FROM task_events WHERE task_id=? AND kind=? AND json_extract(detail,'$.seq')=?").get(Number(id),TASK_RECORD_KINDS[kind],seq);
   return row?{event_id:Number(row.id),task_id:Number(row.task_id),at:row.at,actor:row.actor,...JSON.parse(row.detail)}:null;
 }
+function taskHistoryRefs(db,id){
+  const refs={};
+  for(const [kind,eventKind] of Object.entries(TASK_RECORD_KINDS)){
+    // 恢复说明等路径会追加最新投影；只有正文仍对应原记录才可把它标成这个序号。
+    const record=db.prepare(`WITH latest AS (
+      SELECT detail FROM task_events WHERE task_id=? AND kind=? ORDER BY json_extract(detail,'$.seq') DESC LIMIT 1
+    ) SELECT json_extract(detail,'$.seq') AS seq,json_extract(detail,'$.source') AS source,
+      length(json_extract(detail,'$.note'))>0 AS has_note,
+      CASE WHEN ?='evidence' THEN json_extract(detail,'$.evidence')=coalesce(t.result,'')
+      WHEN json_extract(detail,'$.source')='resolve' THEN length(json_extract(detail,'$.note'))>0 AND json_extract(detail,'$.note')=coalesce(t.last_note,'')
+      ELSE json_extract(detail,'$.note')=coalesce(t.verdict_note,'') END AS matches_current
+      FROM latest JOIN tasks t ON t.id=?`).get(Number(id),eventKind,kind,Number(id));
+    if(record&&record.matches_current===1&&Number.isSafeInteger(record.seq)&&record.seq>0)
+      refs[kind]={seq:record.seq,source:record.source??"unknown",...(kind==="decisions"?{has_note:record.has_note===1}:{})};
+  }
+  return refs;
+}
 function decisionRecordSnapshot(t,source,{note=null,verdict=null,resolvedBy=null}={}){
   return {source,run_id:source==="legacy"?null:t.run_id??null,
     note:note??String(t.last_note??""),verdict,resolved_by:resolvedBy,
@@ -3409,7 +3426,7 @@ module.exports = {
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,
   reopen, rearmDone, deferToRearm, completeGoals, stuckWhy,
-  list, get, counts, events, taskHistoryRecord, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
+  list, get, counts, events, taskHistoryRecord, taskHistoryRefs, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
   DEFAULT_ROUTE,
   verifyRegistry, assertVerify,
   // 给人看的两段白话:判据各一处(面板只渲染,不自己解析证据、不自己算退路)。

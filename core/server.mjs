@@ -301,6 +301,7 @@ const unnamedOf = (t) => {
 // file names, hashes and controlled download endpoints — never source paths.
 const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
   ...t,
+  history_refs:store.taskHistoryRefs(db,t.id),
   execution_trace: taskExecutionView(db, t),
   verification_repair:repair.policy,
   ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
@@ -2858,7 +2859,7 @@ const server = http.createServer(async (req, res) => {
       const rt = url.searchParams.get("runtime") || reviewSeatRuntime();
       const all = store.pendingReview(db);
       const isHeld = (t) => !!REVIEW_ANTI_AFFINITY && !!t.last_runtime && t.last_runtime === rt;
-      return json(res, 200, { tasks: all.filter((t) => !isHeld(t)),
+      return json(res, 200, { tasks: all.filter((t) => !isHeld(t)).map(t=>({...t,history_refs:store.taskHistoryRefs(db,t.id)})),
                               held: all.filter(isHeld).map((t) => ({ id: t.id, last_runtime: t.last_runtime })),
                               anti_affinity: REVIEW_ANTI_AFFINITY, reviewer_runtime: rt });
     }

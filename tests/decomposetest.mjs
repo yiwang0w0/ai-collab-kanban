@@ -114,9 +114,24 @@ console.log("\n[③ a goal that continues an earlier goal decomposes WITH its re
   ok("⭐a non-goal parent is NOT treated as a continuation",
      !/衔接既往目标/.test(base({ prev: { id: 9, kind: "task", subject: "普通卡", status: "done" } })));
   ok("no predecessor ⇒ no continuation block at all", !/衔接既往目标/.test(base()));
-  ok("a very long record is truncated (the prompt travels as one argv element)",
-     base({ prev: { ...prev, result: "x".repeat(5000) } }).includes("x".repeat(1200)) &&
-     !base({ prev: { ...prev, result: "x".repeat(5000) } }).includes("x".repeat(1201)));
+  const oversized = { ...prev, result: "不可切开的前作证据：" + "x".repeat(5000) };
+  const omitted = base({ prev: oversized });
+  ok("超长单段前作证据整体省略，指回原卡且不改原文",
+     !omitted.includes("不可切开的前作证据：") && omitted.includes("省略") && omitted.includes("历史编号未知") && oversized.result.endsWith("x".repeat(5000)));
+  const latest = "最新的完整证据段落。", old = "较早的完整段落：" + "x".repeat(1190);
+  const selected = base({ prev: { ...prev, result: old + "\n\n" + latest } });
+  ok("前作预算优先最新完整段落，并标原省略项号",
+     selected.includes(latest) && !selected.includes("较早的完整段落：") && /原文项号[：:]\s*1/.test(selected));
+  const code = "```text\n不可拆的围栏块\n\n" + "x".repeat(1500) + "\n```";
+  const fence = base({ prev: { ...prev, result: "保留的小段。\n\n" + code } });
+  ok("代码围栏不会按空行拆开或留下半块", fence.includes("保留的小段。") && !fence.includes("不可拆的围栏块") && !fence.includes("```text"));
+  const literalFence = base({ prev: { ...prev, result: "```text\n围栏开头\n```literal\n\n" + "x".repeat(2000) + "\n```" } });
+  ok("带文字后缀的同类标记不是闭围栏，超长围栏仍整块省略",
+     !literalFence.includes("围栏开头") && !literalFence.includes("```literal") && literalFence.includes("省略"));
+  const emoji = "😀".repeat(700) + "完整结尾。";
+  ok("前作预算按Unicode字符计数，不把emoji的UTF16长度误当正文长度", base({ prev: { ...prev, result: emoji } }).includes(emoji));
+  const numbered = base({ prev: { ...oversized, history_refs: { evidence: { seq: 7, source: "report" } } } });
+  ok("仅引用输入中真实存在的历史序号", numbered.includes("GET /api/tasks/3/evidence/7") && !omitted.includes("/evidence/"));
 }
 
 console.log("\n[④ the output contract the server depends on]");

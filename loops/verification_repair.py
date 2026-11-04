@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """验证续修的纯判定；不启动进程，不读取环境或看板。"""
 import re
+from prompt_items import whole_text
 
 
 _ENVIRONMENT = re.compile(
@@ -36,13 +37,10 @@ def classify(rc, tail, verification, evidence=None):
 def repair_prompt(verification, log_path, evidence_path, round_number):
     """只携带本轮失败；长输出按完整段落取舍，全文在原 run 日志。"""
     output = str(verification.get("full_out", verification.get("out")) or "").strip()
-    parts, size = [], 0
-    for part in re.split(r"\n\s*\n", output):
-        if size + len(part) + 2 <= 4500:
-            parts.append(part); size += len(part) + 2
+    excerpt = whole_text(output, 4500, f"请协调者从完整日志 {log_path} 取回所需原文；未取得必要项时按原规则交回原卡等待。")
     return (f"本次尝试第 {round_number} 轮，就地修复刚才的验证失败。保持原任务、会话、模型、强度与权限。\n"
             f"验证键：{verification.get('key')}，退出码：{verification.get('rc')}。\n"
-            + "\n\n".join(parts) + ("\n（其余完整项见日志。）" if size < len(output) else "")
+            + excerpt
             + f"\n完整验证日志：{log_path}" + (f"（{verification['log_bytes']} UTF-8 bytes）" if verification.get("log_bytes") is not None else "")
             + f"\n更新交付证据：{evidence_path}\n"
               "只处理这次失败；如确实卡住请明确说明，不另开任务或提高档位。")
