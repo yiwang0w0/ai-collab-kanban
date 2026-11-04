@@ -2397,7 +2397,8 @@ const EXECUTOR_WRITES = (p) =>
   p === "/api/claim" ||
   /^\/api\/tasks\/\d+\/(?:claim|heartbeat|report)$/.test(p) ||
   /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
-  /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p);
+  /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p) ||
+  p === "/api/approvals/request";
 const REVIEW_WRITES = (p) =>
   p === "/api/pools/exhausted" ||
   /^\/api\/tasks\/\d+\/(?:resolve|autoreview)$/.test(p);
@@ -2768,6 +2769,15 @@ const decodeApprovalId = (raw) => {
 };
 async function approvalsRoute(req, res, url, p, m, boardRole) {
   if (m === "GET" && p === "/api/approvals") return json(res, 200, approvalList());
+  // 执行者主动请求批准(例如「重启共享设备上的应用」):只追加的记录,决定后执行者按 approval_id 查结果。
+  if (m === "POST" && p === "/api/approvals/request") {
+    const ex = asExecutor(req, res); if (!ex) return;
+    const b = await readBody(req);
+    const r = approvals.addRequest(db, ex.id, { action: b.action, risk: b.risk });
+    coord.appendJournal(db, ex.id, { kind: "approval.requested", body: approvals.oneLine(`请求批准 ${r.approval_id}(${r.risk}):${r.action}`, 300) });
+    emit("approval.requested", { id: r.approval_id, executor: ex.id });
+    return json(res, 201, { request: r });
+  }
   if (m === "GET" && p === "/api/approvals/decisions")
     return json(res, 200, { decisions: approvals.listDecisions(db, { limit: url.searchParams.get("limit") }) });
   const md = p.match(/^\/api\/approvals\/([^/]+)$/);
