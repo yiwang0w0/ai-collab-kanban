@@ -626,6 +626,13 @@
   .coord-j{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:var(--sp-2);padding:var(--sp-1) 0;border-bottom:1px solid var(--line);font-size:var(--fs-sm)}
   .coord-j > span{min-width:0;overflow-wrap:anywhere}
   .coord-j .arts{display:block;color:var(--dim);font-family:var(--mono);font-size:var(--fs-xs)}
+  /* 待你批准:强调色左边条只给这一块;批准令牌的表单与一次性显示框。 */
+  .coord-row[data-tone="need"]{box-shadow:inset 3px 0 0 var(--accent);padding-left:var(--sp-2)}
+  .apv-acts{display:flex;gap:var(--sp-1);flex-wrap:wrap;justify-content:flex-end}
+  .apt-form{display:flex;gap:var(--sp-2);align-items:end;flex-wrap:wrap;font-size:var(--fs-sm)}
+  .apt-form .note.ok{color:var(--ok)} .apt-form .note.bad{color:var(--warn)}
+  .apt-new{display:flex;gap:var(--sp-2);align-items:center;flex-wrap:wrap;margin-top:var(--sp-2);font-size:var(--fs-sm)}
+  .apt-new input{flex:1 1 280px;min-width:0;font-family:var(--mono)}
   @media (max-width:620px){
     .coord{padding:var(--sp-3)}
     .coord-row{grid-template-columns:minmax(0,1fr) auto}
@@ -1103,8 +1110,25 @@
   </section>
   <section class="set-sec set-target" id="set-coord" aria-labelledby="set-coord-h">
     <div class="set-h"><h3 id="set-coord-h"><svg class="ic" aria-hidden="true"><use href="#i-board"/></svg>协作</h3>
-      <p>各执行者的状态、资源锁、最近流水和待接手的交接。</p></div>
+      <p>待你批准的事项、各执行者的状态、资源锁、最近流水、待接手的交接和批准令牌。</p></div>
+    <div class="coord" id="approvals"><p class="set-empty">正在读取待批准事项…</p></div>
     <div class="coord" id="coord"><p class="set-empty">正在读取协作状态…</p></div>
+    <!-- 批准令牌:静态表单,不随 refresh 重画,否则刚生成、只显示一次的令牌会被抹掉。 -->
+    <div class="coord" id="apt-box">
+      <div><h4>批准令牌</h4>
+        <p class="dim" id="apt-remote">正在读取远程入口状态…</p>
+        <div id="apt-list"></div></div>
+      <form class="apt-form" id="apt-form" autocomplete="off">
+        <label class="fld"><span>令牌名称</span><input id="apt-label" maxlength="40" placeholder="例如 手机" aria-label="批准令牌名称" required></label>
+        <button type="submit" class="pri">生成批准令牌</button>
+        <span class="note" id="apt-note" aria-live="polite"></span>
+      </form>
+      <div class="apt-new" id="apt-new" hidden>
+        <span>新令牌只显示这一次</span>
+        <input id="apt-new-token" readonly aria-label="新生成的批准令牌">
+        <button type="button" id="apt-copy">复制</button>
+      </div>
+    </div>
   </section>
   <section class="set-sec set-target" id="set-add" aria-labelledby="set-add-h">
     <div class="set-h"><h3 id="set-add-h"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>加线</h3>
@@ -3037,6 +3061,41 @@ function renderCoord(){
     `<div><h4>最近流水</h4>` + (journal.length ? journal.map(jRow).join("") : `<p class="set-empty">执行者用 board.py journal add 记第一条流水。</p>`) + `</div>`;
 }
 
+// ── 待你批准:数据来自 /api/approvals,按钮走同一个决定接口,来源记为 panel。
+let approvalData = null, aptData = null;
+const APV_KIND = { decision: "待裁定", delivery: "待验收", release: "放行确认", version: "版本确认", lock: "逾期锁", request: "执行者请求" };
+const APV_RISK = { low: "低风险", medium: "中风险", high: "高风险" };
+function renderApprovals(){
+  const box = document.getElementById("approvals");
+  const d = approvalData;
+  if (!d){ box.innerHTML = `<div><h4>待你批准</h4><p class="set-empty">待批准事项暂时读不到，看板恢复后自动刷新。</p></div>`; return; }
+  const list = d.approvals || [];
+  const btn = (a, x) => `<button type="button"${x === "approve" ? ' class="pri"' : ""} data-apv="${esc(a.id)}" data-apv-decision="${x}"` +
+    ` data-apv-version="${esc(String(a.expected_version))}">${esc(a.labels?.[x] || (x === "approve" ? "批准" : "拒绝"))}</button>`;
+  const row = (a) => `<div class="coord-row" data-tone="need">` +
+    `<span>${esc(copyLabel(APV_KIND, a.kind, a.kind))}${a.risk ? ` · ${esc(copyLabel(APV_RISK, a.risk, a.risk))}` : ""}</span>` +
+    `<span>${esc(a.title || "–")}</span>` +
+    `<span>${esc(a.summary)}${a.blocked ? ` <span class="dim">${esc(a.blocked)}</span>` : ""}</span>` +
+    `<span class="dim">${esc(a.created_at ? localTime(a.created_at) : "–")}</span>` +
+    `<span class="apv-acts">${(a.actions || []).map((x) => btn(a, x)).join("")}</span></div>`;
+  box.innerHTML = `<div><h4>待你批准 ${list.length}</h4>` +
+    (list.length ? list.map(row).join("") : `<p class="set-empty">没有要你批准的事项。</p>`) + `</div>`;
+}
+function renderApt(){
+  const d = aptData, rem = document.getElementById("apt-remote"), box = document.getElementById("apt-list");
+  if (!d){ rem.textContent = "批准令牌暂时读不到，看板恢复后自动刷新。"; box.innerHTML = ""; return; }
+  const r = d.remote || {};
+  rem.textContent = !r.enabled ? "远程入口已关闭，在配置里打开 remote_access 后可用批准令牌远程批准。"
+    : `远程入口：${(r.listening || []).join("、") || "未在监听"} · 允许来源 ${(r.allow_ips || []).join("、")}` +
+      ((r.errors || []).length ? ` · 监听失败 ${r.errors.join("、")}` : "");
+  const live = (d.tokens || []).filter((t) => t.active);
+  box.innerHTML = live.length ? live.map((t) => `<div class="coord-row"><span class="mono">#${t.id}</span><span>${esc(t.label)}</span>` +
+      `<span class="dim">生成于 ${esc(localTime(t.created_at))}</span>` +
+      `<span class="dim">${t.last_used_at ? "最近使用 " + esc(ago(Date.parse(t.last_used_at))) : "未使用"}</span>` +
+      `<span><button type="button" class="danger" data-apt-revoke="${t.id}">吊销</button></span></div>`).join("")
+    : `<p class="set-empty">生成一个批准令牌，填进远程批准客户端。</p>`;
+}
+
 let MODELS = [], EFFORTS = [], RUNTIMES = [], MAXP = 0;  // MAXP=0 ⇒ old server, no parallel
 let EXECUTION_PROFILES = [], CURRENT_WORKSPACE = null;
 const cfg = document.getElementById("cfg");
@@ -3556,7 +3615,7 @@ async function loadTaskEvents(){
 async function refresh(){
   const started = Date.now();
   try{
-    const [r, mres, wres, cres, eres, ures, qres, sres, kres] = await Promise.all([
+    const [r, mres, wres, cres, eres, ures, qres, sres, kres, ares, tres] = await Promise.all([
       fetch("/api/tasks?archived=false").then((x) => x.json()),
       fetch("/api/meta").then((x) => x.json()),
       fetch("/api/workers").then((x) => x.json()),
@@ -3566,6 +3625,8 @@ async function refresh(){
       fetch("/api/requests?open=1").then((x) => x.json()).catch(() => ({ requests: [] })),
       fetch("/api/setup").then((x) => x.json()).catch(() => null),
       fetch("/api/coord").then((x) => x.ok ? x.json() : null).catch(() => null),
+      fetch("/api/approvals").then((x) => x.ok ? x.json() : null).catch(() => null),
+      fetch("/api/approval-tokens").then((x) => x.ok ? x.json() : null).catch(() => null),
     ]);
     const wasDown = !!boardDown;
     boardDown = null; lastGoodRead = Date.now();
@@ -3596,8 +3657,8 @@ async function refresh(){
     tasks = r.tasks; taskEvents = eres; usageByCard = (ures && ures.cards) || {};
     meta = { ...mres, archived_count: r.archived_count, caps: r.caps || {} };
     byId.clear(); for (const t of tasks) byId.set(t.id, t);
-    coordData = kres;
-    render(); renderRig(); renderCoord(); renderCtx(); homeAfterRefresh(); tocSync();
+    coordData = kres; approvalData = ares; aptData = tres;
+    render(); renderRig(); renderCoord(); renderApprovals(); renderApt(); renderCtx(); homeAfterRefresh(); tocSync();
     sideAfterRefresh();
     if (wasDown) loadHomeExtras(true);   // 断开前的多电脑与运行检查结果需要重新读取。
   }catch(e){
@@ -4111,6 +4172,46 @@ document.getElementById("quick").addEventListener("click", async (e) => {
 // v0.4: add a line from the panel. The server validates, persists to the
 // config file and rebuilds its registry; the rig picks the new line up on the
 // next refresh (it reads /api/workers.lines every time — nothing is cached).
+// 待你批准的按钮与批准令牌的吊销:两押,第一下变成「再按=…」,4 秒不按复原。
+document.addEventListener("click", async (e) => {
+  const b = e.target.closest("button[data-apv], button[data-apt-revoke]");
+  if (!b) return;
+  if (b.dataset.armed !== "1"){
+    b.dataset.armed = "1"; b.dataset.orig = b.textContent; b.classList.add("armed");
+    armSwap(b, b.dataset.aptRevoke ? "再按=确认吊销" : b.dataset.apvDecision === "approve" ? "再按=确认批准" : "再按=确认拒绝");
+    setTimeout(() => { if (b.dataset.armed === "1"){ b.dataset.armed = ""; b.classList.remove("armed"); disarmRestore(b); } }, 4000);
+    return;
+  }
+  b.dataset.armed = ""; b.classList.remove("armed"); disarmRestore(b); b.disabled = true;
+  try {
+    if (b.dataset.aptRevoke) await post(`/api/approval-tokens/${b.dataset.aptRevoke}/revoke`, {});
+    else {
+      const v = b.dataset.apvVersion;
+      await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`,
+                 { decision: b.dataset.apvDecision, source: { client: "panel" }, expected_version: /^\d+$/.test(v) ? Number(v) : v });
+    }
+  } catch (err){ alert("操作失败:" + copyError(err)); }
+  finally { b.disabled = false; refresh(); }
+});
+document.getElementById("apt-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const labelEl = document.getElementById("apt-label"), note = document.getElementById("apt-note");
+  const label = labelEl.value.trim();
+  if (!label) return;
+  note.className = "note"; note.textContent = "生成中…";
+  try {
+    const r = await post("/api/approval-tokens", { label });
+    document.getElementById("apt-new-token").value = r.token;
+    document.getElementById("apt-new").hidden = false;
+    labelEl.value = "";
+    note.className = "note ok"; note.textContent = `已生成批准令牌 #${r.record.id}`;
+    refresh();
+  } catch (err){ note.className = "note bad"; note.textContent = "生成失败:" + copyError(err); }
+});
+document.getElementById("apt-copy").addEventListener("click", async () => {
+  const v = document.getElementById("apt-new-token").value, note = document.getElementById("apt-note");
+  try { await navigator.clipboard.writeText(v); note.textContent = "已复制"; } catch { note.textContent = "复制失败，请手动选中复制"; }
+});
 document.getElementById("line-add").addEventListener("submit", async (e) => {
   e.preventDefault();
   const idEl = document.getElementById("line-add-id");
