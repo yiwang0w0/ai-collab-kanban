@@ -2649,7 +2649,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: "after 必须是非负整数" });
       if (!Number.isInteger(limit) || limit < 1 || limit > 50000)
         return json(res, 400, { error: "limit 必须是 1..50000" });
-      const evs = store.events(db, { taskId, after, limit });
+      const evs = store.events(db, { taskId, after, limit, metadataOnly:true });
       // `last_id` is the cursor for the next page; echoing `after` when the page is
       // empty is what lets a caller detect "no progress" instead of looping forever.
       return json(res, 200, { events: evs, last_id: evs.length ? evs[evs.length - 1].id : after });
@@ -3091,6 +3091,14 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    const historyPath=p.match(/^\/api\/tasks\/(\d+)\/(decisions|evidence)\/(\d+)$/);
+    if(historyPath){
+      if(m!=="GET")return json(res,405,{error:"方法不允许"});
+      const id=Number(historyPath[1]);
+      if(!store.get(db,id))return json(res,404,{error:"不存在"});
+      const record=store.taskHistoryRecord(db,{id,kind:historyPath[2],seq:Number(historyPath[3])});
+      return record?json(res,200,{[historyPath[2]==="decisions"?"decision":"evidence"]:record}):json(res,404,{error:"不存在"});
+    }
     const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs))?$/);
     if (mt) {
       const id = Number(mt[1]);

@@ -673,6 +673,7 @@ function migrate(db) {
     migrateNodeIdentity(db);
     migrateRuns(db);
     migrateTaskVersions(db);
+    migrateTaskRecords(db);
     migrateLifecycle(db);
     db.exec(ownsTransaction ? "COMMIT TRANSACTION" : "RELEASE store_migrate");
   } catch (e) {
@@ -1051,12 +1052,14 @@ function appendEvent(db, { taskId, kind, actor = "system", detail = {} }) {
 
 /** Ordered by the autoincrement id, NOT by `at`: several migrations inside one
  *  millisecond share a timestamp and would come back shuffled. */
-function events(db, { taskId = null, after = 0, limit = 20000 } = {}) {
+function events(db, { taskId = null, after = 0, limit = 20000, metadataOnly = false } = {}) {
   const lim = Math.max(1, Math.min(50000, Number(limit) || 20000));
+  // 旧时间轴只接收原业务事件；正文记录在 SQL 分页前排除，避免短页漏掉后续事件。
+  const metadata=metadataOnly?" AND kind NOT IN ('decision.recorded','evidence.recorded')":"";
   const rows = taskId == null
-    ? db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? ORDER BY id LIMIT ?")
+    ? db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>?"+metadata+" ORDER BY id LIMIT ?")
         .all(Number(after) || 0, lim)
-    : db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? AND task_id=? ORDER BY id LIMIT ?")
+    : db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? AND task_id=?"+metadata+" ORDER BY id LIMIT ?")
         .all(Number(after) || 0, Number(taskId), lim);
   return rows.map((r) => {
     let detail = {};
@@ -1064,6 +1067,58 @@ function events(db, { taskId = null, after = 0, limit = 20000 } = {}) {
     return { id: Number(r.id), at: r.at, task_id: Number(r.task_id),
              kind: r.kind, actor: r.actor, detail };
   });
+}
+
+// 裁定与证据复用原事件库，各自按卡编号；不改变 tasks 上供既有读取方使用的最新投影。
+const TASK_RECORD_KINDS = Object.freeze({decisions:"decision.recorded",evidence:"evidence.recorded"});
+function appendTaskRecord(db,id,kind,detail,actor){
+  const eventKind=TASK_RECORD_KINDS[kind];
+  if(!eventKind||!db.isTransaction)throw err(ERR.INTERNAL,"历史记录必须在原任务写事务中追加");
+  const prior=Number(db.prepare("SELECT COALESCE(MAX(json_extract(detail,'$.seq')),0) AS seq FROM task_events WHERE task_id=? AND kind=?").get(Number(id),eventKind).seq);
+  if(!Number.isSafeInteger(prior)||prior>=Number.MAX_SAFE_INTEGER)throw err(ERR.CONFLICT,"历史序号不可继续递增");
+  const task=db.prepare("SELECT id,line,parent_id,status,kind,released FROM tasks WHERE id=?").get(Number(id));
+  if(!task)throw err(ERR.NOT_FOUND,"任务不存在");
+  return appendEvent(db,{taskId:id,kind:eventKind,actor,detail:eventState(task,{...detail,seq:prior+1})});
+}
+function taskHistoryRecord(db,{id,kind,seq}){
+  if(!Object.hasOwn(TASK_RECORD_KINDS,kind))throw err(ERR.BAD_INPUT,"未知历史类型");
+  if(!Number.isSafeInteger(seq)||seq<1)return null;
+  const row=db.prepare("SELECT id,at,task_id,actor,detail FROM task_events WHERE task_id=? AND kind=? AND json_extract(detail,'$.seq')=?").get(Number(id),TASK_RECORD_KINDS[kind],seq);
+  return row?{event_id:Number(row.id),task_id:Number(row.task_id),at:row.at,actor:row.actor,...JSON.parse(row.detail)}:null;
+}
+function decisionRecordSnapshot(t,source,{note=null,verdict=null,resolvedBy=null}={}){
+  return {source,run_id:source==="legacy"?null:t.run_id??null,
+    note:note??String(t.last_note??""),verdict,resolved_by:resolvedBy,
+    status:t.status,waiting_for:t.waiting_for??null,
+    decision_json:t.decision_json??null,decision_choice:t.decision_choice??null,
+    decision_sql_archive:t.decision_sql_archive??null,decision_receipt:t.decision_receipt??null,
+    verify_ok:t.verify_ok==null?null:Number(t.verify_ok)===1};
+}
+function migrateTaskRecords(db){
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS ux_task_record_seq ON task_events(task_id,kind,json_extract(detail,'$.seq'))
+    WHERE kind IN ('decision.recorded','evidence.recorded');
+    CREATE TRIGGER IF NOT EXISTS task_record_no_update BEFORE UPDATE ON task_events
+    WHEN OLD.kind IN ('decision.recorded','evidence.recorded') OR NEW.kind IN ('decision.recorded','evidence.recorded')
+      OR EXISTS (SELECT 1 FROM task_events WHERE id=NEW.id AND kind IN ('decision.recorded','evidence.recorded'))
+    BEGIN SELECT RAISE(ABORT,'task records are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS task_record_no_replace BEFORE INSERT ON task_events
+    WHEN EXISTS (SELECT 1 FROM task_events WHERE id=NEW.id AND kind IN ('decision.recorded','evidence.recorded'))
+    BEGIN SELECT RAISE(ABORT,'task records are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS task_record_no_delete BEFORE DELETE ON task_events
+    WHEN OLD.kind IN ('decision.recorded','evidence.recorded')
+    BEGIN SELECT RAISE(ABORT,'task records are append-only'); END;
+    CREATE TRIGGER IF NOT EXISTS task_record_sequence BEFORE INSERT ON task_events
+    WHEN NEW.kind IN ('decision.recorded','evidence.recorded') AND (
+      json_type(NEW.detail,'$.seq') IS NOT 'integer' OR json_extract(NEW.detail,'$.seq')>9007199254740991 OR
+      json_extract(NEW.detail,'$.seq')<>1+COALESCE((SELECT MAX(json_extract(detail,'$.seq')) FROM task_events WHERE task_id=NEW.task_id AND kind=NEW.kind),0))
+    BEGIN SELECT RAISE(ABORT,'task record sequence must advance by one'); END;`);
+  const recorded=new Set(db.prepare("SELECT DISTINCT task_id,kind FROM task_events WHERE kind IN ('decision.recorded','evidence.recorded')").all().map(r=>`${r.task_id}:${r.kind}`));
+  for(const t of db.prepare("SELECT * FROM tasks ORDER BY id").all()){
+    if(t.result!==null&&!recorded.has(`${t.id}:evidence.recorded`))
+      appendTaskRecord(db,t.id,"evidence",{source:"legacy",run_id:null,worker:null,outcome:null,evidence:String(t.result),original_updated_at:t.updated_at},"migration");
+    if((t.verdict_note!=null||t.last_verdict!=null||t.verdict!=null||t.decision_json!=null||t.auto_review_at!=null||t.decision_receipt!=null)&&!recorded.has(`${t.id}:decision.recorded`))
+      appendTaskRecord(db,t.id,"decisions",{...decisionRecordSnapshot(t,"legacy",{note:String(t.verdict_note??t.last_note??""),verdict:t.last_verdict??t.verdict??null,resolvedBy:t.resolved_by??null}),original_updated_at:t.updated_at},"migration");
+  }
 }
 
 /** Work spans: claim opens a span. If a span is still open (crash, re-claim), close
@@ -2064,6 +2119,7 @@ function report(db, { id, worker, outcome, evidence = "", runId }) {
         run_id: runId, outcome: String(outcome), waiting_for: waitingFor,
       }),
     });
+    appendTaskRecord(db,id,"evidence",{source:"report",run_id:runId,worker:String(worker),outcome:String(outcome),evidence:String(evidence)},worker);
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_report");
   } catch (e) { try { db.exec(ownsTransaction ? "ROLLBACK" : "ROLLBACK TO store_report; RELEASE store_report"); } catch {} throw e; }
   return { id: Number(id), status: "waiting", waiting_for: waitingFor };
@@ -2167,6 +2223,7 @@ function resolve(db, args) {
     const before = db.prepare(
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(Number(args.id));
     const out = resolveInner(db, {...args,...(args.prepareResolution ? args.prepareResolution() : {})});
+    const disposition=out.status==="done"?"close":out.status==="waiting"?"hold_for_review":"hand_back";
     const t = db.prepare(
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(Number(args.id));
     appendEvent(db, {
@@ -2174,19 +2231,19 @@ function resolve(db, args) {
       detail: eventState(t, {
         from_status: before ? before.status : null,
         verdict: String(args.verdict),
-        disposition: out.status === "done" ? "close"
-          : out.status === "waiting" ? "hold_for_review" : "hand_back",
+        disposition,
       }),
     });
+    appendTaskRecord(db,args.id,"decisions",{...decisionRecordSnapshot(db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(args.id)),"resolve",{verdict:String(args.verdict),resolvedBy:args.resolvedBy||"human"}),disposition},args.resolvedBy||"human");
     // A linked closure is a state transition caused by this ruling too — each closed
     // card gets its OWN history entry, or its close has no record on its own timeline.
     for (const cid of out.cascade?.closed || []) {
-      const ct = db.prepare(
-        "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(Number(cid));
+      const ct = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(cid));
       appendEvent(db, {
         taskId: cid, kind: "resolve", actor: "cascade",
         detail: eventState(ct, { from_status: null, verdict: "approve", cause_task_id: Number(args.id) }),
       });
+      appendTaskRecord(db,cid,"decisions",{...decisionRecordSnapshot(ct,"cascade",{note:String(ct.verdict_note??""),verdict:"approve",resolvedBy:"cascade"}),cause_task_id:Number(args.id)},"cascade");
     }
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_resolve");
     return out;
@@ -2451,6 +2508,7 @@ function markAutoReviewedInner(db, { id, note = "", decisionPackage = null, expe
          decisionPackage == null ? null : JSON.stringify(decisionPackage),
          receipt, receipt, Number(id), expectUpdatedAt, expectUpdatedAt);
   if (!r.changes) throw err(ERR.CONFLICT, `卡 #${id} 在审阅落盘的瞬间变了 —— 本轮判决作废`);
+  appendTaskRecord(db,id,"decisions",decisionRecordSnapshot(db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id)),"autoreview",{note:note?defuseRulingHeads(String(note)):"",resolvedBy:"auto"}),"auto");
   // Return what was written — not a second now() (the file's own rule).
   return { id: Number(id), auto_review_at: ts };
 }
@@ -3351,7 +3409,7 @@ module.exports = {
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,
   reopen, rearmDone, deferToRearm, completeGoals, stuckWhy,
-  list, get, counts, events, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
+  list, get, counts, events, taskHistoryRecord, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
   DEFAULT_ROUTE,
   verifyRegistry, assertVerify,
   // 给人看的两段白话:判据各一处(面板只渲染,不自己解析证据、不自己算退路)。

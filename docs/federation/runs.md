@@ -47,6 +47,19 @@
 
 缺失或格式错误返回 400；执行已结束、已换人或 ID 不是当前 run 返回 409；任务不存在返回 404。结果提交被拒绝时不写结果、状态和事件。心跳和重试的 SQL UPDATE 自身也带 run 条件，防止检查之后被另一进程重新领取。派生任务的父执行校验与插入放在同一个写事务内。
 
+## 裁定与交付历史
+
+每次成功 `report` 在同一任务事务中追加 `evidence.recorded`；`resolve`、`markAutoReviewed` 及实际联动结案分别追加 `decision.recorded`。两类记录复用 `task_events`，各自在同一张卡内从 `seq=1` 严格递增。数据库约束拒绝跳号、重复序号、旧条修改或删除，也拒绝通过改换事件类型绕过保护；记录写入失败会连同最新投影及任务版本一起回滚。陈旧运行、陈旧 CAS 和既有幂等回报不增加历史条数。
+
+- `GET /api/tasks/:id/decisions/:seq` 返回 `{decision: {...}}`，保留本次裁定的 `note`、`verdict`、来源、实际去向和当时的方案、选择、文件归档、执行回执；`decision_json`、`decision_sql_archive`、`decision_receipt` 按存储原文保留为 JSON 字符串或 `null`。
+- `GET /api/tasks/:id/evidence/:seq` 返回 `{evidence: {...}}`，含完整证据正文 `evidence`、运行、执行者和交付结果。
+
+两种读取都复用原 GET 任务的令牌与来源保护；任务或序号不存在返回 404。共同字段含 `seq`、`event_id`、`task_id`、`at`、`actor`、`source` 和原事件的任务位置快照。任务详情中的 `result`、`verdict_note`、决策包及回执仍是原来的最新投影，指纹、提示词和交付物检查不改为拼接全部历史。
+
+原 `/api/task-events` 保持状态与位置元数据事件集合，不携带这两类正文记录；在 SQL 分页前排除，原游标和时间轴判定不变。内部 `store.events()` 默认仍可读取全部事件，历史正文只从上述按序号接口按需读取。
+
+升级只把旧卡当前仍保存的证据和裁定各导入一条 `seq=1`，重复迁移不再导入，也不改旧卡版本或既有事件。旧拼接裁定原文不拆成猜测的多次裁定；空证据或有真实裁定元数据的空备注照样保存。导入记录标记 `source=legacy`，`at` 是导入时间，`original_updated_at` 仅是旧行快照时间；不推断旧证据的运行身份，不绕过退役或恢复写入闸。
+
 人工 CLI：
 
 ~~~text
