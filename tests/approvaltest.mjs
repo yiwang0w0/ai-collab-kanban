@@ -241,3 +241,64 @@ test("远程入口:关闭时不监听;打开后只认白名单来源与批准令
     assert.ok(rows.some((r) => r.status === 200 && r.method === "POST" && r.token_id === made.body.record.id));
   } finally { await B.stop(); }
 });
+
+test("流水记下来源与操作者;board.py approvals / approval-token;面板按钮走同一个决定接口", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const ex = await B.register("agent-c");
+    const tf = join(B.dir, "agent.tok"); writeFileSync(tf, ex + "\n");
+    const ask = async (action) => (await B.api("POST", "/api/approvals/request", ex, { action, risk: "low" })).body.request.approval_id;
+    const [r1, r2, r3] = [await ask("清理构建缓存"), await ask("换测试设备的系统语言"), await ask("重启共享端口上的服务")];
+    let c = B.cli("approvals", "ls");
+    assert.equal(c.code, 0, c.out);
+    for (const id of [r1, r2, r3]) assert.ok(c.out.includes(id), c.out);
+    assert.match(c.out, /清理构建缓存/);
+    assert.notEqual(B.cli("approvals", "approve", r1, "--token-file", tf).code, 0, "执行者令牌不能决定");
+    assert.equal((c = B.cli("approvals", "approve", r1)).code, 0, c.out);
+    assert.match(c.out, new RegExp(`已批准 ${r1}`));
+    const note = join(B.dir, "note.txt"); writeFileSync(note, "等这批测试跑完再换", "utf8");
+    assert.equal((c = B.cli("approvals", "reject", r2, "--file", note, "--device", "desk-1")).code, 0, c.out);
+    c = B.cli("approvals", "approve", r2);
+    assert.notEqual(c.code, 0); assert.match(c.out, /409/);
+    assert.equal((await B.decide(r3, { decision: "approve", source: src("panel"), expected_version: 1 })).status, 200);
+
+    const decided = (await B.journal()).filter((e) => e.kind === "approval.decided");
+    assert.equal(decided.length, 3);
+    assert.ok(decided.every((e) => e.executor === "operator"));
+    assert.match(decided[0].body, new RegExp(`^批准 ${r1}。操作者 operator,来源 cli,经 local`));
+    assert.match(decided[1].body, new RegExp(`^拒绝 ${r2}。操作者 operator,来源 cli/desk-1,经 local`));
+    assert.match(decided[2].body, /来源 panel,经 local/);
+    const asked = (await B.journal()).filter((e) => e.kind === "approval.requested");
+    assert.deepEqual(asked.map((e) => e.executor), ["agent-c", "agent-c", "agent-c"]);
+    const recs = (await B.api("GET", "/api/approvals/decisions", B.operator)).body.decisions;
+    const rec2 = recs.find((d) => d.approval_id === r2);
+    assert.deepEqual(rec2.source, { client: "cli", device: "desk-1" });
+    assert.equal(rec2.note, "等这批测试跑完再换"); assert.equal(rec2.via, "local"); assert.equal(rec2.journal_id, decided[1].id);
+
+    const save = join(B.dir, "apr.tok");
+    assert.equal((c = B.cli("approval-token", "create", "--label", "phone", "--save", save)).code, 0, c.out);
+    const tok = readFileSync(save, "utf8").trim();
+    assert.match(tok, /^apr_/); assert.ok(!c.out.includes(tok), "存文件时不在屏幕上显示令牌");
+    assert.notEqual(B.cli("approval-token", "create", "--label", "x", "--token-file", tf).code, 0, "执行者不能生成批准令牌");
+    assert.match((c = B.cli("approval-token", "ls")).out, /远程入口:已关闭[^]*#1\s+phone\s+有效/);
+    assert.equal(B.cli("approval-token", "revoke", "1").code, 0);
+    assert.match(B.cli("approval-token", "ls").out, /#1\s+phone\s+已吊销/);
+    assert.notEqual(B.cli("approval-token", "revoke", "1").code, 0, "已吊销的再吊销 409");
+
+    // 面板:待你批准的按钮走同一个决定接口,来源记为 panel;渲染只用事项自带的字段
+    const html = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
+    assert.ok(html.includes('await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`,'));
+    assert.ok(html.includes('source: { client: "panel" }'));
+    const a = html.indexOf("function renderApprovals(){"), z = html.indexOf("\n}\n", a) + 3;
+    const box = { innerHTML: "" };
+    const env = { document: { getElementById: () => box }, esc: (x) => String(x ?? "").replace(/[&<>"']/g, (ch) => "&#" + ch.charCodeAt(0) + ";"),
+      copyLabel: (l, v, f) => Object.hasOwn(l, v) ? l[v] : f, localTime: (i) => i.slice(11, 16),
+      APV_KIND: { request: "执行者请求" }, APV_RISK: { high: "高风险" } };
+    const render = new Function(...Object.keys(env), "let approvalData;" + html.slice(a, z) +
+      ";return (d) => { approvalData = d; renderApprovals(); return document.getElementById(\"approvals\").innerHTML; };")(...Object.values(env));
+    const out = render({ approvals: [{ id: "request:9:1", kind: "request", title: "<x>", summary: "重启共享设备上的应用", risk: "high",
+      created_at: new Date().toISOString(), expected_version: 1, actions: ["approve", "reject"], labels: { approve: "批准", reject: "拒绝" } }] });
+    assert.match(out, /待你批准 1[^]*执行者请求 · 高风险[^]*data-apv="request:9:1" data-apv-decision="approve" data-apv-version="1">批准/);
+    assert.ok(!out.includes("<x>"), "标题转义");
+  } finally { await B.stop(); }
+});

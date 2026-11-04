@@ -38,6 +38,13 @@
   $P handoff ls [--all] | handoff show <id> | handoff ack <id>
   take / claim 可带 --lease <分钟>(执行者令牌上限 240);持执行者令牌时 --as 可省略
 
+批准接口(docs/批准接口.md):
+  $P approvals ls                            # 待批准事项:id、摘要、可选动作
+  $P approvals approve|reject <事项id> [--file note.txt] [--client cli] [--device 名] [--version <expected_version>]
+                                             # 不给 --version 时用事项 id 的版本段;版本变了返回 409
+  $P approval-token create (--label <名称> | --file label.txt) [--save 令牌文件]   # 操作员;明文只显示一次
+  $P approval-token revoke <id> | approval-token ls
+
 Task control writes (take/edit/approve/reject/reopen/release/hold/archive) require
 --version <aggregate_version from show>; a JSON edit payload may carry expected_version.
 
@@ -67,7 +74,7 @@ text: a bare backslash inside inline JSON is an escape error (measured — a car
 creation died on a C:\\ path), while a file passed via --file needs no escaping
 gymnastics; inside JSON strings write / or a doubled backslash.
 """
-import json, sys, io, os, re, urllib.request, urllib.error
+import json, sys, io, os, re, urllib.request, urllib.error, urllib.parse
 
 # Python on Windows writes to PIPES in the locale code page (GBK, CP932, ...).
 # Card subjects legitimately contain non-ASCII — a single CJK wave dash was enough
@@ -292,6 +299,68 @@ def coord_cmd(cmd):
         else:
             sys.exit("handoff ls [--all] | handoff show <id> | handoff ack <id>")
 
+def approvals_cmd(cmd):
+    sub = pos(2) or ""
+    if cmd == "approvals":
+        if sub == "ls":
+            s, d = call("GET", "/api/approvals")
+            if s >= 400: die(s, d)
+            if not d["approvals"]: print("没有待批准的事项")
+            for a in d["approvals"]:
+                risk = f" [{a['risk']}]" if a.get("risk") else ""
+                print(f"  {a['id']}{risk}  {a['summary']}  可选 {'/'.join(a.get('actions') or [])}")
+        elif sub in ("approve", "reject"):
+            aid = pos(3)
+            if not aid or aid.count(":") < 2:
+                sys.exit(f"approvals {sub} <事项id> [--file note.txt] [--client cli] [--device 名] [--version <expected_version>]")
+            ver = arg("--version") or aid.split(":", 2)[2]
+            src = {"client": arg("--client") or "cli"}
+            if arg("--device"): src["device"] = arg("--device")
+            body = {"decision": sub, "note": readfile(arg("--file")).strip(), "source": src,
+                    "expected_version": int(ver) if ver.isascii() and ver.isdigit() else ver}
+            s, d = call("POST", f"/api/approvals/{urllib.parse.quote(aid, safe='')}/decide", body)
+            if s == 409 and d.get("current"):
+                sys.exit(f"409 {d.get('error')}\n  当前这一项:{d['current']['id']}  {d['current']['summary']}")
+            if s >= 400: die(s, d)
+            res = d.get("result") or {}
+            print(f"{'已批准' if sub == 'approve' else '已拒绝'} {aid}" +
+                  (f" → 卡 #{res['task_id']} {LABEL_of(res['status'])}" if res.get("status") else "") +
+                  (" → 看板将重启" if res.get("restarting") else ""))
+        else:
+            sys.exit("approvals ls | approvals approve|reject <事项id>")
+    elif cmd == "approval-token":
+        if sub == "create":
+            label = arg("--label") or readfile(arg("--file")).strip()
+            if not label: sys.exit("approval-token create (--label <名称> | --file label.txt) [--save 令牌文件]")
+            save = arg("--save")
+            if save and os.path.exists(save): sys.exit(f"{save} 已存在,不覆盖")
+            s, d = call("POST", "/api/approval-tokens", {"label": label})
+            if s >= 400: die(s, d)
+            rec = d["record"]
+            if save:
+                with io.open(save, "x", encoding="utf-8") as f: f.write(d["token"] + chr(10))
+                print(f"已生成批准令牌 #{rec['id']}({rec['label']});令牌已写入 {save}")
+            else:
+                print(f"已生成批准令牌 #{rec['id']}({rec['label']})")
+                print(f"令牌(只显示这一次):{d['token']}")
+        elif sub == "revoke":
+            tid = pos(3)
+            if not tid or not tid.isascii() or not tid.isdigit(): sys.exit("approval-token revoke <id>")
+            s, d = call("POST", f"/api/approval-tokens/{tid}/revoke", {})
+            if s >= 400: die(s, d)
+            print(f"已吊销批准令牌 #{tid}")
+        elif sub == "ls":
+            s, d = call("GET", "/api/approval-tokens")
+            if s >= 400: die(s, d)
+            r = d.get("remote") or {}
+            print("远程入口:" + (f"监听 {', '.join(r.get('listening') or []) or '-'} · 允许 {', '.join(r.get('allow_ips') or [])}"
+                                 + (f" · 监听失败 {', '.join(r['errors'])}" if r.get("errors") else "") if r.get("enabled") else "已关闭"))
+            if not d["tokens"]: print("没有批准令牌")
+            for t in d["tokens"]:
+                print(f"  #{t['id']:<4} {t['label']:<16} {'有效' if t['active'] else '已吊销'}  生成 {t['created_at']}  最近使用 {t['last_used_at'] or '-'}")
+        else:
+            sys.exit("approval-token create|revoke|ls")
+
 _META = None
 def meta():
     """GET /api/meta, once per process. The display labels for status / waiting_for have
@@ -316,6 +385,9 @@ def main():
 
     if cmd in ("exec", "lock", "journal", "handoff"):
         coord_cmd(cmd)
+
+    elif cmd in ("approvals", "approval-token"):
+        approvals_cmd(cmd)
 
     elif cmd == "ls":
         qs = []
