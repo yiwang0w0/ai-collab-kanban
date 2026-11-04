@@ -2549,7 +2549,7 @@ const asOperator = (req, res) => {
 async function coordRoute(req, res, url, p, m, boardRole) {
   if (m === "GET" && p === "/api/coord")
     return json(res, 200, { executors: coord.listExecutors(db), external_lines: LINES.filter((l) => LINE_EXTERNAL[l]),
-                            executor_max_lease_min: coord.EXECUTOR_MAX_LEASE_MIN, now: Date.now() });
+                            executor_max_lease_min: coord.EXECUTOR_MAX_LEASE_MIN, status_limits: coord.STATUS_LIMITS, now: Date.now() });
   if (m === "GET" && p === "/api/coord/executors") return json(res, 200, { executors: coord.listExecutors(db) });
   if (m === "POST" && p === "/api/coord/executors") {
     if (!asOperator(req, res)) return;
@@ -2562,6 +2562,15 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     const ex = asExecutor(req, res); if (!ex) return;
     const b = await readBody(req);
     return json(res, 200, coord.heartbeat(db, ex.id, { taskId: b.task_id ?? null, leaseMin: b.lease_minutes }));
+  }
+  if (m === "POST" && p === "/api/coord/status") {
+    const ex = asExecutor(req, res); if (!ex) return;
+    const b = await readBody(req);
+    let st;
+    try { st = coord.setStatus(db, ex.id, b); }
+    catch (e) { if (e.limit != null) return json(res, 400, { error: e.message, field: e.field, limit: e.limit, got: e.got }); throw e; }
+    emit("coord.status", { id: ex.id });
+    return json(res, 200, { status: st, limits: coord.STATUS_LIMITS });
   }
   return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的协作接口" });
 }

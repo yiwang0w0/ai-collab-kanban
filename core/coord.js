@@ -1,4 +1,4 @@
-// 多执行者协作:执行者身份与令牌、心跳。
+// 多执行者协作:执行者身份与令牌、心跳、各方状态。
 // 执行者可以是看板的执行线,也可以是看板外的 AI 会话。令牌只存哈希,明文只在登记时返回一次。
 // 表只由看板服务创建(server.mjs 打开库后调用 migrate),store 的其他调用方不受影响。
 const crypto = require("crypto");
@@ -10,6 +10,8 @@ const EXECUTOR_KINDS = ["line", "external", "other"];
 const NAME_MAX = 40;
 // 执行者令牌领卡/续租时的租约上限(分钟)。操作员令牌仍按 store.MAX_LEASE_MIN。
 const EXECUTOR_MAX_LEASE_MIN = 240;
+// 各方状态 {current, done[], next[]} 的上限。超出即拒绝写入,不截断。
+const STATUS_LIMITS = Object.freeze({ current: 300, item: 300, done: 50, next: 20, total: 16000 });
 
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const iso = (ms) => ms == null ? null : new Date(Number(ms)).toISOString();
@@ -27,6 +29,49 @@ function migrate(db) {
     stopped_at INTEGER,
     stop_seq INTEGER NOT NULL DEFAULT 0
   )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS coord_status (
+    executor_id TEXT PRIMARY KEY REFERENCES coord_executors(id),
+    status TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`);
+}
+
+const EMPTY_STATUS = Object.freeze({ current: "", done: [], next: [] });
+function statusOf(db, id) {
+  const r = db.prepare("SELECT status, updated_at FROM coord_status WHERE executor_id=?").get(String(id));
+  if (!r) return { ...EMPTY_STATUS, done: [], next: [], updated_at: null };
+  let st = {}; try { st = JSON.parse(r.status); } catch {}
+  return { current: String(st.current ?? ""), done: Array.isArray(st.done) ? st.done : [],
+           next: Array.isArray(st.next) ? st.next : [], updated_at: r.updated_at };
+}
+
+/** 校验并整份替换执行者自己的状态。任一项超限即 BAD_INPUT,说明哪一项、上限与实际值。 */
+function setStatus(db, executorId, body = {}, now = Date.now()) {
+  if (!getRow(db, executorId)) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
+  const L = STATUS_LIMITS;
+  const over = (what, limit, got) => { throw Object.assign(err(ERR.BAD_INPUT,
+    `状态超出上限,未写入:${what} 上限 ${limit},实际 ${got}。请精简后重写,看板不截断`), { limit, got, field: what }); };
+  const current = body.current == null ? "" : body.current;
+  if (typeof current !== "string") throw err(ERR.BAD_INPUT, "current 必须是字符串");
+  if (chars(current) > L.current) over("current 字数", L.current, chars(current));
+  const list = (name, max) => {
+    const v = body[name] == null ? [] : body[name];
+    if (!Array.isArray(v)) throw err(ERR.BAD_INPUT, `${name} 必须是字符串数组`);
+    if (v.length > max) over(`${name} 项数`, max, v.length);
+    v.forEach((x, i) => {
+      if (typeof x !== "string" || !x.trim()) throw err(ERR.BAD_INPUT, `${name}[${i}] 必须是非空字符串`);
+      if (chars(x) > L.item) over(`${name}[${i}] 字数`, L.item, chars(x));
+    });
+    return v;
+  };
+  const st = { current, done: list("done", L.done), next: list("next", L.next) };
+  const text = JSON.stringify(st);
+  if (chars(text) > L.total) over("整份状态字数", L.total, chars(text));
+  const at = iso(now);
+  db.prepare(`INSERT INTO coord_status (executor_id, status, updated_at) VALUES (?,?,?)
+              ON CONFLICT(executor_id) DO UPDATE SET status=excluded.status, updated_at=excluded.updated_at`)
+    .run(String(executorId), text, at);
+  return { ...st, updated_at: at };
 }
 
 function executorOut(r) {
@@ -66,7 +111,8 @@ function byToken(db, token) {
 }
 
 function listExecutors(db) {
-  return db.prepare("SELECT * FROM coord_executors ORDER BY id").all().map(executorOut);
+  return db.prepare("SELECT * FROM coord_executors ORDER BY id").all()
+    .map((r) => ({ ...executorOut(r), status: statusOf(db, r.id) }));
 }
 
 /** 任意执行者心跳(含卡片心跳)都刷新 last_seen,并回到活动状态。 */
@@ -99,5 +145,6 @@ function heartbeat(db, executorId, { taskId = null, leaseMin } = {}, now = Date.
 
 module.exports = {
   migrate, register, byToken, listExecutors, heartbeat, touch, executorLease, executorOut,
+  statusOf, setStatus, STATUS_LIMITS,
   EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN,
 };

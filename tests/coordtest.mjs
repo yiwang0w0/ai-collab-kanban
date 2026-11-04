@@ -135,3 +135,23 @@ test("外部执行线:接口标出,看板拒绝启动", { timeout: 60000 }, asyn
     assert.equal((await B.api("POST", "/api/config/lines", B.operator, { id: "ext3", external: "yes" })).status, 400);
   } finally { await B.stop(); }
 });
+
+test("各方状态:整份写入带 updated_at,超限拒绝且不截断", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("agent-c");
+    const ok = await B.api("POST", "/api/coord/status", tok, { current: "整理接口", done: ["读完文档"], next: ["写测试", "提交"] });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.ok(ok.body.status.updated_at);
+    const long = "字".repeat(301);
+    for (const body of [{ current: long }, { done: [long] }, { next: Array.from({ length: 21 }, (_, i) => "步骤" + i) }]) {
+      const r = await B.api("POST", "/api/coord/status", tok, body);
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+      assert.match(r.body.error, /上限/);
+      assert.ok(r.body.limit > 0 && r.body.got > r.body.limit);
+    }
+    const ex = (await B.api("GET", "/api/coord", B.operator)).body.executors.find((x) => x.id === "agent-c");
+    assert.deepEqual([ex.status.current, ex.status.done, ex.status.next], ["整理接口", ["读完文档"], ["写测试", "提交"]], "超限写入没有改动原状态");
+    assert.equal((await B.api("POST", "/api/coord/status", B.operator, { current: "x" })).status, 403, "操作员不代写执行者状态");
+  } finally { await B.stop(); }
+});
