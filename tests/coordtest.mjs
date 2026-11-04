@@ -179,6 +179,8 @@ test("资源锁:占用返回 409 带持有者,只有持有者能释放,操作员
     assert.equal(forced.body.lock.release_reason, "持有者会话已结束");
     const all = (await B.api("GET", "/api/coord/locks?all=1", a)).body.locks;
     assert.ok(all.some((l) => l.released_by === "operator" && l.release_reason === "持有者会话已结束"), "强制释放留有记录");
+    const jr = (await B.api("GET", "/api/coord/journal?executor=operator", a)).body.entries;
+    assert.ok(jr.some((e) => e.kind === "lock.force_release" && e.body.includes("持有者会话已结束")), "强制释放写入流水");
     assert.equal((await B.api("POST", "/api/coord/locks", a, { resource: "bad name", minutes: 5, purpose: "x" })).status, 400);
   } finally { await B.stop(); }
 });
@@ -201,4 +203,38 @@ test("资源锁逾期:标出、只发一次通知、不自动释放", { timeout:
     ctl.abort(); await reading;
     assert.equal(sse.split("coord.lock_overdue").length - 1, 1, "逾期通知只发一次");
   } finally { ctl.abort(); await B.stop(); }
+});
+
+test("事件流水:只追加,产物按格式校验,数据库层挡住改写与删除,可按 since/执行者/条数查", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const a = await B.register("agent-g"), b = await B.register("agent-h");
+    const sha = "a".repeat(64);
+    const e1 = await B.api("POST", "/api/coord/journal", a, { kind: "test.run", body: "界面测试通过",
+      artifacts: [{ type: "sha256", value: sha.toUpperCase() }, { type: "commit", value: "abc1234" },
+                  { type: "path", value: "out/report.txt" }, { type: "url", value: "https://example.com/run/1" }] });
+    assert.equal(e1.status, 201, JSON.stringify(e1.body));
+    assert.equal(e1.body.entry.artifacts[0].value, sha);
+    assert.ok(Math.abs(Date.parse(e1.body.entry.at) - Date.now()) < 5000, "时刻由服务端测");
+    for (const bad of [{ kind: "x", body: "y".repeat(301) }, { kind: "x", body: "y", artifacts: [{ type: "sha256", value: "abc" }] },
+                       { kind: "x", body: "y", artifacts: [{ type: "commit", value: "xyz1234" }] },
+                       { kind: "x", body: "y", artifacts: [{ type: "url", value: "ftp://h/x" }] },
+                       { kind: "x", body: "y", artifacts: [{ type: "path", value: "a\nb" }] },
+                       { kind: "x", body: "y", artifacts: [{ type: "file", value: "a" }] }])
+      assert.equal((await B.api("POST", "/api/coord/journal", a, bad)).status, 400, JSON.stringify(bad).slice(0, 60));
+    await B.api("POST", "/api/coord/journal", b, { kind: "note", body: "乙的第一条" });
+    await B.api("POST", "/api/coord/journal", a, { kind: "note", body: "甲的第二条" });
+    const all = (await B.api("GET", "/api/coord/journal", b)).body;
+    assert.deepEqual(all.entries.map((x) => x.executor), ["agent-g", "agent-h", "agent-g"]);
+    assert.deepEqual((await B.api("GET", `/api/coord/journal?since=${e1.body.entry.id}`, a)).body.entries.map((x) => x.body), ["乙的第一条", "甲的第二条"]);
+    assert.deepEqual((await B.api("GET", "/api/coord/journal?executor=agent-g&limit=1", a)).body.entries.map((x) => x.body), ["甲的第二条"]);
+    assert.equal((await B.api("POST", "/api/coord/journal", B.operator, { kind: "note", body: "x" })).status, 403);
+    for (const m of ["PUT", "DELETE", "PATCH"]) assert.notEqual((await B.api(m, `/api/coord/journal`, a, {})).status, 200);
+    const db = new DatabaseSync(join(B.dir, "board.db"));
+    db.exec("PRAGMA busy_timeout=5000");
+    assert.throws(() => db.prepare("UPDATE coord_journal SET body='改' WHERE id=?").run(e1.body.entry.id), /append-only/);
+    assert.throws(() => db.prepare("DELETE FROM coord_journal").run(), /append-only/);
+    db.close();
+    assert.equal((await B.api("GET", "/api/coord/journal", a)).body.entries[0].body, "界面测试通过");
+  } finally { await B.stop(); }
 });

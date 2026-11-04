@@ -2553,6 +2553,7 @@ async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();
   if (m === "GET" && p === "/api/coord")
     return json(res, 200, { executors: coord.listExecutors(db), locks: coord.listLocks(db, {}, now, COORD_GRACE_MS),
+                            journal: coord.journal(db, { limit: 30 }),
                             overdue_grace_min: COORD_GRACE_MS / 60000, external_lines: LINES.filter((l) => LINE_EXTERNAL[l]),
                             executor_max_lease_min: coord.EXECUTOR_MAX_LEASE_MIN, status_limits: coord.STATUS_LIMITS, now: Date.now() });
   if (m === "GET" && p === "/api/coord/executors") return json(res, 200, { executors: coord.listExecutors(db) });
@@ -2586,9 +2587,24 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     const actor = boardRole === "operator" ? { role: "operator" } : { role: "executor", id: req.executor.id };
     const r = coord.release(db, actor, { resource: b.resource, force: b.force, reason: b.reason }, now, COORD_GRACE_MS);
     if (!r.ok) return json(res, 403, { error: `只有持有者 ${r.holder.holder_name} 能释放 ${r.holder.resource}`, holder: r.holder });
-    if (actor.role === "operator") console.log(`协作锁 ${r.lock.resource} 被操作员强制释放(持有者 ${r.lock.holder}):${r.lock.release_reason}`);
+    if (actor.role === "operator") {
+      console.log(`协作锁 ${r.lock.resource} 被操作员强制释放(持有者 ${r.lock.holder}):${r.lock.release_reason}`);
+      coord.appendJournal(db, "operator", { kind: "lock.force_release", body: `强制释放 ${r.lock.resource}:${r.lock.release_reason}` });
+    }
     emit("coord.lock", { resource: r.lock.resource, holder: r.lock.holder, op: actor.role === "operator" ? "force_release" : "release" });
     return json(res, 200, { lock: r.lock });
+  }
+  if (m === "GET" && p === "/api/coord/journal") {
+    const q = url.searchParams;
+    const entries = coord.journal(db, { since: q.get("since"), executor: q.get("executor"), limit: q.has("limit") ? Number(q.get("limit")) : 50 });
+    return json(res, 200, { entries, last_id: entries.length ? entries[entries.length - 1].id : null });
+  }
+  if (m === "POST" && p === "/api/coord/journal") {
+    const ex = asExecutor(req, res); if (!ex) return;
+    const b = await readBody(req);
+    const entry = coord.appendJournal(db, ex.id, { kind: b.kind, body: b.body, artifacts: b.artifacts });
+    emit("coord.journal", { id: entry.id, executor: ex.id });
+    return json(res, 201, { entry });
   }
   if (m === "POST" && p === "/api/coord/status") {
     const ex = asExecutor(req, res); if (!ex) return;
@@ -3544,6 +3560,7 @@ setInterval(() => {
     if (n) { console.log(`租约到期 ${n} 件 回收至未开始`); emit("task.reaped", { count: n }); }
     for (const l of coord.sweepOverdue(db, Date.now(), COORD_GRACE_MS)) {
       console.log(`协作锁逾期: ${l.resource}(持有者 ${l.holder},预计结束 ${l.expected_end})—— 不自动释放`);
+      coord.appendJournal(db, "system", { kind: "lock.overdue", body: `${l.resource} 已逾期,持有者 ${l.holder}` });
       emit("coord.lock_overdue", { resource: l.resource, holder: l.holder, expected_end: l.expected_end });
     }
     // Complement pair — always swept in THIS order.
