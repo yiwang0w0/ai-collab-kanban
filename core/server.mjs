@@ -800,6 +800,12 @@ function acceptTree(confirmTree, who) {
   return { accepted: tree, prev, dirty, files: acceptPreview(tree, prev).files };
 }
 
+/** 更新到新代码之前的那一步:受闸子树有新树且还没确认过,就按人看到的树确认。面板「更新」与批准接口共用。 */
+const acceptForUpgrade = (confirmTree, who) => {
+  const g = gatedTree();
+  return g.tree && readAccepted() !== g.tree ? acceptTree(confirmTree, who).accepted : null;
+};
+
 /** What it takes for a `git pull` to actually be in effect: the gate's record, this process
  *  and the sentries all keep running old code, and none announces itself. Measured, so the
  *  panel can — and since v0.18 the panel offers ONE button for it: accept the tree you were
@@ -2554,6 +2560,11 @@ const asOperator = (req, res) => {
   json(res, 403, { error: "此操作只属于操作员令牌", role: req.boardRole });
   return false;
 };
+/** 操作员强制释放锁之后的记账:控制台一行、流水一条。协作接口与批准接口共用。 */
+function noteForceRelease(lock) {
+  console.log(`协作锁 ${lock.resource} 被操作员强制释放(持有者 ${lock.holder}):${lock.release_reason}`);
+  coord.appendJournal(db, "operator", { kind: "lock.force_release", body: `强制释放 ${lock.resource}:${lock.release_reason}` });
+}
 async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();
   if (m === "GET" && p === "/api/coord")
@@ -2593,10 +2604,7 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     const actor = boardRole === "operator" ? { role: "operator" } : { role: "executor", id: req.executor.id };
     const r = coord.release(db, actor, { resource: b.resource, force: b.force, reason: b.reason }, now, COORD_GRACE_MS);
     if (!r.ok) return json(res, 403, { error: `只有持有者 ${r.holder.holder_name} 能释放 ${r.holder.resource}`, holder: r.holder });
-    if (actor.role === "operator") {
-      console.log(`协作锁 ${r.lock.resource} 被操作员强制释放(持有者 ${r.lock.holder}):${r.lock.release_reason}`);
-      coord.appendJournal(db, "operator", { kind: "lock.force_release", body: `强制释放 ${r.lock.resource}:${r.lock.release_reason}` });
-    }
+    if (actor.role === "operator") noteForceRelease(r.lock);
     emit("coord.lock", { resource: r.lock.resource, holder: r.lock.holder, op: actor.role === "operator" ? "force_release" : "release" });
     return json(res, 200, { lock: r.lock });
   }
@@ -2638,6 +2646,185 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     return json(res, 200, { status: st, limits: coord.STATUS_LIMITS });
   }
   return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的协作接口" });
+}
+
+/** 人的裁定:面板「通过/打回」、board.py approve/reject 与批准接口走的同一段逻辑。返回 store 的裁定结果。 */
+function resolveTask(id, b, boardRole) {
+  // verify_ok is the RULER's declaration (ran the verify just now, was it
+  // green) — the store links only when true; undeclared = no linkage.
+  const t = store.get(db, id);
+  if (!t) throw store.err(store.ERR.NOT_FOUND, `卡 #${id} 不存在`);
+  store.assertExpectedVersion(db,id,b.expected_version);
+  // The handoff archive is an external side effect BEFORE the state change:
+  // validate everything store.resolve would refuse FIRST, or "ruling failed"
+  // can still have copied SQL = half-application.
+  if (!["approve", "reject"].includes(b.verdict))
+    throw store.err(store.ERR.BAD_INPUT, "verdict 必须是 approve 或 reject");
+  // ⭐ resolved_by caller domain (v0.2, incident pin): human / auto only —
+  //   'cascade' is store-internal bookkeeping; anything else is a caller
+  //   MINTING an authority (measured on a live deployment: an interactive
+  //   agent resolved its own card with resolved_by:'codex' and the board
+  //   accepted it). Role × value must also agree: the review token rules
+  //   only as auto; the operator token rules only as human.
+  const rb = b.resolved_by == null ? "human" : String(b.resolved_by);
+  if (!["human", "auto"].includes(rb))
+    throw store.err(store.ERR.BAD_INPUT,
+      `resolved_by 只接受 human / auto(cascade 由系统内部记账)—— 收到 ${JSON.stringify(rb)}。` +
+      `裁定身份不是自我声明:worker 令牌不能 resolve,review 令牌只能以 auto 裁定`);
+  if (boardRole === "review" && rb !== "auto")
+    throw store.err(store.ERR.BAD_INPUT, "review 令牌只能以 resolved_by=auto 裁定(机器审阅不得冒充人的裁定)");
+  if (boardRole === "operator" && rb === "auto")
+    throw store.err(store.ERR.BAD_INPUT,
+      "operator 令牌不能以 resolved_by=auto 裁定 —— auto 专属审阅线(review_token);人的裁定写 human");
+  if (t.status !== "waiting")
+    throw store.err(store.ERR.CONFLICT, `卡 #${id} 状态是 ${t.status},没有待裁定的产出`);
+  // ⭐ Re-entry gate: hold_for_review KEEPS the card in waiting, so the
+  //   one-shot protection above stops working — resending the same POST would
+  //   re-run archiveOptionFiles, overwrite the receipt and wake the reviewer
+  //   again. Plugged by SERVER STATE (plugging it in the panel's render
+  //   condition would dress discipline as structure). ⚠ The key is the new
+  //   column's confirm_pending — keying on the old pair (waiting_for==review
+  //   && decision_choice) would wrongly bounce cards carrying a previous
+  //   round's leftover choice.
+  if (b.selected_option != null && t.confirm_pending === true)
+    throw store.err(store.ERR.CONFLICT,
+      "本卡的执行确认已经提交,正在等待复核(v0.1 由人在面板完成)—— 不能重复确认。" +
+      "要改判请用「无需后续 · 通过」,或等审阅出结果。");
+
+  // ══ ① pure validation phase (ZERO side effects) ═══════════════════════
+  let archive = null;
+  const said = String(b.note || "").trim();
+  let resolveNote = said;
+  let plan = null;
+  if (b.selected_option != null) {
+    if ((b.resolved_by || "human") !== "human")
+      throw store.err(store.ERR.BAD_INPUT, "A/B/C 最终选择只接受人的裁定");
+    const pkg = decision.normalizeDecisionPackage(t?.decision_package, t?.verdict_note);
+    const opt = pkg?.options.find((x) => x.key === String(b.selected_option).toUpperCase());
+    if (!opt) throw store.err(store.ERR.BAD_INPUT, `选择的方案 ${b.selected_option} 不存在`);
+    const publicOpt = decision.publicDecisionPackage(t, DECISION_CTX)
+      ?.options.find((x) => x.key === opt.key);
+    // Field names generalized with the handoff ruling: executed / outcome /
+    // receipt (an option's files can be anything a human applies by hand —
+    // SQL, configs, uploads...).
+    const fallbackAction = opt.kind === "apply" && b.executed === true
+      ? "confirm_executed" : opt.kind === "none" ? "continue" : "";
+    const decisionAction = String(b.decision_action || fallbackAction).trim();
+    if (!new Set(["continue", "request_completion", "confirm_executed"]).has(decisionAction))
+      throw store.err(store.ERR.BAD_INPUT, "decision_action 必须是 continue / request_completion / confirm_executed");
+    let receipt = "", outcome = "";
+    if (decisionAction === "request_completion") {
+      if (opt.kind !== "apply" || publicOpt?.ready !== false)
+        throw store.err(store.ERR.BAD_INPUT, "只有文件尚未补齐的方案才能交回智能体补齐");
+    } else if (opt.kind === "apply") {
+      if (decisionAction !== "confirm_executed" || b.executed !== true)
+        throw store.err(store.ERR.BAD_INPUT, "该方案含需人手应用的文件;未执行时只能交回智能体补齐,不能确认已执行");
+      if (!publicOpt?.ready)
+        throw store.err(store.ERR.BAD_INPUT, "该方案的文件尚未补齐,不能确认已执行;请选择交回智能体补齐");
+      receipt = String(b.receipt || "").trim();
+      if (!receipt)
+        throw store.err(store.ERR.BAD_INPUT, "确认已执行时必须填写执行回执");
+      if (receipt.length > 4000)
+        throw store.err(store.ERR.BAD_INPUT, "执行回执不能超过 4000 字");
+      outcome = String(b.outcome || "").trim().toLowerCase();
+      if (!new Set(["success", "failure"]).has(outcome))
+        throw store.err(store.ERR.BAD_INPUT, "确认已执行时必须明确 outcome=success 或 failure");
+    } else {
+      if (decisionAction !== "continue")
+        throw store.err(store.ERR.BAD_INPUT, "不含文件的方案只能使用 continue");
+    }
+    plan = { opt, publicOpt, decisionAction, receipt, outcome };
+  }
+
+  // ══ ② the destination is decided in THIS ONE PLACE ════════════════════
+  //   ⚠ The deliverable gate used to judge the RAW b.note while the store
+  //     judged the synthesized note built later — two criteria, already
+  //     diverged. The judgment moved BEFORE the side effects and uses the
+  //     same single function as the store.
+  const disp =
+    // ⚠ Key names copied EXPLICITLY: the body uses snake_case resolved_by;
+    //   legacyDisposition destructures camelCase resolvedBy — passed raw, it
+    //   falls to the default "human" and an auto approve turns into a
+    //   hand-back (caught red once). Importing the same function removes the
+    //   divergence only when the INPUTS are the same too.
+    b.selected_option == null
+      ? store.legacyDisposition({ verdict: b.verdict, note: b.note,
+                                  resolvedBy: b.resolved_by || "human" })
+    : (plan.decisionAction === "confirm_executed" && plan.outcome === "success")
+        ? store.confirmDestination(db, t)
+        : "hand_back";
+
+  // ══ ③ deliverable-existence gate — measured ONLY when closing ═════════
+  //   Real story: a card closed without it; only the consumers were
+  //   committed and HEAD's build was broken for four days.
+  //   ⚠ Only UNCOMMITTED counts. Paths absent from disk too (command-line
+  //     fragments, typos) are not reported — false positives blocking
+  //     closure get the gate itself switched off.
+  if (disp === "close" && b.allow_uncommitted !== true) closeGateOrThrow(t);
+
+  const r = store.resolveWithPreparation(db, { id, verdict:b.verdict, expectedVersion:b.expected_version,
+    resolvedBy:b.resolved_by || "human", verifyOk:b.verify_ok, selectedOption:b.selected_option,
+    disposition:disp }, ()=>{
+      // Known-stale commands refuse before copying; commit rechecks under the
+      // write lock. File preparation never holds the SQLite writer lock.
+      let receiptBlock = null;
+      if (plan) {
+        const { opt, decisionAction, receipt, outcome } = plan;
+        const extra = said ? `\n补充指示:${said}` : "";
+        if (decisionAction === "request_completion") {
+          resolveNote = `采用方案 ${opt.key} 的方向:${opt.title}。卡内文件尚未补齐;` +
+            `请原 Agent 补齐完整、可下载、符合 handoff 目标准入名形的文件后重新送审。` + extra;
+        } else if (opt.kind === "apply") {
+          try {
+            archive = decision.archiveOptionFiles(t, opt.key, DECISION_CTX);
+          } catch (e) {
+            const msg = String(e.message || e);
+            throw store.err(msg.includes("同名异内容") ? store.ERR.CONFLICT : store.ERR.BAD_INPUT, msg);
+          }
+          resolveNote = outcome === "failure"
+            ? `采用方案 ${opt.key}:${opt.title}。用户已实际尝试应用,但执行失败;` +
+              `本次不视为已应用,禁止沿成功路径继续。请原 Agent 根据下面的原始回执修正文件;` +
+              `不要覆盖已归档的失败版本,修正版使用下一个序号并重新送审。` +
+              `\n\n—— 执行回执(失败 · 用户填写)——\n${receipt}` + extra
+            : `采用方案 ${opt.key}:${opt.title}。文件已由用户应用成功;` +
+              (disp === "hold_for_review"
+                ? `**本卡不交回原 Agent** —— 留在等待中,复核通过后方可完成(v0.1 复核由人在面板完成)。`
+                : `请按该方案继续并根据下面的回执完成验证。`) +
+              `\n\n—— 执行回执(成功 · 用户填写)——\n${receipt}` + extra;
+          // ⭐ The receipt survives as ONE block. The four existing carriers do
+          //   not live through a cycle (markAutoReviewed erases, the next report
+          //   overwrites) — and a silently vanished "was applied to production"
+          //   is the doorway to a re-run.
+          receiptBlock = { option: opt.key, outcome, receipt, said,
+                           files: archive || [], at: new Date().toISOString(), consumed_at: null };
+        } else {
+          resolveNote = `采用方案 ${opt.key}:${opt.title}。请按该方案继续。` + extra;
+        }
+      }
+
+      return {note:resolveNote,sqlArchive:archive,sqlReceipt:receiptBlock};
+    });
+  emit("task.resolved", r);
+  return r;
+}
+/** 放行 / 收回:显式执行配置的卡要带本人核对过的配置摘要。面板、board.py 与批准接口共用。 */
+function releaseTask(id, b) {
+  const task=store.get(db,id),preview=task?taskProfilePreview(task):null;
+  let executionProfile=null;
+  if(preview&&b.released!==false&&!task.released){
+    if(!preview.ready)throw store.err(store.ERR.CONFLICT,preview.reason);
+    if(b.confirm_execution_profile_digest!==preview.profile_digest)throw store.err(store.ERR.CONFLICT,"执行配置已变化，请重新核对通道、工作目录和预算后放行");
+    const {ready,reason,configuration_changed,...fixed}=preview;executionProfile=fixed;
+  }
+  let verificationRepair=null;
+  if(task&&b.released!==false&&!task.released&&b.confirm_verification_repair_digest!==undefined){
+    const repair=taskRepairPreview(task);
+    if(b.confirm_verification_repair_digest!==repair.digest)throw store.err(store.ERR.CONFLICT,"验证续修轮数已变化，请重新核对后放行");
+    verificationRepair=repair.policy;
+  }
+  const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile,verificationRepair });
+  emit("task.released", r);
+  return r;
 }
 
 // ── 批准接口(/api/approvals)。待批准事项不另存一份:每次从卡片、版本、锁和执行者请求的现状算出来。
@@ -2764,6 +2951,77 @@ function approvalOne(rawId) {
   if (!item && !decision) throw store.err(store.ERR.NOT_FOUND, `${rawId} 不在待批准列表里,也没有决定记录`);
   return { approval: item, decision };
 }
+const DECISION_VERB = Object.freeze({ approve: "批准", reject: "拒绝" });
+const approvalConflict = (msg, extra = {}) => Object.assign(store.err(store.ERR.CONFLICT, msg), extra);
+/** 决定一项:先核对它仍是列表里那个版本,再路由到这类事项原有的处理逻辑,最后在同一事务里写流水与决定记录。
+ *  who = {actor, via, ip?}:via 由凭据决定(local 命令行令牌 / panel 面板会话 / remote 批准令牌),source 是客户端自报。
+ *  拒绝版本确认、逾期锁、放行确认与执行者请求不改对象状态,只留决定记录;同一项不能决定两次(决定记录的主键)。 */
+function decideApproval(rawId, body, who) {
+  const ref = approvals.parseId(rawId);
+  const d = approvals.normalizeDecision(body);
+  const prior = approvals.decisionOf(db, rawId);
+  if (prior) throw approvalConflict(`${rawId} 已于 ${prior.at} 经 ${prior.via} ${DECISION_VERB[prior.decision]},不能再决定`, { decision: prior });
+  const entry = currentApprovalEntry(ref.kind, ref.object);
+  const current = entry ? entry.item : null;
+  if (!entry || current.kind !== ref.kind) throw approvalConflict(`${rawId} 已不在待批准列表里,刷新后再看`, { current });
+  if (current.id !== rawId) throw approvalConflict(`${rawId} 已经变化,当前是 ${current.id};刷新后按新版本决定`, { current });
+  if (String(d.expected_version) !== String(current.expected_version))
+    throw approvalConflict(`expected_version 与这一项不一致:当前是 ${current.expected_version}`, { current });
+  if (!current.actions.includes(d.decision))
+    throw approvalConflict(current.blocked || `这一项现在不能${DECISION_VERB[d.decision]}`, { current });
+  const r = entry.route, now = Date.now(), approve = d.decision === "approve";
+  let result = {}, after = null;
+  if (ref.kind === "decision" || ref.kind === "delivery") {
+    // 与面板、board.py 的 approve/reject 同一条路:note 是给执行者的指示,写了就交回原线(store.legacyDisposition)。
+    resolveTask(r.taskId, { verdict: d.decision, note: d.note, resolved_by: "human", expected_version: current.expected_version }, "operator");
+    const t = store.get(db, r.taskId);
+    result = { task_id: t.id, status: t.status, waiting_for: t.waiting_for ?? null, aggregate_version: t.aggregate_version };
+  } else if (ref.kind === "release") {
+    if (approve) releaseTask(r.taskId, { released: true, expected_version: r.version,
+      confirm_execution_profile_digest: r.profileDigest, confirm_verification_repair_digest: r.repairDigest });
+    const t = store.get(db, r.taskId);
+    result = { task_id: t.id, released: !!t.released, aggregate_version: t.aggregate_version };
+  } else if (ref.kind === "version" && approve) {
+    if (r.op === "bless") result = acceptTree(r.tree, `approval-${who.via}`);
+    else {
+      const c = store.counts(db);
+      if (c.in_progress > 0)
+        throw approvalConflict(`有 ${c.in_progress} 张卡正在跑,现在更新会打断它们;等它们交付后再批准`, { needs_force: true, in_progress: c.in_progress });
+      result = { restarting: true, mode: RESTART_MODE, from: BOOT_REV, to: codeRev(), accepted: acceptForUpgrade(r.tree, `approval-${who.via}`) };
+      after = () => setTimeout(() => { void restartBoard("approval-upgrade"); }, 80);
+    }
+  } else if (ref.kind === "lock" && approve) {
+    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: d.note || "经批准接口强制释放" }, now, COORD_GRACE_MS);
+    noteForceRelease(rr.lock);
+    emit("coord.lock", { resource: rr.lock.resource, holder: rr.lock.holder, op: "force_release" });
+    result = { resource: rr.lock.resource, released_at: rr.lock.released_at };
+  }
+  const src = d.source.client + (d.source.device ? "/" + d.source.device : "");
+  const text = approvals.oneLine(`${DECISION_VERB[d.decision]} ${rawId}。操作者 ${who.actor},来源 ${src},经 ${who.via}` +
+                                 (who.ip ? ` ${who.ip}` : "") + `。${current.summary}`, 300);
+  let rec;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const j = coord.appendJournal(db, "operator", { kind: "approval.decided", body: text }, now);
+    rec = approvals.recordDecision(db, { approval_id: rawId, decision: d.decision, note: d.note, actor: who.actor, via: who.via,
+                                         source: d.source, ip: who.ip ?? null, journal_id: j.id, result }, now);
+    db.exec("COMMIT");
+  } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
+  console.log(`批准接口:${text}`);
+  emit("approval.decided", { id: rawId, decision: d.decision, via: who.via });
+  return { decision: rec, result, after };
+}
+const decisionErrorBody = (e) => ({ error: String(e?.message || e),
+  ...(e?.current !== undefined ? { current: e.current } : {}), ...(e?.decision ? { decision: e.decision } : {}),
+  ...(e?.needs_force ? { needs_force: true, in_progress: e.in_progress } : {}),
+  ...(Number.isSafeInteger(e?.current_version) ? { expected_version: e.expected_version, current_version: e.current_version } : {}) });
+function sendDecision(res, id, body, who) {
+  let out;
+  try { out = decideApproval(id, body, who); }
+  catch (e) { return json(res, statusFor(e, "approvals.decide"), decisionErrorBody(e)); }
+  json(res, out.after ? 202 : 200, { decision: out.decision, result: out.result });
+  out.after?.();
+}
 const decodeApprovalId = (raw) => {
   try { return decodeURIComponent(raw); } catch { throw store.err(store.ERR.BAD_INPUT, "事项 id 的 URL 编码无效"); }
 };
@@ -2782,6 +3040,12 @@ async function approvalsRoute(req, res, url, p, m, boardRole) {
     return json(res, 200, { decisions: approvals.listDecisions(db, { limit: url.searchParams.get("limit") }) });
   const md = p.match(/^\/api\/approvals\/([^/]+)$/);
   if (md && m === "GET") return json(res, 200, approvalOne(decodeApprovalId(md[1])));
+  const mdd = p.match(/^\/api\/approvals\/([^/]+)\/decide$/);
+  if (mdd && m === "POST") {
+    if (!asOperator(req, res)) return;
+    const id = decodeApprovalId(mdd[1]), b = await readBody(req);
+    return sendDecision(res, id, b, { actor: "operator", via: isPanelCredential(req.headers["x-board-token"]) ? "panel" : "local" });
+  }
   return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的批准接口" });
 }
 
@@ -2973,10 +3237,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 409, { error: `有 ${c.in_progress} 张卡正在跑 —— 现在重启会打断它们(卡回到「未开始」由线重领)`,
                                 in_progress: c.in_progress, needs_force: true, hint: "脚本调用请带 force:true;面板会先问你一次" });
       let accepted = null;
-      if (p === "/api/upgrade/apply") {
-        const g = gatedTree();
-        if (g.tree && readAccepted() !== g.tree) accepted = acceptTree(b.confirm_tree, "panel-upgrade").accepted;
-      }
+      if (p === "/api/upgrade/apply") accepted = acceptForUpgrade(b.confirm_tree, "panel-upgrade");
       const live = SUPERVISED.filter((l) => slotsOf(l).some((w) => w.proc));
       const want = SUPERVISED.filter((l) => settingsOf(l).desired_running);
       json(res, 202, { restarting: true, mode: RESTART_MODE, from: BOOT_REV, to: codeRev(), lines: { stop: live, resume: want },
@@ -3468,161 +3729,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { task: store.get(db, id) });
       }
       if (action === "resolve") {
-        // verify_ok is the RULER's declaration (ran the verify just now, was it
-        // green) — the store links only when true; undeclared = no linkage.
-        const t = store.get(db, id);
-        if (!t) throw store.err(store.ERR.NOT_FOUND, `卡 #${id} 不存在`);
-        store.assertExpectedVersion(db,id,b.expected_version);
-        // The handoff archive is an external side effect BEFORE the state change:
-        // validate everything store.resolve would refuse FIRST, or "ruling failed"
-        // can still have copied SQL = half-application.
-        if (!["approve", "reject"].includes(b.verdict))
-          throw store.err(store.ERR.BAD_INPUT, "verdict 必须是 approve 或 reject");
-        // ⭐ resolved_by caller domain (v0.2, incident pin): human / auto only —
-        //   'cascade' is store-internal bookkeeping; anything else is a caller
-        //   MINTING an authority (measured on a live deployment: an interactive
-        //   agent resolved its own card with resolved_by:'codex' and the board
-        //   accepted it). Role × value must also agree: the review token rules
-        //   only as auto; the operator token rules only as human.
-        const rb = b.resolved_by == null ? "human" : String(b.resolved_by);
-        if (!["human", "auto"].includes(rb))
-          throw store.err(store.ERR.BAD_INPUT,
-            `resolved_by 只接受 human / auto(cascade 由系统内部记账)—— 收到 ${JSON.stringify(rb)}。` +
-            `裁定身份不是自我声明:worker 令牌不能 resolve,review 令牌只能以 auto 裁定`);
-        if (boardRole === "review" && rb !== "auto")
-          throw store.err(store.ERR.BAD_INPUT, "review 令牌只能以 resolved_by=auto 裁定(机器审阅不得冒充人的裁定)");
-        if (boardRole === "operator" && rb === "auto")
-          throw store.err(store.ERR.BAD_INPUT,
-            "operator 令牌不能以 resolved_by=auto 裁定 —— auto 专属审阅线(review_token);人的裁定写 human");
-        if (t.status !== "waiting")
-          throw store.err(store.ERR.CONFLICT, `卡 #${id} 状态是 ${t.status},没有待裁定的产出`);
-        // ⭐ Re-entry gate: hold_for_review KEEPS the card in waiting, so the
-        //   one-shot protection above stops working — resending the same POST would
-        //   re-run archiveOptionFiles, overwrite the receipt and wake the reviewer
-        //   again. Plugged by SERVER STATE (plugging it in the panel's render
-        //   condition would dress discipline as structure). ⚠ The key is the new
-        //   column's confirm_pending — keying on the old pair (waiting_for==review
-        //   && decision_choice) would wrongly bounce cards carrying a previous
-        //   round's leftover choice.
-        if (b.selected_option != null && t.confirm_pending === true)
-          throw store.err(store.ERR.CONFLICT,
-            "本卡的执行确认已经提交,正在等待复核(v0.1 由人在面板完成)—— 不能重复确认。" +
-            "要改判请用「无需后续 · 通过」,或等审阅出结果。");
-
-        // ══ ① pure validation phase (ZERO side effects) ═══════════════════════
-        let archive = null;
-        const said = String(b.note || "").trim();
-        let resolveNote = said;
-        let plan = null;
-        if (b.selected_option != null) {
-          if ((b.resolved_by || "human") !== "human")
-            throw store.err(store.ERR.BAD_INPUT, "A/B/C 最终选择只接受人的裁定");
-          const pkg = decision.normalizeDecisionPackage(t?.decision_package, t?.verdict_note);
-          const opt = pkg?.options.find((x) => x.key === String(b.selected_option).toUpperCase());
-          if (!opt) throw store.err(store.ERR.BAD_INPUT, `选择的方案 ${b.selected_option} 不存在`);
-          const publicOpt = decision.publicDecisionPackage(t, DECISION_CTX)
-            ?.options.find((x) => x.key === opt.key);
-          // Field names generalized with the handoff ruling: executed / outcome /
-          // receipt (an option's files can be anything a human applies by hand —
-          // SQL, configs, uploads...).
-          const fallbackAction = opt.kind === "apply" && b.executed === true
-            ? "confirm_executed" : opt.kind === "none" ? "continue" : "";
-          const decisionAction = String(b.decision_action || fallbackAction).trim();
-          if (!new Set(["continue", "request_completion", "confirm_executed"]).has(decisionAction))
-            throw store.err(store.ERR.BAD_INPUT, "decision_action 必须是 continue / request_completion / confirm_executed");
-          let receipt = "", outcome = "";
-          if (decisionAction === "request_completion") {
-            if (opt.kind !== "apply" || publicOpt?.ready !== false)
-              throw store.err(store.ERR.BAD_INPUT, "只有文件尚未补齐的方案才能交回智能体补齐");
-          } else if (opt.kind === "apply") {
-            if (decisionAction !== "confirm_executed" || b.executed !== true)
-              throw store.err(store.ERR.BAD_INPUT, "该方案含需人手应用的文件;未执行时只能交回智能体补齐,不能确认已执行");
-            if (!publicOpt?.ready)
-              throw store.err(store.ERR.BAD_INPUT, "该方案的文件尚未补齐,不能确认已执行;请选择交回智能体补齐");
-            receipt = String(b.receipt || "").trim();
-            if (!receipt)
-              throw store.err(store.ERR.BAD_INPUT, "确认已执行时必须填写执行回执");
-            if (receipt.length > 4000)
-              throw store.err(store.ERR.BAD_INPUT, "执行回执不能超过 4000 字");
-            outcome = String(b.outcome || "").trim().toLowerCase();
-            if (!new Set(["success", "failure"]).has(outcome))
-              throw store.err(store.ERR.BAD_INPUT, "确认已执行时必须明确 outcome=success 或 failure");
-          } else {
-            if (decisionAction !== "continue")
-              throw store.err(store.ERR.BAD_INPUT, "不含文件的方案只能使用 continue");
-          }
-          plan = { opt, publicOpt, decisionAction, receipt, outcome };
-        }
-
-        // ══ ② the destination is decided in THIS ONE PLACE ════════════════════
-        //   ⚠ The deliverable gate used to judge the RAW b.note while the store
-        //     judged the synthesized note built later — two criteria, already
-        //     diverged. The judgment moved BEFORE the side effects and uses the
-        //     same single function as the store.
-        const disp =
-          // ⚠ Key names copied EXPLICITLY: the body uses snake_case resolved_by;
-          //   legacyDisposition destructures camelCase resolvedBy — passed raw, it
-          //   falls to the default "human" and an auto approve turns into a
-          //   hand-back (caught red once). Importing the same function removes the
-          //   divergence only when the INPUTS are the same too.
-          b.selected_option == null
-            ? store.legacyDisposition({ verdict: b.verdict, note: b.note,
-                                        resolvedBy: b.resolved_by || "human" })
-          : (plan.decisionAction === "confirm_executed" && plan.outcome === "success")
-              ? store.confirmDestination(db, t)
-              : "hand_back";
-
-        // ══ ③ deliverable-existence gate — measured ONLY when closing ═════════
-        //   Real story: a card closed without it; only the consumers were
-        //   committed and HEAD's build was broken for four days.
-        //   ⚠ Only UNCOMMITTED counts. Paths absent from disk too (command-line
-        //     fragments, typos) are not reported — false positives blocking
-        //     closure get the gate itself switched off.
-        if (disp === "close" && b.allow_uncommitted !== true) closeGateOrThrow(t);
-
-        const r = store.resolveWithPreparation(db, { id, verdict:b.verdict, expectedVersion:b.expected_version,
-          resolvedBy:b.resolved_by || "human", verifyOk:b.verify_ok, selectedOption:b.selected_option,
-          disposition:disp }, ()=>{
-            // Known-stale commands refuse before copying; commit rechecks under the
-            // write lock. File preparation never holds the SQLite writer lock.
-            let receiptBlock = null;
-            if (plan) {
-              const { opt, decisionAction, receipt, outcome } = plan;
-              const extra = said ? `\n补充指示:${said}` : "";
-              if (decisionAction === "request_completion") {
-                resolveNote = `采用方案 ${opt.key} 的方向:${opt.title}。卡内文件尚未补齐;` +
-                  `请原 Agent 补齐完整、可下载、符合 handoff 目标准入名形的文件后重新送审。` + extra;
-              } else if (opt.kind === "apply") {
-                try {
-                  archive = decision.archiveOptionFiles(t, opt.key, DECISION_CTX);
-                } catch (e) {
-                  const msg = String(e.message || e);
-                  throw store.err(msg.includes("同名异内容") ? store.ERR.CONFLICT : store.ERR.BAD_INPUT, msg);
-                }
-                resolveNote = outcome === "failure"
-                  ? `采用方案 ${opt.key}:${opt.title}。用户已实际尝试应用,但执行失败;` +
-                    `本次不视为已应用,禁止沿成功路径继续。请原 Agent 根据下面的原始回执修正文件;` +
-                    `不要覆盖已归档的失败版本,修正版使用下一个序号并重新送审。` +
-                    `\n\n—— 执行回执(失败 · 用户填写)——\n${receipt}` + extra
-                  : `采用方案 ${opt.key}:${opt.title}。文件已由用户应用成功;` +
-                    (disp === "hold_for_review"
-                      ? `**本卡不交回原 Agent** —— 留在等待中,复核通过后方可完成(v0.1 复核由人在面板完成)。`
-                      : `请按该方案继续并根据下面的回执完成验证。`) +
-                    `\n\n—— 执行回执(成功 · 用户填写)——\n${receipt}` + extra;
-                // ⭐ The receipt survives as ONE block. The four existing carriers do
-                //   not live through a cycle (markAutoReviewed erases, the next report
-                //   overwrites) — and a silently vanished "was applied to production"
-                //   is the doorway to a re-run.
-                receiptBlock = { option: opt.key, outcome, receipt, said,
-                                 files: archive || [], at: new Date().toISOString(), consumed_at: null };
-              } else {
-                resolveNote = `采用方案 ${opt.key}:${opt.title}。请按该方案继续。` + extra;
-              }
-            }
-
-            return {note:resolveNote,sqlArchive:archive,sqlReceipt:receiptBlock};
-          });
-        emit("task.resolved", r);
+        resolveTask(id, b, boardRole);
         return json(res, 200, { task: taskOut(store.get(db, id)) });
       }
       if (action === "attempt") {
@@ -3659,21 +3766,7 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { task: store.get(db, id) });
       }
       if (action === "release") {
-        const task=store.get(db,id),preview=task?taskProfilePreview(task):null;
-        let executionProfile=null;
-        if(preview&&b.released!==false&&!task.released){
-          if(!preview.ready)throw store.err(store.ERR.CONFLICT,preview.reason);
-          if(b.confirm_execution_profile_digest!==preview.profile_digest)throw store.err(store.ERR.CONFLICT,"执行配置已变化，请重新核对通道、工作目录和预算后放行");
-          const {ready,reason,configuration_changed,...fixed}=preview;executionProfile=fixed;
-        }
-        let verificationRepair=null;
-        if(task&&b.released!==false&&!task.released&&b.confirm_verification_repair_digest!==undefined){
-          const repair=taskRepairPreview(task);
-          if(b.confirm_verification_repair_digest!==repair.digest)throw store.err(store.ERR.CONFLICT,"验证续修轮数已变化，请重新核对后放行");
-          verificationRepair=repair.policy;
-        }
-        const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile,verificationRepair });
-        emit("task.released", r);
+        releaseTask(id, b);
         return json(res, 200, { task: taskOut(store.get(db, id)) });
       }
       if (action === "reopen") {
