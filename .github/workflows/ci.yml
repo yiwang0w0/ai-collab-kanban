@@ -241,6 +241,9 @@ jobs:
         run: bash hrun.sh node tests/looptest.mjs
         env:
           PYTHON: python
+      - name: "coordtest (executors, locks, journal, handoffs)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/coordtest.mjs
       - name: "servertest (supervisor: stop reasons, backoff, refusal)"
         if: ${{ !cancelled() && matrix.shard == '3' }}
         run: bash hrun.sh node tests/servertest.mjs

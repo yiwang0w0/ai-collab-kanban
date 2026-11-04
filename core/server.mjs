@@ -47,6 +47,7 @@ if (nodeTooOld()) {
   process.exit(1);
 }
 const store = require_("./store.js");
+const coord = require_("./coord.js");
 const decision = require_("./decision_lib.js");
 const decompose = require_("./decompose_lib.js");
 const dgate = require_("../gates/deliverable_gate.js");
@@ -414,6 +415,7 @@ const fpContext = () => {
 };
 
 const db = store.open();
+coord.migrate(db);
 // Opt-in trusted local configuration; ordinary view-only startup performs no new migration.
 const fleetActions = process.env.BOARD_FLEET_ACTIONS_CONFIG
   ? openFleetActions(db,{config:loadFleetActionsConfig(process.env.BOARD_FLEET_ACTIONS_CONFIG)}) : null;
@@ -517,7 +519,7 @@ function normalizeRole(raw, lineId) {
   }
   return { kind, tools, charter, seat };
 }
-let LINES, SUPERVISED, LINE_HINT, LINE_LABEL, LINE_ACCEPT, LINE_ROLE, LINE_CHARTER_HASH, IMPL_LINES, REVIEW_LINES;
+let LINES, SUPERVISED, LINE_HINT, LINE_LABEL, LINE_ACCEPT, LINE_ROLE, LINE_CHARTER_HASH, IMPL_LINES, REVIEW_LINES, LINE_EXTERNAL;
 function rebuildLines() {
   // Bind charter bytes to the loaded configuration before publishing any new maps.
   // Claim runs inside a writer transaction and must not perform filesystem reads.
@@ -533,6 +535,8 @@ function rebuildLines() {
   // report; the close gates still run; human-gated cards are never auto-completed).
   LINE_LABEL = Object.fromEntries(CFG.lines.map((l) => [l.id, String(l.label || "").trim()]));
   LINE_ACCEPT = Object.fromEntries(CFG.lines.map((l) => [l.id, l.accept === "auto" ? "auto" : "human"]));
+  // 外部执行线:卡交给看板外的执行者(持执行者令牌领取),看板不启动它的进程。
+  LINE_EXTERNAL = Object.fromEntries(CFG.lines.map((l) => [l.id, l.external === true]));
   // v0.22: identity (null = a plain line, exactly as before this version).
   LINE_ROLE = roles;
   LINE_CHARTER_HASH = charterHashes;
@@ -552,7 +556,7 @@ catch (e) {   // a PRESENT-but-broken identity refuses startup, like any other c
 const LINE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 /** Add a line: validate → persist to the config file (atomic) → rebuild → the
  *  caller announces. Throws store.err on refusal (unknown/duplicate/role/shape). */
-function addLine(idRaw, hintRaw, labelRaw, acceptRaw, roleRaw = null) {
+function addLine(idRaw, hintRaw, labelRaw, acceptRaw, roleRaw = null, externalRaw = false) {
   const id = String(idRaw ?? "").trim();
   const hint = String(hintRaw ?? "").trim();
   const label = String(labelRaw ?? "").trim();
@@ -577,15 +581,17 @@ function addLine(idRaw, hintRaw, labelRaw, acceptRaw, roleRaw = null) {
   if (existsSync(CONFIG_FILE)) onDisk = JSON.parse(readFileSync(CONFIG_FILE, "utf8"));   // broken = throws = refuse
   const lines = Array.isArray(onDisk.lines) && onDisk.lines.length
     ? onDisk.lines : BUILTIN_CONFIG.lines.map((l) => ({ ...l }));
+  if (externalRaw != null && typeof externalRaw !== "boolean") throw store.err(store.ERR.BAD_INPUT, "external 只接受 true / false");
+  const external = externalRaw === true;
   lines.push({ id, ...(hint ? { hint } : {}), ...(label ? { label } : {}), ...(accept === "auto" ? { accept } : {}),
-               ...(roleDisk ? { role: roleDisk } : {}) });
+               ...(roleDisk ? { role: roleDisk } : {}), ...(external ? { external } : {}) });
   const next = { ...onDisk, lines };
   const tmp = CONFIG_FILE + ".tmp";
   writeFileSync(tmp, JSON.stringify(next, null, 2) + "\n", "utf8");
   renameSync(tmp, CONFIG_FILE);
   CFG = { ...CFG, lines };     // never mutate BUILTIN_CONFIG through the alias
   rebuildLines();
-  return { id, hint, label, accept, role };
+  return { id, hint, label, accept, role, external };
 }
 
 const workers = new Map();   // slotKey -> { line, slot, proc, startedAt, route, log: [] }
@@ -1688,6 +1694,8 @@ function workerStart(line, route = store.DEFAULT_ROUTE, agentsOverride = null) {
     throw store.err(store.ERR.CONFLICT,
       `看板窗已过(BOARD_UNTIL=${localIso(BOARD_UNTIL_AT)})—— 不再起新线。` +
       `要继续:换个 BOARD_UNTIL 重启看板,或不设截止`);
+  if (LINE_EXTERNAL?.[line])
+    throw store.err(store.ERR.CONFLICT, `${line} 是外部执行线:由持执行者令牌的外部执行者领卡,看板不启动进程`);
   everStarted.add(line);          // this boot has acted on the line (see NO_REVIVE)
   const st = settingsOf(line);
   const isReview = line === "review";
@@ -2160,7 +2168,7 @@ function workerInfo(line) {
       (s2.settings?.runtime || RUNTIME_IDS[0]) !== (st.agents[(s2.slot || 1) - 1]?.runtime || RUNTIME_IDS[0])),
     stale_settings: stale,
     // v0.22: the identity (null for a plain line) and whether agents[0] left its seat.
-    role: LINE_ROLE?.[line] || null, seat_drift: seatDrift(line, st),
+    role: LINE_ROLE?.[line] || null, seat_drift: seatDrift(line, st), external: !!LINE_EXTERNAL?.[line],
     // ⭐ While a container for this run exists, only ITS reason counts; the persisted
     //   last_stop is read only when there is no container (after a board restart —
     //   which is the case "stopped with the board" exists to survive). Reading the
@@ -2223,6 +2231,13 @@ const readBody = (req) => new Promise((resolve, reject) => {
     if (req.boardRole === "worker" && body?.worker !== undefined &&
         (req.workerSeat ? body.worker !== req.workerSeat.worker : workers.get(String(body.worker))?.workerToken))
       return reject(store.err(store.ERR.CONFLICT, "worker identity does not match its credential"));
+    // 执行者只能以自己的 id 领卡、续租、交付;不给 worker 时按令牌补上。
+    if (req.boardRole === "executor" && body && typeof body === "object" && !Array.isArray(body)) {
+      if (body.worker !== undefined && body.worker !== req.executor.id)
+        return reject(store.err(store.ERR.CONFLICT, "执行者身份与令牌不一致"));
+      body.worker = req.executor.id;
+      if (body.lease_minutes !== undefined) body.lease_minutes = coord.executorLease(body.lease_minutes);
+    }
     resolve(body);
   });
   // ⚠ Transport failures (disconnects) stay untyped — they are not about the
@@ -2374,6 +2389,13 @@ const WORKER_WRITES = (p) =>
   /^\/api\/tasks\/\d+\/(?:report|heartbeat|attempt|process-started|execution-event)$/.test(p) ||
   /^\/api\/context\/[a-z0-9_-]+\/compact$/.test(p) ||
   /^\/api\/workers\/[a-z0-9_-]+\/forked$/.test(p);
+// 执行者令牌:读看板、领卡、续租、交付、写自己的状态和流水、加锁与释放自己的锁、确认交接。
+//   裁定、bless、起停线、改设置都不在这里。
+const EXECUTOR_WRITES = (p) =>
+  p === "/api/claim" ||
+  /^\/api\/tasks\/\d+\/(?:claim|heartbeat|report)$/.test(p) ||
+  /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
+  /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p);
 const REVIEW_WRITES = (p) =>
   p === "/api/pools/exhausted" ||
   /^\/api\/tasks\/\d+\/(?:resolve|autoreview)$/.test(p);
@@ -2457,9 +2479,12 @@ function guardAuthentication(req, res) {
   const bound = [...workers.entries()].find(([,w]) => w.workerToken && tok === w.workerToken);
   req.workerSeat = bound ? { worker:bound[0], runtime:bound[1].settings.runtime,
     line:bound[1].line,executionProfile:profileForAgent(bound[1].settings,bound[1].line) } : null;
-  const role = tok === BOARD_TOKEN || isPanelCredential(tok) ? "operator"
+  let role = tok === BOARD_TOKEN || isPanelCredential(tok) ? "operator"
              : tok === WORKER_TOKEN || bound ? "worker"
              : tok === REVIEW_TOKEN ? "review" : null;
+  // 执行者令牌:只按哈希查登记表;只有上面三类都不匹配时才查。
+  req.executor = role ? null : coord.byToken(db, tok);
+  if (req.executor) role = "executor";
   req.boardRole = role;
   if (!role) {
     // ⚠ Echoing TOKEN_FILE raw would hand an unauthenticated caller an absolute
@@ -2473,7 +2498,8 @@ function guardAuthentication(req, res) {
 function guardWrite(req, res, p) {
   const role = guardAuthentication(req, res);
   if (!role) return null;
-  const allowed = role === "operator" || (role === "worker" ? WORKER_WRITES(p) : REVIEW_WRITES(p));
+  const allowed = role === "operator" || (role === "worker" ? WORKER_WRITES(p)
+                : role === "executor" ? EXECUTOR_WRITES(p) : REVIEW_WRITES(p));
   if (!allowed) {
     json(res, 403, { error: `${role} 令牌无权执行此操作 —— 裁定/编辑/治理动作只属于 operator 令牌(board_token)`,
                      role, path: p });
@@ -2507,6 +2533,37 @@ function claimIdentity(body, role, seat=null) {
       verification_repair:store.taskVerificationRepair(db,task,{fromRun:false}),
       ...(seat?.executionProfile?{execution_profile:seat.executionProfile}:{}) };
   }};
+}
+
+// ── 多执行者协作(/api/coord/*)。读:任何已认证角色;写:见 EXECUTOR_WRITES 与各分支的角色要求。
+const asExecutor = (req, res) => {
+  if (req.boardRole === "executor") return req.executor;
+  json(res, 403, { error: "此操作需要执行者令牌", role: req.boardRole });
+  return null;
+};
+const asOperator = (req, res) => {
+  if (req.boardRole === "operator") return true;
+  json(res, 403, { error: "此操作只属于操作员令牌", role: req.boardRole });
+  return false;
+};
+async function coordRoute(req, res, url, p, m, boardRole) {
+  if (m === "GET" && p === "/api/coord")
+    return json(res, 200, { executors: coord.listExecutors(db), external_lines: LINES.filter((l) => LINE_EXTERNAL[l]),
+                            executor_max_lease_min: coord.EXECUTOR_MAX_LEASE_MIN, now: Date.now() });
+  if (m === "GET" && p === "/api/coord/executors") return json(res, 200, { executors: coord.listExecutors(db) });
+  if (m === "POST" && p === "/api/coord/executors") {
+    if (!asOperator(req, res)) return;
+    const b = await readBody(req);
+    const r = coord.register(db, { id: b.id, name: b.name, kind: b.kind ?? "external", rotate: b.rotate === true });
+    emit("coord.executor", { id: r.executor.id });
+    return json(res, r.rotated ? 200 : 201, r);
+  }
+  if (m === "POST" && p === "/api/coord/heartbeat") {
+    const ex = asExecutor(req, res); if (!ex) return;
+    const b = await readBody(req);
+    return json(res, 200, coord.heartbeat(db, ex.id, { taskId: b.task_id ?? null, leaseMin: b.lease_minutes }));
+  }
+  return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的协作接口" });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -2919,13 +2976,13 @@ const server = http.createServer(async (req, res) => {
     //    review allowlists do not carry this path, so they 403 by construction).
     if (m === "POST" && p === "/api/config/lines") {
       const b = await readBody(req);
-      const added = addLine(b.id, b.hint, b.label, b.accept, b.role);
+      const added = addLine(b.id, b.hint, b.label, b.accept, b.role, b.external ?? false);
       emit("config.lines", { line: added.id });
       console.log(`线已加入: ${added.id}${added.label ? "「" + added.label + "」" : ""}${added.hint ? "(" + added.hint + ")" : ""}${added.accept === "auto" ? " · 交付即完成" : ""}`
         + (added.role ? ` · 身份 ${added.role.kind}${added.role.tools === "read-only" ? "·只读" : ""}${added.role.charter ? " · 章程 " + added.role.charter : ""}` : "")
         + ` —— 已写入 ${CONFIG_FILE},无需重启`);
       return json(res, 201, { line: added, lines: LINES, line_hints: LINE_HINT, line_labels: LINE_LABEL, line_accept: LINE_ACCEPT,
-                              line_roles: LINE_ROLE, impl_lines: IMPL_LINES });
+                              line_roles: LINE_ROLE, impl_lines: IMPL_LINES, line_external: LINE_EXTERNAL });
     }
     if (m === "GET" && p === "/api/workers") {
       const inspect = url.searchParams.get("readiness") === "1";
@@ -2937,6 +2994,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { workers: listed, lines: LINES,
                               execution_profiles:profileFacts(),workspace:{label:"当前项目",path:REPO_ROOT},
                               line_hints: LINE_HINT, line_labels: LINE_LABEL, line_accept: LINE_ACCEPT, routes: ROUTES,
+                              line_external: LINE_EXTERNAL,
                               // v0.22: id → identity (null = plain line); the implement subset the decomposer sees.
                               line_roles: LINE_ROLE, impl_lines: IMPL_LINES,
                               // v0.23: the review lines (pipeline targets) and the anti-affinity policy.
@@ -3030,6 +3088,8 @@ const server = http.createServer(async (req, res) => {
       else r = await workerStop(mw[1]);   // stop resets inside workerStop (one place, internal calls included)
       return json(res, 200, r);
     }
+
+    if (p === "/api/coord" || p.startsWith("/api/coord/")) return await coordRoute(req, res, url, p, m, boardRole);
 
     // Pick-a-card claim (no id) — this is what the worker loop hits.
     // Empty queue = 204, not an error: the worker should sleep, not retry.
@@ -3141,6 +3201,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (action === "heartbeat") {
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: b.lease_minutes });
+        if (boardRole === "executor") coord.touch(db, req.executor.id);
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side
       }
       if (action === "process-started") {
@@ -3572,7 +3633,7 @@ server.listen(PORT, HOST, () => {
   if (process.env.BOARD_NO_RESTORE) {
     console.log("BOARD_NO_RESTORE=1 —— 维护重启,不复活任何线(意图保留)");
   } else {
-  const want = SUPERVISED.filter((l) => settingsOf(l).desired_running);
+  const want = SUPERVISED.filter((l) => settingsOf(l).desired_running && !LINE_EXTERNAL?.[l]);
   if (!want.length) console.log("自动拉取: 停止中(上次是手动停的,或还没启动过)");
   else {
     console.log(`恢复自动拉取: ${want.join(" ")}`);
