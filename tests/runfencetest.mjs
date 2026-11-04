@@ -222,9 +222,11 @@ test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat w
 
 test("HTTP claim identity enforces canonical v4 UUIDs and uses the loaded charter snapshot",()=>{
   const source=readFileSync(join(ROOT,"core/server.mjs"),"utf8"),charter=join(TMP,"claim-charter.md");
+  // 领取上下文从原任务授权事件读取续修策略，抽取服务函数时也使用真实隔离任务库。
+  const {db,id}=fixture(), task={...store.get(db,id),line:"dev"};
   writeFileSync(charter,"original charter");let reads=0;
   const role={kind:"implement",tools:"write",charter:"claim-charter.md",seat:null};
-  const context=vm.createContext({CFG:{lines:[{id:"dev",role}]},ROLES:[],CODE_ROOT:TMP,store,resolve,createHash,
+  const context=vm.createContext({CFG:{lines:[{id:"dev",role}]},ROLES:[],CODE_ROOT:TMP,store,db,resolve,createHash,
     normalizeRole:value=>value??null,readFileSync:path=>{reads++;return readFileSync(path);}});
   vm.runInContext(source.slice(source.indexOf("let LINES, SUPERVISED,"),source.indexOf("try { rebuildLines(); }"))+
     source.slice(source.indexOf("const WORKER_PROTOCOL_VERSION = 2;"),source.indexOf("const server = http.createServer")),context);
@@ -234,14 +236,15 @@ test("HTTP claim identity enforces canonical v4 UUIDs and uses the loaded charte
     assert.throws(()=>context.claimIdentity({worker_protocol_version:2,agent_instance_id:bad},"worker"),{code:"BAD_INPUT"});
   assert.throws(()=>context.claimIdentity({worker_protocol_version:1,agent_instance_id:good},"worker"),{code:"BAD_INPUT"});
   writeFileSync(charter,"changed on disk");
-  const run=context.claimIdentity({worker_protocol_version:2,agent_instance_id:good,line:"dev"},"worker").runContextForTask({line:"dev"});
+  const run=context.claimIdentity({worker_protocol_version:2,agent_instance_id:good,line:"dev"},"worker").runContextForTask(task);
   assert.equal(run.charter_sha256,createHash("sha256").update("original charter").digest("hex"));assert.equal(reads,1);
+  assert.deepEqual(run.verification_repair,{max_rounds:1,legacy_retry:false});
   vm.runInContext("rebuildLines()",context);assert.equal(reads,2);
-  assert.equal(context.claimIdentity({line:"dev"},"operator").runContextForTask({line:"dev"}).charter_sha256,
+  assert.equal(context.claimIdentity({line:"dev"},"operator").runContextForTask(task).charter_sha256,
     createHash("sha256").update("changed on disk").digest("hex"));
   rmSync(charter);
   assert.throws(()=>vm.runInContext("rebuildLines()",context),{code:"ENOENT"});
-  const prior=context.claimIdentity({line:"dev"},"operator").runContextForTask({line:"dev"});
+  const prior=context.claimIdentity({line:"dev"},"operator").runContextForTask(task);
   assert.equal(prior.charter_sha256,createHash("sha256").update("changed on disk").digest("hex"));assert.equal(reads,3);
-  assert.equal(context.claimIdentity({line:"plain"},"operator").runContextForTask({line:"plain"}).charter_sha256,null);
+  assert.equal(context.claimIdentity({line:"plain"},"operator").runContextForTask({...task,line:"plain"}).charter_sha256,null);
 });

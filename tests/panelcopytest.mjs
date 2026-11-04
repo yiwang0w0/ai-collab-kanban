@@ -362,7 +362,8 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
   }
   const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高" });
   vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t){", "function sideRelationshipBox(t){"), context);
-  const card = { id: 4, status: "not_started", released: false, aggregate_version: 7, execution_profile: {
+  const card = { id: 4, status: "not_started", released: false, aggregate_version: 7,
+    verification_repair: { max_rounds: 3 }, verification_repair_digest: "b".repeat(64), execution_profile: {
     execution_profile_id: "claude-api", profile_digest: "a".repeat(64), configuration_changed: true, label: "API 样本", channel: "claude_agent_sdk", auth_kind: "api_key", billing_kind: "anthropic_api", model: "allowed", effort: "high", tools: "write", budget: null, workspace: { path: "C:/隔离/中文 工作仓" },
   } };
   const section = context.sideExecution(card), button = section.children.find((n) => n.tag === "button");
@@ -370,16 +371,28 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
   assert.match(section.textContent, /促销归属待账单确认/); assert.match(section.textContent, /待你确认/);
   assert.match(section.textContent, /allowed · 高/);
   assert.equal(button.dataset.a, "release"); assert.equal(button.dataset.version, "7");
+  assert.equal(button.disabled, undefined);
   assert.equal(button.dataset.executionProfileDigest, "a".repeat(64), "确认摘要来自正在显示的卡片，不从其他设置取值");
+  assert.equal(button.dataset.verificationRepairDigest, "b".repeat(64), "续修确认绑定当前卡片的策略摘要");
   assert.match(section.textContent, /放行前核对执行配置/); assert.match(section.textContent, /第二次确认不会自动接受另一份配置/);
   const withoutDigest = context.sideExecution({ ...card, execution_profile: { ...card.execution_profile, profile_digest: null } });
   assert.equal(withoutDigest.children.find((n) => n.tag === "button").disabled, true, "缺少摘要不能放行");
-  assert.equal(context.sideExecution({ ...card, execution_profile: undefined }).children.some((n) => n.tag === "button"), false, "旧卡不新增放行路径");
+  // CLI 旧卡也沿用同一个放行入口确认续修策略；缺少新快照摘要时保持禁用。
+  const legacy = { ...card, execution_profile: undefined };
+  const legacyButtons = context.sideExecution(legacy).children.filter((n) => n.tag === "button");
+  assert.equal(legacyButtons.length, 1, "不新增第二个放行入口");
+  assert.equal(legacyButtons[0].dataset.a, "release");
+  assert.equal(legacyButtons[0].dataset.executionProfileDigest, "");
+  assert.equal(legacyButtons[0].dataset.verificationRepairDigest, "b".repeat(64));
+  assert.equal(legacyButtons[0].disabled, undefined);
+  assert.equal(context.sideExecution({ ...legacy, verification_repair_digest: undefined }).children.find((n) => n.tag === "button").disabled, true);
+  assert.equal(context.sideExecution({ ...legacy, released: true }).children.some((n) => n.tag === "button"), false, "已放行旧卡不重复放行");
   const active = context.sideExecution({ ...card, status: "in_progress", run_id: "run", execution_trace: { run_id: "run", model_activity_at: "2026-10-27T00:00:00Z" } });
   assert.match(active.textContent, /最近模型活动/); assert.match(active.textContent, /进程、心跳和输出不等于有效工作/);
   assert.ok(source.includes('a === "archive" || a === "release") && b.dataset.armed !== "1"'));
   assert.ok(source.includes('released: true, expected_version: Number(b.dataset.version)'));
   assert.ok(source.includes('confirm_execution_profile_digest: b.dataset.executionProfileDigest'), "两押提交原按钮绑定的摘要，配置变化不静默确认");
+  assert.ok(source.includes('confirm_verification_repair_digest: b.dataset.verificationRepairDigest'), "续修策略沿原放行请求提交，不自动扩大旧授权");
 });
 
 test("写了指示的卡按放行状态显示：未放行说明须放行后再跑，已放行保留原文案", () => {

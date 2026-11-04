@@ -1015,8 +1015,18 @@ def prompt_selftest():
                 out.append(argv[j])
         return out
 
+    # 宿主验证日志可读以供原会话续修，但不能被模型改写；它与数据、认证拒绝规则同时生效。
+    verify_log_rule = f"Edit({deny_path(os.path.join(EVID, 'verify_runs'))}/**)"
+    deny_values = _vals(av, "--disallowedTools")
     ok("⭐主座席 argv 带 --disallowedTools 且紧跟全部规则",
-       "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:] == rules + auth_home_deny_rules())
+       "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:]
+       == rules + [verify_log_rule] + auth_home_deny_rules())
+    verify_sample = deny_path(os.path.join(EVID, "verify_runs", "run-1", "round-1.log"))
+    ok("宿主验证日志拒绝修改、允许读取，模型交付证据仍可写",
+       verify_log_rule in deny_values
+       and not any(r.startswith("Read(") and _fn.fnmatch(verify_sample, r.split("(", 1)[1][:-1])
+                   for r in deny_values)
+       and not any(_fn.fnmatch(ev_sample, r.split("(", 1)[1][:-1]) for r in deny_values))
     # ── 读写边界(v0.24.0,按 2026-10-28 spike 实测):与拆解器同一组合 ─────────────────
     ok("⭐权限模式是 dontAsk,argv 里没有 acceptEdits / plan(plan 会换模型,写只靠模型自律)",
        _vals(av, "--permission-mode") == ["dontAsk"] and "acceptEdits" not in av and "plan" not in av,
