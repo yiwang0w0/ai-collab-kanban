@@ -1610,7 +1610,8 @@ def run_task_process(t, worker, attempt, runtime, model, effort, argv, env, *, i
         try:
             # 记录请求占用本次超时预算，不延长模型允许的运行时间。
             deadline = t.get("_attempt_deadline", started + TIMEOUT)
-            stdout, stderr = process.communicate(input, timeout=max(0, deadline - time.monotonic()))
+            # 大浮点时刻先加再减可能略超原上限；钳制不增加任何已授权时间。
+            stdout, stderr = process.communicate(input, timeout=max(0, min(TIMEOUT, deadline - time.monotonic())))
         except subprocess.TimeoutExpired as e:
             if not _popen:
                 stop_api_tree(process)
@@ -2003,9 +2004,13 @@ def probe_runtime(live=False):
 
 def process_start_selftest(ok):
     """替身进程覆盖创建、记录与收尾边界；绝不运行 CLI 或连接看板。"""
+    from unittest.mock import patch
     task = {"id": 7, "run_id": str(uuid.uuid4())}
     for runtime, prompt in (("claude", None), ("codex", "仅夹具输入")):
         order, sent, options = [], [], {}
+        # 同一 Windows tick 可让先加再减的结果多出一 ULP；保留这一确定反例。
+        clock = [next(i / 10 for i in range(1, 1000000) if (i / 10 + TIMEOUT) - i / 10 > TIMEOUT)]
+        record_elapsed = 0.0
         class Process:
             pid, returncode = 321, 17
             def __enter__(self): return self
@@ -2017,9 +2022,11 @@ def process_start_selftest(ok):
         def popen(argv, **kwargs):
             order.append("created"); options.update(kwargs); return Process()
         def api(method, path, body, **kwargs):
+            clock[0] += record_elapsed
             order.append("recorded"); sent.append((method, path, body, kwargs)); return 200, {}
-        result = run_task_process(task, "夹具执行器", 2, runtime, "fixture-model", "high",
-                                  ["fixture-cli"], {}, input=prompt, _popen=popen, _call=api)
+        with patch.object(time, "monotonic", lambda: clock[0]):
+            result = run_task_process(task, "夹具执行器", 2, runtime, "fixture-model", "high",
+                                      ["fixture-cli"], {}, input=prompt, _popen=popen, _call=api)
         ok(f"进程记录/{runtime}:创建后记录、再等待，不把非零退出改成成功",
            order == ["created", "recorded", "communicate"] and result.returncode == 17 and
            result.stdout == "夹具输出" and result.stderr == "夹具错误")
@@ -2033,6 +2040,14 @@ def process_start_selftest(ok):
            options["stdout"] == subprocess.PIPE and options["stderr"] == subprocess.PIPE and
            options["encoding"] == "utf-8" and options["errors"] == "replace" and
            options["input"] == prompt and 0 <= options["timeout"] <= TIMEOUT)
+        clock[0], record_elapsed = 1000.0, 2.0
+        deadline = clock[0] + TIMEOUT - 5
+        bounded = {**task, "_attempt_deadline": deadline}
+        with patch.object(time, "monotonic", lambda: clock[0]):
+            run_task_process(bounded, "夹具执行器", 2, runtime, "fixture-model", "high",
+                             ["fixture-cli"], {}, input=prompt, _popen=popen, _call=api)
+        ok(f"进程记录/{runtime}:记录耗时占用原deadline，不续期",
+           options["timeout"] == TIMEOUT - 7 and bounded["_attempt_deadline"] == deadline)
     sent, messages = [], []
     def failed_spawn(*args, **kwargs): raise OSError("仅夹具启动失败")
     try:

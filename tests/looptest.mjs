@@ -25,13 +25,22 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DatabaseSync } from "node:sqlite";
 import { createRequire } from "node:module";
-const store=createRequire(import.meta.url)("../core/store.js");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
 const TMP = mkdtempSync(join(tmpdir(), "looptest-"));
+// store 的默认路径在加载时固定；只绑定本夹具临时库，随后恢复宿主环境。
+const store = (() => {
+  const previous = { BOARD_DATA_DIR: process.env.BOARD_DATA_DIR, BOARD_DB: process.env.BOARD_DB };
+  Object.assign(process.env, { BOARD_DATA_DIR: TMP, BOARD_DB: join(TMP, "t.db") });
+  try { return createRequire(import.meta.url)("../core/store.js"); }
+  finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+})();
 const PORT = 48200 + Math.floor((Date.now() / 1000) % 60);
 const BASE = `http://127.0.0.1:${PORT}`;
 const PY = process.env.PYTHON || "python";
@@ -116,7 +125,8 @@ const getTask = async (id) => (await api("GET", `/api/tasks/${id}`)).body?.task;
 // 旧阶梯测试需要精确布置档位/尝试帽/未放行状态；这些已不是公开建卡输入。
 // 在本 harness 的临时库中原子布置，避免活跃 loop 抢在 HTTP create→hold/update 之间领走。
 function createFixtureTask(fields){
-  const db=new DatabaseSync(join(TMP,"t.db"));
+  // 复用生产打开路径的 WAL、写锁等待与事务语义，避免裸连接立即撞上活跃 worker 的写锁。
+  const db=store.open();
   try{return store.get(db,store.add(db,{...fields,actor:"looptest-fixture"}));}finally{db.close();}
 }
 
