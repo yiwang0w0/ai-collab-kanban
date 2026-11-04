@@ -1176,12 +1176,22 @@ function add(db, args) {
         throw err(ERR.CONFLICT, "父卡已不属于本执行器");
       requireRun(parent, args.parentRunId);
     }
+    // 仅 HTTP worker 入口注入此内部标志；来源、首案判定与建卡在同一事务内完成。
+    // 归档或重新发送不会抹掉 add 历史，不能把第二案伪成首案。
+    if(args.workerDerived===true){
+      if(args.parentRunId==null||args.parentWorker==null)throw err(ERR.BAD_INPUT,"派生卡缺少父运行身份");
+      const prior=db.prepare("SELECT 1 FROM task_events WHERE kind='add' AND json_extract(detail,'$.parent_run_id')=? LIMIT 1").get(args.parentRunId);
+      // 升级前的子卡没有运行来源，不能把未知历史当成尚未派生过首案。
+      const unknown=db.prepare("SELECT 1 FROM tasks child WHERE child.parent_id=? AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id=child.id AND e.kind='add' AND json_extract(e.detail,'$.parent_run_id') IS NOT NULL) LIMIT 1").get(args.parentId);
+      args={...args,kind:"task",needsBash:0,released:prior||unknown?0:1};
+    }
     const id = addInner(db, args);
     const t = db.prepare(
       "SELECT id, line, parent_id, status, kind, released FROM tasks WHERE id=?").get(id);
     appendEvent(db, {
       taskId: id, kind: "add", actor: args.actor || "system", detail: eventState(t,
-        args.executionProfile ? { execution_profile: args.executionProfile } : {}),
+        {...(args.executionProfile ? { execution_profile: args.executionProfile } : {}),
+         ...(args.workerDerived===true ? { parent_run_id:args.parentRunId } : {})}),
     });
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_add");
     return id;

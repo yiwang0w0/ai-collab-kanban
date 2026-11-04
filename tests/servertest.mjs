@@ -631,7 +631,8 @@ try {
     const forgedAdd = await B.api("POST", "/api/tasks",
       {subject: "forged owner", owner_node_id: "foreign"});
     const forgedEdit = await B.api("POST", "/api/tasks/" + card.id + "/update", {task_uid: "foreign"});
-    ok("J3-7 API refuses caller-supplied owner and UID", forgedAdd.status === 400 && forgedEdit.status === 400);
+    ok("J3-7 建卡丢弃伪造owner，编辑仍拒绝伪造UID",
+       forgedAdd.status === 201 && forgedAdd.body?.task?.owner_node_id === m.node.node_id && forgedEdit.status === 400);
     const reloaded = await B.api("GET", "/api/tasks/" + card.id);
     ok("J3-8 rejected mutation preserves the public task identity",
        reloaded.body?.task?.task_uid === card.task_uid && reloaded.body?.task?.owner_node_id === card.owner_node_id);

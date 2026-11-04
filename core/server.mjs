@@ -2757,29 +2757,35 @@ const server = http.createServer(async (req, res) => {
 
     if (m === "POST" && p === "/api/tasks") {
       const b = await readBody(req);
-      // 执行快照只从宿主的已声明配置生成，客户端不能夹带凭据或伪造快照。
-      delete b.executionProfile;
+      if(!b||typeof b!=="object"||Array.isArray(b))throw store.err(store.ERR.BAD_INPUT,"建卡请求必须是 JSON 对象");
+      // 先保留执行配置的角色闸；白名单外字段统一丢弃，不成为 store 的内部参数。
+      if(b.execution_profile_id!==undefined&&boardRole!=="operator")return json(res,403,{error:"任务执行配置只能由操作者选择"});
+      const allowed=boardRole==="operator"
+        ? ["subject","summary","description","acceptance","line","route","parentId","parent_id","blockedBy","verifyCmd","needsBash","kind","execution_profile_id","model","effort"]
+        : ["subject","summary","description","acceptance","line","parentId","parent_id","parent_run_id","worker"];
+      const fields=Object.fromEntries(allowed.filter(key=>Object.hasOwn(b,key)).map(key=>[key,b[key]]));
+      fields.actor=boardRole;
       if(b.execution_profile_id!==undefined){
-        if(boardRole!=="operator")return json(res,403,{error:"任务执行配置只能由操作者选择"});
-        if(!b.line)throw store.err(store.ERR.BAD_INPUT,"选择执行配置时必须指定执行线");
-        const agent=settingsOf(b.line).agents.find(a=>a.execution_profile_id===b.execution_profile_id&&a.model===b.model&&a.effort===b.effort);
+        if(!fields.line)throw store.err(store.ERR.BAD_INPUT,"选择执行配置时必须指定执行线");
+        const agent=settingsOf(fields.line).agents.find(a=>a.execution_profile_id===fields.execution_profile_id&&a.model===fields.model&&a.effort===fields.effort);
         if(!agent)throw store.err(store.ERR.BAD_INPUT,"所选执行配置、模型和强度不属于该执行线");
-        b.executionProfile=profileForAgent(agent,b.line);b.released=0;b.maxAttempts=1;
+        fields.executionProfile=profileForAgent(agent,fields.line);fields.released=0;fields.maxAttempts=1;
       }
       // Worker-token creation is for DERIVED cards only (the out-of-scope-work
       // channel): a parent is mandatory. A worker minting root goals would be a
       // worker re-scoping the board.
-      if (boardRole === "worker" && b.parentId == null && b.parent_id == null)
+      if (boardRole === "worker" && fields.parentId == null && fields.parent_id == null)
         return json(res, 403, { error: "worker 令牌只能创建派生卡(必须带 parentId)—— 立根目标是 operator 的动作" });
-      if (b.parentId != null && b.parent_id != null && Number(b.parentId) !== Number(b.parent_id))
+      if (fields.parentId != null && fields.parent_id != null && Number(fields.parentId) !== Number(fields.parent_id))
         throw store.err(store.ERR.BAD_INPUT, "parentId 与 parent_id 不一致");
-      b.parentId = b.parentId ?? b.parent_id;
+      fields.parentId = fields.parentId ?? fields.parent_id;
       if (boardRole === "worker") {
-        b.parentRunId = b.parent_run_id ?? null;
-        b.parentWorker = b.worker ?? null;
+        fields.parentRunId = fields.parent_run_id ?? null;
+        fields.parentWorker = fields.worker ?? null;
+        fields.workerDerived = true;
       }
-      if (badRoutable(res, b)) return;   // creation entrance for route/line domains (ONE criterion)
-      const id = store.add(db, b);
+      if (badRoutable(res, fields)) return;   // creation entrance for route/line domains (ONE criterion)
+      const id = store.add(db, fields);
       emit("task.created", { id });
       return json(res, 201, { task: taskOut(store.get(db, id)) });
     }

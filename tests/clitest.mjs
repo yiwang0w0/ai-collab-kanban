@@ -456,8 +456,8 @@ console.log(NL + "[⑪ 执行者任务模板与旧 create payload]");
   const printed = python([board, "create", "--template"]);
   let template = null; try { template = JSON.parse(printed.stdout || ""); } catch {}
   const example = JSON.parse(readFileSync(join(ROOT, "examples", "任务模板.json"), "utf8"));
-  ok("离线模板不访问看板，输出与现有字段示例相同且默认未放行",
-     printed.status === 0 && JSON.stringify(template) === JSON.stringify(example) && template.released === false,
+  ok("离线模板不访问看板，输出与现有字段示例相同且不携带放行控制",
+     printed.status === 0 && JSON.stringify(template) === JSON.stringify(example) && !Object.hasOwn(template,"released"),
      (printed.stderr || "").slice(-180));
   ok("模板区分人看摘要与执行者五段说明，验收包含命令到预期",
      !!template && ["goal:", "ctx(file:line):", "do:", "accept(cmd -> expect):", "limits:"].every(label => template.description.split(NL).some(line => line.startsWith(label))) &&

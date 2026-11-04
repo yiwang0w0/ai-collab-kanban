@@ -41,6 +41,10 @@
 - `POST /api/tasks/:id/report`：worker、run_id、outcome、evidence。
 - worker 创建子任务：`POST /api/tasks`，带 parentId（或 parent_id）、parent_run_id、worker。两个父编号同时传入且不同会返回 400。
 
+建卡请求只提取角色白名单，其余键统一丢弃，不传给 `store.add`。operator 可传 `subject`、`summary`、`description`、`acceptance`、`line`、`route`、`parentId`/`parent_id`、`blockedBy`、`verifyCmd`、`needsBash`、`kind`、`execution_profile_id`、`model`、`effort`；worker 只可传 `subject`、`summary`、`description`、`acceptance`、`line`、`parentId`/`parent_id`、`parent_run_id`、`worker`。`actor` 由服务器按令牌角色写入；尝试次数、人工闸、放行、锁、产物路径、起点档位和联动声明均不从请求体取值。worker 选择执行配置仍返回 403。
+
+普通 operator 卡保留服务端既有放行默认；显式执行配置仍由服务端固定未放行、一次尝试。worker 派生卡首案是否放行，由服务器在父运行校验与插入的同一事务中按已有 `add` 事件来源判断：同一父 run 的首案放行，后案进候选池；首案归档也不会重新取得名额。链深上浮仍会收回放行。旧子卡没有可归属的运行来源时保守保持未放行；不迁移或修改旧任务、事件。内部直接调用 `store.add` 的既有策略不变。
+
 缺失或格式错误返回 400；执行已结束、已换人或 ID 不是当前 run 返回 409；任务不存在返回 404。结果提交被拒绝时不写结果、状态和事件。心跳和重试的 SQL UPDATE 自身也带 run 条件，防止检查之后被另一进程重新领取。派生任务的父执行校验与插入放在同一个写事务内。
 
 人工 CLI：

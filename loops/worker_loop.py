@@ -509,7 +509,7 @@ def harvest_spawned(t, worker):
     ⭐派生闸:「子任务」是「候选发现」。
       1) 只在**父卡成功+验证通过之后**调用(由调用方 handle 保证)
       2) 同一父卡**生涯只收割一次**(flag 文件。重试、重开都不再收割)
-      3) 每父最多 2 案、自动放行只有 1 案(第 2 案进候选池=released 0)、溢出进证据
+      3) 每父最多 2 案、服务端只给可核实的首案放行,后案进候选池、溢出进证据
       4) (父+规范化标题)的重复不建(DB 唯一索引是最终防波堤,这里是先手门)
       5) 链深:目标(0)→执行卡(1)→必要后续(2)**两层为止**。会成为第 3 层的发现
          上浮到链根目标直下并保持未放行(发现不丢,队列不被劫持)
@@ -543,7 +543,7 @@ def harvest_spawned(t, worker):
     except Exception as e:
         log(f"  取现有子卡失败({e})—— 去重交给 DB 索引兜底")
 
-    made, extra = [], []
+    made, extra, released_made = [], [], []
     for it in items:
         if len(made) >= 2:                     # 每父最多 2 案
             extra.append(it); continue
@@ -560,19 +560,16 @@ def harvest_spawned(t, worker):
             "description": str(it.get("description") or ""),
             "acceptance": str(it.get("acceptance") or ""),
             "line": it.get("line") if it.get("line") not in (None, "null") else t.get("line"),
-            "needsBash": False,
             "parent_run_id": t["run_id"], "worker": worker,
             "parentId": t["id"],          # 深度判定归服务端(store.placeInChain)
-            # 自动放行**只有第一案**。第 2 案进候选池(released 0)。
-            # ⚠上浮的卡也会是未放行,但那由**服务端**决定(此处判断不了)。
-            "released": 0 if made else 1,
-            "kind": "task",
+            # 首案放行、后案进候选池及链深上浮均由服务端按父运行历史原子决定。
         })
         if s2 < 400:
             made.append(r2["task"]["id"])
             if ns: existing.add(ns)
             # 有没有上浮**看返回的卡**(不自己重算)。为了不让它静默,打印出来。
             nt = r2.get("task") or {}
+            if nt.get("released"): released_made.append(nt["id"])
             if nt.get("parent_id") != t["id"]:
                 log(f"  ⚠#{nt.get('id')} 被链深闸上浮了(父 #{t['id']} → "
                     f"{('#' + str(nt.get('parent_id'))) if nt.get('parent_id') else '无(链根)'}"
@@ -587,7 +584,7 @@ def harvest_spawned(t, worker):
     except Exception: pass
     try: io.open(harvested_flag(t["id"]), "w", encoding="utf-8").write(datetime.datetime.now().isoformat())
     except Exception as e: log(f"  收割 flag 写不了({e})—— 生涯一次的保证被削弱")
-    if made: log(f"  派生 {len(made)} 件: {made}(放行 {made[:1]},其余候选池)")
+    if made: log(f"  派生 {len(made)} 件: {made}(放行 {released_made},其余候选池)")
     return made, memo
 
 

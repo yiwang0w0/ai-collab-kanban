@@ -137,6 +137,35 @@ test("public task edits cannot forge run IDs",()=>{
   }
 });
 
+test("worker derived release is decided atomically from durable parent-run provenance",()=>{
+  const {db,id}=fixture(), first=claim(db,id);
+  const derive=(subject,extra={})=>store.add(db,{subject,parentId:id,parentRunId:first.run_id,parentWorker:"worker-a",workerDerived:true,...extra});
+  assert.throws(()=>derive("wrong owner",{parentWorker:"other"}),{code:"CONFLICT"});
+  assert.throws(()=>derive("stale",{parentRunId:randomUUID()}),{code:"CONFLICT"});
+  const a=derive("first",{released:0}),b=derive("second",{released:1});
+  assert.equal(store.get(db,a).released,true);assert.equal(store.get(db,b).released,false);
+  assert.equal(store.events(db,{taskId:a}).find(e=>e.kind==="add").detail.parent_run_id,first.run_id);
+  // 首案归档后来源仍在历史中；失败的创建不占用首案名额。
+  store.archive(db,{id:a,expectedVersion:store.get(db,a).aggregate_version});
+  const later=derive("later request",{released:1});assert.equal(store.get(db,later).released,false);
+  for(const child of [b,later])store.archive(db,{id:child,expectedVersion:store.get(db,child).aggregate_version});
+  store.releaseHeldBy(db,"worker-a");const next=claim(db,id);
+  assert.throws(()=>derive("old run"),{code:"CONFLICT"});
+  const c=derive("new run",{parentRunId:next.run_id,released:0});assert.equal(store.get(db,c).released,true);
+  // 内部调用没有该可信来源标志，原来的显式放行参数保持不变。
+  const internal=store.add(db,{subject:"internal",parentId:id,released:0});assert.equal(store.get(db,internal).released,false);
+  const root=store.add(db,{subject:"root",kind:"goal"}),deep=store.add(db,{subject:"deep",parentId:root}),leaf=store.add(db,{subject:"leaf",parentId:deep});
+  const run=claim(db,leaf);
+  const up=store.add(db,{subject:"uplift first",parentId:leaf,parentRunId:run.run_id,parentWorker:"worker-a",workerDerived:true});
+  const afterUp=store.add(db,{subject:"after uplift",parentId:leaf,parentRunId:run.run_id,parentWorker:"worker-a",workerDerived:true});
+  assert.equal(store.get(db,up).parent_id,root);assert.equal(store.get(db,up).released,false);assert.equal(store.get(db,afterUp).released,false);
+  const legacy=store.add(db,{subject:"legacy parent"}),oldRun=claim(db,legacy);
+  const oldChild=store.add(db,{subject:"before upgrade",parentId:legacy});
+  store.archive(db,{id:oldChild,expectedVersion:store.get(db,oldChild).aggregate_version});
+  const unknown=store.add(db,{subject:"unknown prior origin",parentId:legacy,parentRunId:oldRun.run_id,parentWorker:"worker-a",workerDerived:true});
+  assert.equal(store.get(db,unknown).released,false,"旧子卡缺少来源时保守待放行，归档不抹除历史");
+});
+
 test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat writes",async()=>{
   const listener=createServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));
   const port=listener.address().port;await new Promise(r=>listener.close(r));
@@ -170,6 +199,18 @@ test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat w
       return {status:r.status,body:await r.json().catch(()=>null)};
     }
     const meta=await api("GET","/api/meta");assert.equal(meta.body.worker_protocol_version,2);
+    const injected=await api("POST","/api/tasks",{subject:"需要人裁定的白名单夹具",summary:"摘要",description:"说明",acceptance:"验收",line:"alpha",
+      actor:"forged",maxAttempts:99,humanGate:false,released:0,evidencePath:"forged",lockKey:"forged",treeMode:"hierarchical",weight:"heavy",oneofKey:"forged",provesParent:true,
+      parentRunId:randomUUID(),parentWorker:"forged",workerDerived:true,executionProfile:{credential:"forged"},unknown_field:"forged"});
+    assert.equal(injected.status,201,JSON.stringify(injected));
+    const clean=injected.body.task;assert.equal(clean.max_attempts,3);assert.equal(clean.human_gate,true);assert.equal(clean.released,true);
+    assert.equal(clean.summary,"摘要");assert.equal(clean.description,"说明");assert.equal(clean.acceptance,"验收");
+    for(const key of ["evidence_path","lock_key","oneof_key"])assert.equal(clean[key],null);
+    assert.equal(clean.weight,"standard");assert.equal(clean.tree_mode,"legacy");assert.equal(clean.proves_parent,false);
+    const added=(await api("GET","/api/task-events?task_id="+clean.id)).body.events.find(e=>e.kind==="add");
+    assert.equal(added.actor,"operator");assert.equal(added.detail.parent_run_id,undefined);assert.equal(added.detail.execution_profile,undefined);
+    assert.equal((await api("POST","/api/tasks",{subject:"worker config",execution_profile_id:"forged"},wk)).status,403);
+    const goal=await api("POST","/api/tasks",{subject:"合法演示目标",kind:"goal",line:"alpha"});assert.equal(goal.status,201);assert.equal(goal.body.task.kind,"goal");
     const created=await api("POST","/api/tasks",{subject:"HTTP fixture",line:"alpha"});
     assert.equal(created.status,201,JSON.stringify(created));
     const id=created.body.task.id, common={worker:"worker-a",line:"alpha"};
@@ -186,8 +227,16 @@ test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat w
     }
     assert.equal((await api("POST","/api/tasks",{subject:"bad",parentId:id,worker:"worker-a"},wk)).status,400);
     assert.equal((await api("POST","/api/tasks",{subject:"old",parentId:id,parent_run_id:randomUUID(),worker:"worker-a"},wk)).status,409);
-    const child=await api("POST","/api/tasks",{subject:"valid child",parent_id:id,parent_run_id:a.run_id,worker:"worker-a"},wk);
+    const child=await api("POST","/api/tasks",{subject:"valid child",summary:"派生摘要",parent_id:id,parent_run_id:a.run_id,worker:"worker-a",
+      actor:"forged",maxAttempts:99,humanGate:true,released:0,kind:"goal",needsBash:true,verifyCmd:"forged",route:"forged",blockedBy:[clean.id],executionProfile:{credential:"forged"},workerDerived:false,unknown_field:"forged"},wk);
     assert.equal(child.status,201,JSON.stringify(child)); assert.equal(child.body.task.parent_id,id);
+    assert.equal(child.body.task.kind,"task");assert.equal(child.body.task.human_gate,false);assert.equal(child.body.task.max_attempts,3);assert.equal(child.body.task.needs_bash,false);
+    assert.equal(child.body.task.verify_cmd,null);assert.equal(child.body.task.route,"default");assert.deepEqual(child.body.task.blocked_by,[]);assert.equal(child.body.task.released,true);
+    const childAdd=(await api("GET","/api/task-events?task_id="+child.body.task.id)).body.events.find(e=>e.kind==="add");
+    assert.equal(childAdd.actor,"worker");assert.equal(childAdd.detail.parent_run_id,a.run_id);
+    const candidate=await api("POST","/api/tasks",{subject:"second derived",parentId:id,parent_run_id:a.run_id,worker:"worker-a",released:1},wk);
+    assert.equal(candidate.status,201);assert.equal(candidate.body.task.released,false);
+    assert.equal((await api("POST","/api/tasks/"+candidate.body.task.id+"/archive",{})).status,200);
     const childPath="/api/tasks/"+child.body.task.id;
     const cc=await api("POST",childPath+"/claim",{worker:"worker-a"});
     assert.equal(cc.status,200,JSON.stringify(cc));

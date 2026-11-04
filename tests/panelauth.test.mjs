@@ -59,7 +59,8 @@ test('H2 authenticated SSE receives task changes without putting credentials in 
 });
 
 test('H3 authenticated task reads expose current blockers without changing task state',async()=>{
- const created=await fetch(base+'/api/tasks',{method:'POST',headers:headers(operator),body:JSON.stringify({subject:'Synthetic human-held work',line:'alpha',humanGate:true})});
+ // 建卡不接收人工闸字段，沿用服务端既有的裁定标题规则布置被阻挡任务。
+ const created=await fetch(base+'/api/tasks',{method:'POST',headers:headers(operator),body:JSON.stringify({subject:'Synthetic 待裁定 work',line:'alpha'})});
  assert.equal(created.status,201);const t=(await created.json()).task;
  assert.ok(t.progress_blockers.some(r=>r.code==='HUMAN_GATE'));
  for(const token of [operator,worker,review]){

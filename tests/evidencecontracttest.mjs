@@ -257,9 +257,16 @@ test("临时假板一张桩卡完整领取和回报，模型正文在冻结上�
         ...(method === "GET" ? {} : { body: JSON.stringify(body ?? {}) }) });
       return { status: response.status, body: await response.json() };
     }
-    const created = await api("POST", "/api/tasks", { subject: "四节短证据本地桩", line: "alpha", released: 0 });
+    const created = await api("POST", "/api/tasks", { subject: "四节短证据本地桩", line: "alpha" });
     assert.equal(created.status, 201, JSON.stringify(created.body));
-    const task = created.body.task;
+    // 隔离板没有活跃执行线；用原放行接口收回任务，再读取本次授权预览。
+    const held = await api("POST", `/api/tasks/${created.body.task.id}/release`, {
+      released: false, expected_version: created.body.task.aggregate_version });
+    assert.equal(held.status, 200, JSON.stringify(held.body));
+    const current = await api("GET", `/api/tasks/${created.body.task.id}`);
+    assert.equal(current.status, 200, JSON.stringify(current.body));
+    const task = current.body.task;
+    assert.equal(task.released, false);
     assert.deepEqual(task.verification_repair.evidence_contract, { version: 1, max_chars: 4000 });
     const released = await api("POST", `/api/tasks/${task.id}/release`, { released: true, expected_version: task.aggregate_version,
       confirm_verification_repair_digest: task.verification_repair_digest });

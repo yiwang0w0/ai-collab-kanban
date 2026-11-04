@@ -31,6 +31,12 @@ function python(script,args,f){
  assert.equal(result.status,0,result.stderr+'\n'+result.stdout);return result.stdout;
 }
 
+test('worker派生请求只带业务与父运行身份，放行结果只认服务端回执',()=>{
+ const f=fixture();
+ const result=python(`import sys,pathlib,json,uuid,io\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport worker_loop as w\nw.EVID=sys.argv[2]; w.DATA=sys.argv[2]; messages=[]; w.log=messages.append\nparent={'id':7,'run_id':str(uuid.uuid4()),'line':'alpha'}; sent=[]\npathlib.Path(w.spawn_path_for(7)).write_text(json.dumps({'tasks':[{'subject':'first'},{'subject':'second','released':True,'needs_bash':True,'verify_cmd':'forged'}]}),encoding='utf-8')\ndef call(method,path,body=None):\n if method=='GET': return 200,{'tasks':[]}\n sent.append(body); return 201,{'task':{'id':10+len(sent),'parent_id':7,'released':False}}\nw.call=call\nmade,memo=w.harvest_spawned(parent,'worker-a')\nassert made==[11,12] and memo is None and len(sent)==2\nfor body in sent:\n assert set(body)=={'subject','summary','description','acceptance','line','parent_run_id','worker','parentId'},body\n assert body['parent_run_id']==parent['run_id'] and body['worker']=='worker-a' and body['parentId']==7\nassert any('放行 []' in text for text in messages),messages\nprint('worker derived payload passed')`,[f.privateDir],f);
+ assert.match(result,/worker derived payload passed/);
+});
+
 test('物理文件桥沿用相对路径合同，中文文件可读写编辑，CAS拒绝覆盖旧版本',()=>{
  const f=fixture(),tools=createWorkspaceTools(f.job);
  const made=tools.call('write_file',{path:'源码/中文.txt',content:'第一版\n',expected_sha256:null});

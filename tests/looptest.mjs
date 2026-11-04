@@ -25,6 +25,9 @@ import {
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { DatabaseSync } from "node:sqlite";
+import { createRequire } from "node:module";
+const store=createRequire(import.meta.url)("../core/store.js");
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -110,6 +113,12 @@ const api = async (method, path, body) => {
   return { status: r.status, body: j };
 };
 const getTask = async (id) => (await api("GET", `/api/tasks/${id}`)).body?.task;
+// 旧阶梯测试需要精确布置档位/尝试帽/未放行状态；这些已不是公开建卡输入。
+// 在本 harness 的临时库中原子布置，避免活跃 loop 抢在 HTTP create→hold/update 之间领走。
+function createFixtureTask(fields){
+  const db=new DatabaseSync(join(TMP,"t.db"));
+  try{return store.get(db,store.add(db,{...fields,actor:"looptest-fixture"}));}finally{db.close();}
+}
 
 /** Why the loop is not running at all (python missing from PATH / died early).
  *  null = it should be running. ⭐ Without this every wait spins to its timeout and
@@ -224,14 +233,14 @@ try {
 
   console.log("[① place one card that always fails]");
   // ⭐ weight=light on purpose, for two reasons:
-  //   ① proves the create-card entry accepts weight (start rung comes from the card)
+  //   ① 隔离布置 light 档，验证执行循环确实从卡面读取起点
   //   ② light starts at L1, so the three attempts are medium → high → max = all
   //     DIFFERENT rungs, making "did it escalate?" readable off a single card.
-  const A = (await api("POST", "/api/tasks",
+  const A = createFixtureTask(
     { subject: "必ず失败する卡(looptest)", line: LINE, maxAttempts: 3, weight: "light",
-      description: "桩不写证据,所以三次都交不了活。" })).body.task.id;
+      description: "桩不写证据,所以三次都交不了活。" }).id;
   ok("card created (attempts=0, not_started)", (await getTask(A)).attempts === 0, `#${A}`);
-  ok("⭐create-card entry accepts weight (light survives onto the card)",
+  ok("⭐隔离夹具的 light 起点已原子写入卡面",
      (await getTask(A)).weight === "light", `weight=${(await getTask(A)).weight}`);
 
   /** Read "which rung attempt n of card X used" out of the loop log. ⭐ The anchor
@@ -375,10 +384,10 @@ try {
   //     three-rung ladder a standard start would reach the top on attempt 2 and
   //     branch A would have no room to be observed.
   writeFileSync(join(TMP, "static.on"), "1", "utf8");
-  const F = (await api("POST", "/api/tasks",
+  const F = createFixtureTask(
     { subject: "同因失败卡(looptest)", line: LINE, maxAttempts: 3, released: 0, weight: "light",
       description: "桩转同因失败 —— 第 2 次同指纹但还有档可提 ⇒ 不刹车;第 3 次到顶档仍同指纹 ⇒ 刹车。"
-    })).body.task.id;
+    }).id;
   mkdirSync(join(TMP, "evidence"), { recursive: true });
   writeFileSync(join(TMP, "evidence", `spawn-${F}.json`),
     JSON.stringify({ tasks: [{ subject: "失败路径的提案(不该立卡)" }] }), "utf8");
@@ -444,9 +453,9 @@ try {
   //   so it must stop on attempt 2, BEFORE the max_attempts=3 limit ⇒ what stopped it
   //   was the brake, not exhaustion.
   console.log("\n[⑤b ⭐branch B: heavy start → top rung on #1 → brake on #2, before exhaustion]");
-  const H = (await api("POST", "/api/tasks",
+  const H = createFixtureTask(
     { subject: "heavy 同因失败卡(looptest)", line: LINE, maxAttempts: 3, weight: "heavy",
-      description: "起点=顶档。第 2 次同指纹 ⇒ 在到达上限 3 之前刹车。" })).body.task.id;
+      description: "起点=顶档。第 2 次同指纹 ⇒ 在到达上限 3 之前刹车。" }).id;
   const parkedH = await until(async () => {
     const t = await getTask(H);
     return t && t.status === "waiting" ? t : null;
@@ -525,9 +534,9 @@ try {
       writeFileSync(rateStub, "#!/bin/sh\necho 'rate limit reached - try again later' 1>&2\nexit 3\n", "utf8");
       chmodSync(rateStub, 0o755);
     }
-    const R = (await api("POST", "/api/tasks",
+    const R = createFixtureTask(
       { subject: "限流卡(looptest)", line: LINE, maxAttempts: 1,
-        description: "桩自称限流 —— 尝试次数与档位都不该动。" })).body.task.id;
+        description: "桩自称限流 —— 尝试次数与档位都不该动。" }).id;
     const rr = await runLoopOnce({ WORKER_CLAUDE_CLI: rateStub,
                                    ...(WIN ? { WORKER_ALLOW_BATCH_CLI: "1" } : {}),
                                    WORKER_RATE_WAIT_SEC: "1", WORKER_RATE_MAX_WAITS: "2" }, 60000);
@@ -620,10 +629,10 @@ process.stdin.on("end", () => {
     const seatCli = WIN ? process.execPath : join(seatRepo, "node-codex-stub.exe");
     if (!WIN) symlinkSync(process.execPath, seatCli);
 
-    const C = (await api("POST", "/api/tasks", {
+    const C = createFixtureTask({
       subject: "第二座席桩の端到端卡(looptest)", line: LINE, maxAttempts: 1,
       description: "本地假 CLI 产出 evidence 与 JSONL,不呼叫任何外部服务。",
-    })).body.task.id;
+    }).id;
     const seatPromise = runLoopOnce({
       WORKER_RUNTIME: "codex", BOARD_CODEX_RELEASED: "1", BOARD_CODEX_CMD: seatCli,
       BOARD_REPO: seatRepo, WORKER_MODEL: "gpt-5.6-sol", WORKER_EFFORT: "xhigh",
@@ -692,9 +701,9 @@ process.stdin.on("end", () => {
   //   under which the old instrument misses 100% of the time. The trace-based
   //   instrument must still be able to say "it was claimed".
   console.log("\n[②bis ⭐a fast card is not missed]");
-  const Q = (await api("POST", "/api/tasks",
+  const Q = createFixtureTask(
     { subject: "速攻で終わる卡(looptest)", line: LINE, maxAttempts: 1,
-      description: "maxAttempts=1 + 即死桩 ⇒ claim→失败→park 一瞬结束。" })).body.task.id;
+      description: "maxAttempts=1 + 即死桩 ⇒ claim→失败→park 一瞬结束。" }).id;
   const rq = await runLoopOnce(stubEnv);
   const tq = await getTask(Q);
   const cq = claimTrace(Q, tq, rq.out);
@@ -705,8 +714,8 @@ process.stdin.on("end", () => {
 
   // ── ②ter ⭐converse: when it genuinely was NOT claimed, red with matching wording ──
   console.log("\n[②ter ⭐not claimed ⇒ red, but for the right reason]");
-  const N = (await api("POST", "/api/tasks",
-    { subject: "未放行的卡(谁都领不到·looptest)", line: LINE, released: 0 })).body.task.id;
+  const N = createFixtureTask(
+    { subject: "未放行的卡(谁都领不到·looptest)", line: LINE, released: 0 }).id;
   const rn = await runLoopOnce(stubEnv, 45000);
   const tn = await getTask(N);
   const cn = claimTrace(N, tn, rn.out);
@@ -776,9 +785,9 @@ process.stdin.on("end", () => {
       //   green for the wrong reason is one keystroke away here). ⑥d's assertions are
       //   already made, so retire it from the queue first.
       await api("POST", `/api/tasks/${G}/release`, { released: false });
-      const P2 = (await api("POST", "/api/tasks",
+      const P2 = createFixtureTask(
         { subject: "阴性对照 .exe 路径(looptest)", line: LINE, maxAttempts: 1,
-          description: "同一 payload 走 .exe —— 不该发火。" })).body.task.id;
+          description: "同一 payload 走 .exe —— 不该发火。" }).id;
       const r2 = await runLoopOnce({ WORKER_CLAUDE_CLI: WHERE, WORKER_EFFORT: 'max" & exit 7' });
       const t2 = await getTask(P2);
       const ev2 = String(t2?.result || "");
@@ -806,7 +815,7 @@ process.stdin.on("end", () => {
   console.log("\n[⑬ 连续交不成 → 线级熔断(真的会退出)]");
   {
     for (let i = 0; i < 4; i++)
-      await api("POST", "/api/tasks",
+      createFixtureTask(
                 { subject: `熔断用卡 ${i}(交不成)`, line: LINE, maxAttempts: 1 });
     // A stub that exits cleanly and writes NO evidence file: each card uses its one
     // attempt and parks. That is the systemic-failure shape without a real CLI.
@@ -840,7 +849,7 @@ process.stdin.on("end", () => {
     writeFileSync(dump, ["import sys, json, io",
       "io.open(" + JSON.stringify(argvFile) + ", 'w', encoding='utf-8').write(json.dumps(sys.argv))",
       "sys.exit(3)"].join("\n"), "utf8");
-    await api("POST", "/api/tasks", { subject: "argv-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
+    createFixtureTask({ subject: "argv-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
     await runLoopOnce({ WORKER_CLAUDE_CLI: "", WORKER_ALLOW_BATCH_CLI: "", WORKER_CLI_ARGV: JSON.stringify([PY, dump]) }, 60000);
     let argv = []; try { argv = JSON.parse(readFileSync(argvFile, "utf8")); } catch {}
     const i = argv.indexOf("--disallowedTools"); const rules = i >= 0 ? argv.slice(i + 1) : [];
@@ -893,7 +902,7 @@ process.stdin.on("end", () => {
     writeFileSync(dump, ["import sys, json, io",
       "io.open(" + JSON.stringify(argvFile) + ", 'w', encoding='utf-8').write(json.dumps(sys.argv))",
       "sys.exit(3)"].join("\n"), "utf8");
-    await api("POST", "/api/tasks", { subject: "identity-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
+    createFixtureTask({ subject: "identity-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
     const r = await runLoopOnce({ WORKER_CLAUDE_CLI: "", WORKER_ALLOW_BATCH_CLI: "", WORKER_CLI_ARGV: JSON.stringify([PY, dump]),
                                   WORKER_ROLE_KIND: "review", WORKER_TOOL_PROFILE: "read-only",
                                   WORKER_CHARTER: "examples/roles/astra.md" }, 60000);

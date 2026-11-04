@@ -8,7 +8,9 @@
   $P create --template                       # 离线打印现有字段的执行者模板 JSON，不访问看板
   $P create --file payload.json          # payload 的键与 POST /api/tasks 相同:subject(必填)、summary
                                              #   (给人看的「要做什么」,两行以内)、description、acceptance、
-                                             #   line、weight、verifyCmd、humanGate、parentId …
+                                             #   line、route、verifyCmd、parentId、blockedBy、needsBash、kind、
+                                             #   execution_profile_id、model、effort。其它键由服务端丢弃。
+                                             #   放行、尝试次数、人工闸等控制须走原有 release/hold/edit 命令。
   $P claim --as alpha                        # pick-a-card claim (routing/locks/deps decided server-side)
   $P take  <id> --as coord --version <aggregate_version>                   # claim a SPECIFIC id (coordinator finishing one card)
   $P edit  <id> --file payload.json --version <aggregate_version>          # rewrite the card face. An in-progress card accepts ONLY a
