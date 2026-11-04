@@ -19,6 +19,8 @@ from a named incident (see `docs/INCIDENTS.md`):
   network. 操作性读写均要求对应角色的凭据；匿名访问仅开放配对页面及有限的健康／协议发现。
   The separate peer gateway is the only planned
   tailnet-facing surface.
+  可选的远程批准入口（`remote_access`，默认关闭）是另起的监听，只开放批准接口与只读摘要，见下文与 `docs/批准接口.md`；
+  它不是原 UI/API 的代理。
 - **Three credential classes** (v0.2, INCIDENT-12: an agent granted the board
   folder read the token and approved its own card). `board_token` = operator,
   full power; `worker_token` = execution face only (a worker compromised through
@@ -37,7 +39,8 @@ from a named incident (see `docs/INCIDENTS.md`):
   A manually launched legacy loop therefore records an unknown runtime even
   when it actually invokes a Codex CLI; CLI output and usage are still retained.
   执行者令牌（`exe_…`，见 `docs/多执行者协作.md`）由操作员逐个登记，库里只存 sha256，明文只返回一次；
-  只能读看板、领卡、续租、交付、写自己的状态与流水、加锁与释放自己的锁、确认交接，不能裁定、bless、起停线或改设置。
+  只能读看板、领卡、续租、交付、写自己的状态与流水、加锁与释放自己的锁、确认交接、发起批准请求，
+  不能裁定、bless、起停线、改设置或决定批准事项。
   它不证明运行时种类，领卡时不盖运行时徽标。
   **Measured 2026-09-07 with the real CLI on Windows (nine experiments, positive
   controls included):** a Claude worker in `-p` mode can `Read` any absolute path
@@ -120,6 +123,7 @@ from a named incident (see `docs/INCIDENTS.md`):
 | independent `/peer/v1/*` gateway | receiver-issued bearer bound to peer node, epoch, credential version, scope and project | explicit loopback port; only this port is intended for a Tailscale private HTTPS proxy |
 | `/local/v1/tools/list` and `/local/v1/tools/call` broker | per-principal bearer bound to local node epoch, role version and projects; execution principal also bound to agent/run | loopback only; internal HTTP, not a public MCP transport |
 | `cli/mcp.mjs` | desktop/agent MCP stdio bridge with a restricted credential file | JSON-RPC on stdio; diagnostics on stderr; no database path or operator token given to the bridge |
+| 远程批准入口（`remote_access`，默认关闭） | 批准令牌（`apr_…`，只存哈希，操作员生成与吊销）；不认操作员令牌、面板凭据、执行者令牌 | 显式 IP 监听 + `allow_ips` 来源白名单；只开放批准接口与只读摘要；无 TLS，只经 VPN 或可信局域网 |
 
 All peer and broker requests authenticate before lifecycle state is disclosed;
 mutations recheck authorization under their transaction after body upload.
@@ -171,6 +175,21 @@ against its stored key, not a physical stop or an uncompromised OS. Review the
 [migration guide](docs/federation/migration-0.24.md), [peer contract](docs/federation/peers.md),
 [broker contract](docs/federation/mcp.md), and [measured progress](docs/federation/PROGRESS.md)
 before treating this development branch as a production deployment.
+
+## Remote approval entry (0.24 development)
+
+`remote_access` 打开时，看板按 `listen` 另起一个监听，给另一台设备上的批准客户端用；关闭时只监听回环地址，行为不变。
+
+- 监听地址必须显式写 IP；`0.0.0.0`、`::` 默认拒绝启动，另加 `allow_wildcard_listen: true` 才接受。
+  来源地址不在 `allow_ips`（IP 或 CIDR，不接受 `/0`）里的请求一律 403。
+- 只认批准令牌（`Authorization: Bearer apr_…`）。令牌由操作员生成，库里只存 sha256，明文只显示一次，吊销立即失效；
+  操作员令牌、面板配对凭据、执行者与 worker 令牌在远程入口上一律 401，本机接口也不认批准令牌。
+- 只开放 `GET /api/approvals`、`GET /api/approvals/:id`、`POST /api/approvals/:id/decide` 与只读摘要 `GET /api/summary`，
+  其他路径 403。带 `Origin` / `Sec-Fetch-*` 的浏览器请求 403，不回 CORS 头。同一来源认证失败过多返回 429。
+- 每次调用写只追加的 `remote_audit`；每次决定写 `approval.decided` 流水与只追加的决定记录，带操作者、凭据通道与客户端自报的来源。
+- **没有自带 TLS。** 令牌与内容在链路上是明文，加密靠 VPN；只适合经 VPN 或可信局域网访问，不要做公网转发、隧道或反代。
+  来源白名单不是认证，能借用白名单地址的人仍需令牌；批准令牌能批准列表里的一切（含让看板更新重启、强制释放锁），
+  设备丢失就立即吊销。
 
 ## What it deliberately does not defend against
 

@@ -1330,3 +1330,7 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-04 多执行者协作：执行者令牌(只存哈希、权限只到执行面)、心跳续租与外部执行线、各方状态、资源锁(409 带持有者、逾期只标不放)、只追加流水(库层禁改删)、交接包(整项取舍、ack 一次)、board.py exec/lock/journal/handoff、面板设置页「协作」区。
 - 新增 coordtest 11/0；servertest 212/0、selftest 402/0、clitest 89/0、looptest 79/0、reviewtest 29/0、test:channels 92/0、面板相关套件全绿；47961 临时看板两执行者抢锁、写流水、停止与接手实跑通过。
 - 阻塞：无。
+
+- 2026-11-04 批准接口：GET /api/approvals 汇总待裁定／待验收／放行确认／版本确认／逾期锁／执行者请求，决定路由回原 resolve、release、bless、更新、强制释放，版本冲突 409、同一项只决定一次，流水记来源与操作者。
+- 可选远程入口 remote_access（默认关闭、显式 IP 监听、来源白名单、只认批准令牌、只开放批准与只读摘要、拒浏览器请求、逐次审计、无 TLS 只经 VPN）；面板「待你批准」与批准令牌；board.py approvals／approval-token。
+- 新增 approvaltest 3/0；servertest 212/0、selftest 402/0、clitest 89/0、looptest 79/0、reviewtest 29/0、test:channels 92/0、coordtest 11/0、面板相关套件全绿；47962 临时看板远程入口绑 127.0.0.2 用批准令牌列出并批准一项实跑通过。阻塞：无。
