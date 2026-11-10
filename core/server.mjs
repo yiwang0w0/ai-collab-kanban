@@ -3158,7 +3158,7 @@ async function approvalTokensRoute(req, res, url, p, m) {
 }
 
 // ── 远程入口(可选,默认关闭)。另起监听,只接受 allow_ips 里的来源和批准令牌,只开放批准接口与只读摘要。
-//    没有 TLS:只在 VPN 或可信局域网里用。浏览器请求一律拒绝;已认证的调用写 remote_audit(决定一次一行,列表轮询按令牌按窗口聚合),未认证的拒绝聚合后写。
+//    没有 TLS:只在 VPN 或可信局域网里用。浏览器请求一律拒绝;已认证的调用写 remote_audit(决定一次一行,成功的只读查询按令牌按窗口聚合),未认证的拒绝聚合后写。
 const remoteServers = [];
 const remoteState = { listening: [], errors: [] };
 const REMOTE_FAIL_WINDOW_MS = 10 * 60000, REMOTE_FAIL_MAX = 10;
@@ -3200,22 +3200,24 @@ function auditRemoteDenied(rec, now = Date.now()) {
   remoteDenied.set(k, { rec, first: now, more: 0 });
   approvals.audit(db, rec, now);
 }
-// 已认证的列表轮询(GET /api/approvals,客户端每几秒查一次):一次一行的话,一枚令牌一天就是上万行删不掉的记录。
-// 每个(令牌,来源)每个窗口只写第一条,其余在内存里计数,窗口结束补一行「poll +N」(窗口长度与上面相同)。
-// 只聚合这一条成功的只读查询;只读摘要、单项查询、被拒的调用和每一次决定仍一次一行。
-const remotePolls = new Map();   // "令牌编号 来源" -> { rec, first, more }
+// 已认证的只读查询(客户端每几秒查一次列表或摘要):一次一行的话,一枚令牌一天就是上万行删不掉的记录。
+// 成功的 GET 按路径类别分三类:列表、只读摘要、单项查询(不分是哪一项)。每个(令牌,来源,类别)每个窗口只写第一条,
+// 其余在内存里计数,窗口结束补一行「poll +N」,路径写类别(窗口长度与上面相同)。
+// 不成功的调用(越权路径、查不到的单项)和每一次决定(写)仍一次一行。
+const remotePollKind = (p) => p === "/api/approvals" || p === "/api/summary" ? p : "/api/approvals/:id";
+const remotePolls = new Map();   // "令牌编号 来源 类别" -> { rec, kind, first, more }
 function flushRemotePolls(now = Date.now(), all = false) {
   for (const [k, e] of remotePolls) {
     if (!all && now - e.first < REMOTE_DENY_WINDOW_MS) continue;
     remotePolls.delete(k);
-    if (e.more) approvals.audit(db, { ...e.rec, note: `poll +${e.more}` }, now);
+    if (e.more) approvals.audit(db, { ...e.rec, path: e.kind, note: `poll +${e.more}` }, now);
   }
 }
 function auditRemotePoll(rec, now = Date.now()) {
   flushRemotePolls(now);
-  const k = `${rec.tokenId} ${rec.ip}`, e = remotePolls.get(k);
+  const kind = remotePollKind(rec.path), k = `${rec.tokenId} ${rec.ip} ${kind}`, e = remotePolls.get(k);
   if (e) { e.more++; return; }
-  remotePolls.set(k, { rec, first: now, more: 0 });
+  remotePolls.set(k, { rec, kind, first: now, more: 0 });
   approvals.audit(db, rec, now);
 }
 /** 把还只在内存里的计数全部落成汇总行。停止与重启在退出前调用:不然当前窗口里「+N」的次数跟着进程一起没了。
@@ -3285,7 +3287,7 @@ async function remoteHandler(req, res) {
   } finally {
     try {
       if (tokenId == null) auditRemoteDenied({ ip, method: m, path: p, status, note });
-      else if (m === "GET" && p === "/api/approvals" && status === 200) auditRemotePoll({ ip, method: m, path: p, status, tokenId, note });
+      else if (m === "GET" && status === 200) auditRemotePoll({ ip, method: m, path: p, status, tokenId, note });
       else approvals.audit(db, { ip, method: m, path: p, status, tokenId, note });
     }
     catch (e) { console.error(`远程入口审计写入失败:${e.message}`); }

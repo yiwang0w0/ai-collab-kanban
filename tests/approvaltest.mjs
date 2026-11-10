@@ -370,7 +370,7 @@ test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,
   } finally { await B.stop(); }
 });
 
-test("协作安全:已认证的远程列表轮询按令牌按窗口聚合审计;只读摘要、单项查询与决定仍一次一行", { timeout: 120000 }, async () => {
+test("协作安全:已认证的远程列表轮询按令牌按窗口聚合审计;被拒的调用与决定仍一次一行", { timeout: 120000 }, async () => {
   const WINDOW = 3000;
   const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: String(WINDOW) } });
   try {
@@ -387,9 +387,7 @@ test("协作安全:已认证的远程列表轮询按令牌按窗口聚合审计;
     for (let i = 0; i < 5; i++) assert.equal((await raw(rport, { token: t2.token })).status, 200);
     let rows = audit();
     assert.ok(polls(rows, id1).length <= 2 * windowsSince(t0), `40 次列表轮询不应各写一行:${polls(rows, id1).length} 行`);
-    // 其余已认证的调用照旧一次一行:只读摘要、单项查询、越权路径、每一次决定
-    for (let i = 0; i < 3; i++) assert.equal((await raw(rport, { token: t1.token, path: "/api/summary" })).status, 200);
-    for (let i = 0; i < 2; i++) assert.equal((await raw(rport, { token: t1.token, path: one })).status, 200);
+    // 不成功的调用和写操作照旧一次一行:越权路径、每一次决定
     for (let i = 0; i < 2; i++) assert.equal((await raw(rport, { token: t1.token, path: "/api/tasks" })).status, 403);
     const decide = (expected_version) => raw(rport, { token: t1.token, method: "POST", path: one + "/decide", body: { decision: "approve", source: { client: "phone-app" }, expected_version } });
     assert.deepEqual([(await decide(2)).status, (await decide(1)).status, (await decide(1)).status], [409, 200, 409]);
@@ -402,10 +400,49 @@ test("协作安全:已认证的远程列表轮询按令牌按窗口聚合审计;
     assert.ok(polls(rows, id1).some((r) => /^poll \+\d+$/.test(r.note)), `汇总行记次数:${dump}`);
     assert.ok(polls(rows, id1).every((r) => r.status === 200 && r.ip === "127.0.0.2"), "汇总行带令牌编号、来源与状态");
     const mine = rows.filter((r) => r.token_id === id1);
-    assert.equal(mine.filter((r) => r.path === "/api/summary").length, 3, "只读摘要一次一行");
-    assert.equal(mine.filter((r) => r.method === "GET" && r.path === one).length, 2, "单项查询一次一行");
     assert.equal(mine.filter((r) => r.path === "/api/tasks" && r.status === 403).length, 2, "越权路径一次一行");
     assert.deepEqual(mine.filter((r) => r.method === "POST").map((r) => r.status), [409, 200, 409], "每一次决定一行");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:远程入口成功的只读查询(列表、只读摘要、单项)按令牌、来源、路径类别各自聚合;查不到的与决定仍一次一行", { timeout: 120000 }, async () => {
+  const WINDOW = 3000;
+  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: String(WINDOW) } });
+  try {
+    const ex = await B.register("agent-q");
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body, id = tok.record.id;
+    const ask = async (action) => `/api/approvals/${encodeURIComponent((await B.api("POST", "/api/approvals/request", ex, { action, risk: "low" })).body.request.approval_id)}`;
+    const one1 = await ask("清理构建缓存"), one2 = await ask("改共享端口"), none = "/api/approvals/request%3A999%3A1";
+    const counted = (list) => list.reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
+    const get = async (path, want = 200) => assert.equal((await raw(rport, { token: tok.token, path })).status, want, path);
+    const t0 = Date.now(), windowsSince = (t) => Math.floor((Date.now() - t) / WINDOW) + 2;
+    for (let i = 0; i < 12; i++) await get("/api/summary");
+    for (let i = 0; i < 6; i++) { await get(one1); await get(one2); }
+    for (let i = 0; i < 4; i++) await get("/api/approvals");
+    for (let i = 0; i < 2; i++) await get(none, 404);
+    const dec = await raw(rport, { token: tok.token, method: "POST", path: one1 + "/decide", body: { decision: "reject", source: { client: "phone-app" }, expected_version: 1 } });
+    assert.equal(dec.status, 200, JSON.stringify(dec.body));
+    // 三类只读查询各算各的:只读摘要、单项查询(不分是哪一项)、列表
+    const ok = (rows) => rows.filter((r) => r.token_id === id && r.method === "GET" && r.status === 200);
+    const kinds = (rows) => ({ summary: ok(rows).filter((r) => r.path === "/api/summary"), list: ok(rows).filter((r) => r.path === "/api/approvals"),
+                               item: ok(rows).filter((r) => [one1, one2, "/api/approvals/:id"].includes(r.path)) });
+    const total = (rows) => { const k = kinds(rows); return [counted(k.summary), counted(k.item), counted(k.list)]; };
+    let rows = audit();
+    for (let i = 0; i < 80 && total(rows).join() !== "12,12,4"; i++) { await delay(250); rows = audit(); }
+    const dump = JSON.stringify(rows.filter((r) => r.token_id === id).map((r) => [r.method, r.path, r.status, r.note]));
+    assert.deepEqual(total(rows), [12, 12, 4], `三类只读查询的次数各自守恒:${dump}`);
+    const k = kinds(rows), windows = windowsSince(t0);
+    assert.ok(k.summary.length <= 2 * windows && k.summary.length < 12, `12 次只读摘要不应各写一行:${dump}`);
+    assert.ok(k.item.length <= 2 * windows && k.item.length < 12, `12 次单项查询不应各写一行:${dump}`);
+    assert.equal(k.item[0].path, one1, "单项查询的首条记下查的是哪一项");
+    const sums = k.item.filter((r) => /^poll \+\d+$/.test(r.note));
+    assert.ok(sums.length >= 1 && sums.every((r) => r.path === "/api/approvals/:id"), `单项查询的汇总行不冒充某一项的路径:${dump}`);
+    assert.ok(k.summary.some((r) => /^poll \+\d+$/.test(r.note)) && k.list.length <= 2 * windows, dump);
+    assert.equal(ok(rows).length, k.summary.length + k.item.length + k.list.length, `成功的只读查询只有这三类:${dump}`);
+    // 查不到的单项(404)与决定(写)仍一次一行
+    const mine = rows.filter((r) => r.token_id === id);
+    assert.equal(mine.filter((r) => r.path === none && r.status === 404).length, 2, `查不到的单项一次一行:${dump}`);
+    assert.deepEqual(mine.filter((r) => r.method === "POST").map((r) => [r.path, r.status]), [[one1 + "/decide", 200]], "决定一次一行");
   } finally { await B.stop(); }
 });
 
