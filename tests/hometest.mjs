@@ -421,6 +421,16 @@ test("暖色主题沿用原有色彩变量，浅深两种模式的常用文字�
   }
 });
 
+test("视觉底座：侧栏底色两种模式都有定义，两押上膛字色跟主题走，首页页脚不带括号补充", () => {
+  const roots = [...src.matchAll(/:root\{([^}]+)\}/g)].slice(0, 2);
+  assert.equal(roots.length, 2);
+  for (const root of roots) assert.match(root[1], /--bg2:\s*#[0-9a-f]{6}/, "浅色与深色都定义 --bg2");
+  const armed = src.match(/button\.armed\{[^}]*\}/);
+  assert.ok(armed && !armed[0].includes("#1a1a1a") && armed[0].includes("color:var(--bg)!important"), "上膛态的字用纸色，不写死深色");
+  assert.ok(!src.includes("（其中"), "页脚文案不带全角括号补充");
+  assert.ok(src.includes('(held ? "，其中 " + held + " 项未放行" : "")'));
+});
+
 test("推理强度初次渲染和拖动后共用中文展示，协议值不变", () => {
   const start = src.indexOf("function effortName(value){"), end = src.indexOf("function renderCfg(){", start);
   const copyStart = src.indexOf("// ── display-copy(pure;tests/panelcopytest.mjs)──"), copyEnd = src.indexOf("// ── /display-copy ──", copyStart);
@@ -536,7 +546,7 @@ test("手动建卡：原表单、编号和处理器都在，入口是输入框�
 test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、要提交的改动和输入框上方那一行都由纯函数算出", () => {
   const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
   assert.ok(c0 > 0 && c1 > c0, "chat-model block not found in core/panel.html");
-  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend};")();
+  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend,chatListLine,chatListNeed};")();
   const task = (n, extra) => ({ n, subject: "第 " + n + " 步", summary: "摘要 " + n, description: "", acceptance: "", line: "engine", after: [],
     needs_confirm: false, needs_bash: false, enabled: true, edited: [], ...extra });
   const plan = { rev: 2, author: "coordinator", base_rev: 1, created_at: at(3), goal: { subject: "<b>目标</b>", description: "说明" }, applied: null,
@@ -597,6 +607,14 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   assert.deepEqual([C.chatCanSend({ coordinator: ok, text: "字".repeat(4000) }), C.chatCanSend({ coordinator: ok, text: long })], [true, false]);
   assert.equal(C.chatStateLine({ coordinator: ok, text: long }).text, "这条消息 4001 字，一条最多 4000 字。删短或分几条发。");
   assert.equal(C.chatStateLine({ coordinator: ok, conversation: { status: "idle" }, text: "做" }), null);
+
+  // 对话列表:四种状态里只有「计划第 N 版 · 待建卡」标成轮到你;正在回复、上一轮失败时即使有计划也不标
+  const rows = [{ status: "running", plan_rev: 1, plan_applied: false }, { status: "failed", plan_rev: 1, plan_applied: false },
+    { status: "idle", plan_rev: 2, plan_applied: false }, { status: "idle", plan_rev: 2, plan_applied: true }];
+  assert.deepEqual(rows.map((c) => [C.chatListLine(c), C.chatListNeed(c)]),
+    [["协调线正在回复", false], ["上一轮没有完成", false], ["计划第 2 版 · 待建卡", true], ["已建卡", false]]);
+  assert.deepEqual([C.chatListNeed(null), C.chatListNeed({ status: "idle", plan_rev: null, plan_applied: false })], [false, false], "还没有计划的对话不标");
+  assert.ok(src.includes('if (chatListNeed(c)) b.dataset.need = "";') && src.includes(".cl-item[data-need] .cl-s{color:var(--accent)}"));
 
   // 页面只用 textContent 放协调线的字:消息与计划卡这一段不拼 HTML
   const dom = src.slice(src.indexOf("function chatMessage(m){"), src.indexOf("function chatSync(){"));

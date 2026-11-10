@@ -113,10 +113,10 @@ test("本批文案调整保留 ef2ad8f 的原 Kanban 暖色变量", () => {
     .map((match) => Object.fromEntries([...match[1].matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})\b/gi)]
       .map((entry) => [entry[1], entry[2].toLowerCase()])));
   assert.deepEqual(palettes, [
-    { bg: "#f7f2e8", panel: "#fffcf6", panel2: "#f1e9dc", line: "#ddcfbb", fg: "#332b23",
+    { bg: "#f7f2e8", bg2: "#f2ebdf", panel: "#fffcf6", panel2: "#f1e9dc", line: "#ddcfbb", fg: "#332b23",
       dim: "#756652", dim2: "#726451", accent: "#9b530b", cc: "#80572c", l0: "#936544",
       ok: "#396a4c", warn: "#7f5d0e", bad: "#b74332" },
-    { bg: "#1e1a16", panel: "#27211c", panel2: "#312920", line: "#574737", fg: "#f4eadb",
+    { bg: "#1e1a16", bg2: "#191511", panel: "#27211c", panel2: "#312920", line: "#463a2d", fg: "#f4eadb",
       dim: "#c2b19a", dim2: "#a7957d", accent: "#e7ab5c", cc: "#c99760", l0: "#cfb18b",
       ok: "#8db394", warn: "#d7b765", bad: "#f08a77" },
   ]);
