@@ -32,11 +32,11 @@ import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
-import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf} from "./board-claude-cli.mjs";
+import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliResult} from "./board-claude-cli.mjs";
 import {coordinatorSystemPrompt,buildTurnContent,coordinatorCliArgs,coordinatorCliEnvironment,argsFingerprint,
   coordinatorTurnOf,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
-import {openLedger,usageHttp,externalRows} from "./usage.mjs";
+import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -1426,7 +1426,9 @@ const runCli = (args, timeout = 600000) => new Promise((resolve) => {
   // 用户主目录)就等于把那一片交给拆解器读。
   execFile(CLAUDE_CLI, args, { timeout, maxBuffer: 8 << 20, windowsHide: true, cwd: boardCliCwd(),
                                env: boardCliEnvironment({ env: process.env, profiles: EXECUTION_PROFILES }) },
-    (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stdout: stdout || "", stderr: stderr || "" }));
+    // ran = 模型进程起跑过(用量记账据此判断要不要记一行);上面两处没起进程就交回的没有这个键。
+    (err, stdout, stderr) => resolve({ code: err?.code ?? 0, stdout: stdout || "", stderr: stderr || "",
+                                       ran: !String(err?.syscall || "").startsWith("spawn") }));
 });
 // 本进程第一次起 CLI 时在系统临时目录下新建,看板不往里写任何东西(拆解 --no-session-persistence;压缩
 // --resume 按会话 id 续写原转录,2026-10-28 实测该目录跑完仍为空)。
@@ -1522,8 +1524,16 @@ async function decomposeGoal(goalId, model, forced = false) {
     lines: IMPL_LINES, hints: LINE_HINT, labels: LINE_LABEL, language: LANGUAGE,
   });
 
-  const r = await runCli(decomposeCliArgs({ prompt, model: model || DECOMPOSE_MODELS[0].id,
+  const cliModel = model || DECOMPOSE_MODELS[0].id, cliStarted = Date.now();
+  const r = await runCli(decomposeCliArgs({ prompt, model: cliModel,
                                             repoRoot: resolve(REPO_ROOT), ...boardCliScope() }));
+  // 用量结算:拆解这一轮记到目标卡上(phase=decompose)。没拆成的一轮也花了额度,所以在判结果之前记;
+  //   结果消息读不出来时各项是 null(未知),耗时退到墙钟。进程没起跑不记。
+  if (r.ran) {
+    const seen = fromClaudeResult(cliResult(r.stdout).result);
+    usageLedger.append({ phase: "decompose", card: Number(goalId), worker: "decompose", model: cliModel, effort: "high",
+                         ...seen, duration_ms: seen.duration_ms ?? Date.now() - cliStarted });
+  }
   // The failures below are OUR internal failures (child would not start /
   // did not honor the contract). The request is fine, so a 400 would tell the
   // caller "resending is pointless" — a lie ⇒ INTERNAL 500.
@@ -1594,19 +1604,29 @@ async function compactLine(line, note) {
   if (!transcriptOf(sid)) throw store.err(store.ERR.CONFLICT, `${line} 还没有会话记录,没什么可压缩的`);
   const before = contextOf(line);
   let memo = (note || "").trim();
+  // 用量结算:压缩的两步各记一行(phase=compact,记在这条线上,不挂卡)。这两步不带 --output-format json,
+  //   词元与费用读不到,记 null(未知),耗时取墙钟。进程没起跑不记。
+  const account = (run, started, model, effort = null) => {
+    if (run.ran) usageLedger.append({ phase: "compact", worker: line, line, model, effort, session_id: sid,
+                                      duration_ms: Date.now() - started });
+  };
   // 两步都只要模型产出文字:不给任何工具(--tools ""),拒绝规则与拆解同一组(board-claude-cli.mjs)。
   //   被续接的会话里有卡面正文,压缩这一步不该成为它伸手调工具的机会。
   if (!memo) {
+    const askModel = settingsOf(line).agents[0].model, askStarted = Date.now();
     const ask = await runCli(compactCliArgs({ prompt:
       "接下来要对你自己这个会话做 /compact。请只输出一段【压缩指示】,告诉压缩程序哪些必须保留:" +
       "正在做的任务与其编号、已确认的事实与实测数字、踩过的坑与结论、未完成的下一步、" +
       "以及任何再问一遍代价很大的东西。不要复述全部历史,不要寒暄,不要用代码块,300 字以内。",
-      sessionId: sid, model: settingsOf(line).agents[0].model, effort: "low", ...boardCliScope() }));
+      sessionId: sid, model: askModel, effort: "low", ...boardCliScope() }));
+    account(ask, askStarted, askModel, "low");
     memo = (ask.stdout || "").trim().slice(0, 1200);
   }
   if (!memo) memo = "保留当前任务、已确认的事实与数字、未完成的下一步。";
+  const compactModel = settingsOf(line).agents[0].model, compactStarted = Date.now();
   const r = await runCli(compactCliArgs({ prompt: "/compact " + memo, sessionId: sid,
-                                          model: settingsOf(line).agents[0].model, ...boardCliScope() }));
+                                          model: compactModel, ...boardCliScope() }));
+  account(r, compactStarted, compactModel);
   const after = contextOf(line);
   const did = after.compactions > before.compactions;
   // ⭐ The reported numbers come from the transcript's compactMetadata (pre/post).
@@ -3260,15 +3280,35 @@ function startCoordinatorTurn(convId, userMessage, cli) {
     .finally(() => { coordinatorRuns.delete(convId); emit("conversation.changed", { id: convId }); });
   coordinatorRuns.set(convId, { stop: run.stop, finished });
 }
+/** 用量结算:协调线每轮记一行(phase=coord)。对话已按计划建过卡就记到那张目标卡上,否则不挂卡。
+ *  被停止、超时、输出过大的一轮进程也跑过,只是用量读不到:各项记 null(未知),耗时取墙钟。从不抛错。 */
+function accountCoordinatorTurn(convId, usage, wallMs, note = null) {
+  try {
+    const s = conversations.session(db, convId), u = usage || {};
+    usageLedger.append({ phase: "coord", worker: "coordinator", card: s.goal_id, model: s.model, effort: s.effort,
+      session_id: s.session_id, calls: u.num_turns, in: u.in, cc: u.cc, cr: u.cr, out: u.out,
+      duration_ms: u.duration_ms ?? wallMs, cost_usd: u.cost_usd, cost_source: u.cost_usd == null ? "unknown" : "reported", note });
+  } catch (e) { console.warn(`对话 #${convId} 的用量记账失败(${String(e?.message || e).slice(0, 200)})—— 不影响这一轮`); }
+}
 function finishCoordinatorTurn(convId, r, wallMs) {
-  if (r.stopped) return conversations.stopTurn(db, convId);
+  // 进程起跑过的一轮(没被拒发、不是起不来),下面每条出路各记一行账本;消息上的用量照旧。
+  if (r.stopped) {
+    if (!r.refused && !r.spawnError) accountCoordinatorTurn(convId, null, wallMs, "这一轮被停止,用量未知");
+    return conversations.stopTurn(db, convId);
+  }
   if (r.refused) return conversations.failTurn(db, convId, r.refused);
   if (r.spawnError) return conversations.failTurn(db, convId, `协调线没有启动:${redact(r.spawnError)}`);
-  if (r.timedOut)
+  if (r.timedOut) {
+    accountCoordinatorTurn(convId, null, wallMs, "这一轮超时被终止,用量未知");
     return conversations.failTurn(db, convId, `协调线这一轮超过 ${COORDINATOR.timeout_sec} 秒没有结束,已停止。可以重新发送,或把问题拆小一些`);
-  if (r.overflow) return conversations.failTurn(db, convId, "协调线这一轮的输出太大,已停止。把问题拆小一些再发");
+  }
+  if (r.overflow) {
+    accountCoordinatorTurn(convId, null, wallMs, "这一轮输出过大被终止,用量未知");
+    return conversations.failTurn(db, convId, "协调线这一轮的输出太大,已停止。把问题拆小一些再发");
+  }
   const parsed = coordinatorTurnOf(r.stdout);
   const usage = parsed.usage ? { ...parsed.usage, wall_ms: wallMs } : null;
+  accountCoordinatorTurn(convId, parsed.usage, wallMs, parsed.usage ? null : "结果消息里没有用量");
   if (!parsed.ok) {
     const tail = redact(String(r.stderr || "").replace(/\s+/g, " ").trim()).slice(-200);
     // 续接失败(会话文件不在了):不悄悄另开新会话,那样会丢掉上文而人不知道。

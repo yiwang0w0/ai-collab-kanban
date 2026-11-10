@@ -369,6 +369,12 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     d = await b.settle(id);
     assert.equal(d.plans.length, 2); assert.equal(d.messages.at(-1).kind, "plan_ignored");
     assert.ok(flagValue(b.calls().at(-1).argv, "-p").includes(`第 2 版已经建卡(目标 #${goalId})`));
+    // 用量结算:协调线每轮记一行账本(phase=coord)。建卡之前的三轮不挂卡,建卡之后的这一轮记到目标卡上。
+    const coord = (await b.api("GET", "/api/usage?by=phase", b.operator)).body.groups.find((g) => g.key === "coord");
+    assert.deepEqual([coord.rows, coord.calls, coord.in, coord.out, coord.cr, coord.cc, coord.duration_ms, coord.cost_usd, coord.cost_source],
+                     [4, 12, 44, 88, 1332, 176, 4800, 0.05, "reported"]);
+    assert.deepEqual((await b.api("GET", "/api/usage?by=card", b.operator)).body.groups.map((g) => [g.key, g.rows]), [[String(goalId), 1], ["?", 3]]);
+    assert.deepEqual((await b.api("GET", "/api/usage?by=model", b.operator)).body.groups.map((g) => g.key), ["claude-opus-5"]);
     const renamed = await b.api("PATCH", `/api/conversations/${id}`, b.operator, { title: "导出一期", archived: true });
     assert.equal(renamed.status, 200); assert.equal(renamed.body.conversation.title, "导出一期");
     assert.equal((await b.api("GET", "/api/conversations", b.operator)).body.conversations.length, 0);

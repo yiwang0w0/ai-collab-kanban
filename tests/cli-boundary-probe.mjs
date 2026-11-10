@@ -2,7 +2,7 @@
 //
 //   node tests/cli-boundary-probe.mjs --cli "<claude 原生可执行文件>" [--model claude-haiku-4-5-20251001]
 //        [--scripted] [--only 1,3] [--max-calls 7] [--timeout 300] [--base <目录>] [--dry]
-//        [--replay <上次的场地>] [--rm]
+//        [--replay <上次的场地>] [--rm] [--record-tested <看板数据目录>]
 //
 //   (默认)    真模型:CLI 用它自己的订阅登录,模型照提示词逐步调用工具。
 //   --scripted 不用模型也不用登录:探针在本机起一个只会照脚本出牌的 Messages 端点,CLI 经
@@ -527,5 +527,21 @@ console.log(`${NL}${table.join(NL)}`);
 console.log(`${NL}${"─".repeat(56)}${NL}result: ${pass} PASS / ${fail} FAIL   ${MODE},真模型调用 ${calls} 次`);
 console.log(`报告: ${join(BASE, "report.md")}  原始输出: ${RUNS}`);
 if (fail) console.log("(有失败 —— 场地保留,照上面的路径看原始输出;改了判据可用 --replay <场地> 重判)");
+// --record-tested <看板数据目录>:六个场景都真的跑过且没有失败时,把这个 CLI 版本记进那块看板的
+//   「实测过的版本」清单(core/cli-versions.mjs,来源 boundary-probe;版本巡检据此显示「读写边界已实测」)。
+//   --dry、--replay、--only 只跑一部分都不记:没量全就不算实测。数据目录要显式给 —— 本探针开头已把
+//   BOARD_* 从环境里剔掉,不带这个参数时照旧不碰任何真实数据目录。
+const RECORD = arg("--record-tested", "");
+if (RECORD) {
+  const { parseVersion, recordTestedVersion } = await import("../core/cli-versions.mjs");
+  const tested = parseVersion(version), full = !DRY && !REPLAY && Object.keys(SUMMARY).length === 6;
+  if (fail || !full || !tested) console.log("没有记录实测版本:有失败、六个场景没有跑全,或 CLI 版本没读出来");
+  else {
+    try {
+      recordTestedVersion(resolve(RECORD), { cli: "claude", version: tested, source: "boundary-probe" });
+      console.log(`已记录:Claude CLI ${tested} 的读写边界已实测(${MODE})`);
+    } catch (e) { console.log(`实测版本没有记下来:${e.message}`); }
+  }
+}
 if (flag("--rm") && !fail && !REPLAY) { try { rmSync(BASE, { recursive: true, force: true }); } catch {} }
 process.exit(fail ? 1 : 0);

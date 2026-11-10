@@ -1243,6 +1243,13 @@ try {
     const d3 = await B.api("POST", `/api/goals/${g.id}/decompose`, {});
     ok("S5 ⭐评审卡通过后闸自动抬起(不再 409;到达 CLI)",
        cl.status === 200 && rv.status === 200 && d3.status === 500, `claim ${cl.status} resolve ${rv.status} decompose ${d3.status}`);
+    // 用量结算:到达 CLI 的拆解各记一行(phase=decompose,记在目标卡上);被闸挡在 CLI 之前的那次不记。
+    //   桩 CLI 没交回结果 ⇒ 词元与费用未知(null,不是 0),耗时取墙钟。
+    const du = ((await B.api("GET", "/api/usage?by=phase")).body?.groups || []).find((x) => x.key === "decompose");
+    const dc = ((await B.api("GET", "/api/usage?by=card")).body?.groups || []).map((x) => [x.key, x.rows]);
+    ok("S5b ⭐到达 CLI 的两次拆解各记一行用量,记在目标卡上;409 的那次不记;未知值是 null",
+       du?.rows === 2 && du?.in === null && du?.cost_usd === null && du?.cost_source === "unknown" && du?.duration_ms >= 0 &&
+       JSON.stringify(dc) === JSON.stringify([[String(g.id), 2]]), `${JSON.stringify(du)} ${JSON.stringify(dc)}`);
     // Anti-affinity: a delivery made by the reviewer's own family is held — visibly.
     const a = (await B.api("POST", "/api/tasks", { subject: "s-claude", line: "engine", humanGate: false })).body.task.id;
     const b2 = (await B.api("POST", "/api/tasks", { subject: "s-codex", line: "engine", humanGate: false })).body.task.id;
