@@ -18,21 +18,30 @@ const LOCK_MAX_MIN = 1440;
 const PURPOSE_MAX = 120;
 const REASON_MAX = 200;
 // 事件流水:只追加,一行一件。正文不超过 300 字;产物按类型校验格式。
+// 正文、锁用途、状态各项与 url / path 产物都不接受换行、控制字符与双向控制符(URL 解析器会吞掉换行、把 ESC 编码掉而不报错,所以另查原始串)。
 const JOURNAL_BODY_MAX = 300;
 const JOURNAL_KIND_RE = /^[a-z][a-z0-9_.-]{0,31}$/;
 const ARTIFACT_MAX = 20;
 const ARTIFACT_CHECK = Object.freeze({
   sha256: (v) => /^[0-9a-f]{64}$/.test(v),
   commit: (v) => /^[0-9a-f]{7,40}$/.test(v),
-  path: (v) => v.length > 0 && v.length <= 260 && v.trim() === v && !/[\u0000-\u001f\u007f]/.test(v),
-  url: (v) => { try { const u = new URL(v); return ["http:", "https:"].includes(u.protocol) && v.length <= 500 && !u.username && !u.password; }
+  path: (v) => v.length > 0 && v.length <= 260 && v.trim() === v && !hasUnsafeText(v),
+  url: (v) => { try { const u = new URL(v); return ["http:", "https:"].includes(u.protocol) && v.length <= 500 && !u.username && !u.password && !hasUnsafeText(v); }
                catch { return false; } },
 });
 // 交接包里 done / next 各自的字数预算。超出预算的项整项换成指向 full_status 的指针,不从中间截断。
 const HANDOFF_LIST_BUDGET = 2000;
 const HANDOFF_RECENT_JOURNAL = 10;
 // 看板自己写流水时用的执行者名;不允许登记成执行者 id。
-const RESERVED_IDS = ["operator", "system"];
+// undefined:请求里没写 worker 时,store 比对用的就是这个名字,登记成执行者 id 等于谁都能冒用。
+const RESERVED_IDS = ["operator", "system", "undefined"];
+
+// 控制字符(C0、DEL、C1)、行/段分隔符与双向控制符:进了终端或日志会改写别的行、调换显示顺序。
+// 码点用数字写,源码里不出现这些字符本身。
+const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 ||
+  (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+const isUnsafeChar = (ch) => isUnsafeCp(ch.codePointAt(0));
+const hasUnsafeText = (s) => { for (const ch of String(s)) if (isUnsafeChar(ch)) return true; return false; };
 
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const iso = (ms) => ms == null ? null : new Date(Number(ms)).toISOString();
@@ -48,8 +57,12 @@ function migrate(db) {
     token_issued_at TEXT NOT NULL,
     last_seen INTEGER,
     stopped_at INTEGER,
-    stop_seq INTEGER NOT NULL DEFAULT 0
+    stop_seq INTEGER NOT NULL DEFAULT 0,
+    removed_at INTEGER
   )`);
+  // 注销留墓碑,不删行(见 unregister)。这一列是后加的,旧库补上。
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('coord_executors') WHERE name='removed_at'").get())
+    db.exec("ALTER TABLE coord_executors ADD COLUMN removed_at INTEGER");
   // 锁:一行一次持有。未释放的行对同一资源唯一(部分唯一索引 = 库层互斥)。时刻都由服务端测。
   db.exec(`CREATE TABLE IF NOT EXISTS coord_locks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -98,6 +111,12 @@ function migrate(db) {
     db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
     db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   }
+  // REPLACE(INSERT OR REPLACE / REPLACE INTO)在冲突时删掉旧行,而 recursive_triggers 没开时不触发上面的 DELETE 触发器:
+  // 再加一道 BEFORE INSERT,主键或唯一键已存在就拒绝。自增插入时 NEW.id 还没有值,不受影响。
+  for (const [t, hit] of [["coord_journal", "id = NEW.id"], ["coord_handoff_acks", "handoff_id = NEW.handoff_id"],
+                          ["coord_handoffs", "id = NEW.id OR (executor = NEW.executor AND stop_seq = NEW.stop_seq)"]])
+    db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_replace BEFORE INSERT ON ${t} WHEN EXISTS (SELECT 1 FROM ${t} WHERE ${hit})
+             BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   db.exec(`CREATE TABLE IF NOT EXISTS coord_status (
     executor_id TEXT PRIMARY KEY REFERENCES coord_executors(id),
     status TEXT NOT NULL,
@@ -123,6 +142,7 @@ function setStatus(db, executorId, body = {}, now = Date.now()) {
   const current = body.current == null ? "" : body.current;
   if (typeof current !== "string") throw err(ERR.BAD_INPUT, "current 必须是字符串");
   if (chars(current) > L.current) over("current 字数", L.current, chars(current));
+  if (hasUnsafeText(current)) throw err(ERR.BAD_INPUT, "current 不能含换行、控制字符或双向控制符,未写入");
   const list = (name, max) => {
     const v = body[name] == null ? [] : body[name];
     if (!Array.isArray(v)) throw err(ERR.BAD_INPUT, `${name} 必须是字符串数组`);
@@ -130,6 +150,7 @@ function setStatus(db, executorId, body = {}, now = Date.now()) {
     v.forEach((x, i) => {
       if (typeof x !== "string" || !x.trim()) throw err(ERR.BAD_INPUT, `${name}[${i}] 必须是非空字符串`);
       if (chars(x) > L.item) over(`${name}[${i}] 字数`, L.item, chars(x));
+      if (hasUnsafeText(x)) throw err(ERR.BAD_INPUT, `${name}[${i}] 不能含换行、控制字符或双向控制符,未写入`);
     });
     return v;
   };
@@ -150,25 +171,35 @@ function executorOut(r) {
            stopped_at: iso(r.stopped_at), active: r.stopped_at == null };
 }
 
+/** 已登记且未注销的执行者。注销留下的墓碑行(removed_at 非空)对登记以外的一切查询都等于不存在。 */
 function getRow(db, id) {
-  return db.prepare("SELECT * FROM coord_executors WHERE id=?").get(String(id));
+  return db.prepare("SELECT * FROM coord_executors WHERE id=? AND removed_at IS NULL").get(String(id));
 }
 
+/** 这个名字是不是已登记的执行者 id(领卡身份检查用)。调用方先把 worker 正规化成字符串(server.mjs readBody)再来查。 */
+const isExecutor = (db, id) => typeof id === "string" && !!getRow(db, id);
+
 /** 操作员登记执行者。返回明文令牌(只此一次)。rotate=true 时为已登记的执行者换发令牌,旧令牌立即失效。 */
-function register(db, { id, name, kind = "external", rotate = false } = {}, now = Date.now()) {
+function register(db, { id, name, kind, rotate = false } = {}, now = Date.now()) {
   const eid = String(id ?? "").trim();
   if (!EXECUTOR_ID_RE.test(eid))
     throw err(ERR.BAD_INPUT, `执行者 id 只允许小写字母、数字、- 或 _,1-32 位,以字母或数字开头 —— 收到 ${JSON.stringify(id)}`);
   if (RESERVED_IDS.includes(eid)) throw err(ERR.BAD_INPUT, `执行者 id 不能用保留名 ${RESERVED_IDS.join(" / ")}`);
-  const nm = String(name ?? "").trim() || eid;
+  const have = getRow(db, eid);
+  // 换发令牌时没给的显示名与种类保持原样;只有新登记才用默认值(显示名 = id,种类 = external)。
+  const nm = String(name ?? "").trim() || have?.name || eid;
   if (chars(nm) > NAME_MAX) throw err(ERR.BAD_INPUT, `显示名最多 ${NAME_MAX} 字`);
+  kind = kind ?? have?.kind ?? "external";
   if (!EXECUTOR_KINDS.includes(kind)) throw err(ERR.BAD_INPUT, `kind 只接受 ${EXECUTOR_KINDS.join(" / ")} —— 收到 ${JSON.stringify(kind)}`);
   const token = "exe_" + crypto.randomBytes(24).toString("hex");
   const at = iso(now);
-  const have = getRow(db, eid);
   if (have && !rotate) throw err(ERR.CONFLICT, `执行者 ${eid} 已登记;换发令牌请带 rotate:true`);
   if (have) db.prepare("UPDATE coord_executors SET name=?, kind=?, token_hash=?, token_issued_at=? WHERE id=?")
     .run(nm, kind, sha256(token), at, eid);
+  // 这个 id 注销过:复用墓碑行,当作新登记。stop_seq 接着往下数,不与旧的交接记录撞号。
+  else if (db.prepare("SELECT 1 FROM coord_executors WHERE id=?").get(eid))
+    db.prepare(`UPDATE coord_executors SET name=?, kind=?, token_hash=?, created_at=?, token_issued_at=?,
+                last_seen=NULL, stopped_at=NULL, removed_at=NULL WHERE id=?`).run(nm, kind, sha256(token), at, at, eid);
   else db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
     .run(eid, nm, kind, sha256(token), at, at);
   return { executor: executorOut(getRow(db, eid)), token, rotated: !!have };
@@ -177,7 +208,7 @@ function register(db, { id, name, kind = "external", rotate = false } = {}, now 
 /** 令牌 → 执行者;查不到返回 null。只按哈希比较,库里没有明文。 */
 function byToken(db, token) {
   if (typeof token !== "string" || !token.startsWith("exe_")) return null;
-  return executorOut(db.prepare("SELECT * FROM coord_executors WHERE token_hash=?").get(sha256(token)));
+  return executorOut(db.prepare("SELECT * FROM coord_executors WHERE token_hash=? AND removed_at IS NULL").get(sha256(token)));
 }
 
 function lockOut(db, r, now = Date.now(), graceMs = 30 * 60000) {
@@ -204,6 +235,7 @@ function acquire(db, executorId, { resource, minutes, purpose } = {}, now = Date
   const why = String(purpose ?? "").trim();
   if (!why) throw err(ERR.BAD_INPUT, "加锁必须写用途 purpose");
   if (chars(why) > PURPOSE_MAX) throw err(ERR.BAD_INPUT, `用途最多 ${PURPOSE_MAX} 字`);
+  if (hasUnsafeText(why)) throw err(ERR.BAD_INPUT, "用途写成一行,不能含换行、控制字符或双向控制符");
   try {
     const r = db.prepare("INSERT INTO coord_locks (resource, holder, purpose, started_at, expected_end) VALUES (?,?,?,?,?)")
       .run(res, String(executorId), why, now, Math.round(now + mins * 60000));
@@ -261,7 +293,8 @@ function normalizeArtifacts(raw) {
   if (!Array.isArray(list)) throw err(ERR.BAD_INPUT, "artifacts 必须是数组");
   if (list.length > ARTIFACT_MAX) throw err(ERR.BAD_INPUT, `产物最多 ${ARTIFACT_MAX} 个`);
   return list.map((a, i) => {
-    const type = a?.type, check = Object.hasOwn(ARTIFACT_CHECK, String(type)) ? ARTIFACT_CHECK[type] : null;
+    // type 必须本身是字符串:数组会被 String() 和属性访问强转成合法类型名,然后原样(任意深度)入库。
+    const type = a?.type, check = typeof type === "string" && Object.hasOwn(ARTIFACT_CHECK, type) ? ARTIFACT_CHECK[type] : null;
     if (!check) throw err(ERR.BAD_INPUT, `artifacts[${i}].type 只接受 ${Object.keys(ARTIFACT_CHECK).join(" / ")}`);
     let value = typeof a.value === "string" ? a.value : "";
     if (type === "sha256" || type === "commit") value = value.toLowerCase();
@@ -276,6 +309,7 @@ function appendJournal(db, executor, { kind, body, artifacts } = {}, now = Date.
   if (!JOURNAL_KIND_RE.test(k)) throw err(ERR.BAD_INPUT, `kind 只允许小写字母开头的字母、数字和 . _ -,1-32 位 —— 收到 ${JSON.stringify(kind)}`);
   if (typeof body !== "string" || !body.trim()) throw err(ERR.BAD_INPUT, "body 必须是非空字符串");
   if (chars(body) > JOURNAL_BODY_MAX) throw err(ERR.BAD_INPUT, `正文最多 ${JOURNAL_BODY_MAX} 字,实际 ${chars(body)},未写入`);
+  if (hasUnsafeText(body)) throw err(ERR.BAD_INPUT, "流水一行一件:正文不能含换行、控制字符或双向控制符,未写入");
   const arts = normalizeArtifacts(artifacts);
   const r = db.prepare("INSERT INTO coord_journal (at, executor, kind, body, artifacts) VALUES (?,?,?,?,?)")
     .run(iso(now), String(executor), k, body, JSON.stringify(arts));
@@ -322,7 +356,7 @@ function handoffOut(db, r, { full = false } = {}) {
            ...(full ? { full_status: JSON.parse(r.full_status) } : {}) };
 }
 
-/** 停止执行者并生成交接记录。已停止(未再心跳)时返回那一次的记录,不再生成。 */
+/** 停止执行者并生成交接记录。已停止(未再心跳)且此后没有新的状态、流水或锁变化时,返回那一次的记录,不再生成。 */
 function stop(db, executorId, reason = "stop", now = Date.now(), graceMs) {
   const own = !db.isTransaction;
   db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT coord_stop");
@@ -330,20 +364,31 @@ function stop(db, executorId, reason = "stop", now = Date.now(), graceMs) {
     const r = getRow(db, executorId);
     if (!r) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
     let created = false;
-    if (r.stopped_at == null) {
+    const st = statusOf(db, r.id);
+    const recent = db.prepare("SELECT id FROM coord_journal WHERE executor=? ORDER BY id DESC LIMIT ?")
+      .all(r.id, HANDOFF_RECENT_JOURNAL).map((x) => Number(x.id)).reverse();
+    const lastId = recent.length ? recent[recent.length - 1] : null;
+    const locks = listLocks(db, { holder: r.id }, now, graceMs).map((l) =>
+      ({ resource: l.resource, purpose: l.purpose, started_at: l.started_at, expected_end: l.expected_end, overdue: l.overdue }));
+    // 已停止(多半是心跳中断)之后又写了状态、流水或动了锁:上一份交接包停在那一刻,已经过期,这次重新生成一份。
+    // 写状态和流水不算心跳,所以「还在干活但 20 分钟没心跳」的执行者正好走到这里。
+    let outdated = false;
+    if (r.stopped_at != null) {
+      const prev = db.prepare("SELECT package FROM coord_handoffs WHERE executor=? ORDER BY stop_seq DESC LIMIT 1").get(r.id);
+      let p = null; try { p = JSON.parse(prev.package); } catch {}
+      outdated = !p || p.status_updated_at !== st.updated_at || (p.journal?.last_id ?? null) !== lastId ||
+        (p.locks || []).map((l) => l.resource).join(" ") !== locks.map((l) => l.resource).join(" ");
+    }
+    if (r.stopped_at == null || outdated) {
       const seq = Number(r.stop_seq) + 1;
       db.prepare("UPDATE coord_executors SET stopped_at=?, stop_seq=? WHERE id=?").run(now, seq, r.id);
-      const st = statusOf(db, r.id);
-      const recent = db.prepare("SELECT id FROM coord_journal WHERE executor=? ORDER BY id DESC LIMIT ?")
-        .all(r.id, HANDOFF_RECENT_JOURNAL).map((x) => Number(x.id)).reverse();
       const pkg = {
         executor: { id: r.id, name: r.name, kind: r.kind }, reason, stopped_at: iso(now), status_updated_at: st.updated_at,
         goal: st.current,
         done: pickWhole(st.done, "done", HANDOFF_LIST_BUDGET, true),
         next: pickWhole(st.next, "next", HANDOFF_LIST_BUDGET, false),
-        journal: { recent_ids: recent, last_id: recent.length ? recent[recent.length - 1] : null },
-        locks: listLocks(db, { holder: r.id }, now, graceMs).map((l) =>
-          ({ resource: l.resource, purpose: l.purpose, started_at: l.started_at, expected_end: l.expected_end, overdue: l.overdue })),
+        journal: { recent_ids: recent, last_id: lastId },
+        locks,
       };
       db.prepare(`INSERT INTO coord_handoffs (executor, stop_seq, reason, created_at, package, full_status) VALUES (?,?,?,?,?,?)`)
         .run(r.id, seq, reason, iso(now), JSON.stringify(pkg), JSON.stringify({ current: st.current, done: st.done, next: st.next }));
@@ -360,8 +405,8 @@ function stop(db, executorId, reason = "stop", now = Date.now(), graceMs) {
 
 /** 心跳超过 staleMs 的活动执行者:按停止处理,各生成一份交接记录。从未心跳过的不算。 */
 function sweepStale(db, now = Date.now(), staleMs = 20 * 60000, graceMs) {
-  const rows = db.prepare(`SELECT id FROM coord_executors WHERE stopped_at IS NULL AND last_seen IS NOT NULL AND last_seen + ? < ?`)
-    .all(staleMs, now);
+  const rows = db.prepare(`SELECT id FROM coord_executors WHERE stopped_at IS NULL AND removed_at IS NULL
+                             AND last_seen IS NOT NULL AND last_seen + ? < ?`).all(staleMs, now);
   return rows.map((x) => stop(db, x.id, "heartbeat_stale", now, graceMs)).filter((x) => x.created).map((x) => x.handoff);
 }
 
@@ -390,8 +435,38 @@ function ackHandoff(db, executorId, id, now = Date.now()) {
 }
 
 function listExecutors(db) {
-  return db.prepare("SELECT * FROM coord_executors ORDER BY id").all()
+  return db.prepare("SELECT * FROM coord_executors WHERE removed_at IS NULL ORDER BY id").all()
     .map((r) => ({ ...executorOut(r), status: statusOf(db, r.id) }));
+}
+
+/** 操作员注销执行者:令牌立即失效,id 空出来(可以重新登记)。还持有进行中的卡或未释放的锁时拒绝。
+ *  行不删:锁记录与交接记录按 id 引用它,交接记录又是只追加的。改成墓碑(removed_at),令牌哈希换成不可能命中的值,
+ *  当前状态清掉;它写过的流水、锁记录、交接记录原样留着。同一事务里写一条操作员流水。
+ *  cardsBelongToSeat:id 与受管座位同名时,这个名字下进行中的卡是座位的(同名的执行者领不了卡),不算它持有。 */
+function unregister(db, executorId, { cardsBelongToSeat = false } = {}, now = Date.now()) {
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT coord_unregister");
+  try {
+    const r = getRow(db, executorId);
+    if (!r) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
+    const cards = cardsBelongToSeat ? []
+      : db.prepare("SELECT id FROM tasks WHERE status='in_progress' AND worker=? ORDER BY id").all(r.id).map((x) => Number(x.id));
+    const locks = db.prepare("SELECT resource FROM coord_locks WHERE holder=? AND released_at IS NULL ORDER BY id").all(r.id).map((x) => x.resource);
+    if (cards.length || locks.length) {
+      const what = [cards.length ? `进行中的卡 ${cards.map((c) => "#" + c).join(" ")}` : "", locks.length ? `未释放的锁 ${locks.join(" ")}` : ""];
+      throw err(ERR.CONFLICT, `执行者 ${r.id} 还持有${what.filter(Boolean).join("、")},不能注销;等它交付、释放,或等租约到期、强制释放锁之后再注销`);
+    }
+    db.prepare("UPDATE coord_executors SET removed_at=?, stopped_at=COALESCE(stopped_at, ?), token_hash=? WHERE id=?")
+      .run(now, now, `removed:${r.id}`, r.id);
+    db.prepare("DELETE FROM coord_status WHERE executor_id=?").run(r.id);
+    const name = [...String(r.name)].map((ch) => isUnsafeChar(ch) ? "?" : ch).join("");
+    const entry = appendJournal(db, "operator", { kind: "executor.unregister", body: `注销执行者 ${r.id}(${name},${r.kind});令牌已失效` }, now);
+    db.exec(own ? "COMMIT" : "RELEASE coord_unregister");
+    return { executor: { ...executorOut(r), active: false, removed_at: iso(now) }, journal_id: entry.id };
+  } catch (e) {
+    try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO coord_unregister; RELEASE coord_unregister"); } catch {}
+    throw e;
+  }
 }
 
 /** 任意执行者心跳(含卡片心跳)都刷新 last_seen,并回到活动状态。 */
@@ -411,22 +486,26 @@ function heartbeat(db, executorId, { taskId = null, leaseMin } = {}, now = Date.
   if (!r) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
   touch(db, r.id, now);
   const cards = taskId == null
-    ? db.prepare("SELECT id, run_id FROM tasks WHERE status='in_progress' AND worker=? ORDER BY id").all(r.id)
-    : db.prepare("SELECT id, run_id FROM tasks WHERE status='in_progress' AND worker=? AND id=?").all(r.id, Number(taskId));
+    ? db.prepare("SELECT id, run_id, lease_until FROM tasks WHERE status='in_progress' AND worker=? ORDER BY id").all(r.id)
+    : db.prepare("SELECT id, run_id, lease_until FROM tasks WHERE status='in_progress' AND worker=? AND id=?").all(r.id, Number(taskId));
   if (taskId != null && !cards.length)
     throw err(ERR.CONFLICT, `卡 #${taskId} 不是 ${r.id} 正在进行的卡,未续租`);
+  // 没给 lease 的心跳只往后续:取默认租约与这张卡现有剩余时间里较长的。按默认 30 分钟直接改写,
+  // 会把 240 分钟领的卡缩成 30 分钟,半小时后被回收。明确给了 lease 就按给的值。
+  const given = Number.isFinite(Number(leaseMin)) && Number(leaseMin) > 0;
   const renewed = cards.map((c) => {
-    const h = store.heartbeat(db, { id: c.id, worker: r.id, runId: c.run_id, leaseMin: executorLease(leaseMin) });
+    const keep = Math.min(Math.max(store.DEFAULT_LEASE_MIN, (Number(c.lease_until) - now) / 60000), EXECUTOR_MAX_LEASE_MIN);
+    const h = store.heartbeat(db, { id: c.id, worker: r.id, runId: c.run_id, leaseMin: given ? executorLease(leaseMin) : keep });
     return { id: c.id, lease_until: h.task?.lease_until ?? null };
   });
   return { executor: executorOut(getRow(db, r.id)), renewed };
 }
 
 module.exports = {
-  migrate, register, byToken, listExecutors, heartbeat, touch, executorLease, executorOut,
+  migrate, register, unregister, byToken, isExecutor, listExecutors, heartbeat, touch, executorLease, executorOut,
   statusOf, setStatus, STATUS_LIMITS,
-  acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN,
+  acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN, REASON_MAX,
   appendJournal, journal, ARTIFACT_CHECK, JOURNAL_BODY_MAX, RESERVED_IDS,
   stop, sweepStale, listHandoffs, getHandoff, ackHandoff, HANDOFF_LIST_BUDGET,
-  EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN,
+  EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN, isUnsafeChar, hasUnsafeText,
 };

@@ -1356,3 +1356,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-10 首页改版整合（claude/home-v2-int）：以上四线与对话后端、首页对话界面、Codex CLI 通道并入；test 串补五组新测试；一键拆解、压缩、协调线对话每轮记用量账本（decompose／compact／coord）；边界探针加 `--record-tested` 记实测版本。整合后 convtest 3/0、usagetest 3/0、decomposetest 84/0、servertest 216/0；卡在操作者：重新登录 Claude CLI 后跑协调线两轮与真模型探针。
 - 2026-11-10 首页改版整合第 2a 轮：并入协调线费用按轮差额、经验库 confirm／discard、正常停止与重启不记故障；用量账本 coord 行的费用改记这一轮的差额（与对话 usage 同值，convtest 钉两行之和）；servertest 端口起点按进程号错开；hometest 的不可用原因换成服务端真会给的一条；cliversionstest 收尾不直接 process.exit（Windows 上断言全过也以 127 退出，基线同样）。
 - convtest 3/0、servertest 216/0、clitest 114/0、lessonstest 5/0、usagetest 3/0、hometest 25/0、panelcopytest 27/0、decomposetest 84/0、doctorallowtest 17/0、cliversionstest 47/0、upgradeclitest 27/0；阻塞：无。
+- 2026-11-10 首页改版整合第 2b-1 步：并入协作与批准接口的安全修复（claude/home-v2-secfix，29 个提交）。core/server.mjs 一处冲突：正常停止时两边各加了一行（远程入口审计计数落库、干净退出标记），两行都保留，先落库再写标记。面板「待你批准」原样回传服务端给的事项 id 与 expected_version，board.py 取事项 id 的版本段，版本类事项的新版本段两处都不用改。
+- coordtest 24/0、approvaltest 19/0、servertest 216/0、clitest 114/0、convtest 3/0、usagetest 3/0、hometest 25/0、panelcopytest 27/0、looptest 85/0、selftest 402/0、decomposetest 84/0；阻塞：无。

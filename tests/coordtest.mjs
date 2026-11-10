@@ -9,16 +9,25 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
+// 不起服务、直接测 coord.js 的用例用内存库。
+const coord = createRequire(import.meta.url)("../core/coord.js");
+const memdb = () => { const db = new DatabaseSync(":memory:"); coord.migrate(db); return db; };
+const badInput = (fn, what) => assert.throws(fn, (e) => e.code === "BAD_INPUT", what);
+// 控制字符与双向控制符一律用码点拼出来,源码里不出现这些字符本身。
+const cp = (...n) => String.fromCodePoint(...n);
+const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+const hasUnsafe = (text) => [...String(text)].some((ch) => isUnsafeCp(ch.codePointAt(0)));
 
-async function board(env = {}) {
+async function board(env = {}, extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), "coordtest-")), config = join(dir, "fleet.json");
-  writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", external: true }], roles: [], routes: ["default"], repo: dir }));
+  writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", external: true }], roles: [], routes: ["default"], repo: dir, ...extra }));
   const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
   const port = l.address().port; await new Promise((r) => l.close(r));
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
@@ -101,6 +110,12 @@ test("执行者令牌:只存哈希、只显示一次,权限只到执行面", { t
     const rot = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-a", rotate: true });
     assert.equal(rot.status, 200);
     assert.equal((await B.api("GET", "/api/coord", tok)).status, 401, "换发后旧令牌失效");
+    assert.equal(rot.body.executor.name, "执行者甲", "换发令牌不改显示名");
+    assert.equal((await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-o", name: "乙", kind: "other" })).status, 201);
+    const rot2 = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-o", rotate: true });
+    assert.deepEqual([rot2.body.executor.name, rot2.body.executor.kind], ["乙", "other"], "换发令牌不改种类");
+    const rot3 = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-o", rotate: true, name: "丙", kind: "external" });
+    assert.deepEqual([rot3.body.executor.name, rot3.body.executor.kind], ["丙", "external"], "换发时明确给了才改");
   } finally { await B.stop(); }
 });
 
@@ -363,4 +378,400 @@ test("面板协作区:逾期锁与待接手交接标出,外部执行线不出启
   assert.ok(!html.includes("<甲>"), "执行者名转义");
   const rig = src.slice(src.indexOf("function renderRig(){"), src.indexOf("let MODELS = []"));
   assert.match(rig, /w\.external \? `<span class="wk-acts"><\/span><\/div>`/, "外部执行线不渲染齿轮与启动按钮");
+});
+
+test("协作安全:共享 worker 令牌不能冒用已登记执行者的 id 领卡、续租、交付", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("agent-s1");
+    const t = await B.card("执行者的卡", "ext");
+    const got = await B.take(tok, t.id);
+    assert.equal(got.status, 200, JSON.stringify(got.body));
+    const run = (await B.api("GET", `/api/tasks/${t.id}`, B.worker)).body.task.run_id;
+    assert.ok(run, "run_id 对已认证角色可读,所以身份不能只靠它");
+    const hb = await B.api("POST", `/api/tasks/${t.id}/heartbeat`, B.worker, { worker: "agent-s1", run_id: run });
+    assert.equal(hb.status, 409, `worker 令牌冒名续租:${JSON.stringify(hb.body)}`);
+    const rep = await B.api("POST", `/api/tasks/${t.id}/report`, B.worker, { worker: "agent-s1", run_id: run, outcome: "done", evidence: "伪造" });
+    assert.equal(rep.status, 409, `worker 令牌冒名交付:${JSON.stringify(rep.body)}`);
+    await B.card("外部线上的另一张", "ext");
+    const cl = await B.api("POST", "/api/claim", B.worker, { worker: "agent-s1", line: "ext", worker_protocol_version: 2, agent_instance_id: randomUUID() });
+    assert.equal(cl.status, 409, `worker 令牌冒名领卡:${JSON.stringify(cl.body)}`);
+    const still = (await B.api("GET", `/api/tasks/${t.id}`, B.operator)).body.task;
+    assert.deepEqual([still.status, still.worker], ["in_progress", "agent-s1"], "卡没有被冒名改动");
+    const own = await B.api("POST", `/api/tasks/${t.id}/report`, tok, { run_id: run, outcome: "done", evidence: "执行者自己的交付" });
+    assert.equal(own.status, 200, JSON.stringify(own.body));
+    // 纯数字的执行者 id:worker 写成数字,落库时同样会变成这个 id
+    const num = await B.register("777");
+    const t3 = await B.card("数字 id 的卡", "ext");
+    const got3 = await B.take(num, t3.id);
+    assert.equal(got3.status, 200, JSON.stringify(got3.body));
+    const hb3 = await B.api("POST", `/api/tasks/${t3.id}/heartbeat`, B.worker, { worker: 777, run_id: got3.body.task.run_id });
+    assert.equal(hb3.status, 409, `worker 写成数字也不能冒名:${JSON.stringify(hb3.body).slice(0, 120)}`);
+  } finally { await B.stop(); }
+});
+
+test("协作安全:worker 只接受字符串或数字,数组、嵌套数组、布尔、null 写法不能绕过身份检查冒用执行者 id", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    // String() 之后这些写法都会变成一个合法的名字:["agent-s2"]、[["agent-s2"]] → agent-s2,true → "true",null → "null"。
+    const toks = {}; for (const id of ["agent-s2", "true", "null"]) toks[id] = await B.register(id);
+    for (const [id, worker] of [["agent-s2", ["agent-s2"]], ["agent-s2", [["agent-s2"]]], ["true", true], ["null", null]]) {
+      const what = `worker 写成 ${JSON.stringify(worker)}`, brief = (r) => JSON.stringify(r.body).slice(0, 160);
+      const t = await B.card(`${id} 的卡`, "ext");
+      const got = await B.take(toks[id], t.id);
+      assert.equal(got.status, 200, JSON.stringify(got.body));
+      const run = got.body.task.run_id;
+      const hb = await B.api("POST", `/api/tasks/${t.id}/heartbeat`, B.worker, { worker, run_id: run });
+      assert.equal(hb.status, 400, `${what} 续租:${brief(hb)}`);
+      const spare = await B.card(`${id} 线上的另一张`, "ext");
+      const cl = await B.api("POST", "/api/claim", B.worker, { worker, line: "ext", worker_protocol_version: 2, agent_instance_id: randomUUID() });
+      assert.equal(cl.status, 400, `${what} 领卡:${brief(cl)}`);
+      const rep = await B.api("POST", `/api/tasks/${t.id}/report`, B.worker, { worker, run_id: run, outcome: "done", evidence: "伪造" });
+      assert.equal(rep.status, 400, `${what} 交付:${brief(rep)}`);
+      const still = (await B.api("GET", `/api/tasks/${t.id}`, B.operator)).body.task;
+      assert.deepEqual([still.status, still.worker], ["in_progress", id], `${what}:卡没有被冒名改动`);
+      const other = (await B.api("GET", `/api/tasks/${spare.id}`, B.operator)).body.task;
+      assert.equal(other.status, "not_started", `${what}:另一张没有被冒名领走`);
+      // 收掉这两张,下一种写法从干净的线开始
+      assert.equal((await B.api("POST", `/api/tasks/${t.id}/report`, toks[id], { run_id: run, outcome: "done", evidence: "执行者自己的交付" })).status, 200);
+      assert.equal((await B.take(toks[id], spare.id)).status, 200);
+    }
+    // 操作员与执行者令牌同样只接受字符串或数字
+    const t9 = await B.card("类型检查", "ext");
+    assert.equal((await B.take(B.operator, t9.id, { worker: ["agent-s2"] })).status, 400, "操作员令牌也不接受数组");
+    assert.equal((await B.take(toks["agent-s2"], t9.id, { worker: { toString: "agent-s2" } })).status, 400, "执行者令牌也不接受对象");
+    // 请求里没写 worker 时,落库比对用的名字是 "undefined":这个 id 不能登记;修复前已登记的也不能被这样冒用。
+    assert.equal((await B.api("POST", "/api/coord/executors", B.operator, { id: "undefined" })).status, 400, "undefined 是保留名");
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
+      .run("undefined", "undefined", "external", createHash("sha256").update("exe_" + "1".repeat(48)).digest("hex"), at, at);
+    db.close();
+    const held = await B.take(B.operator, t9.id, { worker: "undefined" });
+    assert.equal(held.status, 200, JSON.stringify(held.body));
+    const hbU = await B.api("POST", `/api/tasks/${t9.id}/heartbeat`, B.worker, { run_id: held.body.task.run_id });
+    assert.equal(hbU.status, 409, `不写 worker 也不能冒用名为 undefined 的执行者:${JSON.stringify(hbU.body).slice(0, 160)}`);
+    const repU = await B.api("POST", `/api/tasks/${t9.id}/report`, B.worker, { run_id: held.body.task.run_id, outcome: "done", evidence: "伪造" });
+    assert.equal(repU.status, 409, `不写 worker 的交付:${JSON.stringify(repU.body).slice(0, 160)}`);
+  } finally { await B.stop(); }
+});
+
+test("协作安全:执行者 id 不能与受管执行线的座位同名,同名的旧登记不能领卡续租交付", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const clash = await B.api("POST", "/api/coord/executors", B.operator, { id: "alpha", kind: "line" });
+    assert.equal(clash.status, 409, `与受管线同名的登记应拒绝:${JSON.stringify(clash.body)}`);
+    assert.equal((await B.api("POST", "/api/coord/executors", B.operator, { id: "ext", kind: "line" })).status, 201, "外部执行线没有受管座位,同名可以登记");
+    await B.register("zeta");
+    assert.equal((await B.api("POST", "/api/config/lines", B.operator, { id: "zeta" })).status, 409, "反方向:受管线不能与已登记执行者同名");
+    assert.equal((await B.api("POST", "/api/config/lines", B.operator, { id: "zeta", external: true })).status, 201, "外部执行线可以与执行者同名");
+    // 修复前已经同名的旧登记:直接写库造一行,它的令牌不能再以座位名义动卡。
+    const legacy = "exe_" + "0".repeat(48);
+    const db = new DatabaseSync(join(B.dir, "board.db"));
+    db.exec("PRAGMA busy_timeout=5000");
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
+      .run("alpha", "alpha", "line", createHash("sha256").update(legacy).digest("hex"), at, at);
+    db.close();
+    const t = await B.card("受管线上的卡");
+    const held = await B.take(B.operator, t.id, { worker: "alpha" });
+    assert.equal(held.status, 200, JSON.stringify(held.body));
+    const run = held.body.task.run_id;
+    assert.equal((await B.api("GET", "/api/coord", legacy)).status, 200, "旧令牌仍能读");
+    const rep = await B.api("POST", `/api/tasks/${t.id}/report`, legacy, { run_id: run, outcome: "done", evidence: "伪造" });
+    assert.equal(rep.status, 409, `同名执行者替座位交付:${JSON.stringify(rep.body).slice(0, 200)}`);
+    assert.equal((await B.api("POST", "/api/coord/heartbeat", legacy, {})).status, 409, "同名执行者不能替座位批量续租");
+    const t2 = await B.card("受管线上的另一张");
+    assert.equal((await B.take(legacy, t2.id)).status, 409, "同名执行者不能以座位名领卡");
+    const still = (await B.api("GET", `/api/tasks/${t.id}`, B.operator)).body.task;
+    assert.equal(still.status, "in_progress");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:流水产物的 type 必须是字符串,数组与嵌套数组不能冒充合法类型", () => {
+  const db = memdb(), sha = "a".repeat(64);
+  coord.register(db, { id: "agent-t" });
+  let deep = "sha256"; for (let i = 0; i < 50; i++) deep = [deep];
+  for (const type of [["sha256"], [[["sha256"]]], deep, { toString: () => "sha256" }, 7, null])
+    badInput(() => coord.appendJournal(db, "agent-t", { kind: "note", body: "x", artifacts: [{ type, value: sha }] }), JSON.stringify(type).slice(0, 40));
+  badInput(() => coord.appendJournal(db, "agent-t", { kind: "note", body: "x", artifacts: [null] }), "产物项为 null");
+  const ok = coord.appendJournal(db, "agent-t", { kind: "note", body: "x", artifacts: [{ type: "sha256", value: sha.toUpperCase() }] });
+  assert.deepEqual(ok.artifacts, [{ type: "sha256", value: sha }]);
+  assert.equal(coord.journal(db, {}).length, 1, "被拒的都没有入库");
+});
+
+test("协作安全:心跳中断生成交接包之后又写了状态与流水,再 stop 拿到的是新的交接包", () => {
+  const db = memdb(), t0 = 1_800_000_000_000, min = 60000;
+  coord.register(db, { id: "agent-w" });
+  coord.touch(db, "agent-w", t0);
+  coord.setStatus(db, "agent-w", { current: "开工:跑回归" }, t0 + min);
+  coord.acquire(db, "agent-w", { resource: "device:test-phone", minutes: 60, purpose: "回归" }, t0 + 2 * min);
+  const swept = coord.sweepStale(db, t0 + 21 * min, 20 * min);
+  assert.deepEqual(swept.map((h) => [h.reason, h.stop_seq, h.package.goal]), [["heartbeat_stale", 1, "开工:跑回归"]]);
+  const j = coord.appendJournal(db, "agent-w", { kind: "note", body: "回归跑完" }, t0 + 38 * min);
+  coord.release(db, { role: "executor", id: "agent-w" }, { resource: "device:test-phone" }, t0 + 38.5 * min);
+  coord.setStatus(db, "agent-w", { current: "收尾完成", done: ["回归全绿", "报告已提交"] }, t0 + 39 * min);
+  const s = coord.stop(db, "agent-w", "stop", t0 + 40 * min);
+  assert.equal(s.created, true, "中断之后写过最终状态:这次 stop 重新生成");
+  assert.deepEqual([s.handoff.reason, s.handoff.stop_seq, s.handoff.package.goal], ["stop", 2, "收尾完成"]);
+  assert.deepEqual(s.handoff.package.done, ["回归全绿", "报告已提交"]);
+  assert.deepEqual(s.handoff.package.journal.recent_ids, [j.id]);
+  assert.deepEqual(s.handoff.package.locks, [], "已释放的锁不再出现在交接包里");
+  assert.deepEqual(coord.getHandoff(db, s.handoff.id).full_status.done, ["回归全绿", "报告已提交"]);
+  const again = coord.stop(db, "agent-w", "stop", t0 + 41 * min);
+  assert.deepEqual([again.created, again.handoff.id], [false, s.handoff.id], "没有新内容时重复 stop 仍是同一份");
+  assert.equal(coord.listHandoffs(db).length, 2);
+  // 只多了一条流水也算有新内容
+  coord.appendJournal(db, "agent-w", { kind: "note", body: "补一条" }, t0 + 42 * min);
+  assert.equal(coord.stop(db, "agent-w", "stop", t0 + 43 * min).handoff.stop_seq, 3);
+});
+
+test("协作安全:不带 lease 的心跳只往后续租,不把长租约缩成默认的 30 分钟", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("agent-l");
+    const long = await B.card("长租约的卡", "ext"), short = await B.card("短租约的卡", "ext");
+    assert.equal((await B.take(tok, long.id, { lease_minutes: 240 })).status, 200);
+    assert.equal((await B.take(tok, short.id, { lease_minutes: 1 })).status, 200);
+    const left = (r, id) => (r.body.renewed.find((x) => x.id === id).lease_until - Date.now()) / 60000;
+    const hb = await B.api("POST", "/api/coord/heartbeat", tok, {});
+    assert.equal(hb.status, 200, JSON.stringify(hb.body));
+    assert.ok(left(hb, long.id) > 235, `长租约在无 lease 心跳后不应变短:剩 ${left(hb, long.id).toFixed(1)} 分`);
+    assert.ok(left(hb, short.id) > 29 && left(hb, short.id) < 31, `短租约续到默认 30 分:剩 ${left(hb, short.id).toFixed(1)} 分`);
+    const one = await B.api("POST", "/api/coord/heartbeat", tok, { task_id: long.id });
+    assert.ok(left(one, long.id) > 235, "只续一张时同样不缩短");
+    const set = await B.api("POST", "/api/coord/heartbeat", tok, { task_id: long.id, lease_minutes: 60 });
+    assert.ok(left(set, long.id) > 59 && left(set, long.id) < 61, "明确给了 lease 就按给的值");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:卡片级心跳不带 lease_minutes 时同样只往后续租,明确给值仍按给的值", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("agent-k");
+    const long = await B.card("长租约的卡", "ext"), short = await B.card("短租约的卡", "ext");
+    const gl = await B.take(tok, long.id, { lease_minutes: 240 }), gs = await B.take(tok, short.id, { lease_minutes: 1 });
+    assert.deepEqual([gl.status, gs.status], [200, 200]);
+    const runL = gl.body.task.run_id, runS = gs.body.task.run_id;
+    /** 卡片级心跳,返回续完之后剩下的分钟数 */
+    const beat = async (token, id, body) => {
+      const r = await B.api("POST", `/api/tasks/${id}/heartbeat`, token, body);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      return (r.body.task.lease_until - Date.now()) / 60000;
+    };
+    let left = await beat(tok, long.id, { run_id: runL });
+    assert.ok(left > 235, `240 分钟领的卡,不带 lease_minutes 的卡片级心跳后不应变短:剩 ${left.toFixed(1)} 分`);
+    left = await beat(tok, short.id, { run_id: runS });
+    assert.ok(left > 29 && left < 31, `短租约续到默认 30 分:剩 ${left.toFixed(1)} 分`);
+    for (const bad of [null, 0, -5, "abc"]) {
+      left = await beat(tok, long.id, { run_id: runL, lease_minutes: bad });
+      assert.ok(left > 235, `lease_minutes 写成 ${JSON.stringify(bad)} 等于没给,不缩租:剩 ${left.toFixed(1)} 分`);
+    }
+    const viaCoord = await B.api("POST", "/api/coord/heartbeat", tok, { task_id: long.id, lease_minutes: null });
+    assert.ok((viaCoord.body.renewed[0].lease_until - Date.now()) / 60000 > 235, "协作心跳里 lease_minutes 写成 null 同样等于没给");
+    left = await beat(tok, long.id, { run_id: runL, lease_minutes: 60 });
+    assert.ok(left > 59 && left < 61, `明确给了 lease_minutes 就按给的值:剩 ${left.toFixed(1)} 分`);
+    left = await beat(tok, long.id, { run_id: runL, lease_minutes: 1000 });
+    assert.ok(left > 239 && left < 241, `执行者令牌的上限仍是 240 分:剩 ${left.toFixed(1)} 分`);
+    // 共享 worker 令牌走同一条路由:没给只往后续;每次都带 lease_minutes 的(worker 循环)按给的值,行为不变
+    await B.card("手工执行线的卡");
+    const cl = await B.api("POST", "/api/claim", B.worker, { worker: "manual-w", line: "alpha", lease_minutes: 120, worker_protocol_version: 2, agent_instance_id: randomUUID() });
+    assert.equal(cl.status, 200, JSON.stringify(cl.body));
+    const w = { worker: "manual-w", run_id: cl.body.task.run_id };
+    left = await beat(B.worker, cl.body.task.id, w);
+    assert.ok(left > 115, `worker 令牌不带 lease_minutes 也不缩租:剩 ${left.toFixed(1)} 分`);
+    left = await beat(B.worker, cl.body.task.id, { ...w, lease_minutes: 45 });
+    assert.ok(left > 44 && left < 46, `worker 带 lease_minutes 的心跳照旧按给的值:剩 ${left.toFixed(1)} 分`);
+  } finally { await B.stop(); }
+});
+
+test("协作安全:只追加的协作表挡住 REPLACE(整行替换),不只是 UPDATE 与 DELETE", () => {
+  const db = memdb(), t0 = 1_800_000_000_000;
+  coord.register(db, { id: "agent-p" }); coord.register(db, { id: "agent-q" });
+  const j = coord.appendJournal(db, "agent-p", { kind: "note", body: "原始正文" }, t0);
+  const h = coord.stop(db, "agent-p", "stop", t0 + 1000).handoff;
+  coord.ackHandoff(db, "agent-q", h.id, t0 + 2000);
+  const tries = {
+    "流水 INSERT OR REPLACE": () => db.prepare("INSERT OR REPLACE INTO coord_journal (id,at,executor,kind,body) VALUES (?,?,?,?,?)").run(j.id, j.at, "operator", "approval.decided", "被替换的正文"),
+    "流水 REPLACE INTO": () => db.prepare("REPLACE INTO coord_journal (id,at,executor,kind,body) VALUES (?,?,?,?,?)").run(j.id, j.at, "operator", "x", "y"),
+    "交接 按主键替换": () => db.prepare("INSERT OR REPLACE INTO coord_handoffs (id,executor,stop_seq,reason,created_at,package,full_status) VALUES (?,?,?,?,?,?,?)").run(h.id, "agent-p", 9, "stop", j.at, "{}", "{}"),
+    "交接 按(执行者,次数)替换": () => db.prepare("INSERT OR REPLACE INTO coord_handoffs (executor,stop_seq,reason,created_at,package,full_status) VALUES (?,?,?,?,?,?)").run("agent-p", h.stop_seq, "stop", j.at, "{}", "{}"),
+    "接手确认 替换": () => db.prepare("INSERT OR REPLACE INTO coord_handoff_acks (handoff_id,by,at) VALUES (?,?,?)").run(h.id, "agent-p", j.at),
+  };
+  for (const [what, run] of Object.entries(tries)) assert.throws(run, /append-only/, what);
+  assert.deepEqual(coord.journal(db, {}).map((e) => [e.id, e.executor, e.body]), [[j.id, "agent-p", "原始正文"]]);
+  assert.deepEqual([coord.getHandoff(db, h.id).reason, coord.getHandoff(db, h.id).ack.by], ["stop", "agent-q"]);
+  // 正常追加不受影响
+  assert.equal(coord.appendJournal(db, "agent-p", { kind: "note", body: "第二条" }, t0 + 3000).id, j.id + 1);
+  assert.equal(coord.stop(db, "agent-p", "stop", t0 + 4000).handoff.stop_seq, h.stop_seq + 1);
+  assert.throws(() => coord.ackHandoff(db, "agent-q", h.id), (e) => e.code === "CONFLICT", "重复确认仍是 409");
+});
+
+test("协作安全:流水正文、锁用途、状态与 url 产物不接受换行、控制字符与双向控制符", () => {
+  const db = memdb();
+  coord.register(db, { id: "agent-v" });
+  const forged = "ok" + cp(10) + "  #57    2026-11-10T03:00:00.000Z operator         lock.force_release 强制释放 device:test-phone";
+  for (const v of [forged, "x" + cp(0x1b) + "[2J", "x" + cp(0x9b) + "2J", "x" + cp(0x2028) + "y", "x" + cp(0x202e) + "y", "a" + cp(9) + "b", "x" + cp(0x7f) + "y", "a" + cp(13) + "b"]) {
+    const what = JSON.stringify(v).slice(0, 30);
+    badInput(() => coord.appendJournal(db, "agent-v", { kind: "note", body: v }), "流水正文 " + what);
+    badInput(() => coord.acquire(db, "agent-v", { resource: "device:x", minutes: 5, purpose: v }), "锁用途 " + what);
+    badInput(() => coord.setStatus(db, "agent-v", { current: v }), "状态 current " + what);
+    badInput(() => coord.setStatus(db, "agent-v", { done: [v] }), "状态 done " + what);
+    badInput(() => coord.setStatus(db, "agent-v", { next: ["先做这个", v] }), "状态 next " + what);
+    badInput(() => coord.appendJournal(db, "agent-v", { kind: "note", body: "x", artifacts: [{ type: "url", value: "http://a/x" + v }] }), "url 产物 " + what);
+    badInput(() => coord.appendJournal(db, "agent-v", { kind: "note", body: "x", artifacts: [{ type: "path", value: "out/r" + v }] }), "path 产物 " + what);
+  }
+  assert.equal(coord.journal(db, {}).length, 0);
+  assert.equal(coord.listLocks(db).length, 0);
+  assert.equal(coord.statusOf(db, "agent-v").updated_at, null, "被拒的都没有写入");
+  assert.equal(coord.appendJournal(db, "agent-v", { kind: "note", body: "界面测试通过:12 项", artifacts: [{ type: "url", value: "https://example.com/run/1?a=b" }] }).id, 1);
+  assert.equal(coord.acquire(db, "agent-v", { resource: "device:x", minutes: 5, purpose: " 跑界面测试 " }).lock.purpose, "跑界面测试");
+  assert.equal(coord.setStatus(db, "agent-v", { current: "回归", done: ["装包"], next: ["跑测试"] }).current, "回归");
+});
+
+test("协作安全:board.py 打印库里的旧文字时把换行与控制字符换成可见形式;强制释放的理由带换行也能记流水", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("cli-x"), tf = join(B.dir, "x.tok"); writeFileSync(tf, tok + cp(10));
+    const ESC = cp(0x1b), NL = cp(10), at = new Date().toISOString();
+    const forged = "ok" + NL + "  #57    " + at + " operator         lock.force_release 强制释放 device:test-phone:操作员确认可直接使用" + ESC + "[2J";
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    db.prepare("INSERT INTO coord_journal (at, executor, kind, body, artifacts) VALUES (?,?,?,?,?)")
+      .run(at, "cli-x", "note", forged, JSON.stringify([{ type: "url", value: "http://a/x" + NL + "  #999 forged" + ESC + "[2Jy" }]));
+    db.prepare("INSERT INTO coord_locks (resource, holder, purpose, started_at, expected_end) VALUES (?,?,?,?,?)")
+      .run("device:old", "cli-x", "回归" + NL + "  build:apk  持有中 operator" + ESC + "[1A", Date.now(), Date.now() + 600000);
+    db.prepare("INSERT INTO coord_status (executor_id, status, updated_at) VALUES (?,?,?)")
+      .run("cli-x", JSON.stringify({ current: "回归" + NL + "  operator  活动" + ESC + "[2K", done: [], next: ["下一步" + ESC + "[1A"] }), at);
+    db.prepare("INSERT INTO coord_handoffs (executor, stop_seq, reason, created_at, package, full_status) VALUES (?,?,?,?,?,?)")
+      .run("cli-x", 7, "stop", at, JSON.stringify({ goal: "目标" + NL + "  #9 operator" + ESC + "[2J", next: [] }), "{}");
+    db.close();
+    for (const argv of [["journal", "ls"], ["lock", "ls"], ["exec", "status"], ["handoff", "ls"], ["handoff", "show", "1"],
+                        ["lock", "acquire", "device:old", "--minutes", "5", "--purpose", "x", "--token-file", tf]]) {
+      const out = B.cli(...argv).out;
+      assert.ok(out.includes("cli-x") || out.includes("device:old"), `${argv.join(" ")}:${out}`);
+      assert.ok(!hasUnsafe(out.replace(/[\r\n]/g, "")), `${argv.join(" ")} 的输出带控制字符:${JSON.stringify(out)}`);
+      assert.ok(!/^ +#(57|999|9) /m.test(out) && !/^ +(build:apk|operator) /m.test(out), `${argv.join(" ")} 的输出里出现了伪造的行:${out}`);
+    }
+    // 操作员强制释放的理由文件里有换行:锁照常释放,流水记成一行
+    const why = join(B.dir, "why.txt"); writeFileSync(why, "持有者会话已结束" + NL + "已当面确认");
+    const r = B.cli("lock", "release", "device:old", "--force", "--file", why);
+    assert.equal(r.code, 0, r.out);
+    const jr = (await B.api("GET", "/api/coord/journal?executor=operator", tok)).body.entries;
+    assert.ok(jr.some((e) => e.kind === "lock.force_release" && e.body.includes("持有者会话已结束 已当面确认")), JSON.stringify(jr));
+  } finally { await B.stop(); }
+});
+
+test("协作安全:board.py journal ls 的查询参数做 URL 编码,带 + 时区的 --since 可用", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("cli-y"), tf = join(B.dir, "y.tok"); writeFileSync(tf, tok + cp(10));
+    assert.equal((await B.api("POST", "/api/coord/journal", tok, { kind: "note", body: "带时区查询" })).status, 201);
+    const since = new Date(Date.now() - 3600000 + 9 * 3600000).toISOString().replace("Z", "+09:00");   // 一小时前,写成 +09:00
+    const r = B.cli("journal", "ls", "--since", since, "--token-file", tf);
+    assert.equal(r.code, 0, `--since ${since}:${r.out}`);
+    assert.match(r.out, /带时区查询/);
+    const none = B.cli("journal", "ls", "--since", since, "--executor", "nobody&limit=500", "--token-file", tf);
+    assert.equal(none.code, 0, none.out);
+    assert.ok(!none.out.includes("带时区查询"), "值里的 & 不会混进别的参数");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:操作员可以注销执行者;在持卡或持锁时拒绝,其他令牌与远程入口不能注销,留流水", { timeout: 120000 }, async () => {
+  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.2", r));
+  const rport = l.address().port; await new Promise((r) => l.close(r));
+  const B = await board({}, { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.0/8"] } });
+  try {
+    const del = (id, token) => B.api("DELETE", `/api/coord/executors/${encodeURIComponent(id)}`, token);
+    const ids = async () => (await B.api("GET", "/api/coord/executors", B.operator)).body.executors.map((e) => e.id);
+    const tok = await B.register("agent-d"), other = await B.register("agent-e");
+    // 只有操作员能注销
+    const apr = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    assert.equal((await del("agent-d", B.worker)).status, 403, "worker 令牌不能注销");
+    assert.equal((await del("agent-d", tok)).status, 403, "执行者不能注销自己");
+    assert.equal((await del("agent-d", other)).status, 403, "执行者不能注销别人");
+    assert.equal((await del("agent-d", apr)).status, 401, "本机接口不认批准令牌");
+    let remote = null;
+    for (let i = 0; i < 50 && !remote; i++) {
+      try { remote = await fetch(`http://127.0.0.2:${rport}/api/coord/executors/agent-d`, { method: "DELETE", headers: { Authorization: `Bearer ${apr}` } }); }
+      catch { await delay(100); }
+    }
+    assert.equal(remote?.status, 403, "远程入口不开放注销");
+    assert.equal((await del("nobody", B.operator)).status, 404, "没登记的 id 是 404");
+    assert.ok((await ids()).includes("agent-d"), "被拒的都没有注销成");
+    // 还持有进行中的卡:409
+    await B.api("POST", "/api/coord/status", tok, { current: "跑回归", next: ["提交报告"] });
+    await B.api("POST", "/api/coord/journal", tok, { kind: "note", body: "注销之前写的流水" });
+    const t = await B.card("执行者手上的卡", "ext");
+    const got = await B.take(tok, t.id);
+    assert.equal(got.status, 200, JSON.stringify(got.body));
+    const held = await del("agent-d", B.operator);
+    assert.equal(held.status, 409, `在持卡时不能注销:${JSON.stringify(held.body).slice(0, 200)}`);
+    assert.match(held.body.error, new RegExp(`#${t.id}`), "写明是哪张卡");
+    assert.equal((await B.api("POST", `/api/tasks/${t.id}/report`, tok, { run_id: got.body.task.run_id, outcome: "done", evidence: "交付" })).status, 200);
+    // 还持有未释放的锁:409
+    assert.equal((await B.api("POST", "/api/coord/locks", tok, { resource: "device:test-phone", minutes: 5, purpose: "回归" })).status, 201);
+    const locked = await del("agent-d", B.operator);
+    assert.equal(locked.status, 409, `在持锁时不能注销:${JSON.stringify(locked.body).slice(0, 200)}`);
+    assert.match(locked.body.error, /device:test-phone/, "写明是哪把锁");
+    assert.equal((await B.api("GET", "/api/coord", tok)).status, 200, "被拒之后令牌照常");
+    assert.equal((await B.api("POST", "/api/coord/locks/release", tok, { resource: "device:test-phone" })).status, 200);
+    // 都放掉之后可以注销:令牌立即失效,列表里不再有它,留一条操作员流水;它写过的流水与锁记录还在
+    const gone = await del("agent-d", B.operator);
+    assert.equal(gone.status, 200, JSON.stringify(gone.body));
+    assert.equal(gone.body.executor.id, "agent-d");
+    assert.equal((await B.api("GET", "/api/coord", tok)).status, 401, "注销后令牌失效");
+    assert.deepEqual(await ids(), ["agent-e"]);
+    const jr = (await B.api("GET", "/api/coord/journal?limit=200", B.operator)).body.entries;
+    const note = jr.find((e) => e.kind === "executor.unregister");
+    assert.ok(note && note.executor === "operator" && note.body.includes("agent-d"), `注销要留流水:${JSON.stringify(jr.map((e) => [e.executor, e.kind]))}`);
+    assert.equal(note.id, gone.body.journal_id);
+    assert.ok(jr.some((e) => e.executor === "agent-d" && e.body === "注销之前写的流水"), "它写过的流水不删");
+    const locks = (await B.api("GET", "/api/coord/locks?all=1", B.operator)).body.locks;
+    assert.deepEqual(locks.map((x) => [x.resource, x.holder]), [["device:test-phone", "agent-d"]], "锁记录不删");
+    assert.equal((await del("agent-d", B.operator)).status, 404, "已注销的再注销是 404");
+    const db = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
+    const row = db.prepare("SELECT token_hash FROM coord_executors WHERE id='agent-d'").get(); db.close();
+    assert.notEqual(row?.token_hash, createHash("sha256").update(tok).digest("hex"), "库里不再留着旧令牌的哈希");
+    // 同一个 id 可以重新登记:新令牌可用,旧令牌仍无效,状态从空白开始
+    const again = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-d", name: "新的甲" });
+    assert.equal(again.status, 201, JSON.stringify(again.body));
+    assert.equal((await B.api("GET", "/api/coord", tok)).status, 401);
+    const me = (await B.api("GET", "/api/coord/executors", again.body.token)).body.executors.find((e) => e.id === "agent-d");
+    assert.deepEqual([me.name, me.kind, me.status.current, me.last_seen], ["新的甲", "external", "", null]);
+    assert.equal((await B.api("POST", "/api/coord/stop", again.body.token, {})).status, 201, "重新登记后照常停止并生成交接包");
+    // 命令行:exec unregister
+    const tf = join(B.dir, "e.tok"); writeFileSync(tf, other + cp(10));
+    assert.notEqual(B.cli("exec", "unregister", "agent-e", "--token-file", tf).code, 0, "执行者令牌不能用命令行注销");
+    const c = B.cli("exec", "unregister", "agent-e");
+    assert.equal(c.code, 0, c.out);
+    assert.match(c.out, /已注销执行者 agent-e/);
+    assert.equal((await B.api("GET", "/api/coord", other)).status, 401);
+    assert.notEqual(B.cli("exec", "unregister", "agent-e").code, 0, "再注销一次报 404");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:与受管线同名的旧登记注销之后,共享 worker 令牌可以再用这个座位名", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    // 手工用共享 worker 令牌跑 alpha 线,手上有一张卡
+    await B.card("受管线上的卡");
+    const cl = await B.api("POST", "/api/claim", B.worker, { worker: "alpha", line: "alpha", worker_protocol_version: 2, agent_instance_id: randomUUID() });
+    assert.equal(cl.status, 200, JSON.stringify(cl.body));
+    const beat = () => B.api("POST", `/api/tasks/${cl.body.task.id}/heartbeat`, B.worker, { worker: "alpha", run_id: cl.body.task.run_id, lease_minutes: 30 });
+    assert.equal((await beat()).status, 200, "没有同名登记时照常续租");
+    // 修复前留下的同名登记(直接写库):共享令牌从此用不了这个座位名
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
+      .run("alpha", "alpha", "line", createHash("sha256").update("exe_" + "2".repeat(48)).digest("hex"), at, at);
+    db.close();
+    assert.equal((await beat()).status, 409, "有同名登记时,共享令牌对已持有的卡续租也被拒");
+    // 操作员注销这条旧登记:alpha 名下进行中的卡是座位的(同名执行者领不了卡),不挡注销
+    const gone = await B.api("DELETE", "/api/coord/executors/alpha", B.operator);
+    assert.equal(gone.status, 200, `同名旧登记应能注销:${JSON.stringify(gone.body).slice(0, 200)}`);
+    assert.equal((await beat()).status, 200, "注销后共享令牌恢复续租");
+    assert.equal((await B.api("GET", "/api/coord", "exe_" + "2".repeat(48))).status, 401, "旧登记的令牌失效");
+    const still = (await B.api("GET", `/api/tasks/${cl.body.task.id}`, B.operator)).body.task;
+    assert.deepEqual([still.status, still.worker], ["in_progress", "alpha"], "座位手上的卡不受影响");
+  } finally { await B.stop(); }
 });

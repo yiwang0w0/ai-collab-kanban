@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const net = require("net");
 const store = require("./store.js");
 const { err, ERR } = store;
+const { isUnsafeChar, hasUnsafeText } = require("./coord.js");
 
 const KINDS = Object.freeze(["decision", "delivery", "release", "version", "lock", "request"]);
 // 事项 id = 类型:对象:版本。对象的状态一变版本就变,同一个 id 只对应一个确定的状态:可以重放,不会落到新状态上。
@@ -17,13 +18,17 @@ const CLIENT_RE = /^[a-z][a-z0-9_.-]{0,31}$/;
 const OPEN_REQUESTS_MAX = 20;
 const LIVE_TOKENS_MAX = 20;
 const TOKEN_RE = /^apr_[0-9a-f]{48}$/;
-const CONTROL_RE = /[\u0000-\u001f\u007f]/;
+// 一行文字里的控制字符与双向控制符换成这个可见的占位(U+FFFD)。
+const PLACEHOLDER = String.fromCodePoint(0xfffd);
 
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const iso = (ms) => new Date(Number(ms)).toISOString();
 const chars = (s) => [...String(s)].length;
 
-function appendOnly(db, t) {
+function appendOnly(db, t, key = "id") {
+  // REPLACE 在冲突时删旧行却不触发 DELETE 触发器(recursive_triggers 没开):主键已存在的插入也在这里拒绝。
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_replace BEFORE INSERT ON ${t} WHEN EXISTS (SELECT 1 FROM ${t} WHERE ${key} = NEW.${key})
+           BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
 }
@@ -55,7 +60,7 @@ function migrate(db) {
     journal_id INTEGER,
     result TEXT NOT NULL DEFAULT '{}'
   )`);
-  appendOnly(db, "approval_decisions");
+  appendOnly(db, "approval_decisions", "approval_id");
   // 批准令牌:只存 sha256。吊销写 revoked_at,不删行。
   db.exec(`CREATE TABLE IF NOT EXISTS approval_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,9 +84,10 @@ function migrate(db) {
   appendOnly(db, "remote_audit");
 }
 
-/** 白话一行:空白折成一个空格,超长截断并留「…」。 */
+/** 白话一行:空白折成一个空格,超长截断并留「…」。折叠后剩下的控制字符与双向控制符换成可见的占位:
+ *  标题与摘要会进终端、控制台日志和远程客户端,ESC 之类能改写屏幕上别的事项。 */
 function oneLine(text, max = SUMMARY_MAX) {
-  const a = [...String(text ?? "").replace(/\s+/g, " ").trim()];
+  const a = [...String(text ?? "").replace(/\s+/g, " ").trim()].map((ch) => isUnsafeChar(ch) ? PLACEHOLDER : ch);
   return a.length > max ? a.slice(0, max - 1).join("") + "…" : a.join("");
 }
 const makeId = (kind, object, version) => `${kind}:${object}:${version}`;
@@ -105,7 +111,7 @@ function normalizeDecision(body) {
   if (!CLIENT_RE.test(client)) throw err(ERR.BAD_INPUT, "source.client 只允许小写字母开头的字母、数字和 . _ -,1-32 位");
   let device = null;
   if (src.device != null && src.device !== "") {
-    if (typeof src.device !== "string" || chars(src.device) > DEVICE_MAX || CONTROL_RE.test(src.device) || src.device.trim() !== src.device)
+    if (typeof src.device !== "string" || chars(src.device) > DEVICE_MAX || hasUnsafeText(src.device) || src.device.trim() !== src.device)
       throw err(ERR.BAD_INPUT, `source.device 必须是不含控制字符、首尾无空白的字符串,最多 ${DEVICE_MAX} 字`);
     device = src.device;
   }
@@ -136,7 +142,7 @@ function recordDecision(db, rec, now = Date.now()) {
       .run(rec.approval_id, kind, object, version, rec.decision, rec.note || "", String(rec.actor), String(rec.via),
            rec.source.client, rec.source.device ?? null, rec.ip ?? null, iso(now), rec.journal_id ?? null, JSON.stringify(rec.result ?? {}));
   } catch (e) {
-    if (/UNIQUE|PRIMARY KEY/.test(String(e.message))) throw err(ERR.CONFLICT, `${rec.approval_id} 已经决定过,不能再决定`);
+    if (/UNIQUE|PRIMARY KEY|append-only/.test(String(e.message))) throw err(ERR.CONFLICT, `${rec.approval_id} 已经决定过,不能再决定`);
     throw e;
   }
   return decisionOf(db, rec.approval_id);
@@ -153,6 +159,8 @@ const OPEN_SQL = `SELECT r.* FROM approval_requests r
 /** 执行者发起批准请求:动作描述(白话一行)+ 风险等级。 */
 function addRequest(db, executor, { action, risk } = {}, now = Date.now()) {
   if (typeof action !== "string" || !action.trim()) throw err(ERR.BAD_INPUT, "action 必须是非空字符串:要做什么");
+  // 换行与制表符照旧折成空格;其余控制字符与双向控制符直接拒绝,不让它进只追加的请求表。
+  if (hasUnsafeText(action.replace(/\s+/g, " "))) throw err(ERR.BAD_INPUT, "action 不能含控制字符或双向控制符");
   const text = oneLine(action, Infinity);
   if (chars(text) > ACTION_MAX) throw err(ERR.BAD_INPUT, `action 最多 ${ACTION_MAX} 字,实际 ${chars(text)}`);
   if (!RISKS.includes(risk)) throw err(ERR.BAD_INPUT, `risk 只接受 ${RISKS.join(" / ")}`);
@@ -173,7 +181,7 @@ function tokenOut(r) {
 /** 操作员生成批准令牌。明文只在这里返回一次,库里只存 sha256。 */
 function createToken(db, { label } = {}, now = Date.now()) {
   const name = typeof label === "string" ? label.trim() : "";
-  if (!name || chars(name) > LABEL_MAX || CONTROL_RE.test(name)) throw err(ERR.BAD_INPUT, `label 必填,不含控制字符,最多 ${LABEL_MAX} 字`);
+  if (!name || chars(name) > LABEL_MAX || hasUnsafeText(name)) throw err(ERR.BAD_INPUT, `label 必填,不含控制字符,最多 ${LABEL_MAX} 字`);
   const live = db.prepare("SELECT COUNT(*) n FROM approval_tokens WHERE revoked_at IS NULL").get().n;
   if (live >= LIVE_TOKENS_MAX) throw err(ERR.CONFLICT, `有效的批准令牌已有 ${live} 枚,上限 ${LIVE_TOKENS_MAX};先吊销不用的`);
   const token = "apr_" + crypto.randomBytes(24).toString("hex");
@@ -211,7 +219,10 @@ function listAudit(db, { limit = 50 } = {}) {
 
 // ── 远程入口配置:remote_access: {enabled, listen: [], allow_ips: [], allow_wildcard_listen?}
 const normalizeIp = (addr) => { const s = String(addr || ""); const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(s); return m ? m[1] : s; };
-const isWildcard = (host) => host === "0.0.0.0" || (net.isIP(host) === 6 && /^[0:]+$/.test(host));
+// 通配地址按解析后的地址判断,不按字面:::0.0.0.0、0:0:0:0:0:0:0.0.0.0、::ffff:0.0.0.0(IPv4 映射的通配)同样是监听全部网卡。
+const WILDCARDS = new net.BlockList();
+WILDCARDS.addAddress("0.0.0.0", "ipv4"); WILDCARDS.addAddress("::", "ipv6"); WILDCARDS.addAddress("::ffff:0.0.0.0", "ipv6");
+const isWildcard = (host) => { const fam = net.isIP(host); return !!fam && WILDCARDS.check(host, fam === 4 ? "ipv4" : "ipv6"); };
 function parseListen(entry) {
   let host, port;
   if (typeof entry === "string") {
@@ -245,6 +256,12 @@ function parseRemoteConfig(raw) {
     if (m) {
       const bits = Number(m[2]);
       if (bits < 1 || bits > (fam === 4 ? 32 : 128)) throw new Error(`allow_ips 前缀长度不合格(不接受 /0):${s}`);
+      // IPv4 来源是按 ::ffff:a.b.c.d 与 IPv6 前缀比较的:盖住整个 ::ffff:0:0/96 的 IPv6 前缀等于放行全部 IPv4,也就是 /0。
+      if (fam === 6) {
+        const one = new net.BlockList(); one.addSubnet(addr, bits, type);
+        if (one.check("::ffff:0.0.0.0", "ipv6") && one.check("::ffff:255.255.255.255", "ipv6"))
+          throw new Error(`allow_ips 这一项放行了全部 IPv4 来源(等于 /0),不接受:${s}`);
+      }
       list.addSubnet(addr, bits, type);
     } else list.addAddress(addr, type);
     allow.push(s);

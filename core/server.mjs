@@ -602,6 +602,8 @@ function addLine(idRaw, hintRaw, labelRaw, acceptRaw, roleRaw = null, externalRa
     ? onDisk.lines : BUILTIN_CONFIG.lines.map((l) => ({ ...l }));
   if (externalRaw != null && typeof externalRaw !== "boolean") throw store.err(store.ERR.BAD_INPUT, "external 只接受 true / false");
   const external = externalRaw === true;
+  if (!external && coord.isExecutor(db, id))
+    throw store.err(store.ERR.CONFLICT, `线 ${id} 与已登记的执行者同名;受管执行线的座位名就是线 id,换一个线名或配成外部执行线`);
   lines.push({ id, ...(hint ? { hint } : {}), ...(label ? { label } : {}), ...(accept === "auto" ? { accept } : {}),
                ...(roleDisk ? { role: roleDisk } : {}), ...(external ? { external } : {}) });
   const next = { ...onDisk, lines };
@@ -2291,16 +2293,35 @@ const readBody = (req) => new Promise((resolve, reject) => {
     let body;
     try { body = b ? JSON.parse(b) : {}; }
     catch { return reject(store.err(store.ERR.BAD_INPUT, "请求正文不是有效的 JSON，请检查输入格式。")); }
+    // worker 在入口正规化一次:只接受字符串或数字,统一成字符串;下面的身份检查与 store 的比对、落库看的是同一个值。
+    // 数组、布尔、null 经 String() 会变成合法的名字(["a"] → "a"、true → "true"),检查按原值、落库按 String() 就能冒名。
+    if (body && typeof body === "object" && !Array.isArray(body) && body.worker !== undefined) {
+      if (typeof body.worker !== "string" && typeof body.worker !== "number")
+        return reject(store.err(store.ERR.BAD_INPUT, "worker 必须是字符串或数字"));
+      body.worker = String(body.worker);
+    }
     // Covers claim, report, heartbeat and derived-card writes, before state changes.
     if (req.boardRole === "worker" && body?.worker !== undefined &&
-        (req.workerSeat ? body.worker !== req.workerSeat.worker : workers.get(String(body.worker))?.workerToken))
+        (req.workerSeat ? body.worker !== req.workerSeat.worker : workers.get(body.worker)?.workerToken))
       return reject(store.err(store.ERR.CONFLICT, "worker identity does not match its credential"));
+    // 已登记的执行者 id 只属于它自己的 exe_ 令牌:共享 worker 令牌不能把 worker 写成它。
+    // 没写 worker 时也按 store 会用的名字查(String(undefined) = "undefined"),不留「没写就不查」的口子。
+    if (req.boardRole === "worker" && !req.workerSeat && coord.isExecutor(db, String(body?.worker)))
+      return reject(store.err(store.ERR.CONFLICT, "worker identity belongs to a registered executor"));
     // 执行者只能以自己的 id 领卡、续租、交付;不给 worker 时按令牌补上。
     if (req.boardRole === "executor" && body && typeof body === "object" && !Array.isArray(body)) {
       if (body.worker !== undefined && body.worker !== req.executor.id)
         return reject(store.err(store.ERR.CONFLICT, "执行者身份与令牌不一致"));
+      // 与 worker 分支对称:id 与受管座位同名的(修复前登记的)执行者不能以座位名义领卡、续租、交付。
+      if (isManagedSeatName(req.executor.id))
+        return reject(store.err(store.ERR.CONFLICT, "执行者 id 与受管执行线的座位同名,不能以它领卡、续租或交付;请操作员用别的 id 重新登记"));
       body.worker = req.executor.id;
-      if (body.lease_minutes !== undefined) body.lease_minutes = coord.executorLease(body.lease_minutes);
+      // 正数按执行者上限截断;不是正数的当作没给(领卡用默认值,心跳只往后续)。在这里换成默认的 30 分钟的话,
+      // 下游分不出「明确给了 30」和「没给」,心跳会把长租约缩短。
+      if (body.lease_minutes !== undefined) {
+        const n = Number(body.lease_minutes);
+        body.lease_minutes = Number.isFinite(n) && n > 0 ? coord.executorLease(n) : undefined;
+      }
     }
     resolve(body);
   });
@@ -2442,9 +2463,11 @@ const isPanelCredential = (tok) => {
 /** An anonymous caller's body: small JSON, or null. Excess is read and dropped, so the
  *  socket stays usable for the refusal. */
 const readSmallJson = (req, max = 1024) => new Promise((resolve) => {
-  let b = "", over = false;
-  req.on("data", (c) => { if (!over) { b += c; over = b.length > max; } });
-  req.on("end", () => { if (over) return resolve(null); try { resolve(b ? JSON.parse(b) : {}); } catch { resolve(null); } });
+  // 分片按字节收齐后整体解码:逐片解码会把跨分片的多字节字符改成 U+FFFD(JSON 照样能解析)。上限也按字节算。
+  const chunks = []; let size = 0, over = false;
+  req.on("data", (c) => { if (!over) { size += c.length; over = size > max; if (!over) chunks.push(c); } });
+  req.on("end", () => { if (over) return resolve(null); const b = Buffer.concat(chunks).toString("utf8");
+                        try { resolve(b ? JSON.parse(b) : {}); } catch { resolve(null); } });
   req.on("error", () => resolve(null));
 });
 
@@ -2611,6 +2634,10 @@ const asExecutor = (req, res) => {
   json(res, 403, { error: "此操作需要执行者令牌", role: req.boardRole });
   return null;
 };
+// 受管(非外部)执行线第 1 个座位的 worker 名就是线 id,角色座席同理:执行者 id 与它们同名,执行者令牌就等同那个座位的凭据。
+function isManagedSeatName(id) {
+  return (LINES.includes(id) && !LINE_EXTERNAL?.[id]) || ROLES.includes(id) || workers.has(id);
+}
 const asOperator = (req, res) => {
   if (req.boardRole === "operator") return true;
   json(res, 403, { error: "此操作只属于操作员令牌", role: req.boardRole });
@@ -2619,7 +2646,8 @@ const asOperator = (req, res) => {
 /** 操作员强制释放锁之后的记账:控制台一行、流水一条。协作接口与批准接口共用。 */
 function noteForceRelease(lock) {
   console.log(`协作锁 ${lock.resource} 被操作员强制释放(持有者 ${lock.holder}):${lock.release_reason}`);
-  coord.appendJournal(db, "operator", { kind: "lock.force_release", body: `强制释放 ${lock.resource}:${lock.release_reason}` });
+  // 理由可以是多行;流水一行一件,所以折成一行再记。
+  coord.appendJournal(db, "operator", { kind: "lock.force_release", body: approvals.oneLine(`强制释放 ${lock.resource}:${lock.release_reason}`, 300) });
 }
 async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();
@@ -2633,9 +2661,23 @@ async function coordRoute(req, res, url, p, m, boardRole) {
   if (m === "POST" && p === "/api/coord/executors") {
     if (!asOperator(req, res)) return;
     const b = await readBody(req);
-    const r = coord.register(db, { id: b.id, name: b.name, kind: b.kind ?? "external", rotate: b.rotate === true });
+    if (isManagedSeatName(String(b.id ?? "").trim()))
+      throw store.err(store.ERR.CONFLICT, `执行者 id ${String(b.id).trim()} 与受管执行线(或角色座席)同名;换一个 id,或把那条线配成外部执行线`);
+    const r = coord.register(db, { id: b.id, name: b.name, kind: b.kind ?? undefined, rotate: b.rotate === true });
     emit("coord.executor", { id: r.executor.id });
     return json(res, r.rotated ? 200 : 201, r);
+  }
+  // 注销:只属于操作员(guardWrite 已把 worker、执行者、审阅令牌挡在 403;批准令牌本机不认,远程入口不开放这条路径)。
+  const mx = p.match(/^\/api\/coord\/executors\/([^/]+)$/);
+  if (mx && m === "DELETE") {
+    if (!asOperator(req, res)) return;
+    let id;
+    try { id = decodeURIComponent(mx[1]); } catch { throw store.err(store.ERR.BAD_INPUT, "执行者 id 的 URL 编码无效"); }
+    // id 与受管座位同名的(修复前登记的)执行者领不了卡:这个名字下进行中的卡是座位的,不挡注销。锁只可能是执行者自己的。
+    const r = coord.unregister(db, id, { cardsBelongToSeat: isManagedSeatName(id) }, now);
+    console.log(`协作:操作员注销执行者 ${r.executor.id}`);
+    emit("coord.executor", { id: r.executor.id, op: "unregister" });
+    return json(res, 200, r);
   }
   if (m === "POST" && p === "/api/coord/heartbeat") {
     const ex = asExecutor(req, res); if (!ex) return;
@@ -2910,37 +2952,60 @@ function taskApprovalEntry(t) {
     const rp = taskRepairPreview(t);
     // 放行确认绑定本人看到的执行配置摘要:配置变了版本段就变,旧 id 批不下去。
     const version = `${t.aggregate_version}.${pv.profile_digest.slice(0, 16)}.${rp.digest ? rp.digest.slice(0, 16) : "0"}`;
+    // 摘要绑定的是工作目录、权限与预算,所以事项要把它们给批准者看(远程入口读不到卡片详情)。
+    // 跑过又被收回放行的卡(租约到期、执行线停下、打回、重开)再次等放行时,带上收回时写进 result 的说明,摘要加标记:
+    // 上一轮的结果未知,再放行可能重复计费或重复副作用,不能和首次放行长得一样。
+    const rerun = Number(t.attempts) > 0 || !!t.result;
+    const held = String(t.result || "").split("—— 当前运行状态 ——").pop();
     return { item: { id: approvals.makeId("release", t.id, version), kind: "release", title,
-                     summary: approvals.oneLine(`${pv.label || pv.execution_profile_id} · ${pv.model} · ${pv.effort}:${t.summary || t.subject}`),
+                     summary: approvals.oneLine((rerun ? "【再次放行】" : "") + (pv.configuration_changed ? "【配置已变化】" : "") +
+                       `${pv.label || pv.execution_profile_id} · ${pv.model} · ${pv.effort}:${t.summary || t.subject}`),
                      detail_ref: ref, created_at: t.created_at, expected_version: version,
                      actions: pv.ready ? [...APPROVE_REJECT] : ["reject"], labels: { approve: "按此配置放行", reject: "暂不放行" },
+                     execution_profile: { id: pv.execution_profile_id, label: pv.label ?? null, channel: pv.channel ?? null, model: pv.model, effort: pv.effort,
+                                          workspace_path: pv.workspace?.path ?? null, tools: pv.tools ?? null, budget: pv.budget ?? null,
+                                          budget_enforcement: pv.budget_enforcement ?? null, configuration_changed: !!pv.configuration_changed },
+                     ...(rerun ? { rerun: true, held_note: approvals.oneLine(held, 300) } : {}),
                      ...(pv.ready ? {} : { blocked: pv.reason }) },
              route: { taskId: t.id, version: t.aggregate_version, profileDigest: pv.profile_digest, repairDigest: rp.digest } };
   }
   return null;
 }
+// 「这棵树待确认」会重复出现(回滚、撤销后重做):版本段带上次确认记录的写入时刻,每确认一次就换一个 id,
+// 旧的决定记录不会把同一棵树的下一次确认滤掉。首次确认(还没有记录)为 0。
+const acceptedStamp = () => { try { return Math.floor(statSync(acceptedFile()).mtimeMs); } catch { return 0; } };
+// 事项要带原确认界面给人看的东西:上次确认的树、git diff --stat 的文件清单(前 14 行)。只有两个短哈希的摘要等于不看 diff 就确认。
+const versionChanges = (pv) => ({ prev: pv.prev, files: pv.files, stat: pv.stat.slice(0, 14), more: Math.max(0, pv.stat.length - 14) });
 /** 版本确认:代码已更新待重启(升级)优先;否则看板版本待确认(bless)。 */
 function versionApprovalEntry(op = null) {
   const up = upgradeState();
   if (up.pending && up.apply) {
     if (op && op !== "upgrade") return null;
     const tree = up.apply.body?.confirm_tree || null;
-    const version = `${up.on_disk}.${tree ? tree.slice(0, 16) : "0"}`;
+    // 待重启的更新只属于这个进程(重启后就不再待更新):版本段带进程启动时刻,回退后再次更新到同一提交也是新的 id。
+    const version = `${up.on_disk}.${tree ? tree.slice(0, 16) : "0"}.${STARTED}`;
     const id = approvals.makeId("version", "upgrade", version);
-    return { item: { id, kind: "version", title: "更新看板代码", summary: `从 ${up.running} 更新到 ${up.on_disk},随后重启看板`,
+    // tree 非空 = 受闸子树的新树还没确认过:批准更新会先把它写进确认记录(acceptForUpgrade)。这一步要写在摘要里,并带上改动清单。
+    const pv = tree ? acceptPreview(tree, readAccepted()) : null;
+    return { item: { id, kind: "version", title: "更新看板代码",
+                     summary: `从 ${up.running} 更新到 ${up.on_disk},随后重启看板` +
+                       (pv ? `;同时确认受闸代码版本 ${tree.slice(0, 12)}` + (pv.files != null ? `(上次确认后改了 ${pv.files} 个文件)` : "(首次确认)") : ""),
                      detail_ref: { type: "setup", api: "/api/setup" }, created_at: seenAt(id), expected_version: version,
-                     actions: [...APPROVE_REJECT], labels: { approve: "更新并重启", reject: "暂不更新" }, in_progress: up.apply.in_progress },
+                     actions: [...APPROVE_REJECT], labels: { approve: "更新并重启", reject: "暂不更新" }, in_progress: up.apply.in_progress,
+                     confirm: up.apply.confirm, lines: up.apply.lines, ...(pv ? { accepts_tree: tree, changes: versionChanges(pv) } : {}) },
              route: { op: "upgrade", tree } };
   }
   if (op && op !== "bless") return null;
   const bl = blessStep();
   if (bl.state !== "todo" || bl.action?.path !== "/api/setup/bless") return null;
   const tree = bl.action.body.confirm_tree, pv = acceptPreview(tree, readAccepted());
-  const id = approvals.makeId("version", "bless", tree);
+  const version = `${tree}.${acceptedStamp()}`;
+  const id = approvals.makeId("version", "bless", version);
   return { item: { id, kind: "version", title: "确认当前版本",
                    summary: `确认版本 ${tree.slice(0, 12)}` + (pv.files != null ? `,上次确认后改了 ${pv.files} 个文件` : ",首次确认"),
-                   detail_ref: { type: "setup", api: "/api/setup" }, created_at: seenAt(id), expected_version: tree,
-                   actions: [...APPROVE_REJECT], labels: { approve: "确认此版本", reject: "暂不确认" } },
+                   detail_ref: { type: "setup", api: "/api/setup" }, created_at: seenAt(id), expected_version: version,
+                   actions: [...APPROVE_REJECT], labels: { approve: "确认此版本", reject: "暂不确认" },
+                   confirm: pv.confirm, changes: versionChanges(pv) },
            route: { op: "bless", tree } };
 }
 /** 逾期的资源锁:问人要不要强制释放。版本段 = 这次持有的预计结束时刻(毫秒)。 */
@@ -2956,8 +3021,9 @@ function lockApprovalEntry(l) {
 }
 function requestApprovalEntry(r) {
   if (!r) return null;
+  // summary 只有 160 字,而 action 最长 300 字:决定是对整段 action 生效的,所以事项另带完整的 action。
   return { item: { id: r.approval_id, kind: "request", title: `${r.executor} 请求批准`, summary: approvals.oneLine(r.action),
-                   risk: r.risk, executor: r.executor, detail_ref: { type: "request", id: r.id, api: `/api/approvals/${r.approval_id}` },
+                   action: approvals.oneLine(r.action, approvals.ACTION_MAX), risk: r.risk, executor: r.executor, detail_ref: { type: "request", id: r.id, api: `/api/approvals/${r.approval_id}` },
                    created_at: r.created_at, expected_version: 1, actions: [...APPROVE_REJECT], labels: { approve: "批准", reject: "拒绝" } },
            route: { requestId: r.id } };
 }
@@ -3026,6 +3092,11 @@ function decideApproval(rawId, body, who) {
   if (!current.actions.includes(d.decision))
     throw approvalConflict(current.blocked || `这一项现在不能${DECISION_VERB[d.decision]}`, { current });
   const r = entry.route, now = Date.now(), approve = d.decision === "approve";
+  // 远程入口的再次放行:这张卡跑过,上次运行中断、结果未知,放行被收回(事项带 rerun)。再放行可能重复计费或重复副作用,
+  // 远程客户端要在正文里明确带 confirm_rerun:true 才放行(客户端应当先把 held_note 给人看)。拒绝不需要;本机面板与命令行不变。
+  if (who.via === "remote" && approve && ref.kind === "release" && current.rerun && body.confirm_rerun !== true)
+    throw approvalConflict(`这张卡跑过,上次运行中断、结果未知,放行已被收回(${current.held_note || "没有留下说明"})。` +
+      "再次放行可能重复计费或重复副作用:远程入口要求决定正文带 confirm_rerun:true", { current, needs_confirm_rerun: true });
   let result = {}, after = null;
   if (ref.kind === "decision" || ref.kind === "delivery") {
     // 与面板、board.py 的 approve/reject 同一条路:note 是给执行者的指示,写了就交回原线(store.legacyDisposition)。
@@ -3036,7 +3107,9 @@ function decideApproval(rawId, body, who) {
     if (approve) releaseTask(r.taskId, { released: true, expected_version: r.version,
       confirm_execution_profile_digest: r.profileDigest, confirm_verification_repair_digest: r.repairDigest });
     const t = store.get(db, r.taskId);
-    result = { task_id: t.id, released: !!t.released, aggregate_version: t.aggregate_version };
+    // 再次放行在决定记录里写明;远程入口确认过的另记 confirm_rerun。
+    result = { task_id: t.id, released: !!t.released, aggregate_version: t.aggregate_version,
+               ...(approve && current.rerun ? { rerun: true, ...(body.confirm_rerun === true ? { confirm_rerun: true } : {}) } : {}) };
   } else if (ref.kind === "version" && approve) {
     if (r.op === "bless") result = acceptTree(r.tree, `approval-${who.via}`);
     else {
@@ -3047,10 +3120,15 @@ function decideApproval(rawId, body, who) {
       after = () => setTimeout(() => { void restartBoard("approval-upgrade"); }, 80);
     }
   } else if (ref.kind === "lock" && approve) {
-    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: d.note || "经批准接口强制释放" }, now, COORD_GRACE_MS);
+    // note 的上限是 500 字,锁理由是 200 字:理由取 note 折成一行后的前 200 字,全文留在决定记录的 note 里。
+    // 没写 note 时不拿一句固定的话冒充理由:写明「未写理由」和是谁、经哪条通道决定的。
+    const why = approvals.oneLine(d.note, coord.REASON_MAX) || `经批准接口强制释放(未写理由;${who.actor} 经 ${who.via})`;
+    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: why }, now, COORD_GRACE_MS);
     noteForceRelease(rr.lock);
     emit("coord.lock", { resource: rr.lock.resource, holder: rr.lock.holder, op: "force_release" });
     result = { resource: rr.lock.resource, released_at: rr.lock.released_at };
+  } else if (ref.kind === "request") {
+    result = { action: current.action };   // 决定记录里留下被批准 / 拒绝的原文,事后能对账
   }
   const src = d.source.client + (d.source.device ? "/" + d.source.device : "");
   const text = approvals.oneLine(`${DECISION_VERB[d.decision]} ${rawId}。操作者 ${who.actor},来源 ${src},经 ${who.via}` +
@@ -3070,6 +3148,7 @@ function decideApproval(rawId, body, who) {
 const decisionErrorBody = (e) => ({ error: String(e?.message || e),
   ...(e?.current !== undefined ? { current: e.current } : {}), ...(e?.decision ? { decision: e.decision } : {}),
   ...(e?.needs_force ? { needs_force: true, in_progress: e.in_progress } : {}),
+  ...(e?.needs_confirm_rerun ? { needs_confirm_rerun: true } : {}),
   ...(Number.isSafeInteger(e?.current_version) ? { expected_version: e.expected_version, current_version: e.current_version } : {}) });
 function sendDecision(res, id, body, who) {
   let out;
@@ -3128,11 +3207,11 @@ async function approvalTokensRoute(req, res, url, p, m) {
 }
 
 // ── 远程入口(可选,默认关闭)。另起监听,只接受 allow_ips 里的来源和批准令牌,只开放批准接口与只读摘要。
-//    没有 TLS:只在 VPN 或可信局域网里用。浏览器请求一律拒绝;每次调用都写 remote_audit。
+//    没有 TLS:只在 VPN 或可信局域网里用。浏览器请求一律拒绝;已认证的调用写 remote_audit(决定一次一行,成功的只读查询按令牌按窗口聚合),未认证的拒绝聚合后写。
 const remoteServers = [];
 const remoteState = { listening: [], errors: [] };
 const REMOTE_FAIL_WINDOW_MS = 10 * 60000, REMOTE_FAIL_MAX = 10;
-const remoteFails = new Map();   // ip -> { n, first }:认证失败计数,按来源地址限流
+const remoteFails = new Map();   // ip -> { n, first }:无效令牌的失败计数,按来源地址限流(只拦无效令牌)
 const remoteThrottled = (ip) => {
   const f = remoteFails.get(ip);
   if (f && Date.now() - f.first > REMOTE_FAIL_WINDOW_MS) { remoteFails.delete(ip); return false; }
@@ -3143,6 +3222,61 @@ const remoteFail = (ip) => {
   if (!f || Date.now() - f.first > REMOTE_FAIL_WINDOW_MS) { if (remoteFails.size > 1000) remoteFails.clear(); remoteFails.set(ip, { n: 1, first: Date.now() }); }
   else f.n++;
 };
+// 没通过认证就被拒的请求(路径无效、来源不在白名单、浏览器、限流、无效令牌)不逐条落库:remote_audit 只追加、删不掉,
+// 不能让未认证的来源决定它长多快。每个(来源,原因)每个窗口只写第一条,其余在内存里计数,窗口结束补一行「原因 +N」;
+// 全部来源合计每个窗口最多 REMOTE_DENY_ROWS_MAX 个(来源,原因),超出的并成一行来源为 * 的「denied +N」。
+const REMOTE_DENY_WINDOW_MS = Number(process.env.BOARD_REMOTE_AUDIT_WINDOW_MS) > 0 ? Number(process.env.BOARD_REMOTE_AUDIT_WINDOW_MS) : 60000;
+const REMOTE_DENY_ROWS_MAX = 20;
+const remoteDenied = new Map();   // "来源 原因" -> { rec, first, more }
+const remoteDenyWindow = { start: 0, rows: 0, dropped: 0 };
+function flushRemoteDenied(now = Date.now(), all = false) {
+  for (const [k, e] of remoteDenied) {
+    if (!all && now - e.first < REMOTE_DENY_WINDOW_MS) continue;
+    remoteDenied.delete(k);
+    if (e.more) approvals.audit(db, { ...e.rec, note: `${e.rec.note} +${e.more}` }, now);
+  }
+  if (all || now - remoteDenyWindow.start >= REMOTE_DENY_WINDOW_MS) {
+    if (remoteDenyWindow.dropped) approvals.audit(db, { ip: "*", method: "*", path: "", status: 0, note: `denied +${remoteDenyWindow.dropped}` }, now);
+    Object.assign(remoteDenyWindow, { start: now, rows: 0, dropped: 0 });
+  }
+}
+function auditRemoteDenied(rec, now = Date.now()) {
+  flushRemoteDenied(now);
+  const k = `${rec.ip} ${rec.note}`, e = remoteDenied.get(k);
+  if (e) { e.more++; return; }
+  if (remoteDenyWindow.rows >= REMOTE_DENY_ROWS_MAX) { remoteDenyWindow.dropped++; return; }
+  remoteDenyWindow.rows++;
+  remoteDenied.set(k, { rec, first: now, more: 0 });
+  approvals.audit(db, rec, now);
+}
+// 已认证的只读查询(客户端每几秒查一次列表或摘要):一次一行的话,一枚令牌一天就是上万行删不掉的记录。
+// 成功的 GET 按路径类别分三类:列表、只读摘要、单项查询(不分是哪一项)。每个(令牌,来源,类别)每个窗口只写第一条,
+// 其余在内存里计数,窗口结束补一行「poll +N」,路径写类别(窗口长度与上面相同)。
+// 不成功的调用(越权路径、查不到的单项)和每一次决定(写)仍一次一行。
+const remotePollKind = (p) => p === "/api/approvals" || p === "/api/summary" ? p : "/api/approvals/:id";
+const remotePolls = new Map();   // "令牌编号 来源 类别" -> { rec, kind, first, more }
+function flushRemotePolls(now = Date.now(), all = false) {
+  for (const [k, e] of remotePolls) {
+    if (!all && now - e.first < REMOTE_DENY_WINDOW_MS) continue;
+    remotePolls.delete(k);
+    if (e.more) approvals.audit(db, { ...e.rec, path: e.kind, note: `poll +${e.more}` }, now);
+  }
+}
+function auditRemotePoll(rec, now = Date.now()) {
+  flushRemotePolls(now);
+  const kind = remotePollKind(rec.path), k = `${rec.tokenId} ${rec.ip} ${kind}`, e = remotePolls.get(k);
+  if (e) { e.more++; return; }
+  remotePolls.set(k, { rec, kind, first: now, more: 0 });
+  approvals.audit(db, rec, now);
+}
+/** 把还只在内存里的计数全部落成汇总行。停止与重启在退出前调用:不然当前窗口里「+N」的次数跟着进程一起没了。
+ *  进程被强杀(任务管理器、kill -9)时走不到这里,当前窗口的计数会丢,首条仍在库里。 */
+function flushRemoteAudit() {
+  for (const flush of [flushRemoteDenied, flushRemotePolls]) {
+    try { flush(Date.now(), true); }
+    catch (e) { console.error(`远程入口审计写入失败:${e.message}`); }
+  }
+}
 const remoteStatus = () => REMOTE.enabled
   ? { enabled: true, listen: REMOTE.listen.map(approvals.formatListen), allow_ips: REMOTE.allow_ips,
       listening: [...remoteState.listening], errors: [...remoteState.errors] }
@@ -3158,8 +3292,9 @@ async function remoteHandler(req, res) {
   let p = "", status = 0, tokenId = null, note = "";
   const send = (code, body, headers = {}) => {
     status = code;
+    // 没通过认证的来源不留长连接,免得空闲连接占满 maxConnections。
     res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store",
-                          "X-Content-Type-Options": "nosniff", ...headers });
+                          "X-Content-Type-Options": "nosniff", ...(tokenId == null ? { Connection: "close" } : {}), ...headers });
     res.end(JSON.stringify(body));
   };
   try {
@@ -3170,10 +3305,12 @@ async function remoteHandler(req, res) {
     if (req.headers.origin !== undefined || req.headers["sec-fetch-site"] !== undefined || req.headers["sec-fetch-mode"] !== undefined) {
       note = "browser"; return send(403, { error: "远程入口不接受浏览器发起的请求" });
     }
-    if (remoteThrottled(ip)) { note = "throttled"; return send(429, { error: "认证失败次数过多,稍后再试" }, { "Retry-After": "600" }); }
+    // 先认令牌:有效令牌不受同一来源的失败计数影响,否则同地址的任何一方发几个坏请求就能把持有者锁在门外。
+    // 失败计数只拦后续的无效令牌;不带令牌的请求不可能是在猜令牌,不计数。
     const bearer = /^Bearer ([A-Za-z0-9_]{1,128})$/.exec(String(req.headers.authorization || ""));
     const tok = bearer ? approvals.tokenByValue(db, bearer[1]) : null;
-    if (!tok) { remoteFail(ip); note = "auth"; return send(401, { error: "缺少或无效的批准令牌" }); }
+    if (!tok && bearer && remoteThrottled(ip)) { note = "throttled"; return send(429, { error: "认证失败次数过多,稍后再试" }, { "Retry-After": "600" }); }
+    if (!tok) { if (bearer) remoteFail(ip); note = "auth"; return send(401, { error: "缺少或无效的批准令牌" }); }
     tokenId = tok.id;
     if (m === "GET" && p === "/api/approvals") return send(200, approvalList());
     if (m === "GET" && p === "/api/summary") return send(200, remoteSummary());
@@ -3197,9 +3334,36 @@ async function remoteHandler(req, res) {
     note = note || "error";
     if (!res.headersSent) send(statusFor(e, "remote"), { error: String(e?.message || e) });
   } finally {
-    try { approvals.audit(db, { ip, method: m, path: p, status, tokenId, note }); }
+    try {
+      if (tokenId == null) auditRemoteDenied({ ip, method: m, path: p, status, note });
+      else if (m === "GET" && status === 200) auditRemotePoll({ ip, method: m, path: p, status, tokenId, note });
+      else approvals.audit(db, { ip, method: m, path: p, status, tokenId, note });
+    }
     catch (e) { console.error(`远程入口审计写入失败:${e.message}`); }
   }
+}
+// 连接按来源分池,在 connection 事件上就分(这时还没读任何数据):只有一个不分来源的总名额时,白名单外的主机
+// 不用令牌、开满空闲连接就能把持有有效令牌的人挡在门外。
+//   白名单外的来源合用一个小池;池里的连接最多留 REMOTE_OUTSIDE_LIFE_MS(够读完请求头、回一个 403),池满时新连接直接断开。
+//   白名单内每个来源各有上限,一个来源占满自己的名额不影响别的来源。全部监听合计。
+const REMOTE_OUTSIDE_POOL = 32, REMOTE_OUTSIDE_LIFE_MS = 2000, REMOTE_PER_SOURCE = 16;
+const remoteConns = { outside: 0, bySource: new Map() };
+function admitRemoteConnection(sock) {
+  const ip = approvals.normalizeIp(sock.remoteAddress);
+  if (!REMOTE.allows(ip)) {
+    if (remoteConns.outside >= REMOTE_OUTSIDE_POOL) return sock.destroy();
+    remoteConns.outside++;
+    const timer = setTimeout(() => sock.destroy(), REMOTE_OUTSIDE_LIFE_MS);
+    sock.once("close", () => { clearTimeout(timer); remoteConns.outside--; });
+    return;
+  }
+  const n = remoteConns.bySource.get(ip) || 0;
+  if (n >= REMOTE_PER_SOURCE) return sock.destroy();
+  remoteConns.bySource.set(ip, n + 1);
+  sock.once("close", () => {
+    const left = (remoteConns.bySource.get(ip) || 1) - 1;
+    if (left > 0) remoteConns.bySource.set(ip, left); else remoteConns.bySource.delete(ip);
+  });
 }
 function startRemote() {
   if (!REMOTE.enabled) return;
@@ -3207,6 +3371,8 @@ function startRemote() {
     const where = approvals.formatListen(l);
     const srv = http.createServer(remoteHandler);
     srv.requestTimeout = 15000; srv.headersTimeout = 10000; srv.keepAliveTimeout = 5000; srv.maxHeadersCount = 50;
+    srv.maxConnections = 256;   // 总上限照旧;白名单外最多占其中 REMOTE_OUTSIDE_POOL 个
+    srv.on("connection", admitRemoteConnection);
     srv.on("error", (e) => {
       remoteState.errors.push(`${where} ${e.code || e.message}`);
       console.error(`⚠ 远程批准入口 ${where} 监听失败:${e.message}`);
@@ -3217,11 +3383,14 @@ function startRemote() {
     });
     remoteServers.push(srv);
   }
+  // 没有新请求时也要把上一个窗口的计数补成汇总行。
+  setInterval(() => { try { flushRemoteDenied(); flushRemotePolls(); } catch (e) { console.error(`远程入口审计写入失败:${e.message}`); } }, REMOTE_DENY_WINDOW_MS).unref();
 }
+// 先关监听、断开连接,再落汇总:顺序反过来的话,落完之后进来的请求又只留在内存里。
 const closeRemote = () => Promise.all(remoteServers.map((s) => new Promise((r) => {
   if (!s.listening) return r();
   s.close(() => r()); s.closeAllConnections?.();
-})));
+}))).then(flushRemoteAudit);
 
 // ── 对话式首页:对话、协调线一轮、按计划建卡(接口与安全边界见 docs/对话式首页.md)。
 //    只认面板会话或操作员令牌;执行者令牌、批准令牌、远程入口都进不来。
@@ -4075,7 +4244,16 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { task: taskOut(r.task) });
       }
       if (action === "heartbeat") {
-        const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: b.lease_minutes });
+        // 没给 lease_minutes(或给的不是正数)的心跳只往后续:取默认租约与这张卡现有剩余时间里较长的。store 在没给时
+        // 按默认 30 分钟改写,会把更长的租约缩短,到点被回收(与 coord.heartbeat 同一条规则)。明确给了正数就按给的值:
+        // worker 循环每次都带,行为不变。持有者与 run 的核对仍在 store.heartbeat 里。
+        let lease = b.lease_minutes;
+        if (!(Number.isFinite(Number(lease)) && Number(lease) > 0)) {
+          const left = (Number(db.prepare("SELECT lease_until FROM tasks WHERE id=?").get(id)?.lease_until) - Date.now()) / 60000;
+          lease = Math.max(store.DEFAULT_LEASE_MIN, Number.isFinite(left) ? left : 0);
+          if (boardRole === "executor") lease = Math.min(lease, coord.EXECUTOR_MAX_LEASE_MIN);
+        }
+        const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: lease });
         if (boardRole === "executor") coord.touch(db, req.executor.id);
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side
       }
@@ -4381,6 +4559,7 @@ async function stopWithBoard(trigger) {
       try { await workerStop(l, { keepIntent: true, reason: STOP_REASON.WITH_BOARD }); } catch {}
     }
   }
+  flushRemoteAudit();   // 远程入口当前窗口的拒绝计数,退出前落库(restartBoard 走 closeRemote)
   // Orderly from here on: the wrapper reads this marker, not the exit code (core/board-run.mjs).
   try { noteCleanExit(store.DATA_DIR, { kind: "stop" }); } catch {}
   process.exit(0);

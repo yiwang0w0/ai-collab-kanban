@@ -13,8 +13,16 @@ import { createServer, connect } from "node:net";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
+import { createRequire } from "node:module";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
+// 不起服务、直接测 approvals.js 的用例用内存库。
+const approvals = createRequire(import.meta.url)("../core/approvals.js");
+const memdb = () => { const db = new DatabaseSync(":memory:"); approvals.migrate(db); return db; };
+// 控制字符与双向控制符一律用码点拼出来,源码里不出现这些字符本身。
+const cp = (...n) => String.fromCodePoint(...n);
+const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+const hasUnsafe = (text) => [...String(text)].some((ch) => isUnsafeCp(ch.codePointAt(0)));
 const freePort = async (host = "127.0.0.1") => {
   const l = createServer(); await new Promise((r) => l.listen(0, host, r));
   const port = l.address().port; await new Promise((r) => l.close(r)); return port;
@@ -33,7 +41,7 @@ async function board({ config = {}, files = {}, env = {}, expectExit = false } =
            BOARD_RESTART_MODE: "exit", BOARD_DELIVERABLE_GATE: "off", ...env } });
   let logs = ""; const add = (v) => { logs = (logs + String(v)).slice(-20000); };
   child.stdout.on("data", add); child.stderr.on("data", add);
-  let exitCode = null; const closed = new Promise((r) => child.once("close", (c) => { exitCode = c; r(); }));
+  let exitCode = null; const closed = new Promise((r) => child.once("close", (c) => { exitCode = c; r(c); }));
   const base = `http://127.0.0.1:${port}`;
   const cleanup = () => { try { rmSync(dir, { recursive: true, force: true }); } catch {} };
   if (expectExit) { await Promise.race([closed, delay(15000)]); cleanup(); return { exitCode, logs }; }
@@ -73,7 +81,7 @@ async function board({ config = {}, files = {}, env = {}, expectExit = false } =
     return { code: r.status, out: (r.stdout || "") + (r.stderr || "") };
   };
   const stop = async () => { child.kill(); await closed; cleanup(); };
-  return { dir, base, port, api, operator, register, card, deliver, list, decide, journal, cli, stop, logs: () => logs };
+  return { dir, base, port, api, operator, register, card, deliver, list, decide, journal, cli, stop, closed, logs: () => logs };
 }
 
 const PROFILE = { config: { gated_subtree: ".", execution_profiles: [{ id: "claude-api", enabled: true, budget: { timeout_sec: 120, max_turns: 4, max_cost_usd: 0.5 } }] },
@@ -148,7 +156,7 @@ test("待批准事项:六类都列出来,决定路由回原有逻辑,版本冲�
     // 版本确认 → 原有 bless(写 accepted_rev)
     const bl = await B.decide(by.version.id, { decision: "approve", source: src("panel"), expected_version: by.version.expected_version });
     assert.equal(bl.status, 200, JSON.stringify(bl.body));
-    assert.equal(readFileSync(join(B.dir, "accepted_rev"), "utf8").trim(), by.version.expected_version);
+    assert.equal(readFileSync(join(B.dir, "accepted_rev"), "utf8").trim(), String(by.version.expected_version).split(".")[0]);
     assert.deepEqual(await B.list(), [], "全部决定后列表为空");
     // 决定记录只追加
     const db = new DatabaseSync(join(B.dir, "board.db"));
@@ -234,7 +242,8 @@ test("远程入口:关闭时不监听;打开后只认白名单来源与批准令
     assert.equal((await raw(rport, { token: tok })).status, 401, "吊销后失效");
     const adb = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
     const rows = adb.prepare("SELECT * FROM remote_audit ORDER BY id").all(); adb.close();
-    assert.ok(rows.length >= 18, `每次调用都审计:${rows.length}`);
+    assert.equal(rows.filter((r) => r.token_id === made.body.record.id).length, 12, `已认证的调用每次一行:${rows.length}`);
+    assert.equal(rows.filter((r) => r.token_id == null && r.note === "auth").length, 1, "未认证的拒绝按来源与原因聚合");
     assert.ok(rows.some((r) => r.status === 403 && r.note === "ip" && r.ip === "127.0.0.3"));
     assert.ok(rows.some((r) => r.status === 403 && r.note === "browser"));
     assert.ok(rows.some((r) => r.status === 403 && r.note === "path" && r.path === "/api/tasks"));
@@ -285,6 +294,15 @@ test("流水记下来源与操作者;board.py approvals / approval-token;面板�
     assert.match(B.cli("approval-token", "ls").out, /#1\s+phone\s+已吊销/);
     assert.notEqual(B.cli("approval-token", "revoke", "1").code, 0, "已吊销的再吊销 409");
 
+    // 修复前已经入库、带终端转义的请求:列表接口与命令行输出里都不再有控制字符
+    const ldb = new DatabaseSync(join(B.dir, "board.db")); ldb.exec("PRAGMA busy_timeout=5000");
+    ldb.prepare("INSERT INTO approval_requests (executor, action, risk, created_at) VALUES (?,?,?,?)")
+      .run("agent-c", "旧数据" + cp(0x1b) + "[1A" + cp(0x1b) + "[2K", "low", new Date().toISOString());
+    ldb.close();
+    assert.ok(!hasUnsafe(JSON.stringify((await B.list()).map((a) => [a.title, a.summary]))), "列表里的标题与摘要不带控制字符");
+    c = B.cli("approvals", "ls");
+    assert.ok(c.out.includes("旧数据") && !hasUnsafe(c.out.replace(/[\r\n]/g, "")), `命令行输出不带控制字符:${JSON.stringify(c.out)}`);
+
     // 面板:待你批准的按钮走同一个决定接口,来源记为 panel;渲染只用事项自带的字段
     const html = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
     assert.ok(html.includes('await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`,'));
@@ -300,5 +318,513 @@ test("流水记下来源与操作者;board.py approvals / approval-token;面板�
       created_at: new Date().toISOString(), expected_version: 1, actions: ["approve", "reject"], labels: { approve: "批准", reject: "拒绝" } }] });
     assert.match(out, /待你批准 1[^]*执行者请求 · 高风险[^]*data-apv="request:9:1" data-apv-decision="approve" data-apv-version="1">批准/);
     assert.ok(!out.includes("<x>"), "标题转义");
+  } finally { await B.stop(); }
+});
+
+const remoteBoard = async (extra = {}) => {
+  const rport = await freePort("127.0.0.2");
+  const B = await board({ ...extra, config: { ...extra.config, remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32"] } } });
+  for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
+  const audit = () => { const db = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
+    try { return db.prepare("SELECT * FROM remote_audit ORDER BY id").all(); } finally { db.close(); } };
+  return { B, rport, audit };
+};
+
+test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,按来源与原因聚合,按窗口限速", { timeout: 120000 }, async () => {
+  const WINDOW = 3000;
+  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: String(WINDOW) } });
+  try {
+    // 首条记 1 次,汇总行「原因 +N」记 N 次:加起来就是请求次数。请求跨不跨窗口,这个数都守恒。
+    const counted = (list) => list.reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
+    const anonOf = (list) => list.filter((r) => r.token_id == null);
+    // 一段时间最多碰到几个窗口(窗口不与测试对齐,两头各算一个)
+    const t0 = Date.now(), windowsSince = (t) => Math.floor((Date.now() - t) / WINDOW) + 2;
+    for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/x" + "a".repeat(150), local: "127.0.0.3" })).status, 403);
+    // 已认证的列表查询另行按令牌聚合(见下面的轮询用例),不算在未认证的次数里
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body;
+    for (let i = 0; i < 3; i++) assert.equal((await raw(rport, { token: tok.token })).status, 200);
+    for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/y" + i })).status, 401);
+    let rows = audit();
+    // 每个窗口里每个(来源,原因)最多两行:首条和汇总
+    const out3 = rows.filter((r) => r.ip === "127.0.0.3").length, anon2 = rows.filter((r) => r.ip === "127.0.0.2" && r.token_id == null).length;
+    assert.ok(out3 <= 2 * windowsSince(t0), `白名单外来源 30 次请求不应各写一行:${out3}`);
+    assert.ok(anon2 <= 2 * windowsSince(t0), `无令牌 30 次请求不应各写一行:${anon2}`);
+    // 很多不同来源:每个窗口合计也有上限
+    const t1 = Date.now();
+    for (let i = 4; i < 94; i++) assert.equal((await raw(rport, { path: "/z", local: `127.0.0.${i}` })).status, 403);
+    const burstWindows = windowsSince(t1);
+    // 窗口结束后补汇总行:次数一次不丢
+    for (let i = 0; i < 80 && counted(anonOf(rows = audit())) < 150; i++) await delay(250);
+    const dump = JSON.stringify(rows.map((r) => [r.ip, r.note]));
+    assert.equal(counted(anonOf(rows)), 150, `汇总后次数应等于请求数:${dump}`);
+    assert.equal(counted(rows.filter((r) => r.ip === "127.0.0.3")), 30, `同一来源同一原因的次数守恒,不论这 30 次落在几个窗口里:${dump}`);
+    assert.equal(counted(rows.filter((r) => r.ip === "127.0.0.2" && r.token_id == null)), 30, `无令牌请求的次数守恒:${dump}`);
+    // 90 个来源落在 burstWindows 个窗口里;每个窗口只给 20 组(来源,原因)各写首条,所以窗口数不超过 4 时必有并掉的
+    if (90 > 20 * burstWindows) assert.ok(rows.some((r) => r.ip === "*" && /^denied \+\d+$/.test(r.note)), `来源很多时超出上限的并成一行:${dump}`);
+    // 行数按窗口有界:每个窗口最多 20 条首行、20 条汇总、1 条并掉的
+    const windows = windowsSince(t0);
+    assert.ok(anonOf(rows).length <= 41 * windows, `未认证请求的审计行数按窗口有界(${windows} 个窗口):${anonOf(rows).length}`);
+    assert.ok(anonOf(rows).length < 150, "行数少于请求数");
+    for (let i = 0; i < 40 && counted(rows.filter((r) => r.token_id === tok.record.id)) < 3; i++) { await delay(250); rows = audit(); }
+    assert.equal(counted(rows.filter((r) => r.token_id === tok.record.id && r.status === 200)), 3, "已认证的列表查询次数守恒");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:已认证的远程列表轮询按令牌按窗口聚合审计;被拒的调用与决定仍一次一行", { timeout: 120000 }, async () => {
+  const WINDOW = 3000;
+  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: String(WINDOW) } });
+  try {
+    const ex = await B.register("agent-p");
+    const t1 = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body, id1 = t1.record.id;
+    const t2 = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "tablet" })).body, id2 = t2.record.id;
+    const rq = (await B.api("POST", "/api/approvals/request", ex, { action: "改共享端口", risk: "medium" })).body.request;
+    const one = `/api/approvals/${encodeURIComponent(rq.approval_id)}`;
+    const counted = (list) => list.reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
+    const polls = (list, id) => list.filter((r) => r.token_id === id && r.method === "GET" && r.path === "/api/approvals");
+    const t0 = Date.now(), windowsSince = (t) => Math.floor((Date.now() - t) / WINDOW) + 2;
+    // 客户端轮询待批准列表:40 次
+    for (let i = 0; i < 40; i++) assert.equal((await raw(rport, { token: t1.token })).status, 200);
+    for (let i = 0; i < 5; i++) assert.equal((await raw(rport, { token: t2.token })).status, 200);
+    let rows = audit();
+    assert.ok(polls(rows, id1).length <= 2 * windowsSince(t0), `40 次列表轮询不应各写一行:${polls(rows, id1).length} 行`);
+    // 不成功的调用和写操作照旧一次一行:越权路径、每一次决定
+    for (let i = 0; i < 2; i++) assert.equal((await raw(rport, { token: t1.token, path: "/api/tasks" })).status, 403);
+    const decide = (expected_version) => raw(rport, { token: t1.token, method: "POST", path: one + "/decide", body: { decision: "approve", source: { client: "phone-app" }, expected_version } });
+    assert.deepEqual([(await decide(2)).status, (await decide(1)).status, (await decide(1)).status], [409, 200, 409]);
+    // 窗口结束后补一行「poll +N」:次数不丢,每个令牌各算各的
+    for (let i = 0; i < 80 && counted(polls(rows = audit(), id1)) + counted(polls(rows, id2)) < 45; i++) await delay(250);
+    const dump = JSON.stringify(rows.filter((r) => r.token_id != null).map((r) => [r.token_id, r.method, r.path, r.status, r.note]));
+    assert.equal(counted(polls(rows, id1)), 40, `第一枚令牌的轮询次数守恒:${dump}`);
+    assert.equal(counted(polls(rows, id2)), 5, `第二枚令牌的轮询次数守恒:${dump}`);
+    assert.ok(polls(rows, id1).length <= 2 * windowsSince(t0) && polls(rows, id1).length < 40, `每个窗口每枚令牌最多两行(首条与汇总):${dump}`);
+    assert.ok(polls(rows, id1).some((r) => /^poll \+\d+$/.test(r.note)), `汇总行记次数:${dump}`);
+    assert.ok(polls(rows, id1).every((r) => r.status === 200 && r.ip === "127.0.0.2"), "汇总行带令牌编号、来源与状态");
+    const mine = rows.filter((r) => r.token_id === id1);
+    assert.equal(mine.filter((r) => r.path === "/api/tasks" && r.status === 403).length, 2, "越权路径一次一行");
+    assert.deepEqual(mine.filter((r) => r.method === "POST").map((r) => r.status), [409, 200, 409], "每一次决定一行");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:远程入口成功的只读查询(列表、只读摘要、单项)按令牌、来源、路径类别各自聚合;查不到的与决定仍一次一行", { timeout: 120000 }, async () => {
+  const WINDOW = 3000;
+  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: String(WINDOW) } });
+  try {
+    const ex = await B.register("agent-q");
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body, id = tok.record.id;
+    const ask = async (action) => `/api/approvals/${encodeURIComponent((await B.api("POST", "/api/approvals/request", ex, { action, risk: "low" })).body.request.approval_id)}`;
+    const one1 = await ask("清理构建缓存"), one2 = await ask("改共享端口"), none = "/api/approvals/request%3A999%3A1";
+    const counted = (list) => list.reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
+    const get = async (path, want = 200) => assert.equal((await raw(rport, { token: tok.token, path })).status, want, path);
+    const t0 = Date.now(), windowsSince = (t) => Math.floor((Date.now() - t) / WINDOW) + 2;
+    for (let i = 0; i < 12; i++) await get("/api/summary");
+    for (let i = 0; i < 6; i++) { await get(one1); await get(one2); }
+    for (let i = 0; i < 4; i++) await get("/api/approvals");
+    for (let i = 0; i < 2; i++) await get(none, 404);
+    const dec = await raw(rport, { token: tok.token, method: "POST", path: one1 + "/decide", body: { decision: "reject", source: { client: "phone-app" }, expected_version: 1 } });
+    assert.equal(dec.status, 200, JSON.stringify(dec.body));
+    // 三类只读查询各算各的:只读摘要、单项查询(不分是哪一项)、列表
+    const ok = (rows) => rows.filter((r) => r.token_id === id && r.method === "GET" && r.status === 200);
+    const kinds = (rows) => ({ summary: ok(rows).filter((r) => r.path === "/api/summary"), list: ok(rows).filter((r) => r.path === "/api/approvals"),
+                               item: ok(rows).filter((r) => [one1, one2, "/api/approvals/:id"].includes(r.path)) });
+    const total = (rows) => { const k = kinds(rows); return [counted(k.summary), counted(k.item), counted(k.list)]; };
+    let rows = audit();
+    for (let i = 0; i < 80 && total(rows).join() !== "12,12,4"; i++) { await delay(250); rows = audit(); }
+    const dump = JSON.stringify(rows.filter((r) => r.token_id === id).map((r) => [r.method, r.path, r.status, r.note]));
+    assert.deepEqual(total(rows), [12, 12, 4], `三类只读查询的次数各自守恒:${dump}`);
+    const k = kinds(rows), windows = windowsSince(t0);
+    assert.ok(k.summary.length <= 2 * windows && k.summary.length < 12, `12 次只读摘要不应各写一行:${dump}`);
+    assert.ok(k.item.length <= 2 * windows && k.item.length < 12, `12 次单项查询不应各写一行:${dump}`);
+    assert.equal(k.item[0].path, one1, "单项查询的首条记下查的是哪一项");
+    const sums = k.item.filter((r) => /^poll \+\d+$/.test(r.note));
+    assert.ok(sums.length >= 1 && sums.every((r) => r.path === "/api/approvals/:id"), `单项查询的汇总行不冒充某一项的路径:${dump}`);
+    assert.ok(k.summary.some((r) => /^poll \+\d+$/.test(r.note)) && k.list.length <= 2 * windows, dump);
+    assert.equal(ok(rows).length, k.summary.length + k.item.length + k.list.length, `成功的只读查询只有这三类:${dump}`);
+    // 查不到的单项(404)与决定(写)仍一次一行
+    const mine = rows.filter((r) => r.token_id === id);
+    assert.equal(mine.filter((r) => r.path === none && r.status === 404).length, 2, `查不到的单项一次一行:${dump}`);
+    assert.deepEqual(mine.filter((r) => r.method === "POST").map((r) => [r.path, r.status]), [[one1 + "/decide", 200]], "决定一次一行");
+  } finally { await B.stop(); }
+});
+
+/** 等看板进程自己退出,再读它留下的审计行。 */
+const anonAfterExit = async (B, audit, ip) => { await Promise.race([B.closed, delay(20000, null, { ref: false })]); return audit().filter((r) => r.ip === ip).map((r) => r.note); };
+
+test("协作安全:重启、停止、经批准接口更新重启之前,当前窗口里的拒绝计数与轮询计数先落成汇总行", { timeout: 180000 }, async () => {
+  // 窗口设成 10 分钟:汇总行只可能来自关停路径,不会是窗口自然结束补的。
+  const env = { BOARD_REMOTE_AUDIT_WINDOW_MS: "600000" };
+  const ways = [
+    ["重启", {}, (B) => B.api("POST", "/api/setup/restart", B.operator, {}), 75],
+    ["停止", {}, (B) => B.api("POST", "/api/setup/stop", B.operator, {}), 0],
+    ["经批准接口更新重启", { config: { gated_subtree: "." }, env: { ...env, BOARD_TEST_BOOT_REV: "0000000" } }, async (B) => {
+      const v = (await B.list()).find((a) => a.kind === "version" && a.id.startsWith("version:upgrade:"));
+      assert.ok(v, "有待批准的更新事项");
+      return B.decide(v.id, { decision: "approve", source: src("cli"), expected_version: v.expected_version });
+    }, 75],
+  ];
+  for (const [what, extra, trigger, code] of ways) {
+    const { B, rport, audit } = await remoteBoard({ env, ...extra });
+    try {
+      for (let i = 0; i < 50; i++) assert.equal((await raw(rport, { path: "/x", local: "127.0.0.3" })).status, 403);
+      assert.deepEqual(audit().filter((r) => r.ip === "127.0.0.3").map((r) => r.note), ["ip"], `${what}:窗口没结束时库里只有第一条`);
+      const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body;
+      for (let i = 0; i < 10; i++) assert.equal((await raw(rport, { token: tok.token })).status, 200);
+      const r = await trigger(B);
+      assert.equal(r.status, 202, `${what}:${JSON.stringify(r.body)}`);
+      assert.deepEqual(await anonAfterExit(B, audit, "127.0.0.3"), ["ip", "ip +49"], `${what}:退出前把当前窗口的 49 次补成汇总行`);
+      assert.deepEqual(audit().filter((x) => x.token_id === tok.record.id).map((x) => x.note), ["", "poll +9"], `${what}:带令牌的列表轮询同样在退出前补汇总行`);
+      assert.equal(await B.closed, code, `${what} 的退出码`);
+    } finally { await B.stop(); }
+  }
+});
+
+test("协作安全:同一来源的失败请求不能把有效批准令牌锁在门外", { timeout: 120000 }, async () => {
+  const { B, rport } = await remoteBoard();
+  try {
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    for (let i = 0; i < 12; i++) assert.equal((await raw(rport, { path: "/x" })).status, 401, "不带令牌的请求不计入失败次数");
+    assert.equal((await raw(rport, { token: tok })).status, 200, "12 次无令牌请求之后,有效令牌照常");
+    const bad = "apr_" + "0".repeat(48);
+    for (let i = 0; i < 10; i++) assert.equal((await raw(rport, { token: bad })).status, 401);
+    assert.equal((await raw(rport, { token: bad })).status, 429, "无效令牌失败满 10 次后被限流");
+    assert.equal((await raw(rport, { token: tok })).status, 200, "有效令牌先认证,不受同一来源的失败计数影响");
+    assert.equal((await raw(rport, { token: tok, path: "/api/summary" })).status, 200);
+  } finally { await B.stop(); }
+});
+
+/** 开一条不发数据的 TCP 连接,连上(或失败)后返回;live() = 现在还连着。 */
+const idle = (port, local, host = "127.0.0.2") => new Promise((ok) => {
+  const s = connect({ host, port, localAddress: local });
+  const st = { s, open: false, closed: false, live: () => st.open && !st.closed };
+  s.on("error", () => {}); s.on("close", () => { st.closed = true; ok(st); });
+  s.once("connect", () => { st.open = true; ok(st); });
+});
+const quiet = (p) => p.catch((e) => ({ status: 0, body: String(e.code || e.message) }));
+
+test("协作安全:白名单外来源开满连接也挡不住白名单内的有效令牌;远程入口的连接按来源分池", { timeout: 120000 }, async () => {
+  const rport = await freePort("127.0.0.2");
+  const B = await board({ config: { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32", "127.0.0.4"] } } });
+  let socks = [];
+  try {
+    for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    // 白名单外的来源开 300 条不发数据的连接(修复前:占满全部 256 个名额,白名单内的请求连不上)
+    const t0 = Date.now();
+    socks = await Promise.all(Array.from({ length: 300 }, () => idle(rport, "127.0.0.3")));
+    await delay(150);
+    const held = socks.filter((x) => x.live()).length;
+    for (let i = 0; i < 3; i++) {
+      const r = await quiet(raw(rport, { token: tok }));
+      assert.equal(r.status, 200, `白名单外来源开了 300 条连接(留着 ${held} 条)时,白名单内带有效令牌的请求应照常:${JSON.stringify(r.body)}`);
+    }
+    assert.ok(held <= 32, `白名单外来源合用一个小池,同时留着的连接不超过 32 条:${held}`);
+    // 小池里的连接也留不久:2 秒内没发完请求头就被断开
+    for (let i = 0; i < 40 && socks.some((x) => x.live()); i++) await delay(100);
+    assert.equal(socks.filter((x) => x.live()).length, 0, `白名单外的空闲连接应在 2 秒左右被断开(已过 ${Date.now() - t0} ms)`);
+    assert.ok(Date.now() - t0 < 4500, `断开得太晚:${Date.now() - t0} ms`);
+    // 池子空出来之后,白名单外的请求仍得到 403(应答语义不变)
+    assert.equal((await raw(rport, { token: tok, local: "127.0.0.3" })).status, 403, "不在 allow_ips 的来源仍是 403");
+    // 白名单内每个来源也有上限:一个来源占满自己的名额,不影响另一个白名单来源
+    const mine = await Promise.all(Array.from({ length: 24 }, () => idle(rport, "127.0.0.4")));
+    socks.push(...mine);
+    await delay(150);
+    const kept = mine.filter((x) => x.live()).length;
+    assert.ok(kept >= 1 && kept <= 16, `白名单内每个来源最多 16 条连接:${kept}`);
+    assert.equal((await quiet(raw(rport, { token: tok, local: "127.0.0.4" }))).status, 0, "这个来源的名额占满后,它的新连接被断开");
+    assert.equal((await quiet(raw(rport, { token: tok }))).status, 200, "另一个白名单来源不受影响");
+    for (const x of mine) x.s.destroy();
+    let back = { status: 0 };
+    for (let i = 0; i < 30 && back.status !== 200; i++) { await delay(100); back = await quiet(raw(rport, { token: tok, local: "127.0.0.4" })); }
+    assert.equal(back.status, 200, "连接放掉后名额归还");
+  } finally { for (const x of socks) x.s.destroy(); await B.stop(); }
+});
+
+/** 裸 TCP 分两次写正文:第一段写到 cut 字节,隔一会儿再写剩下的。 */
+const rawSplit = (port, { path, token, body, cut, local = "127.0.0.2", host = "127.0.0.2" }) => new Promise((ok, ko) => {
+  const buf = Buffer.from(body, "utf8");
+  const s = connect({ host, port, localAddress: local });
+  let out = Buffer.alloc(0);
+  s.on("data", (c) => { out = Buffer.concat([out, c]); });
+  s.on("error", ko);
+  s.on("close", () => { const text = out.toString("utf8"); const m = /^HTTP\/1\.1 (\d+)/.exec(text);
+    const tail = text.slice(text.indexOf("\r\n\r\n") + 4);   // 响应可能是分块编码:取第一个 { 到最后一个 }
+    let j = null; try { j = JSON.parse(tail.slice(tail.indexOf("{"), tail.lastIndexOf("}") + 1)); } catch {} ok({ status: m ? Number(m[1]) : 0, body: j }); });
+  s.once("connect", async () => {
+    s.setNoDelay(true);
+    s.write(`POST ${path} HTTP/1.1\r\nHost: ${host}:${port}\r\nAuthorization: Bearer ${token}\r\nContent-Type: application/json\r\nContent-Length: ${buf.length}\r\nConnection: close\r\n\r\n`);
+    s.write(buf.subarray(0, cut));
+    await delay(300);
+    s.write(buf.subarray(cut));
+  });
+});
+
+test("协作安全:远程决定的正文跨分片到达时,多字节字符不被改坏;4KB 上限按字节算", { timeout: 120000 }, async () => {
+  const { B, rport } = await remoteBoard();
+  try {
+    const ex = await B.register("agent-u");
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    const rq = (await B.api("POST", "/api/approvals/request", ex, { action: "换测试设备的系统语言", risk: "low" })).body.request;
+    const note = "请先补上回归测试再送审";
+    const body = JSON.stringify({ decision: "reject", note, source: { client: "phone-app" }, expected_version: 1 });
+    const at = Buffer.from(body.slice(0, body.indexOf("补")), "utf8").length + 1;   // 切在「补」的 3 个字节中间
+    const d = await rawSplit(rport, { path: `/api/approvals/${encodeURIComponent(rq.approval_id)}/decide`, token: tok, body, cut: at });
+    assert.equal(d.status, 200, JSON.stringify(d.body));
+    assert.equal(d.body.decision.note, note, "跨分片的汉字原样写进决定记录");
+    // 1500 个汉字 = 4500 字节 > 4KB:按字节拒绝(按字符数只有 1500 多,会被放过)
+    const rq2 = (await B.api("POST", "/api/approvals/request", ex, { action: "第二个请求", risk: "low" })).body.request;
+    const big = await raw(rport, { token: tok, method: "POST", path: `/api/approvals/${encodeURIComponent(rq2.approval_id)}/decide`,
+      body: JSON.stringify({ decision: "reject", note: "字".repeat(400), pad: "字".repeat(1100), source: { client: "phone-app" }, expected_version: 1 }) });
+    assert.equal(big.status, 400, `超过 4KB(字节)的正文应拒绝:${JSON.stringify(big.body)}`);
+  } finally { await B.stop(); }
+});
+
+test("协作安全:只追加的批准表挡住 REPLACE(整行替换),重复决定仍是 409", () => {
+  const db = memdb(), t0 = 1_800_000_000_000;
+  const rq = approvals.addRequest(db, "agent-a", { action: "重启共享设备上的应用", risk: "high" }, t0);
+  const rec = { approval_id: rq.approval_id, decision: "reject", note: "改天", actor: "operator", via: "local", source: { client: "cli", device: null } };
+  approvals.recordDecision(db, rec, t0 + 1000);
+  approvals.audit(db, { ip: "127.0.0.2", method: "GET", path: "/api/approvals", status: 200, tokenId: 1 }, t0);
+  const tries = {
+    "决定记录 INSERT OR REPLACE": () => db.prepare(`INSERT OR REPLACE INTO approval_decisions (approval_id,kind,object_id,version,decision,actor,via,client,at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(rq.approval_id, "request", "1", "1", "approve", "operator", "local", "cli", "2026-01-01T00:00:00.000Z"),
+    "决定记录 REPLACE INTO": () => db.prepare(`REPLACE INTO approval_decisions (approval_id,kind,object_id,version,decision,actor,via,client,at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(rq.approval_id, "request", "1", "1", "approve", "operator", "local", "cli", "2026-01-01T00:00:00.000Z"),
+    "批准请求 替换": () => db.prepare("INSERT OR REPLACE INTO approval_requests (id,executor,action,risk,created_at) VALUES (?,?,?,?,?)").run(rq.id, "agent-a", "别的动作", "low", rq.created_at),
+    "远程审计 替换": () => db.prepare("INSERT OR REPLACE INTO remote_audit (id,at,ip,method,path,status) VALUES (1,?,?,?,?,?)").run("2026-01-01T00:00:00.000Z", "127.0.0.9", "GET", "/", 200),
+  };
+  for (const [what, run] of Object.entries(tries)) assert.throws(run, /append-only/, what);
+  assert.equal(approvals.decisionOf(db, rq.approval_id).decision, "reject");
+  assert.equal(approvals.getRequest(db, rq.id).action, "重启共享设备上的应用");
+  assert.equal(approvals.listAudit(db)[0].ip, "127.0.0.2");
+  assert.throws(() => approvals.recordDecision(db, { ...rec, decision: "approve" }, t0 + 2000), (e) => e.code === "CONFLICT", "同一项再决定仍按 409 报");
+  // 正常追加不受影响
+  assert.equal(approvals.addRequest(db, "agent-a", { action: "第二个请求", risk: "low" }, t0 + 3000).id, rq.id + 1);
+  approvals.audit(db, { ip: "127.0.0.2", method: "GET", path: "/api/summary", status: 200, tokenId: 1 }, t0 + 4000);
+  assert.equal(approvals.listAudit(db).length, 2);
+});
+
+test("协作安全:待批准事项的一行文字不带控制字符与双向覆盖符;执行者请求里直接拒绝", () => {
+  const db = memdb(), ESC = cp(0x1b);
+  const raw = "a" + ESC + "[1Ab" + cp(8) + "c" + cp(7) + "d" + cp(0x9b) + "e" + cp(0x202e) + "f" + cp(0x2066) + "g" + cp(0x2028) + "h" + cp(9) + "i" + cp(13, 10) + "j";
+  const line = approvals.oneLine(raw);
+  assert.ok(!hasUnsafe(line), `oneLine 留下了控制字符:${JSON.stringify(line)}`);
+  assert.match(line, /^a.\[1Ab.c.d.e.f.g.h i j$/u, "可见文字与空白折叠照旧,控制字符换成可见的占位");
+  for (const action of ["整理日志" + ESC + "[1A" + ESC + "[2K", "清缓存" + cp(0x9b) + "2J", "改名" + cp(0x202e) + "gnp.exe", "退格" + cp(8), "隔离" + cp(0x2067) + "x"])
+    assert.throws(() => approvals.addRequest(db, "agent-a", { action, risk: "low" }), (e) => e.code === "BAD_INPUT", JSON.stringify(action));
+  assert.equal(approvals.openRequests(db).length, 0, "被拒的请求没有入库");
+  assert.equal(approvals.addRequest(db, "agent-a", { action: "重启" + cp(9) + "共享设备" + cp(10) + "上的" + cp(0x2028) + "应用", risk: "low" }).action, "重启 共享设备 上的 应用", "换行、制表符、行分隔符照旧折成空格");
+});
+
+test("协作安全:通配监听与 allow_ips 全开按解析后的地址判断,等价写法不能绕过", () => {
+  const cfg = (extra) => approvals.parseRemoteConfig({ enabled: true, listen: ["127.0.0.2:47830"], allow_ips: ["127.0.0.2"], ...extra });
+  for (const l of ["0.0.0.0:47830", "[::]:47830", "[::0]:47830", "[0:0:0:0:0:0:0:0]:47830", "[::0.0.0.0]:47830",
+                   "[0:0:0:0:0:0:0.0.0.0]:47830", "[::ffff:0.0.0.0]:47830", "[::ffff:0:0]:47830", "[0:0:0:0:0:ffff:0:0]:47830"])
+    assert.throws(() => cfg({ listen: [l] }), /通配地址/, `listen ${l} 应按通配地址拒绝`);
+  assert.equal(cfg({ listen: ["[::0.0.0.0]:47830"], allow_wildcard_listen: true }).allow_wildcard_listen, true, "显式开关照旧放行");
+  for (const l of ["127.0.0.2:47830", "[::1]:47830", "[::ffff:127.0.0.2]:47830", "100.64.0.10:47830"]) assert.equal(cfg({ listen: [l] }).enabled, true, l);
+  for (const a of ["0.0.0.0/0", "::/0", "::ffff:0.0.0.0/96", "::ffff:0:0/96", "::/1", "::/80", "::ffff:0:0/95"])
+    assert.throws(() => cfg({ allow_ips: [a] }), /不接受/, `allow_ips ${a} 放行全部 IPv4,应拒绝`);
+  for (const a of ["192.0.2.0/28", "0.0.0.0/1", "::1", "2001:db8::/32", "::/96", "::ffff:192.0.2.0/124"]) assert.equal(cfg({ allow_ips: [a] }).enabled, true, a);
+  const mapped = cfg({ allow_ips: ["::ffff:192.0.2.0/124"] });
+  assert.deepEqual([mapped.allows("192.0.2.5"), mapped.allows("::ffff:192.0.2.5"), mapped.allows("192.0.2.77"), mapped.allows("8.8.8.8")], [true, true, false, false]);
+});
+
+test("协作安全:执行者请求的完整 action 出现在事项、单项查询与决定记录里,不只是截断的摘要", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const ex = await B.register("agent-f");
+    const action = "清理测试设备上的构建缓存".repeat(13) + ";随后重置共享设备并清空其上的测试数据库" + "。".repeat(100);
+    assert.ok([...action].length > 160 && [...action].length <= 300);
+    const rq = (await B.api("POST", "/api/approvals/request", ex, { action, risk: "low" })).body.request;
+    const item = (await B.list()).find((a) => a.id === rq.approval_id);
+    assert.equal([...item.summary].length, 160, "摘要仍是截断的一行");
+    assert.equal(item.action, action, "事项带完整的 action,批准者看得到后半段");
+    assert.equal((await B.api("GET", `/api/approvals/${encodeURIComponent(rq.approval_id)}`, B.operator)).body.approval.action, action);
+    const c = B.cli("approvals", "ls");
+    assert.ok(c.out.includes("随后重置共享设备并清空其上的测试数据库"), `命令行列表显示完整 action:${c.out}`);
+    const d = await B.decide(rq.approval_id, { decision: "approve", source: src("cli"), expected_version: 1 });
+    assert.equal(d.status, 200, JSON.stringify(d.body));
+    assert.equal(d.body.decision.result.action, action, "决定记录存下被批准的原文");
+    const seen = (await B.api("GET", `/api/approvals/${encodeURIComponent(rq.approval_id)}`, ex)).body;
+    assert.equal(seen.approval, null);
+    assert.equal(seen.decision.result.action, action, "决定后按 id 查,仍能对上原文");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:逾期锁经批准接口强制释放时,note 按接口上限 500 字接受;没写 note 的理由写明未写与决定者", { timeout: 120000 }, async () => {
+  const B = await board({ env: { BOARD_COORD_OVERDUE_GRACE_MIN: "0" } });
+  try {
+    const ex = await B.register("agent-n");
+    for (const resource of ["device:long-note", "device:no-note"])
+      assert.equal((await B.api("POST", "/api/coord/locks", ex, { resource, minutes: 0.01, purpose: "回归" })).status, 201);
+    await delay(1200);
+    const items = Object.fromEntries((await B.list()).filter((a) => a.kind === "lock").map((a) => [a.title, a]));
+    const note = "持有者的会话已经结束,设备空着。".repeat(20);   // 320 字:在 note 的 500 字上限内,超过锁理由的 200 字
+    const it = items["device:long-note"];
+    const d = await B.decide(it.id, { decision: "approve", note, source: src("phone-app"), expected_version: it.expected_version });
+    assert.equal(d.status, 200, `合乎接口上限的 note 应被接受:${JSON.stringify(d.body)}`);
+    assert.equal(d.body.decision.note, note, "决定记录保留 note 全文");
+    const locks = async () => (await B.api("GET", "/api/coord/locks?all=1", B.operator)).body.locks;
+    const long = (await locks()).find((l) => l.resource === "device:long-note");
+    assert.equal(long.released_by, "operator");
+    assert.ok([...long.release_reason].length <= 200 && long.release_reason.startsWith(note.slice(0, 150)), `锁记录里的理由截到 200 字以内:${long.release_reason}`);
+    // 没写 note(面板「待你批准」行没有留言框):理由不能是一句看不出有没有人写过的固定话
+    const bare = items["device:no-note"];
+    assert.equal((await B.decide(bare.id, { decision: "approve", source: src("panel"), expected_version: bare.expected_version })).status, 200);
+    const none = (await locks()).find((l) => l.resource === "device:no-note");
+    assert.match(none.release_reason, /未写理由/, `没写 note 的强制释放要写明未写理由:${none.release_reason}`);
+    assert.match(none.release_reason, /operator 经 local/, "并记下是谁、经哪条通道决定的");
+    assert.ok((await B.journal()).some((e) => e.kind === "lock.force_release" && e.body.includes("device:no-note") && e.body.includes("未写理由")));
+  } finally { await B.stop(); }
+});
+
+test("协作安全:同一棵树再次待确认时是新的事项 id,旧的决定记录不会把它滤掉", { timeout: 120000 }, async () => {
+  const B = await board({ config: { gated_subtree: "." } });
+  try {
+    const rev = join(B.dir, "accepted_rev");
+    const v1 = (await B.list()).find((a) => a.kind === "version");
+    assert.ok(v1 && v1.id.startsWith("version:bless:"), JSON.stringify(v1));
+    assert.equal((await B.decide(v1.id, { decision: "approve", source: src("panel"), expected_version: v1.expected_version })).status, 200);
+    const tree = readFileSync(rev, "utf8").trim();
+    assert.match(tree, /^[0-9a-f]{40,64}$/);
+    assert.equal((await B.list()).filter((a) => a.kind === "version").length, 0);
+    // 之后确认过别的树,代码又回到这棵树(回滚):确认记录停在另一棵树上,这棵树再次待确认
+    await delay(30);
+    writeFileSync(rev, "f".repeat(40) + "\n");
+    const v2 = (await B.list()).find((a) => a.kind === "version");
+    assert.ok(v2, "同一棵树再次待确认,必须出现在待批准列表里");
+    assert.notEqual(v2.id, v1.id, "是新的事项 id");
+    assert.ok(v2.id.startsWith(`version:bless:${tree}.`), v2.id);
+    const again = await B.decide(v2.id, { decision: "approve", source: src("cli"), expected_version: v2.expected_version });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(readFileSync(rev, "utf8").trim(), tree);
+    assert.equal((await B.decide(v1.id, { decision: "approve", source: src("cli"), expected_version: v1.expected_version })).status, 409, "旧 id 不能重放");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:版本确认与更新事项带原确认界面的改动清单;更新事项写明同时确认受闸代码版本", { timeout: 180000 }, async () => {
+  // 上一个提交的树当作「上次确认的版本」;浅克隆里没有上一个提交时退回首次确认。
+  const g = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD~1^{tree}", "HEAD^{tree}"], { encoding: "utf8", windowsHide: true });
+  const [prev, head] = g.status === 0 ? g.stdout.trim().split(/\s+/) : [null, null];
+  const files = prev && prev !== head ? { accepted_rev: prev + "\n" } : {};
+  const check = (item, what) => {
+    assert.ok(typeof item.confirm === "string" && item.confirm.includes("确认版本"), `${what} 带原确认文本:${JSON.stringify(item)}`);
+    assert.ok(item.changes && Array.isArray(item.changes.stat), `${what} 带改动清单`);
+    if (files.accepted_rev) {
+      assert.equal(item.changes.prev, prev, "写明上次确认的树");
+      assert.ok(item.changes.files > 0 && item.changes.stat.length > 0, `${what} 列出改了哪些文件:${JSON.stringify(item.changes)}`);
+      assert.ok(item.confirm.includes(item.changes.stat[0].trim()), "确认文本里就是这份清单");
+    } else assert.match(item.confirm, /首次确认/);
+  };
+  const bless = await board({ config: { gated_subtree: "." }, files });
+  try {
+    const v = (await bless.list()).find((a) => a.kind === "version");
+    assert.ok(v.id.startsWith("version:bless:"), v.id);
+    check(v, "版本确认");
+    const c = bless.cli("approvals", "ls");
+    assert.ok(c.out.includes("确认之后执行线才会用这个版本起跑"), `命令行列表打出确认文本:${c.out}`);
+  } finally { await bless.stop(); }
+  const up = await board({ config: { gated_subtree: "." }, files, env: { BOARD_TEST_BOOT_REV: "0000000" } });
+  try {
+    const v = (await up.list()).find((a) => a.kind === "version");
+    assert.ok(v.id.startsWith("version:upgrade:"), v.id);
+    assert.match(v.summary, /同时确认受闸代码版本 [0-9a-f]{12}/, `更新事项要写明这一下同时确认版本:${v.summary}`);
+    assert.match(v.accepts_tree, /^[0-9a-f]{40,64}$/);
+    assert.ok(v.summary.includes(v.accepts_tree.slice(0, 12)));
+    check(v, "更新");
+    assert.ok(v.confirm.includes("接着看板会自己重启"), "更新事项的确认文本含重启会打断什么");
+    assert.deepEqual(Object.keys(v.lines).sort(), ["resume", "stop"]);
+  } finally { await up.stop(); }
+});
+
+test("协作安全:放行确认事项带工作目录、权限与预算;中断后收回放行的卡再次出现时写明原因", { timeout: 120000 }, async () => {
+  const B = await board(PROFILE);
+  try {
+    const held = await B.card({ subject: "按配置放行的卡", line: "alpha", execution_profile_id: "claude-api", model: "claude-haiku-4-5", effort: "high" });
+    const first = (await B.list()).find((a) => a.kind === "release");
+    const local = (await B.api("GET", `/api/tasks/${held.id}`, B.operator)).body;
+    const p = first.execution_profile;
+    assert.ok(p, `放行确认事项要带被摘要绑定的执行配置:${JSON.stringify(first)}`);
+    assert.ok(typeof p.workspace_path === "string" && p.workspace_path.length > 0, "工作目录");
+    assert.ok(["write", "read-only"].includes(p.tools), "权限");
+    assert.deepEqual(p.budget, { timeout_sec: 120, max_turns: 4, max_cost_usd: 0.5 }, "预算");
+    assert.equal(p.configuration_changed, false);
+    assert.ok(!first.rerun && !first.held_note, "首次放行没有再次放行的标记");
+    assert.ok(JSON.stringify(local).includes(JSON.stringify(p.workspace_path).slice(1, -1)), "与本机详情里的工作目录是同一个");
+    const c = B.cli("approvals", "ls");
+    assert.ok(c.out.includes("工作目录") && c.out.includes("预算"), `命令行列表打出工作目录与预算:${c.out}`);
+    assert.equal((await B.decide(first.id, { decision: "approve", source: src("panel"), expected_version: first.expected_version })).status, 200);
+    // 执行中租约到期:回收巡检把卡退回未开始、取消放行,并把「结果未知」写进 result(store.holdExplicitProfileRecovery)。
+    // 显式配置的卡只有绑定座位能领,测试里不起模型进程,所以直接把回收后的那一行状态写进库。
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    const u = db.prepare("UPDATE tasks SET released=0, attempts=1, result=? WHERE id=? AND status='not_started' AND released=1")
+      .run("本轮执行已中断，结果未知。已取消放行，请本人核对后重新放行。", held.id);
+    db.close();
+    assert.equal(u.changes, 1);
+    const again = (await B.list()).find((a) => a.kind === "release") || null;
+    assert.ok(again, "放行被收回后,事项再次出现");
+    assert.notEqual(again.id, first.id);
+    assert.equal(again.rerun, true, `再次放行要有标记:${JSON.stringify(again)}`);
+    assert.match(again.held_note, /结果未知/, "带上收回放行的原因");
+    assert.match(again.summary, /^【再次放行】/, "只看摘要的客户端也分得出这不是首次放行");
+    assert.ok(again.execution_profile.workspace_path === p.workspace_path);
+  } finally { await B.stop(); }
+});
+
+test("协作安全:远程入口再次放行(上次运行中断、结果未知)要带 confirm_rerun:true;首次放行、拒绝、本机面板与命令行不变", { timeout: 120000 }, async () => {
+  const rport = await freePort("127.0.0.2");
+  const B = await board({ ...PROFILE, config: { ...PROFILE.config, remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32"] } } });
+  try {
+    for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    const cards = [];
+    for (const subject of ["远程再次放行", "远程拒绝", "面板再次放行", "命令行再次放行"])
+      cards.push(await B.card({ subject, line: "alpha", execution_profile_id: "claude-api", model: "claude-haiku-4-5", effort: "high" }));
+    const [a, b, c, d] = cards.map((t) => t.id);
+    const item = async (id) => (await B.list()).find((x) => x.kind === "release" && x.detail_ref.id === id);
+    const far = (it, decision = "approve", extra = {}) => raw(rport, { token: tok, method: "POST", path: `/api/approvals/${encodeURIComponent(it.id)}/decide`,
+      body: { decision, source: { client: "phone-app" }, expected_version: it.expected_version, ...extra } });
+    const released = async (id) => (await B.api("GET", `/api/tasks/${id}`, B.operator)).body.task.released;
+    // 首次放行:远程入口不需要额外字段
+    const first = await item(a);
+    assert.ok(first && !first.rerun, JSON.stringify(first));
+    const d0 = await far(first);
+    assert.equal(d0.status, 200, `首次放行不要求 confirm_rerun:${JSON.stringify(d0.body)}`);
+    assert.equal(await released(a), true);
+    for (const id of [b, c, d]) { const it = await item(id); assert.equal((await B.decide(it.id, { decision: "approve", source: src("panel"), expected_version: it.expected_version })).status, 200); }
+    // 四张卡都「执行中断、结果未知、放行被收回」(同上一个用例:直接写回收后的那一行状态)
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    for (const id of [a, b, c, d])
+      assert.equal(db.prepare("UPDATE tasks SET released=0, attempts=1, result=? WHERE id=? AND status='not_started' AND released=1")
+        .run("本轮执行已中断，结果未知。已取消放行，请本人核对后重新放行。", id).changes, 1);
+    db.close();
+    const again = await item(a);
+    assert.equal(again.rerun, true, JSON.stringify(again));
+    // 远程入口:不带 confirm_rerun 的批准 409,写明原因;卡没有放行,也没有留下决定记录
+    const no = await far(again);
+    assert.equal(no.status, 409, `远程入口再次放行必须带 confirm_rerun:true:${JSON.stringify(no.body)}`);
+    assert.match(no.body.error, /confirm_rerun:true/, "写明要带什么");
+    assert.match(no.body.error, /结果未知/, "写明为什么");
+    assert.equal(no.body.needs_confirm_rerun, true);
+    assert.equal(no.body.current.id, again.id);
+    for (const v of ["true", 1, false, null])
+      assert.equal((await far(again, "approve", { confirm_rerun: v })).status, 409, `confirm_rerun 必须是布尔值 true,收到 ${JSON.stringify(v)}`);
+    assert.equal(await released(a), false, "被拒的批准没有放行");
+    assert.equal((await B.api("GET", `/api/approvals/${encodeURIComponent(again.id)}`, B.operator)).body.decision, null, "被拒的批准不留决定记录");
+    const yes = await far(again, "approve", { confirm_rerun: true });
+    assert.equal(yes.status, 200, JSON.stringify(yes.body));
+    assert.equal(await released(a), true);
+    assert.deepEqual([yes.body.decision.via, yes.body.decision.result.rerun, yes.body.decision.result.confirm_rerun], ["remote", true, true], "决定记录写明这是确认过的再次放行");
+    // 远程拒绝不放行任何东西,不要求确认字段
+    const rej = await far(await item(b), "reject");
+    assert.equal(rej.status, 200, JSON.stringify(rej.body));
+    assert.equal(await released(b), false);
+    // 本机面板与命令行不变:不带 confirm_rerun 照常放行
+    const itc = await item(c);
+    const loc = await B.decide(itc.id, { decision: "approve", source: src("panel"), expected_version: itc.expected_version });
+    assert.equal(loc.status, 200, `本机决定不要求 confirm_rerun:${JSON.stringify(loc.body)}`);
+    assert.equal(await released(c), true);
+    const cli = B.cli("approvals", "approve", (await item(d)).id);
+    assert.equal(cli.code, 0, cli.out);
+    assert.equal(await released(d), true);
   } finally { await B.stop(); }
 });

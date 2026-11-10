@@ -27,6 +27,7 @@
 
 多执行者协作(docs/多执行者协作.md)。--token-file <文件> 改用执行者令牌,其余命令照旧;不给则用 board_token:
   $P exec register <id> [--kind line|external|other] [--name 名] [--file payload.json] [--save 令牌文件]   # 操作员
+  $P exec unregister <id>                    # 操作员:注销,令牌立即失效;还持有进行中的卡或未释放的锁时 409
   $P exec status [--file status.json]        # 有 --file = 写自己的 {current,done,next};没有 = 列出各执行者
   $P exec heartbeat [--task <id>] [--lease <分钟>]
   $P exec stop                               # 停下并生成交接包
@@ -158,6 +159,18 @@ def arg(flag, default=None):
 def readfile(p):
     return io.open(p, encoding="utf-8").read() if p else ""
 
+def vis(v):
+    """打印前把控制字符(含换行)、行分隔符与双向控制符换成可见的转义。执行者写进库里的文字
+    原样打印的话,换行能伪造出别的行,ESC 能改写终端上已经打印的行。"""
+    out, bs = [], chr(92)
+    for ch in str(v):
+        c = ord(ch)
+        if c <= 0x1f or 0x7f <= c <= 0x9f or c in (0x2028, 0x2029) or 0x202a <= c <= 0x202e or 0x2066 <= c <= 0x2069:
+            out.append(f"{bs}x{c:02x}" if c <= 0xff else f"{bs}u{c:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
 def args_of(flag):
     """同一个 flag 可给多次(--artifact)。"""
     out, i = [], 0
@@ -203,23 +216,23 @@ def coord_cmd(cmd):
             ex = d["executor"]
             if save:
                 with io.open(save, "x", encoding="utf-8") as f: f.write(d["token"] + chr(10))
-                print(f"已登记执行者 {ex['id']}({ex['name']},{ex['kind']});令牌已写入 {save}")
+                print(f"已登记执行者 {ex['id']}({vis(ex['name'])},{ex['kind']});令牌已写入 {save}")
             else:
-                print(f"已登记执行者 {ex['id']}({ex['name']},{ex['kind']})")
+                print(f"已登记执行者 {ex['id']}({vis(ex['name'])},{ex['kind']})")
                 print(f"令牌(只显示这一次):{d['token']}")
         elif sub == "status":
             if arg("--file"):
                 s, d = call("POST", "/api/coord/status", json.loads(readfile(arg("--file"))))
                 if s >= 400: die(s, d)
                 st = d["status"]
-                print(f"状态已写入 {st['updated_at']}:当前 {st['current'] or '-'} · 已完成 {len(st['done'])} 项 · 下一步 {len(st['next'])} 项")
+                print(f"状态已写入 {st['updated_at']}:当前 {vis(st['current'] or '-')} · 已完成 {len(st['done'])} 项 · 下一步 {len(st['next'])} 项")
             else:
                 s, d = call("GET", "/api/coord/executors")
                 if s >= 400: die(s, d)
                 for ex in d["executors"]:
                     st = ex["status"]
-                    print(f"  {ex['id']:<16} {'活动' if ex['active'] else '已停止'} 心跳 {ex['last_seen'] or '-'}  当前 {st['current'] or '-'}"
-                          + (f"  下一步 {st['next'][0]}" if st["next"] else ""))
+                    print(f"  {ex['id']:<16} {'活动' if ex['active'] else '已停止'} 心跳 {ex['last_seen'] or '-'}  当前 {vis(st['current'] or '-')}"
+                          + (f"  下一步 {vis(st['next'][0])}" if st["next"] else ""))
         elif sub == "heartbeat":
             body = lease_arg({})
             if arg("--task"): body["task_id"] = int(arg("--task"))
@@ -232,8 +245,15 @@ def coord_cmd(cmd):
             if s >= 400: die(s, d)
             h = d["handoff"]
             print(f"已停止;交接记录 #{h['id']}" + ("" if d.get("created") else "(此前已生成,未重复生成)"))
+        elif sub == "unregister":
+            eid = pos(3)
+            if not eid: sys.exit("exec unregister <id>")
+            s, d = call("DELETE", "/api/coord/executors/" + urllib.parse.quote(eid, safe=""))
+            if s >= 400: die(s, d)
+            ex = d["executor"]
+            print(f"已注销执行者 {vis(ex['id'])}({vis(ex['name'])},{vis(ex['kind'])});令牌已失效,流水 #{d['journal_id']}")
         else:
-            sys.exit("exec register|status|heartbeat|stop")
+            sys.exit("exec register|unregister|status|heartbeat|stop")
     elif cmd == "lock":
         if sub == "acquire":
             res, mins = pos(3), arg("--minutes")
@@ -244,7 +264,7 @@ def coord_cmd(cmd):
             s, d = call("POST", "/api/coord/locks", {"resource": res, "minutes": mins, "purpose": purpose})
             if s == 409:
                 h = d["holder"]
-                sys.exit(f"409 {res} 已被 {h['holder_name']}({h['holder']})占用:{h['purpose']},开始 {h['started_at']},预计结束 {h['expected_end']}")
+                sys.exit(f"409 {res} 已被 {vis(h['holder_name'])}({h['holder']})占用:{vis(h['purpose'])},开始 {h['started_at']},预计结束 {h['expected_end']}")
             if s >= 400: die(s, d)
             print(f"已加锁 {res},预计结束 {d['lock']['expected_end']}")
         elif sub == "release":
@@ -254,14 +274,14 @@ def coord_cmd(cmd):
             if "--force" in sys.argv: body.update({"force": True, "reason": readfile(arg("--file")).strip()})
             s, d = call("POST", "/api/coord/locks/release", body)
             if s >= 400: die(s, d)
-            print(f"已释放 {res}" + (f"(强制:{d['lock']['release_reason']})" if d["lock"]["released_by"] == "operator" else ""))
+            print(f"已释放 {res}" + (f"(强制:{vis(d['lock']['release_reason'])})" if d["lock"]["released_by"] == "operator" else ""))
         elif sub == "ls":
             s, d = call("GET", "/api/coord/locks" + ("?all=1" if "--all" in sys.argv else ""))
             if s >= 400: die(s, d)
             if not d["locks"]: print("没有被锁的资源")
             for l in d["locks"]:
                 state = "已释放" if l["released_at"] else ("逾期" if l["overdue"] else "持有中")
-                print(f"  {l['resource']:<28} {state:<4} {l['holder']:<16} 预计结束 {l['expected_end']}  {l['purpose']}")
+                print(f"  {l['resource']:<28} {state:<4} {l['holder']:<16} 预计结束 {l['expected_end']}  {vis(l['purpose'])}")
         else:
             sys.exit("lock acquire|release|ls")
     elif cmd == "journal":
@@ -277,12 +297,13 @@ def coord_cmd(cmd):
             if s >= 400: die(s, d)
             print(f"已记流水 #{d['entry']['id']} {d['entry']['at']}")
         elif sub == "ls":
-            qs = [f"{k}={arg('--' + k)}" for k in ("since", "executor", "limit") if arg("--" + k)]
-            s, d = call("GET", "/api/coord/journal" + ("?" + "&".join(qs) if qs else ""))
+            # 值要做 URL 编码:带正时区的 ISO 时刻里的 + 不编码会被服务端解成空格。
+            qs = urllib.parse.urlencode({k: arg("--" + k) for k in ("since", "executor", "limit") if arg("--" + k)})
+            s, d = call("GET", "/api/coord/journal" + ("?" + qs if qs else ""))
             if s >= 400: die(s, d)
             for e in d["entries"]:
-                arts = " ".join(f"{a['type']}:{a['value']}" for a in e["artifacts"])
-                print(f"  #{e['id']:<5} {e['at']} {e['executor']:<16} {e['kind']:<16} {e['body']}" + (f"  [{arts}]" if arts else ""))
+                arts = " ".join(vis(f"{a['type']}:{a['value']}") for a in e["artifacts"])
+                print(f"  #{e['id']:<5} {e['at']} {vis(e['executor']):<16} {vis(e['kind']):<16} {vis(e['body'])}" + (f"  [{arts}]" if arts else ""))
         else:
             sys.exit("journal add|ls")
     elif cmd == "handoff":
@@ -293,12 +314,12 @@ def coord_cmd(cmd):
             if not d["handoffs"]: print("没有待接手的交接")
             for h in d["handoffs"]:
                 p = h["package"]
-                print(f"  #{h['id']:<4} {h['executor']:<16} {h['reason']:<16} {h['created_at']}  目标 {p.get('goal') or '-'}"
+                print(f"  #{h['id']:<4} {h['executor']:<16} {h['reason']:<16} {h['created_at']}  目标 {vis(p.get('goal') or '-')}"
                       + (f"  已由 {h['ack']['by']} 接手" if h["ack"] else ""))
         elif sub == "show" and hid:
             s, d = call("GET", f"/api/coord/handoffs/{hid}")
             if s >= 400: die(s, d)
-            print(json.dumps(d["handoff"], ensure_ascii=False, indent=1))
+            print(chr(10).join(vis(line) for line in json.dumps(d["handoff"], ensure_ascii=False, indent=1).split(chr(10))))
         elif sub == "ack" and hid:
             s, d = call("POST", f"/api/coord/handoffs/{hid}/ack", {})
             if s >= 400: die(s, d)
@@ -315,7 +336,18 @@ def approvals_cmd(cmd):
             if not d["approvals"]: print("没有待批准的事项")
             for a in d["approvals"]:
                 risk = f" [{a['risk']}]" if a.get("risk") else ""
-                print(f"  {a['id']}{risk}  {a['summary']}  可选 {'/'.join(a.get('actions') or [])}")
+                print(f"  {vis(a['id'])}{vis(risk)}  {vis(a['summary'])}  可选 {'/'.join(a.get('actions') or [])}")
+                # 执行者请求:摘要可能截断,决定是对完整的 action 生效的,所以整段再打一遍。
+                if a.get("action") and a["action"] != a["summary"]: print(f"      完整动作:{vis(a['action'])}")
+                # 放行确认:被摘要绑定的工作目录、权限、预算;跑过又被收回放行的卡另打收回原因。
+                ep = a.get("execution_profile")
+                if ep:
+                    print(f"      工作目录 {vis(ep.get('workspace_path') or '待核实')} · 权限 {vis(ep.get('tools') or '待核实')} · 预算 "
+                          + vis(json.dumps(ep.get("budget"), ensure_ascii=False)) + (" · 配置已变化" if ep.get("configuration_changed") else ""))
+                if a.get("rerun"): print(f"      再次放行:{vis(a.get('held_note') or '此前已运行过')}")
+                # 版本确认 / 更新:原确认界面的整段文字(改了哪些文件、会停哪些线),看过再批。
+                for line in str(a.get("confirm") or "").split(chr(10)):
+                    if line.strip(): print(f"      {vis(line)}")
         elif sub in ("approve", "reject"):
             aid = pos(3)
             if not aid or aid.count(":") < 2:
@@ -327,7 +359,7 @@ def approvals_cmd(cmd):
                     "expected_version": int(ver) if ver.isascii() and ver.isdigit() else ver}
             s, d = call("POST", f"/api/approvals/{urllib.parse.quote(aid, safe='')}/decide", body)
             if s == 409 and d.get("current"):
-                sys.exit(f"409 {d.get('error')}\n  当前这一项:{d['current']['id']}  {d['current']['summary']}")
+                sys.exit(f"409 {vis(d.get('error'))}\n  当前这一项:{vis(d['current']['id'])}  {vis(d['current']['summary'])}")
             if s >= 400: die(s, d)
             res = d.get("result") or {}
             print(f"{'已批准' if sub == 'approve' else '已拒绝'} {aid}" +
