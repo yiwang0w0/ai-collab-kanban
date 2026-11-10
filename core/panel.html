@@ -539,7 +539,26 @@
   .usage-no{font-family:var(--mono);color:var(--dim)}
   .usage-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .usage-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  /* 时间范围与分组两个分段控件;按卡的排行行下多一行失败尝试与结算;按线、模型、阶段是一张常显的表。 */
+  .usage-head{flex-wrap:wrap}
+  .usage-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
+  .usage-ctl .seg-o span{min-width:3em;padding:0 var(--sp-2)}
+  .usage-what{display:flex;flex-direction:column;white-space:normal}
+  .usage-what > span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .usage-flag{color:var(--dim);font-size:var(--fs-sm)}
+  .usage-groups{padding:0 var(--sp-3) var(--sp-2);font-size:var(--fs-sm)}
+  .usage-grow{display:grid;grid-template-columns:minmax(0,1fr) 7em 15em 8em;align-items:center;gap:var(--sp-1) var(--sp-3);min-height:var(--ctl-h);
+              padding:var(--sp-1) var(--sp-2);border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .usage-grow.usage-gh{min-height:0;color:var(--dim);border-bottom-color:var(--line)}
+  .usage-grow.usage-gt{font-weight:600;border-bottom:0}
+  .usage-grow > span{min-width:0;overflow-wrap:anywhere}
   @media (max-width:620px){
+    .usage-ctl{width:100%}
+    .usage-ctl .seg{width:100%}
+    .usage-grow{grid-template-columns:minmax(0,1fr) auto auto}
+    .usage-grow > span:first-child{grid-column:1 / -1}
+    .usage-grow > .usage-num{text-align:left}
+    .usage-gh{display:none}
     .usage-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
     .usage-stat dd{font-size:var(--fs-lg)}
     /* 手机:第一行卡号和标题,第二行费用和词元 */
@@ -1746,6 +1765,34 @@ function usageTop(groups, limit = 10){
   const cards = (groups || []).filter((g) => g && g.key !== "?");
   const priced = cards.filter((g) => cost(g) !== null).sort((a, b) => cost(b) - cost(a) || Number(a.key) - Number(b.key));
   return { rows: priced.slice(0, limit), unknown: cards.length - priced.length, loose: (groups || []).find((g) => g && g.key === "?") || null };
+}
+// 历史页用量的时间范围与分组。范围按本地日历日:今天 = 今天零点起,7 天 = 含今天的 7 个日历日。
+const USAGE_RANGES = [["today", "今天"], ["7d", "7 天"], ["all", "全部"]];
+const USAGE_BYS = [["card", "按卡"], ["line", "按线"], ["model", "按模型"], ["phase", "按阶段"]];
+/** 范围的起点(YYYY-MM-DD,本地时间);「全部」与认不得的返回空串。 */
+function usageSince(range, now = new Date()){
+  const back = range === "today" ? 0 : range === "7d" ? 6 : null;
+  if (back === null) return "";
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back), p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+/** 汇总接口的路径。by 认不得按卡;csv = 导出用。 */
+function usagePath(by, range, now = new Date(), csv = false){
+  const key = USAGE_BYS.some(([k]) => k === by) ? by : "card", since = usageSince(range, now);
+  return "/api/usage?by=" + key + (since ? "&since=" + since : "") + (csv ? "&format=csv" : "");
+}
+/** 按卡排行一行下面的那一句:失败尝试几次、结算了没有。卡号未知(attempts_failed 为 null)写「失败尝试待核实」。 */
+function usageCardFlag(g){
+  const failed = !g || !("attempts_failed" in g) ? ""
+    : Number.isSafeInteger(g.attempts_failed) ? (g.attempts_failed > 0 ? "失败尝试 " + g.attempts_failed + " 次" : "") : "失败尝试待核实";
+  const settled = g && typeof g.settled === "boolean" ? (g.settled ? "已结算" : "未结算") : "";
+  return [failed, settled].filter(Boolean).join(" · ");
+}
+/** 按线、模型、阶段的一行。name 由调用方给(线名换成显示名);尝试次数是一组里不同尝试的个数。 */
+function usageGroupRow(g, name){
+  return { key: String(g?.key ?? "?"), name: String(name || "").trim() || "待核实",
+    attempts: Number.isSafeInteger(g?.attempts) && g.rows > 0 ? g.attempts + " 次" : "待核实",
+    cost: usageValue(g, "cost_usd") + usageCostMark(g), tokens: usageValue(g, ["in", "out"]) };
 }
 /** 执行器 CLI 的四格：当前、最新、上次核对、实测。格子里只写短状态，口径说明进 title；没有配置的返回 null。
  *  update_available 为 null 时不判断新旧。when 把时刻写成本地时间。
@@ -7355,7 +7402,7 @@ function renderHomeViews(){
     note.textContent = partial.length ? partial.map((n) => "「" + n + "」").join("、") + "的缓存任务较多，这里只读取了前 1000 项；完整列表在全局视图。" : "";
   } else {
     const items = lists.history;
-    renderHistoryUsage(items);
+    renderHistoryUsage();
     document.getElementById("history-n").textContent = items.length ? String(items.length) : "";
     const partial = homeFleet?.partial || [];
     homeFill(document.getElementById("history-list"), JSON.stringify([homeReady, historyLimit, items, partial]), () => {
@@ -7415,73 +7462,95 @@ function usageCsvButton(label, path, name){
   return b;
 }
 
-// ── 历史页用量汇总:GET /api/usage?by=card,进入历史页时取一次;应答没有 groups(旧服务端)或 404 时整节不出。
+// ── 历史页用量汇总:GET /api/usage?by=…&since=…,进入历史页和换范围、换分组时各取一次;应答没有 groups(旧服务端)或 404 时整节不出。
+//    按卡时每组带失败尝试次数(attempts_failed)与有没有结算(settled),顶层带已结算的合计:一次请求,不再逐卡取。
 const historyUsage = optionalSlot();
-let historyTopOpen = false;
+let historyTopOpen = false, historyRange = "all", historyBy = "card";
+try { const s = JSON.parse(sessionStorage.getItem("kanban.history-usage") || "{}");
+      if (USAGE_RANGES.some(([k]) => k === s.range)) historyRange = s.range; if (USAGE_BYS.some(([k]) => k === s.by)) historyBy = s.by; } catch {}
 async function historyUsageLoad(){
-  // 上次没取到的失败尝试,这次进历史页再取。
-  if (!usageFailedBusy) for (const [id, failed] of usageFailed) if (!failed) usageFailed.delete(id);
-  if (await optionalLoad(historyUsage, "/api/usage?by=card", (v) => Array.isArray(v.groups) && !!v.total && typeof v.total === "object"))
-    try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
+  const path = usagePath(historyBy, historyRange);
+  historyUsage.want = path;
+  if (historyUsage.busy) return;                      // 正在读的那一次读完后按最新的选择再读
+  const asked = await optionalLoad(historyUsage, path, (v) => Array.isArray(v.groups) && !!v.total && typeof v.total === "object");
+  if (asked && !historyUsage.error) historyUsage.got = path;
+  if (historyUsage.want !== path) return historyUsageLoad();
+  if (asked) try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
 }
-// 过渡做法:汇总接口还不带失败尝试,按历史页当前显示的这一页完成卡逐卡取 failed,按卡号缓存;汇总接口补上后换成一次请求。
-const usageFailed = new Map();   // 卡号 → failed 汇总;null = 还在取或没取到
-let usageFailedBusy = 0, usageFailedMissing = false;
-const usageFailedQueue = [];
-function historyFailedLoad(ids){
-  if (usageFailedMissing) return;
-  for (const id of ids) if (!usageFailed.has(id)) { usageFailed.set(id, null); usageFailedQueue.push(id); }
-  const pump = () => {
-    while (usageFailedBusy < 4 && usageFailedQueue.length && !usageFailedMissing) {
-      const id = usageFailedQueue.shift();
-      usageFailedBusy++;
-      homeGetOptional("/api/usage/card/" + id).then((v) => {
-        if (v === null) usageFailedMissing = true;
-        else if (v.failed && typeof v.failed === "object") usageFailed.set(id, v.failed);
-      }, () => {}).finally(() => {
-        usageFailedBusy--; pump();
-        if (!usageFailedBusy && homeView === "history") try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
-      });
-    }
-  };
-  pump();
+/** 换时间范围或分组:记在本标签页,重读一次。 */
+function historyUsagePick(kind, value){
+  if (kind === "range") historyRange = value; else historyBy = value;
+  try { sessionStorage.setItem("kanban.history-usage", JSON.stringify({ range: historyRange, by: historyBy })); } catch {}
+  try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
+  historyUsageLoad();
 }
-/** 历史页用量一节。items = 历史列表(新的在前);四个数都不用强调色。 */
-function renderHistoryUsage(items){
+/** 历史页用量一节。四个数都不用强调色。按卡:四个数加「最贵的 10 张」;按线、模型、阶段:一张表。 */
+function renderHistoryUsage(){
   const sec = document.getElementById("history-usage"), v = historyUsage.value;
   sec.hidden = !v;
   if (!v) { homeFill(sec, "", () => []); return; }
-  const total = v.total, groups = v.groups;
-  // 每张完成卡的词元:分子分母都取「本机已完成的卡」与「有用量记录的卡」的交集。
-  const done = new Set(tasks.filter((t) => t.status === "done").map((t) => String(t.id)));
-  const settled = groups.filter((g) => done.has(String(g.key)));
-  const sum = usageMerge(settled, ["in", "out"]), n = settled.length;
-  const share = (x) => (usageNumber(x) ? x / n : null);
-  const per = n ? usageValue({ in: share(sum.in), out: share(sum.out), known: { in: share(sum.known.in), out: share(sum.known.out) } }, ["in", "out"]) : "没有记录";
-  // 缓存读占比:三项里有未知的就不算。
-  const base = [total.in, total.cc, total.cr].every(usageNumber) ? total.in + total.cc + total.cr : 0;
-  const cache = base > 0 ? Math.round(total.cr / base * 100) + "%" : "待核实";
-  // 失败尝试浪费:只数历史页当前这一页的本机完成卡。
-  const page = items.slice(0, historyLimit).filter((i) => i.localId != null).map((i) => i.localId);
-  const keys = new Set(groups.map((g) => String(g.key))), wanted = page.filter((id) => keys.has(String(id)));
-  historyFailedLoad(wanted);
-  const waiting = usageFailedBusy > 0 || usageFailedQueue.length > 0;
-  const burnt = usageMerge(wanted.map((id) => usageFailed.get(id)).filter(Boolean), ["in", "out"]);
-  // 有卡没取到:合计只是已知部分。
-  const lower = wanted.some((id) => !usageFailed.get(id));
-  const waste = usageFailedMissing ? "待核实" : waiting ? "正在读取"
-    : usageValue(lower ? { known: { in: burnt.in ?? burnt.known.in, out: burnt.out ?? burnt.known.out } } : burnt, ["in", "out"]);
-  const top = usageTop(groups), title = (key) => String(byId.get(Number(key))?.subject || "");
-  const row = (g) => ({ key: g.key, title: title(g.key), cost: usageValue(g, "cost_usd") + usageCostMark(g), tokens: usageValue(g, ["in", "out"]) });
-  const model = { rows: total.rows, stale: historyUsage.stale, cache, per, n, waste, page: page.length,
-    cost: usageValue(total, "cost_usd") + usageCostMark(total),
-    top: top.rows.map(row), unknown: top.unknown, loose: top.loose && row(top.loose) };
+  const fresh = historyUsage.got === historyUsage.want, by = historyBy;
+  const model = { range: historyRange, by, fresh, stale: historyUsage.stale, rows: 0 };
+  if (fresh) {
+    const total = v.total, groups = v.groups;
+    model.rows = total.rows;
+    if (by === "card") {
+      // 每张完成卡的词元:分子分母都取「本机已完成的卡」与「有用量记录的卡」的交集。
+      const done = new Set(tasks.filter((t) => t.status === "done").map((t) => String(t.id)));
+      const settled = groups.filter((g) => done.has(String(g.key)));
+      const sum = usageMerge(settled, ["in", "out"]), n = settled.length;
+      const share = (x) => (usageNumber(x) ? x / n : null);
+      model.per = n ? usageValue({ in: share(sum.in), out: share(sum.out), known: { in: share(sum.known.in), out: share(sum.known.out) } }, ["in", "out"]) : "没有记录";
+      model.n = n;
+      // 缓存读占比:三项里有未知的就不算。
+      const base = [total.in, total.cc, total.cr].every(usageNumber) ? total.in + total.cc + total.cr : 0;
+      model.cache = base > 0 ? Math.round(total.cr / base * 100) + "%" : "待核实";
+      model.failed = Number.isSafeInteger(total.attempts_failed) ? total.attempts_failed + " 次" : "待核实";
+      model.failedCards = groups.filter((g) => g.attempts_failed > 0).length;
+      model.settled = v.settled && Number.isSafeInteger(v.settled.cards) ? v.settled.cards : null;
+      model.cost = usageValue(total, "cost_usd") + usageCostMark(total);
+      const top = usageTop(groups), title = (key) => String(byId.get(Number(key))?.subject || "");
+      const row = (g) => ({ key: g.key, title: title(g.key), flag: usageCardFlag(g), cost: usageValue(g, "cost_usd") + usageCostMark(g), tokens: usageValue(g, ["in", "out"]) });
+      model.top = top.rows.map(row); model.unknown = top.unknown; model.loose = top.loose && row(top.loose);
+    } else {
+      const name = (k) => k === "?" ? (by === "line" ? "未记到线上" : "待核实") : by === "line" ? lineLabel(k) : by === "phase" ? USAGE_PHASE[k] || k : k;
+      model.groups = groups.map((g) => usageGroupRow(g, name(String(g.key))));
+      model.total = usageGroupRow(total, "合计");
+    }
+  }
+  const held = sec.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
   homeFill(sec, JSON.stringify(model), () => {
-    const head = homeEl("div", undefined, "usage-head");
-    head.append(homeEl("h2", "用量"), homeEl("span", "", "usage-note"), usageCsvButton("导出 CSV", "/api/usage?by=card&format=csv", "usage-by-card"));
+    const head = homeEl("div", undefined, "usage-head"), ctl = homeEl("div", undefined, "usage-ctl");
+    const seg = (kind, label, list, current) => {
+      const box = homeEl("div", undefined, "seg"); box.setAttribute("role", "radiogroup"); box.setAttribute("aria-label", label);
+      for (const [key, text] of list) {
+        const o = homeEl("label", undefined, "seg-o"), input = homeEl("input");
+        input.type = "radio"; input.name = "usage-" + kind; input.value = key; input.checked = key === current; input.dataset.fk = kind + ":" + key;
+        input.addEventListener("change", () => { if (input.checked) historyUsagePick(kind, key); });
+        o.append(input, homeEl("span", text)); box.append(o);
+      }
+      return box;
+    };
+    ctl.append(seg("range", "时间范围", USAGE_RANGES, model.range), seg("by", "分组", USAGE_BYS, model.by));
+    head.append(homeEl("h2", "用量"), ctl, homeEl("span", "", "usage-note"),
+      usageCsvButton("导出 CSV", usagePath(model.by, model.range, new Date(), true), "usage-by-" + model.by));
     const out = [head];
+    if (!model.fresh) { out.push(homeEl("p", historyUsage.error ? "暂时读不到" : "正在读取", "usage-empty")); return out; }
     if (model.stale) out.push(homeEl("p", "暂时读不到", "usage-empty"));
-    if (!model.rows) { out.push(homeEl("p", "还没有用量记录", "usage-empty")); return out; }
+    if (!model.rows) { out.push(homeEl("p", model.range === "all" ? "还没有用量记录" : "这段时间没有用量记录", "usage-empty")); return out; }
+    if (model.by !== "card") {
+      const table = homeEl("div", undefined, "usage-groups"), line = (r, cls) => {
+        const el = homeEl("div", undefined, "usage-grow" + (cls ? " " + cls : ""));
+        el.append(homeEl("span", r.name), homeEl("span", r.attempts, "usage-num"), homeEl("span", r.cost, "usage-num"), homeEl("span", "词元 " + r.tokens, "usage-num"));
+        return el;
+      };
+      const h = homeEl("div", undefined, "usage-grow usage-gh");
+      h.append(homeEl("span", ({ line: "执行线", model: "模型", phase: "阶段" })[model.by]), homeEl("span", "尝试", "usage-num"), homeEl("span", "费用", "usage-num"), homeEl("span", "词元", "usage-num"));
+      table.append(h, ...model.groups.map((r) => line(r)), line(model.total, "usage-gt"));
+      table.title = "词元 = 输入 + 输出，不含缓存读写；有未知行时只有已知部分";
+      out.push(table);
+      return out;
+    }
     const stats = homeEl("dl", undefined, "usage-stats");
     const stat = (label, value, sub, tip) => {
       const cell = homeEl("div", undefined, "usage-stat");
@@ -7492,17 +7561,18 @@ function renderHistoryUsage(items){
     };
     stat("缓存读占比", model.cache, "", "缓存读词元占输入、缓存写、缓存读三项之和的比例；三项里有未知的写待核实");
     stat("每张完成卡的词元", model.per, model.n ? model.n + " 张完成卡" : "", "词元 = 输入 + 输出，不含缓存读写；只数本机已完成且有用量记录的卡");
-    stat("失败尝试浪费", model.waste, "本页 " + model.page + " 张卡", "失败尝试用掉的词元，输入 + 输出；只数这一页显示的完成卡");
-    stat("费用合计", model.cost, "", "全部用量行的费用之和；有未知行时只有已知部分");
+    stat("失败尝试", model.failed, model.failedCards ? model.failedCards + " 张卡" : "", "这段时间里有用量行、最后没通过的尝试次数");
+    stat("费用合计", model.cost, model.settled !== null ? "已结算 " + model.settled + " 张卡" : "", "这段时间全部用量行的费用之和；有未知行时只有已知部分");
     out.push(stats);
     const fold = homeEl("details", undefined, "usage-top");
     fold.open = historyTopOpen;
     fold.addEventListener("toggle", () => { historyTopOpen = fold.open; });
     fold.append(homeEl("summary", "最贵的 10 张"));
     for (const r of model.top) {
-      const b = homeEl("button", undefined, "usage-row ghost"); b.type = "button";
-      b.append(homeEl("span", "#" + r.key, "usage-no"), homeEl("span", r.title, "usage-title"),
-               homeEl("span", r.cost, "usage-num"), homeEl("span", "词元 " + r.tokens, "usage-num"));
+      const b = homeEl("button", undefined, "usage-row ghost"), what = homeEl("span", undefined, "usage-title usage-what"); b.type = "button";
+      what.append(homeEl("span", r.title));
+      if (r.flag) what.append(homeEl("span", r.flag, "usage-flag"));
+      b.append(homeEl("span", "#" + r.key, "usage-no"), what, homeEl("span", r.cost, "usage-num"), homeEl("span", "词元 " + r.tokens, "usage-num"));
       b.addEventListener("click", () => openSide({ id: Number(r.key), uid: null, item: null }));
       fold.append(b);
     }
@@ -7516,6 +7586,7 @@ function renderHistoryUsage(items){
     out.push(fold);
     return out;
   });
+  if (held) for (const el of sec.querySelectorAll("[data-fk]")) if (el.dataset.fk === held) { el.focus({ preventScroll: true }); break; }
 }
 
 // ── 执行器 CLI 版本:GET /api/cli-versions。进入设置页时读一次,停留期间最多每 10 分钟一次;不进 refresh()。

@@ -8,7 +8,7 @@ const start = source.indexOf("// ── display-copy(pure;tests/panelcopytest.mj
 const end = source.indexOf("// ── /display-copy ──", start);
 assert.ok(start >= 0 && end > start, "未找到纯展示文案测试边界");
 const copy = new Function(source.slice(source.indexOf("\n", start) + 1, end) +
-  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells, zcodeView, zcodeCardRows };")();
+  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells, zcodeView, zcodeCardRows, usageSince, usagePath, usageCardFlag, usageGroupRow };")();
 
 function panelSection(start, end) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
@@ -101,6 +101,14 @@ test("用量的数：未知不当 0，有已知部分写「不少于」，费用
   const top = copy.usageTop([g("1", 0.5), g("2", null, { cost_usd: 2 }), g("3", null), g("?", 9), g("4", 1.5), g("5", null)], 2);
   assert.deepEqual([top.rows.map((x) => x.key), top.unknown, top.loose.key], [["2", "4"], 2, "?"]);
   assert.deepEqual(copy.usageTop([]), { rows: [], unknown: 0, loose: null });
+  // 第三波:时间范围按本地日历日给 since;分组路径;按卡的失败尝试与结算;按线等分组行里未知写「待核实」不写 0。
+  const now = new Date(2026, 10, 10, 9, 30);
+  assert.deepEqual(["today", "7d", "all", "x"].map((r) => copy.usageSince(r, now)), ["2026-11-10", "2026-11-04", "", ""]);
+  assert.deepEqual([copy.usagePath("line", "7d", now), copy.usagePath("bogus", "all", now, true)], ["/api/usage?by=line&since=2026-11-04", "/api/usage?by=card&format=csv"]);
+  assert.deepEqual([copy.usageCardFlag({ attempts_failed: 2, settled: true }), copy.usageCardFlag({ attempts_failed: 0, settled: false }),
+    copy.usageCardFlag({ attempts_failed: null, settled: false }), copy.usageCardFlag({ rows: 1 })], ["失败尝试 2 次 · 已结算", "未结算", "失败尝试待核实 · 未结算", ""]);
+  const zc = copy.usageGroupRow({ key: "zcode", rows: 1, attempts: 1, in: null, out: null, cost_usd: null, cost_source: "unknown", known: {}, unknown: { in: 1, out: 1, cost_usd: 1 } }, "Zcode");
+  assert.deepEqual([zc.name, zc.attempts, zc.cost, zc.tokens], ["Zcode", "1 次", "待核实", "待核实"], "Zcode 账本行的词元与费用是未知,不是 0");
 });
 
 test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态都带下一步，判断不了新旧就不写，没配置的整行不出", () => {
