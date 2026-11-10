@@ -410,6 +410,50 @@ assert not (case/'evidence'/'spawn-7.json').exists() and len(list((case/'evidenc
 `);
 });
 
+test("领取开始时先把上一次遗留的派生文件留档：进程被杀留下的旧建议不被这次成功收割", () => {
+  python(WORKER_FIXTURE + `stale={'tasks':[{'subject':'进程被杀前写下的建议','description':'上一次领取'}]}
+def leftover(name):
+ # 上一次领取的进程被杀：没走到任何出口，派生文件原样留在证据目录。
+ case=folder/name; (case/'evidence').mkdir(parents=True)
+ (case/'evidence'/'spawn-7.json').write_text(json.dumps(stale,ensure_ascii=False),encoding='utf-8')
+ return case
+def retained(case): return list((case/'evidence').glob('spawn-7-retained-*.json'))
+# 这次领取：模型没有写建议，验证通过。遗留文件在模型运行前就被留档，不立卡。
+case=leftover('被杀的卡'); f=exercise([green],case=case)
+assert f.result=='done' and f.posts==[],(f.result,f.posts)
+kept=retained(case)
+assert len(kept)==1 and json.loads(kept[0].read_text(encoding='utf-8'))==stale and not (case/'evidence'/'spawn-7.json').exists(),kept
+report=f.deliveries[0][0][3]
+assert '候选发现' in report and '上一次领取遗留' in report and str(kept[0]) in report,report
+# 这次领取里新写的建议不受影响：旧的留档，新的照常立卡。
+case=leftover('又被杀的卡'); g=exercise([green],case=case,spawn={'tasks':[{'subject':'这次领取写下的建议'}]})
+assert g.result=='done' and [body['subject'] for body in g.posts]==['这次领取写下的建议'],g.posts
+assert len(retained(case))==2,retained(case)
+# 这次没成功：遗留文件同样已留档，等待报告里有说明。
+case=leftover('被杀后又失败的卡'); h=exercise([{'ok':False,'out':'timeout'}],case=case)
+assert h.result=='wait' and h.posts==[] and len(retained(case))==1 and '上一次领取遗留' in h.deliveries[0][0][3],h.deliveries
+# 旧阶梯路径同样在领取开始时留档。
+case=leftover('旧阶梯被杀的卡')
+w.os.environ['WORKER_LEGACY_RETRY']='1'
+w.DATA=str(case); w.EVID=str(case/'evidence'); w.LEDGER=str(case/'ledger.jsonl')
+w.LAST_ACCT={'sid':None,'t0':None,'usage':{'calls':None,'in':None,'cc':None,'cr':None,'out':None}}
+old={'id':7,'run_id':str(uuid.uuid4()),'attempts':1,'attempts_this_claim':1,'max_attempts':3,'verify_cmd':'fixture-check','subject':'旧阶梯夹具','weight':'standard'}
+posted=[]; delivered=[]
+def model(task,worker,path,prev,attempt,name,effort): pathlib.Path(path).write_text('旧阶梯交付',encoding='utf-8'); return 0,'完成'
+w.run_worker=model
+w.run_verify=lambda task:{'ok':True,'key':'fixture-check','cmd':'本地函数桩','rc':0,'out':'PASS 本地桩验证','registry_sha256':'a'*64}
+def call(method,path,body=None,**kwargs):
+ if method=='POST' and path=='/api/tasks': posted.append(body); return 201,{'task':{'id':101,'parent_id':7,'released':True}}
+ return 200,{'tasks':[]}
+w.call=call
+w.deliver=lambda *args,**kwargs:(delivered.append(args),True)[1]
+try: outcome=w.handle(old,'fixture')
+finally: w.os.environ.pop('WORKER_LEGACY_RETRY',None)
+assert outcome=='done' and posted==[] and delivered[0][2]=='done',(outcome,posted,delivered)
+assert len(retained(case))==1 and '上一次领取遗留' in delivered[0][3],delivered[0][3]
+`);
+});
+
 test("验证日志落盘失败不改写验证结果：执行线转等待不重跑模型，审阅线本轮跳过不裁决", () => {
   python(WORKER_FIXTURE + `import verify_lib as v
 import reviewer_loop as r

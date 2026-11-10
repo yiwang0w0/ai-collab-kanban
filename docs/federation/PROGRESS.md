@@ -1358,4 +1358,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - convtest 3/0、servertest 216/0、clitest 114/0、lessonstest 5/0、usagetest 3/0、hometest 25/0、panelcopytest 27/0、decomposetest 84/0、doctorallowtest 17/0、cliversionstest 47/0、upgradeclitest 27/0；阻塞：无。
 
 - 2026-11-10 执行线审阅修复 8 条（claude/home-v2-devfix-ev）：证据校验与验证分类耗时有界；带 fail 字样的环境故障不再当测试红；「声明卡住」分清否定句；非完成出口留档派生建议；选项块按结构取舍；操作员建卡的收紧字段照收；验证日志落盘失败不翻验证结果；「（未执行）」被审阅闸识别。
-- verificationrepairtest 18/0、evidencecontracttest 11/0、servertest 222/0、looptest 85/0、reviewtest 32/0、selftest 402/0、lessonstest 5/0、usagetest 3/0、clitest 114/0、prompt-selftest 82/0、codex-selftest 33/0。阻塞：无；runfencetest 的「claim identity」一项在整合分支基线上已红（vm 切片缺 process），不在本批范围。
+- verificationrepairtest 18/0、evidencecontracttest 11/0、servertest 222/0、looptest 85/0、reviewtest 32/0、selftest 402/0、lessonstest 5/0、usagetest 3/0、clitest 114/0、prompt-selftest 82/0、codex-selftest 33/0。阻塞：无。
+- 同批续修：runfencetest 领取身份用例的切片只取到 claimIdentity（原切片自 51b5583 起带进读 process.env 的代码，一直红）；建卡 lockKey 与较低起跑档照收、worker 派生卡的收紧取值生效；审阅闸计数模式改线性；领取开始时留档上一次遗留的派生文件。runfencetest 26/0、servertest 226/0、verificationrepairtest 19/0、evidencecontracttest 12/0、looptest 85/0、reviewtest 32/0、selftest 402/0。
+- 未决：宿主验证附录仍与模型正文拼在同一段文本，没有独立字段；审阅线因验证日志落盘失败跳过的卡，数据目录修好前每轮都会重跑验证。合规的小写检查行（`cmd -> pass 12 / fail 0`）不计为机器产出、维持转人工，已裁定不放宽。

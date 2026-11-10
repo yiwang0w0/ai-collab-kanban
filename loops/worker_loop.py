@@ -514,6 +514,20 @@ def stash_spawn(tid, why):
             + f"\n完整候选原件：{saved}（{os.path.getsize(saved)} bytes）")
 
 
+def set_aside_leftover(tid):
+    """领取开始、模型还没跑:证据目录里若已有本卡的派生文件,只能是上一次领取留下的
+    (进程被杀、租约被回收,没走到任何出口)。先留档移走 —— 这次成功只收割这次写下的建议。
+    返回 (要并进报告的说明, 本次还能不能收割)。留档失败时文件还在原处,这次不收割。"""
+    try:
+        memo = stash_spawn(tid, "上一次领取遗留,本次开始前移走")
+    except OSError as error:
+        log(f"  ⚠上一次领取遗留的派生文件留档失败({error})—— 本次不收割派生建议")
+        return f"⚠上一次领取遗留的派生文件留档失败({error}):{spawn_path_for(tid)} 仍在原处;本次未收割派生建议,请人工移走。", False
+    if memo:
+        log("  上一次领取遗留的派生文件已留档,不参与本次收割")
+    return memo or "", True
+
+
 def harvest_spawned(t, worker):
     """把 worker 放下的 spawn 文件变成卡。**建卡的是 loop**。
     ⭐派生闸:「子任务」是「候选发现」。
@@ -2498,9 +2512,11 @@ def handle_legacy(t, worker):
     run_id = t.get("run_id")
     if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
         raise RuntimeError("领取回执缺少有效 run_id；未调用模型")
-    def deliver_run(*args, **kwargs):
-        return deliver(*args, run_id=run_id, **kwargs)
+    def deliver_run(card, who, outcome, text, **kwargs):
+        # 上一次领取遗留的派生文件已在开始时留档;说明并入本次的每一份报告。
+        return deliver(card, who, outcome, text + ((chr(10) * 2 + leftover) if leftover else ""), run_id=run_id, **kwargs)
     os.makedirs(EVID, exist_ok=True)
+    leftover, may_harvest = set_aside_leftover(tid)
     attempt = int(t.get("attempts", 1))
     # ⭐判定上限**只在这里**。看板只返回次数,不说"已经用尽"。
     max_att = int(t.get("max_attempts", 3))
@@ -2619,7 +2635,7 @@ def handle_legacy(t, worker):
             if ev and (vr is None or vr["ok"]):
                 ev = host_delivery(t, ev, ev_path, vr, rc)
                 ev += lessons_lib.session(t, DATA, log).close(True)   # 经验入库 + 附过的条目各记一次命中
-                made, memo = ([], "") if PROFILE_MODE else harvest_spawned(t, worker)
+                made, memo = ([], "") if PROFILE_MODE or not may_harvest else harvest_spawned(t, worker)
                 if made and not any(isinstance(x, dict) for x in made):
                     ev += (chr(10) + chr(10) + "—— 本卡派生出的子任务卡 ——" + chr(10) +
                            "#" + " #".join(str(x) for x in made))
@@ -2769,6 +2785,7 @@ def handle(t, worker):
     os.makedirs(EVID, exist_ok=True)
     log_dir = os.path.join(EVID, "verify_runs", run_id)
     os.makedirs(log_dir, exist_ok=True)
+    leftover, may_harvest = set_aside_leftover(tid)
     def set_aside(why):
         """父卡没成功:派生文件留档不立卡,返回要并进报告的说明。
         放着不管,这张卡下次成功时会把失败路线上的建议立成卡(首案还会自动放行)。"""
@@ -2782,6 +2799,8 @@ def handle(t, worker):
     def finish(outcome, text, why=None):
         if outcome != "done":
             text += set_aside(why or "未完成")
+        if leftover:
+            text += "\n\n" + leftover
         text += lessons.close(outcome == "done")    # 收尾:经验入库;验证通过时给附过的条目各记一次命中
         delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id)
         return "done" if delivered and outcome == "done" else "wait" if delivered else "rejected"
@@ -2863,7 +2882,7 @@ def handle(t, worker):
                            if oversize else evidence or str(tail))
             if reason == "passed":
                 last_result = host_delivery(t, last_result, ev_path, vr, rc)
-                made, memo = ([], "") if PROFILE_MODE else harvest_spawned(task, worker)
+                made, memo = ([], "") if PROFILE_MODE or not may_harvest else harvest_spawned(task, worker)
                 if made:
                     last_result += "\n本卡派生子任务：" + str(made)
                 if memo:
