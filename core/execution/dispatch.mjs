@@ -13,6 +13,8 @@ import {chooseRole} from "../mcp/tools.mjs";
 const require=createRequire(import.meta.url),store=require("../store.js"),cancellation=require("../cancellation_guard.js");
 const at=()=>new Date().toISOString();
 const MODES=["fixture","provider"];
+// 输出解码器判定的工具越权(core/execution/output.mjs):结算时以它为准,覆盖先到的自报完成(finishDispatch)。
+const TOOL_SCOPE_VIOLATIONS=new Set(["UNAUTHORIZED_TOOL","TOOL_SCOPE_MISMATCH"]);
 const table=db=>db.prepare("SELECT * FROM broker_dispatches WHERE dispatch_id=?");
 function fresh(db,id){
  uuid(id,"dispatch_id");const node=localIdentity(db),d=table(db).get(id);
@@ -251,6 +253,11 @@ export function finishDispatch(db,{dispatchId,result,observation=null}){
   }else if(t?.run_id===d.run_id&&t.status==="waiting"&&!t.archived_at){
    const reported=db.prepare("SELECT 1 FROM broker_requests r JOIN broker_principals p ON r.principal_id=p.principal_id WHERE p.run_id=? AND r.tool_name='report_result' LIMIT 1").get(d.run_id);
    if(reported)delivery="existing_mcp_report_preserved";
+   // 进程因工具越权被宿主终止:以越权结论为准。模型的 report_result 可能在被杀之前已经到达,把卡送进了待验收;
+   // 这里改回待裁定、证据换成宿主的结论,与自报没赶上时(上面 in_progress 那支代报 wait)落到同一个状态。
+   if(reported&&result.status!=="success"&&TOOL_SCOPE_VIOLATIONS.has(observation?.observed?.protocol_error)&&
+    store.overrideReport(db,{id:t.id,worker:d.worker,runId:d.run_id,evidence:(d.execution_mode==="fixture"?"[fixture; no real model call]\n":"")+result.evidence,reason:observation.observed.protocol_error}))
+    delivery="mcp_report_overridden";
   }
   revokeRunPrincipals(db,d.run_id,"dispatch_settled");
   const receipt={...result,delivery,accepted:false,execution_mode:d.execution_mode,real_model_call_confirmed:false};

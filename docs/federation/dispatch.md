@@ -51,6 +51,7 @@ finishDispatch 接收已观察的 success / failed / timeout / cancelled、证�
 
 - 当前 run 仍在执行：复用原生 report；success 进入 waiting/review，其他终态进入 waiting/decision，均不自动验收。
 - 相同 run 已通过 MCP report_result 交付：保留原交付内容与等待种类，进程回执另存，不用最终 stdout 覆盖 agent 的正式交付。
+  例外：进程观察的协议错误是工具越权（UNAUTHORIZED_TOOL / TOOL_SCOPE_MISMATCH）而卡停在这次运行的 waiting/review 时，以越权为准：卡改为 waiting/decision、结果换成进程回执的证据（与 MCP 交付没赶上时相同），交付记为 mcp_report_overridden；agent 的原交付留在证据历史里。
 - 任务已被其他 run 替换或状态改变：只保留迟到回执，不修改当前任务。
 - 同一分派重复提交同一终态回执返回原结果；改变内容返回 RESULT_CONFLICT。
 - 回执写入失败时，任务状态、run、工作时段、事件和终态记录一起回滚；重试不再消费启动许可。

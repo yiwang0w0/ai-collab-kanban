@@ -375,12 +375,14 @@ test('没配账本时不落「已记账」标记:之后配上账本,reconcile �
  assert.equal(fixed.accounted,true);assert.equal(fixed.launched,false);assert.equal(ledger(f).length,1);assert.equal(ledger(f)[0].card,t.id);assert.equal(ledger(f)[0].contract_ok,true);
  assert.equal(used(f),1);assert.equal(launches(f),1);assert.equal(existsSync(schedulerLock(f)),false);
 });
-test('工具范围:声称调用未授权工具或工具数不符,额度照扣、不重启、卡进待裁定',{skip},async()=>{
- for(const [mode,protocol] of [['bad-tool','UNAUTHORIZED_TOOL'],['wrong-toolcount','TOOL_SCOPE_MISMATCH']]){
+test('工具范围:声称调用未授权工具或工具数不符,额度照扣、不重启、卡进待裁定;自报完成先到也以越权为准',{skip},async()=>{
+ // 前两种:越权与模型经 MCP 的回传谁先到不确定;late-bad-tool:回传落盘之后才越权,固定走「自报先到」那一支。
+ for(const [mode,protocol] of [['bad-tool','UNAUTHORIZED_TOOL'],['wrong-toolcount','TOOL_SCOPE_MISMATCH'],['late-bad-tool','UNAUTHORIZED_TOOL']]){
   const f=await fixture({mode,limit:2}),t=card(f),w=await open(f),r=await w.tick();assert.equal(r.results[0].phase,'settled',JSON.stringify([r,f.events]));
   const o=observation(f);
   assert.equal(o.observed.protocol_error,protocol);assert.equal(o.status,'failed');assert.equal(o.process.cleanup,'job_empty');
-  assert.equal(used(f),1);assert.equal(row(f,t.id).waiting_for,'decision');assert.equal(ledger(f)[0].settled_success,false);
+  assert.equal(used(f),1);assert.equal(row(f,t.id).waiting_for,'decision',mode);assert.equal(row(f,t.id).result,o.evidence,mode);assert.equal(ledger(f)[0].settled_success,false);
+  if(mode==='late-bad-tool')assert.equal(ledger(f)[0].delivered_via,'mcp_report_overridden');
   assert.equal((await w.tick()).status,'idle');assert.equal(launches(f),1);
   await w.close();
  }

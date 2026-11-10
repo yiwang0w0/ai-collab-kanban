@@ -284,6 +284,8 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
   - `settled_success`:进程观察是否成功;
   - `task_read_observed`:这次运行是否真的读过卡;
   - `delivered_via`:`existing_mcp_report_preserved` 是模型自己回传,`reported` 是宿主代报;
+    `mcp_report_overridden` 是进程因工具越权(`UNAUTHORIZED_TOOL` / `TOOL_SCOPE_MISMATCH`)被终止、而模型的回传在被杀之前已经到达:
+    结算以越权为准,卡从待验收改回待裁定、结果换成宿主的结论(与回传没赶上时相同),模型回传的正文留在卡的证据历史里;
   - `contract_ok`:交付的正文是否符合四节合同。没有成功交付、或卡已不在这次运行手里时记 `null`。
 - `host_verify`、`host_commit` 恒为 `not_applicable`。
 

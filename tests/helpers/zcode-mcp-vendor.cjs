@@ -8,6 +8,7 @@
 //   fail            开始后以退出码 7 结束
 //   idle            开始后不再输出(用于无输出时限)
 //   bad-tool        声称调用一个未授权的原生工具
+//   late-bad-tool   正常读卡并回传(回传已落盘)之后,再声称调用一个未授权的原生工具:自报一定先于越权判定到达
 //   wrong-toolcount 上报的工具数与实际不符
 "use strict";
 const fs=require("node:fs"),path=require("node:path"),{spawn}=require("node:child_process"),{randomUUID}=require("node:crypto");
@@ -84,6 +85,7 @@ async function main(){
   await call("get_task",{task_uid:bound.task_uid});
   const body=mode==="bad-contract"?PROSE:EVIDENCE;
   if(mode!=="no-report")await call("report_result",{request_id:randomUUID(),task_uid:bound.task_uid,run_id:bound.run_id,outcome:"done",evidence:body});
+  if(mode==="late-bad-tool")event("tool.updated",{kind:"scheduled",toolCallId:"call"+(++calls),toolName:"Bash"});
   event("turn.completed",{resultType:"success",response:body});
   out({type:"result",sessionId:"fixture",turnId:"turn",traceId:"trace",response:body,eventCount:seq,projection:{status:"completed",turnCount:1,totalTokenCount:0}});
  }finally{await mcp.close();}

@@ -2147,6 +2147,34 @@ function report(db, { id, worker, outcome, evidence = "", runId }) {
 }
 
 /**
+ * 宿主结算否决这次运行先到的自报完成(例:进程因工具越权被终止,而模型的 report_result 在被杀之前已经落盘)。
+ * 卡从待验收(review)改为待裁定(decision),证据换成宿主的结论 —— 与「自报没赶上、由宿主代报 wait」落到同一个状态,
+ * 结果不再取决于两者谁先到。只改仍停在这次运行交付上的卡(waiting/review、同 run、同持有者、未归档),否则不动、返回 false。
+ * 模型自报的正文在 report 时已记入 evidence 历史,这里追加宿主这一条,不删旧的。
+ */
+function overrideReport(db, { id, worker, runId, evidence, reason }) {
+  const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
+  if (!t || t.status !== "waiting" || t.waiting_for !== "review" || t.run_id !== runId || t.worker !== String(worker) || t.archived_at) return false;
+  const ownsTransaction = !db.isTransaction;
+  db.exec(ownsTransaction ? "BEGIN IMMEDIATE" : "SAVEPOINT store_override_report");
+  try {
+    const r = db.prepare(
+      `UPDATE tasks SET waiting_for='decision', result=?, result_summary=?, updated_at=?
+        WHERE id=? AND status='waiting' AND waiting_for='review' AND worker=? AND run_id=? AND archived_at IS NULL`
+    ).run(String(evidence), resultSummaryOf(evidence), now(), Number(id), String(worker), runId);
+    if (r.changes) {
+      appendEvent(db, {
+        taskId: Number(id), kind: "report_overridden", actor: "system",
+        detail: eventState({ ...t, waiting_for: "decision" }, { run_id: runId, reason: String(reason), from_waiting_for: "review", waiting_for: "decision" }),
+      });
+      appendTaskRecord(db,id,"evidence",{source:"settlement_override",run_id:runId,worker:String(worker),outcome:"wait",evidence:String(evidence),reason:String(reason)},"system");
+    }
+    db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_override_report");
+    return r.changes > 0;
+  } catch (e) { try { db.exec(ownsTransaction ? "ROLLBACK" : "ROLLBACK TO store_override_report; RELEASE store_override_report"); } catch {} throw e; }
+}
+
+/**
  * Linked closure (ruling: "one path through, no extra ceremony"). Closes the cards
  * a success makes unnecessary:
  *   ① siblings under the same parent sharing `oneof_key` = alternatives ⇒ close
@@ -3425,7 +3453,7 @@ function openChildrenOnLines(db, parentId, lines) {
 module.exports = {
   UUID_RE, migrateLifecycle, resolveWithPreparation,
   localNode, renameNode, assertLocalIdentityInput, requireRun, runs, requireExpectedVersion, assertExpectedVersion,
-  open, migrate, add, claim, heartbeat, recordProcessStarted, recordExecutionEvent, taskExecutionProfile, taskVerificationRepair, matchesExecutionProfile, bumpAttempt, report, resolve, update, setReleased, archive,
+  open, migrate, add, claim, heartbeat, recordProcessStarted, recordExecutionEvent, taskExecutionProfile, taskVerificationRepair, matchesExecutionProfile, bumpAttempt, report, overrideReport, resolve, update, setReleased, archive,
   addRequest, getRequest, listRequests, ackRequest, doneRequest, REQUEST_KINDS, REQUEST_STATUS,
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,
