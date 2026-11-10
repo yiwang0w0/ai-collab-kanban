@@ -6,7 +6,8 @@ import {inspectStoppedRuns} from '../core/execution/stop-proof.mjs';
 import test,{after} from "node:test";
 import assert from "node:assert/strict";
 import {DatabaseSync} from "node:sqlite";
-import {createRequire} from "node:module";
+import {createRequire,syncBuiltinESMExports} from "node:module";
+import {performance} from "node:perf_hooks";
 import {randomUUID} from "node:crypto";
 import {mkdtempSync,mkdirSync,readFileSync,writeFileSync,rmSync,existsSync,cpSync} from "node:fs";
 import {join} from "node:path";
@@ -22,6 +23,7 @@ import {migrateSync} from "../core/federation/sync-store.mjs";
 import {migrateBroker,putRole,issuePrincipal,revokePrincipal,authenticatePrincipal} from "../core/mcp/policy.mjs";
 import {callTool} from "../core/mcp/tools.mjs";
 import {pinFile,superviseProcess} from "../core/execution/supervisor.mjs";
+import {createOutputDecoder} from "../core/execution/output.mjs";
 import {createSourceGate} from "../core/execution/source-gate.mjs";
 import {prepareUncertainResolution,recordUncertainResolution,migrateDispatch,putQuota,quotaStatus,prepareDispatch,authorizeLaunch,finishDispatch,abandonPrepared,dispatchStatus} from "../core/execution/dispatch.mjs";
 const require=createRequire(import.meta.url),store=require("../core/store.js"),ROOT=fileURLToPath(new URL("../",import.meta.url));
@@ -690,10 +692,45 @@ test("runner keeps unknown post-permit filesystem exceptions private and uncerta
  assert.throws(()=>authorizeLaunch(f.db,{dispatchId:w.receipt.dispatch_id,sourceGate:gate}),{code:"LAUNCH_NOT_AVAILABLE"});
 });
 
-test("idle runner settles a completed-but-still-running vendor as timeout and retains safe diagnostics",async()=>{
+test("idle runner settles a completed-but-still-running vendor as timeout and retains safe diagnostics",async(context)=>{
  const {f,w,options}=zcodeDispatchFixture("idle");
  options.idleTimeoutMs=300;options.heartbeatMs=50;
- const r=await executePreparedDispatch(f.db,options),o=r.execution.observation;
+ // 本例测完成终态之后的空转，不拿冷启动能否赶在300ms内作为先决条件。
+ // 旁观真实宿主帧并用相同协议解码；终态到达后下一轮事件循环才放开活动时钟。
+ // 仅替换本测试的观测时钟，runner的5000ms墙钟和300ms空转阈值保持原样。
+ const childProcess=require("node:child_process"),originalSpawn=childProcess.spawn,now=performance.now.bind(performance);
+ const decoded=createOutputDecoder("zcode",options.prepared.plan.decoder);
+ let openedAt=null,terminalObserved=false,transportError=null;
+ let r;
+ try{
+  context.mock.method(performance,"now",()=>openedAt===null?0:now()-openedAt);
+  context.mock.method(childProcess,"spawn",(program,args,settings)=>{
+   const child=originalSpawn(program,args,settings);
+   if(args?.includes(fileURLToPath(new URL("../core/execution/process_host.py",import.meta.url)))){
+    let frames="";
+    child.stdout.on("data",chunk=>{
+     if(terminalObserved||transportError)return;
+     try{
+      frames+=chunk.toString("utf8");let end;
+      while((end=frames.indexOf("\n"))!==-1){
+       const frame=JSON.parse(frames.slice(0,end));frames=frames.slice(end+1);
+       if(frame.kind!=="stdout")continue;
+       assert.equal(decoded.push(Buffer.from(frame.data,"base64")),true);
+       if(decoded.activity.events>=4){
+        assert.equal(decoded.finish({exitCode:0}).status,"success");
+        terminalObserved=true;setImmediate(()=>{openedAt=now();});break;
+       }
+      }
+     }catch(error){transportError=error;}
+    });
+   }
+   return child;
+  });
+  syncBuiltinESMExports();
+  r=await executePreparedDispatch(f.db,options);
+ }finally{context.mock.restoreAll();syncBuiltinESMExports();}
+ assert.equal(transportError,null);assert.equal(terminalObserved,true);
+ const o=r.execution.observation;
  assert.equal(r.phase,"settled");assert.equal(r.result.status,"timeout");assert.equal(o.diagnostic,"IDLE_TIMEOUT");
  assert.equal(o.observed.terminal_status,"success");assert.equal(o.process.cleanup,"job_empty");
  assert.ok(o.process.activity.idle_timeout_observed_ms>=300);assert.ok(o.process.activity.events>=4);

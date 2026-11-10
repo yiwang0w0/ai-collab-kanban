@@ -53,7 +53,7 @@ def validate(text, contract):
             check = (r".+\s*->\s*pass\s*[:=]?\s*\d+\s*[/,，;；· ]+\s*fail\s*[:=]?\s*\d+"
                      r"(?:\s*[（(]未执行[）)])?(?:\s*[;；,，]\s*(?:日志|文件)[:：]\s*.+?\s*[（(]?\d+\s*(?:UTF-8\s*)?bytes[）)]?)?")
             if not re.fullmatch(check, line, re.I):
-                errors.append("检查每行写 cmd -> pass N / fail N；未执行写 pass 0 / fail 0 并标明未执行")
+                errors.append("检查每行写 cmd -> pass N / fail N；未执行写 cmd -> pass 0 / fail 0（未执行）")
                 break
         if any("```" in line for lines in sections.values() for line in lines):
             errors.append("不内联长输出或代码块；只引用日志文件与实际 UTF-8 字节数")
@@ -65,7 +65,8 @@ def prompt(contract):
             f"正文最多 {contract['max_chars']} Unicode 字符（emoji 按一个码点计）；不含宿主附录或落盘日志。超限原文保留并拒收，同会话要求精简，不截断。",
             "# 给人看的结果", "结论、改动和需要人做的事，共 1 至 3 行。",
             "# 改动", "path:12-18 一句话。无改动写无。",
-            "# 检查", "cmd -> pass 2 / fail 0。未执行写 pass 0 / fail 0（未执行）。不要虚构检查。",
+            "# 检查", "cmd -> pass 2 / fail 0",
+            "未执行写 cmd -> pass 0 / fail 0（未执行），cmd 替换为实际检查命令；保留命令名和 ->，不要虚构检查。",
             "# 未决", "每条一行；没有写无。",
             "长输出只引用日志文件及实际字节数；登记验证日志由宿主附加，无须重复执行验证。"]
 

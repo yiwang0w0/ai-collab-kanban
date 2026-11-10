@@ -129,6 +129,20 @@ assert '作为最终中文回复' in chr(10).join(w.delivery_block('C:/fixture/�
   assert.equal(store.resultSummaryOf(BODY), "完成本地桩修改。\n无需人工操作。");
 });
 
+test("未执行检查的提示示例包含命令并被原合同接收", () => {
+  python(`import re
+import evidence_contract as e
+body=${JSON.stringify(BODY)}
+contract={'version':1,'max_chars':4000}
+instruction=next(line for line in e.prompt(contract) if '未执行' in line and 'pass 0' in line)
+example=re.search(r'cmd -> pass 0 / fail 0（未执行）',instruction)
+assert example,instruction
+assert e.validate(body.replace('fixture-check -> pass 2 / fail 0',example.group()),contract)['ok']
+assert not e.validate(body.replace('fixture-check -> pass 2 / fail 0','pass 0 / fail 0（未执行）'),contract)['ok']
+assert 'cmd -> pass 0 / fail 0' in e.validate(body.replace('fixture-check -> pass 2 / fail 0','未执行'),contract)['errors'][-1]
+`);
+});
+
 test("中文与emoji按Unicode码点计数，4000边界与UTF-8字节在JS/Python一致", () => {
   const chars = Array.from(BODY).length;
   const exact = BODY + "🙂".repeat(4000 - chars);
