@@ -499,5 +499,12 @@ test("协作安全:逾期锁经批准接口强制释放时,note 按接口上限 
     const long = (await locks()).find((l) => l.resource === "device:long-note");
     assert.equal(long.released_by, "operator");
     assert.ok([...long.release_reason].length <= 200 && long.release_reason.startsWith(note.slice(0, 150)), `锁记录里的理由截到 200 字以内:${long.release_reason}`);
+    // 没写 note(面板「待你批准」行没有留言框):理由不能是一句看不出有没有人写过的固定话
+    const bare = items["device:no-note"];
+    assert.equal((await B.decide(bare.id, { decision: "approve", source: src("panel"), expected_version: bare.expected_version })).status, 200);
+    const none = (await locks()).find((l) => l.resource === "device:no-note");
+    assert.match(none.release_reason, /未写理由/, `没写 note 的强制释放要写明未写理由:${none.release_reason}`);
+    assert.match(none.release_reason, /operator 经 local/, "并记下是谁、经哪条通道决定的");
+    assert.ok((await B.journal()).some((e) => e.kind === "lock.force_release" && e.body.includes("device:no-note") && e.body.includes("未写理由")));
   } finally { await B.stop(); }
 });
