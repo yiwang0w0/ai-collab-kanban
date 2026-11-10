@@ -567,3 +567,18 @@ test("协作安全:board.py 打印库里的旧文字时把换行与控制字符�
     assert.ok(jr.some((e) => e.kind === "lock.force_release" && e.body.includes("持有者会话已结束 已当面确认")), JSON.stringify(jr));
   } finally { await B.stop(); }
 });
+
+test("协作安全:board.py journal ls 的查询参数做 URL 编码,带 + 时区的 --since 可用", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("cli-y"), tf = join(B.dir, "y.tok"); writeFileSync(tf, tok + cp(10));
+    assert.equal((await B.api("POST", "/api/coord/journal", tok, { kind: "note", body: "带时区查询" })).status, 201);
+    const since = new Date(Date.now() - 3600000 + 9 * 3600000).toISOString().replace("Z", "+09:00");   // 一小时前,写成 +09:00
+    const r = B.cli("journal", "ls", "--since", since, "--token-file", tf);
+    assert.equal(r.code, 0, `--since ${since}:${r.out}`);
+    assert.match(r.out, /带时区查询/);
+    const none = B.cli("journal", "ls", "--since", since, "--executor", "nobody&limit=500", "--token-file", tf);
+    assert.equal(none.code, 0, none.out);
+    assert.ok(!none.out.includes("带时区查询"), "值里的 & 不会混进别的参数");
+  } finally { await B.stop(); }
+});

@@ -282,8 +282,9 @@ def coord_cmd(cmd):
             if s >= 400: die(s, d)
             print(f"已记流水 #{d['entry']['id']} {d['entry']['at']}")
         elif sub == "ls":
-            qs = [f"{k}={arg('--' + k)}" for k in ("since", "executor", "limit") if arg("--" + k)]
-            s, d = call("GET", "/api/coord/journal" + ("?" + "&".join(qs) if qs else ""))
+            # 值要做 URL 编码:带正时区的 ISO 时刻里的 + 不编码会被服务端解成空格。
+            qs = urllib.parse.urlencode({k: arg("--" + k) for k in ("since", "executor", "limit") if arg("--" + k)})
+            s, d = call("GET", "/api/coord/journal" + ("?" + qs if qs else ""))
             if s >= 400: die(s, d)
             for e in d["entries"]:
                 arts = " ".join(vis(f"{a['type']}:{a['value']}") for a in e["artifacts"])
