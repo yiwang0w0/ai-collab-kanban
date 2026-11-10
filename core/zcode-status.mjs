@@ -98,23 +98,34 @@ function loopOf(s,alive){
  }
 }
 
+/** 循环配置读不到时的线名:库里运行时为 zcode 的角色恰好一条就是它;没有、不止一条或读不出来都是 null。 */
+function roleLine(db){
+ try{
+  if(!table(db,'broker_roles'))return null;
+  const ids=db.prepare('SELECT role_id FROM broker_roles ORDER BY role_id').all().map(r=>r.role_id)
+   .filter(id=>{try{return getRole(db,id)?.policy.runtime==='zcode';}catch{return false;}});
+  return ids.length===1?ids[0]:null;
+ }catch{return null;}
+}
+
 /**
  * GET /api/zcode/status 的正文。configFile 是 fleet.config.json 的 zcode_worker_config(缺省 null)。
- * 没指配置或库里没登记:只给 configured:false 与 loop;指了但读不到:configured:true、loop.state=blocked、开关与预算记 null。
+ * 没指配置或库里没登记:只给 configured:false、line 与 loop;指了但读不到:configured:true、loop.state=blocked、开关与预算记 null。
+ * line 是 Zcode 角色线的线名:配置读得到取配置里的 line(= 执行角色的 role_id),读不到取 roleLine,都取不到是 null。
  */
 export function zcodeStatus(db,{configFile=null}={}){
- const absent=reason=>({configured:false,loop:{state:'not_configured',reason}});
- const broken=reason=>({configured:true,switches:{budget_enabled:null,launch_enabled:null,released_env:null},budget:null,loop:{state:'blocked',reason}});
- if(configFile===null||configFile===undefined||configFile==='')return absent(TEXT.no_pointer);
+ const absent=(reason,line)=>({configured:false,line,loop:{state:'not_configured',reason}});
+ const broken=(reason,line)=>({configured:true,line,switches:{budget_enabled:null,launch_enabled:null,released_env:null},budget:null,loop:{state:'blocked',reason}});
+ if(configFile===null||configFile===undefined||configFile==='')return absent(TEXT.no_pointer,roleLine(db));
  let config;
- try{config=loadConfig(configFile);}catch{return broken(TEXT.config_bad);}
+ try{config=loadConfig(configFile);}catch{return broken(TEXT.config_bad,roleLine(db));}
  let s,model=null;
- try{s=readOnly(db,()=>zcodeWorkerStatus(db,config,null));}catch(e){return broken(GATE_TEXT[code(e)]??TEXT.unreadable);}
- if(!s.configured)return absent(TEXT.not_setup);
+ try{s=readOnly(db,()=>zcodeWorkerStatus(db,config,null));}catch(e){return broken(GATE_TEXT[code(e)]??TEXT.unreadable,config.line);}
+ if(!s.configured)return absent(TEXT.not_setup,config.line);
  try{model=getRole(db,s.line)?.policy.model??null;}catch{/* 读不出来就不给 model。 */}
  const beats=s.scheduler.map(i=>i.heartbeat_at).filter(x=>typeof x==='string').sort(),last=beats.at(-1);
  const alive=s.scheduler.some(i=>!i.ended_at&&i.heartbeat_state==='recent'),d=s.dispatches[0];
- return {configured:true,
+ return {configured:true,line:s.line,
   switches:{budget_enabled:s.budget?s.budget.enabled:null,launch_enabled:s.switch.config_enabled,released_env:null},
   budget:s.budget?{used:s.budget.used,limit:s.budget.limit_total,reserved:s.budget.reserved}:null,
   loop:{...loopOf(s,alive),...(last?{last_heartbeat_at:last}:{})},

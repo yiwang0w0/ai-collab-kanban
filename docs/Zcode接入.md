@@ -227,6 +227,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 ```json
 { "configured": true,
+  "line": "zcode",
   "switches": { "budget_enabled": true, "launch_enabled": true, "released_env": null },
   "budget": { "used": 1, "limit": 1, "reserved": 0 },
   "loop": { "state": "budget_exhausted", "reason": "…", "last_heartbeat_at": "…" },
@@ -234,8 +235,10 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
   "model": "GLM-5.3" }
 ```
 
-- 没配 `zcode_worker_config`,或库里还没 `setup`:只有 `{configured:false, loop:{state:"not_configured", reason}}`。
+- 没配 `zcode_worker_config`,或库里还没 `setup`:只有 `{configured:false, line, loop:{state:"not_configured", reason}}`。
 - 配了但文件读不到、格式不对:`configured:true`、`loop.state:"blocked"`,`switches` 三项与 `budget` 是 `null`。
+- `line` 是 Zcode 角色线的线名,每种情况都有:配置读得到取配置里的 `line`(还没 `setup` 也一样);
+  读不到或没配时取库里运行时为 `zcode` 的那个角色,没有或不止一个是 `null`。
 - `released_env` 恒为 `null`。环境钥匙只在循环自己的终端里,看板看不到;状态不因它判成「关着」。
 - `last_dispatch` 是这份预算下最近的一次分派,`outcome` 取结算结果(`success` / `failed` / `timeout` 等),没结算是 `null`。
 - `last_heartbeat_at` 取本库最近的调度实例。调度锁按库唯一,同库另跑 `cli/scheduler.mjs` 时它也会算进来。

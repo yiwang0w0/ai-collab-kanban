@@ -688,21 +688,26 @@ test('人工恢复回执不清并发位:record-uncertain 之后循环报 needs_a
 });
 
 // ── 面板上看状态:看板服务的只读接口 GET /api/zcode/status 与卡上的 zcode 字段(core/zcode-status.mjs) ──
-test('面板状态:看板没指配置、库里没登记都报 not_configured 且不给其余字段;指错配置报 blocked;只读',{skip},async()=>{
+test('面板状态:看板没指配置、库里没登记都报 not_configured 且除 line 外不给其余字段;指错配置报 blocked;line 取配置或库里唯一的 zcode 角色;只读',{skip},async()=>{
  const f=await fixture(),configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
+ // line:配置读得到取配置里的线名;读不到取库里唯一一条运行时为 zcode 的角色;都取不到是 null。
  const off=zcodeStatus(f.db,{configFile:null});
- assert.deepEqual(Object.keys(off),['configured','loop']);assert.equal(off.configured,false);assert.equal(off.loop.state,'not_configured');assert.ok(off.loop.reason.includes('zcode_worker_config'));
+ assert.deepEqual(Object.keys(off),['configured','line','loop']);assert.equal(off.configured,false);assert.equal(off.line,'zcode');assert.equal(off.loop.state,'not_configured');assert.ok(off.loop.reason.includes('zcode_worker_config'));
  const bare=new DatabaseSync(join(f.base,'bare.db'));dbs.push(bare);store.migrate(bare);
  const fresh=zcodeStatus(bare,{configFile});
- assert.deepEqual(Object.keys(fresh),['configured','loop']);assert.equal(fresh.loop.state,'not_configured');assert.ok(fresh.loop.reason.includes('setup'));
+ assert.deepEqual(Object.keys(fresh),['configured','line','loop']);assert.equal(fresh.line,'zcode');assert.equal(fresh.loop.state,'not_configured');assert.ok(fresh.loop.reason.includes('setup'));
+ assert.equal(zcodeStatus(bare,{configFile:null}).line,null);
  assert.equal(bare.prepare("SELECT count(*) n FROM sqlite_master WHERE name LIKE 'broker_%'").get().n,0);
  const wrong=zcodeStatus(f.db,{configFile:'worker.json'});
- assert.equal(wrong.configured,true);assert.equal(wrong.loop.state,'blocked');assert.deepEqual(wrong.switches,{budget_enabled:null,launch_enabled:null,released_env:null});assert.equal(wrong.budget,null);
+ assert.equal(wrong.configured,true);assert.equal(wrong.line,'zcode');assert.equal(wrong.loop.state,'blocked');assert.deepEqual(wrong.switches,{budget_enabled:null,launch_enabled:null,released_env:null});assert.equal(wrong.budget,null);
  // 配置读得到:服务端看不到循环终端里的环境钥匙,不按它判「关着」;本连接读完仍可写。
  const ready=zcodeStatus(f.db,{configFile});
- assert.equal(ready.loop.state,'idle',JSON.stringify(ready));assert.deepEqual(ready.switches,{budget_enabled:true,launch_enabled:true,released_env:null});assert.deepEqual(ready.budget,{used:0,limit:1,reserved:0});
+ assert.equal(ready.loop.state,'idle',JSON.stringify(ready));assert.equal(ready.line,'zcode');assert.deepEqual(ready.switches,{budget_enabled:true,launch_enabled:true,released_env:null});assert.deepEqual(ready.budget,{used:0,limit:1,reserved:0});
  assert.equal(ready.model,'GLM-5.3');assert.equal('last_dispatch' in ready,false);
  const t=card(f);assert.equal(zcodeStatus(f.db,{configFile}).loop.state,'ready');assert.equal(zcodeCard(f.db,store.get(f.db,t.id)).dispatches,0);
+ // 库里不止一条 zcode 角色:没有配置时认不出是哪条,line 为 null;有配置仍取配置里的。
+ putRole(f.db,{role_id:'zcode-b',kind:'implement',projects:['demo'],capabilities:['board-tools'],runtime:'zcode',model:'GLM-5.3',effort:'low',tools:'write',priority:10,enabled:true,limits:LIMITS});
+ assert.equal(zcodeStatus(f.db,{configFile:null}).line,null);assert.equal(zcodeStatus(f.db,{configFile}).line,'zcode');
 });
 test('卡级拒收码:没有 ZCODE_REFUSED 记录时按 plan 的同一判定给码并标来源;配置读不到就不给;只读',{skip},async()=>{
  const f=await fixture(),configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
@@ -739,7 +744,7 @@ test('面板状态接口:合成供应商跑完一张卡后读得到预算、最�
   const token=name=>readFileSync(join(data,name),'utf8').trim(),operator=token('board_token'),before=counts();
   const s=await api('/api/zcode/status',operator);
   assert.equal(s.status,200,JSON.stringify(s.body)+logs);
-  assert.equal(s.body.configured,true);assert.deepEqual(s.body.switches,{budget_enabled:true,launch_enabled:true,released_env:null});
+  assert.equal(s.body.configured,true);assert.equal(s.body.line,'zcode');assert.deepEqual(s.body.switches,{budget_enabled:true,launch_enabled:true,released_env:null});
   assert.deepEqual(s.body.budget,{used:1,limit:1,reserved:0});assert.equal(s.body.loop.state,'budget_exhausted');assert.ok(s.body.loop.reason);assert.ok(Date.parse(s.body.loop.last_heartbeat_at));
   assert.deepEqual({...s.body.last_dispatch,at:typeof s.body.last_dispatch.at},{task_id:good.id,phase:'settled',outcome:'success',at:'string'});assert.equal(s.body.model,'GLM-5.3');
   // 只读:库里调度相关的表行数不变,没有调度锁,也没人监听循环的 MCP 端口。
