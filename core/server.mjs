@@ -30,6 +30,7 @@ import {PeerError} from "./federation/protocol.mjs";
 import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
+import {readCliVersions} from "./cli-versions.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf} from "./board-claude-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
@@ -3245,6 +3246,12 @@ const server = http.createServer(async (req, res) => {
       if(!guardWrite(req,res,p))return;
       try{return json(res,200,readFleetHealth(db));}
       catch(e){return json(res,503,inspectionError(e));}
+    }
+    // 执行器 CLI 的当前 / 最新 / 上次核对 / 是否实测过（core/cli-versions.mjs）。最新版本一天查一次，查不到记「未能查询」。
+    if (m==="GET"&&p==="/api/cli-versions") {
+      if(!guardWrite(req,res,p))return;
+      try{return json(res,200,await readCliVersions({dataDir:store.DATA_DIR,network:url.searchParams.get("refresh")==="1"?"force":"stale"}));}
+      catch{return json(res,503,{code:"CLI_VERSIONS_UNAVAILABLE",error:"执行器 CLI 版本暂时读不到"});}
     }
     if (m==="GET"&&p==="/api/fleet/progress") {
       if(!guardWrite(req,res,p))return;

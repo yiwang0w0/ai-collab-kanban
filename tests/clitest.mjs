@@ -326,6 +326,10 @@ console.log(NL + "[⑧ start:bg / open / stop]");
     '  if (req.method === "GET" && req.url === "/api/fleet/health") return send(res, 200, { issues: [',
     '    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", next_action: "inspect_scheduler_owner", count: 1 },',
     '    { code: "SCHEDULER_LOCK_MISSING", level: "problem", next_action: "inspect_scheduler_owner", count: 1 }] });',
+    // The executor CLIs as GET /api/cli-versions reports them: one behind and never measured, one not configured.
+    '  if (req.method === "GET" && req.url === "/api/cli-versions") return send(res, 200, { clis: [',
+    '    { id: "claude", name: "Claude CLI", state: "found", current: "2.1.300", latest: "2.1.305", latest_state: "ok", latest_checked_at: "2026-11-10T01:00:00.000Z", update_available: true, tested: { state: "none" } },',
+    '    { id: "codex", name: "Codex CLI", state: "not_configured", current: null, latest: null, latest_state: "not_checked", tested: { state: "none" } }] });',
     '  send(res, 404, {}); }); };',
     'http.createServer(handle).listen(Number(process.env.BOARD_PORT), "127.0.0.1");',
     // The same board reached through an address that is not this computer's own loopback name.
@@ -375,6 +379,9 @@ console.log(NL + "[⑧ start:bg / open / stop]");
      && /✗ 执行线:设计、审阅 启动被拒绝（退出码 3）。下一步:运行 node cli\/doctor\.mjs/.test(st.out)
      && /上次故障:没有记录/.test(st.out) && /3 项需要注意/.test(st.out)
      && /详细日志:node cli\/status\.mjs --log/.test(st.out) && !/源码闸拒绝启动|stub boot/.test(st.out), st.out.slice(-500));
+  ok("⭐the executor CLI row: current / latest / last checked / measured or not; a CLI that is not configured is not listed",
+     /执行器:Claude CLI 当前 2\.1\.300 · 最新 2\.1\.305，可升级 · 上次核对 \d\d-\d\d \d\d:\d\d · 未实测/.test(st.out) && !/Codex CLI/.test(st.out),
+     st.out.split(NL).find((l) => l.includes("执行器:")) || "");
   const stLog = cli("status.mjs", ["--log"]);
   ok("status --log expands the lines' recent log (repeats folded into one line) and the end of the board log",
      stLog.code === 2 && /设计：源码闸拒绝启动 {2}×2/.test(stLog.out) && /stub boot supervised=1/.test(stLog.out), stLog.out.slice(-400));
@@ -473,6 +480,17 @@ console.log(NL + "[⑨ doctor: 模型请求发往哪里]");
   ok("⭐no key and no full URL is ever printed", !out.includes("sk-relay-secret-value-0001") && !out.includes("relay.example.net/v1"));
   rmSync(join(home, ".claude", "settings.json")); rmSync(join(repo, ".claude", "settings.local.json")); rmSync(join(codexHome, "config.toml"));
   ok("nothing configured: says the CLIs use their default official endpoints", /PASS\s+模型请求走各 CLI 的默认官方地址/.test(doctor({})));
+  // ⑨a the executor CLI versions, read-only: doctor runs `--version` (node stands in for both CLIs), does not
+  //     go online and writes nothing; `--record-tested` records only when every check passed.
+  const v = process.version.slice(1).replace(/\./g, "\\.");
+  ok("⭐doctor lists each CLI: current / latest (not queried: doctor never goes online) / last checked / measured or not",
+     new RegExp(`PASS\\s+Claude CLI 当前 ${v} · 最新 未查询 · 上次核对 无 · 未实测`).test(out)
+     && new RegExp(`PASS\\s+Codex CLI 当前 ${v} · 最新 未查询`).test(out) && !existsSync(join(TMP, "doc-data", "probes")), line(/Claude CLI 当前/));
+  const noted = spawnSync(process.execPath, [join(ROOT, "cli", "doctor.mjs"), "--record-tested"], { encoding: "utf8", windowsHide: true, timeout: 120000,
+    env: { ...clean, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, WORKER_CLAUDE_CLI: process.execPath, BOARD_REPO: repo,
+           BOARD_CONFIG: join(TMP, "none.json"), BOARD_VERIFY_REGISTRY: join(TMP, "missing-registry.json"), BOARD_DATA_DIR: join(TMP, "doc-data"), BOARD_PORT: "0" } });
+  ok("⭐--record-tested with a FAIL on the board (node is not a Claude CLI: its flags do not match): nothing is recorded",
+     noted.status === 1 && /没有记录实测版本/.test(noted.stdout) && !existsSync(join(TMP, "doc-data", "probes", "cli_tested.json")), (noted.stdout || "").slice(-200));
   // ⑨b the write-allow rules (--allowedTools) this deployment would send, produced by the real
   //     verify_lib function: the usual layout passes; a repo below the evidence directory and a
   //     relative repo each fail with their own line. (The three shapes are pinned one by one in

@@ -1,6 +1,6 @@
 // `node cli/status.mjs [--log]` (= npm run status) — one place to see whether the board on this
 // machine is running, what needs attention and what to do next: computer, board service, each line,
-// the last fault. The words are the home page's own (core/home-model.mjs):
+// the executor CLI versions, the last fault. The words are the home page's own (core/home-model.mjs):
 // the same merged alerts, the same next steps. Read-only: it only sends GET requests and starts,
 // stops and repairs nothing — when the board is down it gives one cause and one next step, and
 // `--log` expands the end of its log.
@@ -8,6 +8,7 @@
 import { localBoard } from "../core/local-board.mjs";
 import { loadHomeModel } from "../core/home-model.mjs";
 import { collapseRepeats, downCause, faultText, isLoopback, logLines, mergeLineFaults, probeBoard, readRunRecord } from "../core/board-run.mjs";
+import { versionLine } from "../core/cli-versions.mjs";
 
 const USAGE = ["用法: node cli/status.mjs [--log]",
   "  --log    展开看板日志的最后 30 行，连续重复的行合并成一行",
@@ -16,7 +17,8 @@ const USAGE = ["用法: node cli/status.mjs [--log]",
   "  停止看板          node cli/stop.mjs",
   "  打开面板          node cli/open.mjs",
   "  体检              node cli/doctor.mjs",
-  "  登录后自动启动    node cli/autostart.mjs"].join("\n");
+  "  登录后自动启动    node cli/autostart.mjs",
+  "  升级执行器 CLI    node cli/upgrade-cli.mjs"].join("\n");
 const START = "node cli/start.mjs --background";
 
 // Returns its exit code instead of calling process.exit(): see cli/open.mjs (Node 24 on Windows
@@ -39,8 +41,8 @@ async function main() {
     if (!r.ok) throw Object.assign(new Error(v.error || `读取失败，HTTP ${r.status}`), { status: r.status });
     return v;
   };
-  const [setup, workers, meta, fleet, health] = await Promise.allSettled(
-    ["/api/setup", "/api/workers", "/api/meta", "/api/fleet?limit=1", "/api/fleet/health"].map(read));
+  const [setup, workers, meta, fleet, health, versions] = await Promise.allSettled(
+    ["/api/setup", "/api/workers", "/api/meta", "/api/fleet?limit=1", "/api/fleet/health", "/api/cli-versions"].map(read));
   const ok = (r) => (r.status === "fulfilled" ? r.value : null), why = (r) => (r.status === "rejected" ? r.reason.message : null);
   // 服务在线不等于状态可读；必需读取失败不能被可选的健康提醒掩盖。
   const unreadable = [["配置", setup], ["执行器", workers], ["本机状态", meta]].filter(([, r]) => r.status === "rejected");
@@ -61,6 +63,8 @@ async function main() {
   console.log(`  地址:${url}${version ? " · 版本 " + version : ""}`);
   const lines = linesNow(w);
   if (lines) console.log(`  执行线:${lines}`);
+  // 当前 / 最新 / 上次核对 / 是否实测过；没有配置的 CLI 不列，旧版本看板没有这个接口时整行不出。
+  for (const text of (ok(versions)?.clis || []).map(versionLine).filter(Boolean)) console.log(`  执行器:${text}`);
   console.log(`  上次故障:${faultText(readRunRecord(dataDir).last_fault)}`);
   console.log(`  ${alerts.length === s.alerts.length ? s.line : alerts.length + " 项需要注意"}`);
   for (const a of alerts) console.log(`  ${a.tone === "bad" ? "✗" : "!"} ${a.where}:${a.what}。下一步:${a.next}`);

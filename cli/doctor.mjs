@@ -6,7 +6,8 @@
 //
 // ⚠ Read-only by design: doctor never writes config, never creates directories,
 //   never touches a database. A preflight that "helpfully" mutates state turns
-//   diagnosis into a second thing to diagnose.
+//   diagnosis into a second thing to diagnose. The one exception is asked for by
+//   name: `--record-tested` notes the checked CLI version when every check passed.
 
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, accessSync, constants } from "node:fs";
@@ -18,6 +19,7 @@ import {inspectSeatCLI} from "../core/seat-cli-evidence.mjs";
 import { MIN_GIT_VERSION, probeGitVersion } from "../core/git-version.mjs";
 import { applyConfigDefaults, nodeTooOld } from "../core/env.mjs";
 import { detectCodex } from "../core/config-setup.mjs";
+import { readCliVersions, recordTestedVersion, versionLine } from "../core/cli-versions.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -92,7 +94,7 @@ try {
 // Same resolution the worker loop uses: host env wins, then PATH; a .cmd shim on
 // Windows is refused by the BatBadBut gate, so probe for the native sibling.
 // CLI_PATH / CLI_IS_SHIM are read again by ⑤b — resolve the CLI once, here.
-let CLI_PATH = null, CLI_IS_SHIM = false;
+let CLI_PATH = null, CLI_IS_SHIM = false, CLI_CONTRACT_OK = false;
 {
   const envCli = process.env.WORKER_CLAUDE_CLI;
   // PATH is walked by hand rather than via `where`: its output arrives in the
@@ -223,7 +225,7 @@ await new Promise((resolve) => {
       if (missing.length)
         no(`CLI 不认识这些参数: ${missing.join(" ")}`,
            "这个 CLI 版本与本板驱动它的方式不匹配 —— worker 会起不来。升级看板,或把 CLI 降回兼容版本");
-      else ok(`CLI 参数契约吻合(${CLI_FLAGS.length} 个)`);
+      else { CLI_CONTRACT_OK = true; ok(`CLI 参数契约吻合(${CLI_FLAGS.length} 个)`); }
       for (const [flag, want] of Object.entries(CLI_CHOICES)) {
         const bad = want.filter((v) => !help.includes(v));
         if (bad.length)
@@ -253,6 +255,19 @@ await new Promise((resolve) => {
     }catch{wr("座席 CLI 版本或摘要未能核实","未执行模型；此项不能作为权限语义验收");}
   }else wr("没有可核实的原生座席 CLI","不把包装器或缺失文件视为已测量执行器");
 }
+
+// ── ⑤b2 执行器 CLI 版本:当前 / 最新 / 上次核对 / 是否实测过(core/cli-versions.mjs)。
+//    doctor 只读:不联网、不写缓存,最新版本取看板上次查到的那一个。
+let CLI_VERSIONS = null;
+try {
+  CLI_VERSIONS = await readCliVersions({ dataDir: resolve(process.env.BOARD_DATA_DIR || join(ROOT, "core", ".data")), network: "never", write: false });
+  for (const c of CLI_VERSIONS.clis) {
+    const text = versionLine(c);
+    if (!text) continue;
+    if (c.state === "found" && c.current) ok(text, c.update_available ? `升级用 node cli/upgrade-cli.mjs ${c.id}` : "");
+    else wr(text, "版本没有核对成");
+  }
+} catch (e) { wr(`执行器 CLI 版本没读到(${String(e.message).slice(0, 60)})`, "这一项没测成 —— 不是通过,是没测"); }
 
 // ── ⑤c the trust boundary: are the tokens and the registry inside the worker's reach? ─
 // Measured 2026-09-07 with the real CLI (Windows): a Claude worker in -p mode can Read any
@@ -450,4 +465,16 @@ console.log(`result: ${pass} PASS / ${warn} WARN / ${fail} FAIL` +
                           : "\n一切就绪: ") +
                     `${envPrefix}node cli/start.mjs --background(后台;停止用 node cli/stop.mjs),或 ${envPrefix}node cli/start.mjs(在这个窗口里跑,面板按「更新」时原地重起)` +
                     (envPrefix ? "(PowerShell 用 $env: 形式设同名变量)" : "")));
+// --record-tested:体检全部通过时,把当前 Claude CLI 版本记进「实测过的版本」清单,来源 doctor(只核对了参数)。
+// 这是 doctor 唯一会写文件的地方,不带这个参数时什么都不写。
+if (process.argv.includes("--record-tested")) {
+  const claude = CLI_VERSIONS?.clis.find((c) => c.id === "claude");
+  if (fail || !CLI_CONTRACT_OK || !claude?.current) console.log("没有记录实测版本:体检有 FAIL,或 Claude CLI 的参数、版本没有核对成");
+  else {
+    try {
+      recordTestedVersion(resolve(process.env.BOARD_DATA_DIR || join(ROOT, "core", ".data")), { cli: "claude", version: claude.current, source: "doctor" });
+      console.log(`已记录:Claude CLI ${claude.current} 的参数已核对`);
+    } catch (e) { console.log(`实测版本没有记下来:${e.message}`); }
+  }
+}
 process.exit(fail ? 1 : 0);
