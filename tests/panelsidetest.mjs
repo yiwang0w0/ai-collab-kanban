@@ -36,8 +36,11 @@ function fixture(extra = {}) {
     }
     set textContent(value) { this.text = String(value); this.children = []; }
     get textContent() { return this.text + this.children.map((e) => e.textContent ?? String(e)).join(""); }
-    append(...nodes) { this.children.push(...nodes); }
-    replaceChildren(...nodes) { this.replacements++; this.text = ""; this.children = nodes; }
+    append(...nodes) { this.children.push(...nodes); for (const n of nodes) if (n instanceof Element) n.parent = this; }
+    replaceChildren(...nodes) { this.replacements++; this.text = ""; this.children = nodes; for (const n of nodes) if (n instanceof Element) n.parent = this; }
+    // 用量一节是读数到了以后才插进来的:在某个节点后面放一个兄弟节点、把自己拿掉。
+    after(node) { const list = this.parent.children; list.splice(list.indexOf(this) + 1, 0, node); node.parent = this.parent; }
+    remove() { const list = this.parent?.children; if (list) list.splice(list.indexOf(this), 1); this.parent = null; }
     addEventListener() {}
     setAttribute(name, value) {
       if (name === "id") this.id = String(value);
@@ -87,6 +90,9 @@ function fixture(extra = {}) {
     homeMulti: () => false, homeLocalName: () => "本机", lineLabel: (line) => line,
     // 跨机数据:默认单机(没有多机列表、没有委派记录);用例按需放进夹具。
     homeFleet: null, homeActions: null, sideDetail: null, homeGet: async () => ({}), copyError: (e) => String(e?.message || e),
+    // 用量:卡面读数(refresh 给的)与面板的请求。默认 404 = 这块看板还没有单卡用量接口。
+    usageByCard: {}, WH: {}, fetch: async () => ({ status: 404, ok: false, json: async () => ({ error: "not found" }) }),
+    usageCsvButton: (label, path, name) => { const b = new Element("button"); b.textContent = label; b.dataset.usageCsv = path; b.dataset.usageName = name; return b; },
     history: { replaceState() {} }, location: { hash: "", pathname: "/", search: "" }, URLSearchParams,
     homeEl: (tag, text, cls) => {
       const node = new Element(tag);
@@ -96,8 +102,10 @@ function fixture(extra = {}) {
     },
   });
   const pure = section("// ── home-model(pure;tests/hometest.mjs)──", "// ── /home-model ──");
+  const copy = section("// ── display-copy(pure;tests/panelcopytest.mjs)──", "// ── /display-copy ──");
+  const optional = section("// ── optional-read(tests/panelsidetest.mjs)──", "// ── /optional-read ──");
   const side = section("function sideCard(){", "function sideFromHash(){");
-  vm.runInContext([pure, declaration("ago"), declaration("localTime"), declaration("hbClass"), declaration("tick"), declaration("syncHandoff"), side].join("\n"), context);
+  vm.runInContext([copy, pure, optional, declaration("ago"), declaration("localTime"), declaration("hbClass"), declaration("tick"), declaration("syncHandoff"), side].join("\n"), context);
   return { context, task, root, document, setTime: (value) => { clock = value; }, time: () => clock,
     body: document.getElementById("task-side-body"), state: () => document.getElementById("task-side-state") };
 }
@@ -471,4 +479,107 @@ test("单机环境：侧栏里没有任何跨机元素", () => {
   const m = fleetFixture({ status: "not_started", released: true }, { peers: [{ node_id: PC_B, node_epoch: "e", projects: ["demo"] }] });
   m.context.renderSide();
   assert.deepEqual(m.document.getElementById("task-side-more").querySelectorAll("button").map((b) => b.textContent).filter((t) => t === "分派"), ["分派"]);
+});
+
+// ── 侧栏用量(GET /api/usage/card/<卡号>):接口读得到才有这一节 ──
+const usageSum = (extra = {}) => ({ rows: 2, attempts: 1, calls: 9, in: 12000, cc: 800, cr: 90000, out: 3400, duration_ms: 200000, cost_usd: 0.42,
+  cost_source: "reported", cost_sources: { reported: 2 }, known: {}, unknown: {}, ...extra });
+const usageCard = (extra = {}) => ({ card: 7, rows_through: 3, totals: usageSum({ rows: 3, attempts: 2, cost_source: "mixed", cost_sources: { reported: 2, estimated: 1 } }),
+  by: [{ phase: "implement", model: "fixture-model", ...usageSum() },
+       { phase: "review", model: "?", ...usageSum({ rows: 1, attempts: 0, in: null, cost_usd: null, cost_source: "unknown", cost_sources: { unknown: 1 }, known: {}, unknown: { in: 1, cost_usd: 1 } }) }],
+  failed: usageSum({ rows: 1, attempts: 1, in: 5000, out: 600 }), settlements: [], ...extra });
+const reply = (status, body) => ({ status, ok: status >= 200 && status < 300, json: async () => body });
+
+test("用量接口 404 时侧栏没有用量一节，也不再问第二次；其他错误且从没读到过，同样整节不出", async () => {
+  const f = fixture({ status: "waiting", waiting_for: "review" });
+  const asked = [];
+  f.context.fetch = async (path) => { asked.push(path); return reply(404, { error: "not found" }); };
+  f.context.renderSide();
+  await f.context.sideUsageLoad(f.task, true);
+  assert.deepEqual(asked, ["/api/usage/card/7"]);
+  assert.equal(f.document.getElementById("task-side-usage"), null, "接口不在：整节不出，不写 0，不报错");
+  assert.ok(!f.body.textContent.includes("用量") && !f.body.textContent.includes("待核实 · 尝试"));
+  f.context.usageByCard = { 7: { rows: 1, in: 5 } };
+  await f.context.sideUsageLoad(f.task); await f.context.sideUsageLoad(f.task, true);
+  assert.equal(asked.length, 1, "已知接口不在，这一页不再问");
+  // 旧形状(没有 totals / by)当作接口不在。
+  const old = fixture(); old.context.fetch = async () => reply(200, { cards: {} });
+  old.context.renderSide(); await old.context.sideUsageLoad(old.task, true);
+  assert.equal(old.document.getElementById("task-side-usage"), null);
+  // 500 且从没读到过:整节不出。
+  const broken = fixture(); broken.context.fetch = async () => reply(500, { error: "账本读不了" });
+  broken.context.renderSide(); await broken.context.sideUsageLoad(broken.task, true);
+  assert.equal(broken.document.getElementById("task-side-usage"), null);
+});
+
+test("有用量时：这一节在步骤条之后、详细说明之前，不进 sideSig，读数变了只换这一节，留言框不重建", async () => {
+  const f = fixture({ status: "waiting", waiting_for: "review" });
+  let body = usageCard(), status = 200, asked = 0;
+  f.context.fetch = async (path) => { asked++; assert.equal(path, "/api/usage/card/7"); return reply(status, body); };
+  f.context.renderSide();
+  const input = f.body.querySelector("textarea"), button = f.body.querySelectorAll("button").find((b) => b.dataset.a === "approve");
+  input.value = "读数到了也不能丢掉这句话"; input.focus(); input.setSelectionRange(2, 6);
+  button.dataset.armed = "1"; button.classList.add("armed");
+  const sig = f.context.sideSig, changes = f.body.replacements;
+  await f.context.sideUsageLoad(f.task, true);
+  const usage = f.document.getElementById("task-side-usage");
+  assert.ok(usage, "读数到了：这一节局部放进来");
+  const order = f.body.children.map((n) => n.id);
+  assert.deepEqual(order.slice(order.indexOf("task-side-execution"), order.indexOf("task-side-detail") + 1), ["task-side-execution", "task-side-usage", "task-side-detail"]);
+  assert.equal(f.context.sideSig, sig, "用量不进侧栏的整栏签名");
+  assert.equal(f.body.replacements, changes, "放进用量一节不重建整个侧栏");
+  assert.equal(f.body.querySelector("textarea"), input); assert.equal(input.value, "读数到了也不能丢掉这句话");
+  assert.equal(f.document.activeElement, input); assert.equal(input.selectionStart, 2); assert.equal(input.selectionEnd, 6);
+  assert.equal(button.dataset.armed, "1");
+  // 常显一行;未知的数不当 0;混合来源标「含估算」。
+  const line = usage.querySelector("p.side-usage-line");
+  assert.equal(line.textContent, "词元 1.5万 · 尝试 2 次 · 模型耗时 3 分 20 秒 · 费用 0.42 美元 · 含估算");
+  assert.match(line.title, /输入 \+ 输出/, "口径说明只进 title");
+  const rec = usage.querySelector("details.side-rec");
+  assert.ok(rec && !rec.open && rec.querySelector("summary").textContent === "按阶段与模型", "明细默认折叠");
+  const groups = rec.querySelectorAll("div.usage-group");
+  assert.deepEqual(groups.map((g) => g.querySelector("p.usage-group-h").textContent), ["实现 · fixture-model", "审阅 · 模型待核实"]);
+  assert.deepEqual(groups[0].querySelectorAll("dt").map((n) => n.textContent), ["输入", "输出", "缓存读", "缓存写", "调用", "尝试", "耗时", "费用"]);
+  assert.deepEqual(groups[0].querySelectorAll("dd").map((n) => n.textContent), ["1.2万", "3.4千", "9.0万", "800", "9", "1", "3 分 20 秒", "0.42 美元"]);
+  assert.deepEqual(groups[1].querySelectorAll("dd").map((n) => n.textContent).filter((_, i) => i === 0 || i === 7), ["待核实", "待核实"], "未知的输入和费用写待核实，不写 0");
+  assert.match(rec.textContent, /失败尝试 1 次 · 词元 5\.6千/);
+  const csv = rec.querySelectorAll("button").find((b) => b.dataset.usageCsv);
+  assert.deepEqual([csv.textContent, csv.dataset.usageCsv, csv.dataset.usageName], ["导出这张卡的 CSV", "/api/usage/card/7?format=csv", "usage-card-7"]);
+  // 之后每次刷新:卡面用量没变不重取;变了才重取,只换这一节的内容,折叠开着的还开着。
+  rec.open = true;
+  await f.context.sideUsageLoad(f.task); f.context.renderSide();
+  assert.equal(asked, 1, "卡面用量没变，不重取");
+  f.context.usageByCard = { 7: { rows: 4, in: 20000 } };
+  body = usageCard({ totals: usageSum({ rows: 4, attempts: 3, in: null, known: { in: 15000 }, unknown: { in: 1 } }) });
+  await f.context.sideUsageLoad(f.task);
+  assert.equal(asked, 2);
+  assert.equal(f.document.getElementById("task-side-usage"), usage, "这一节的节点不换");
+  assert.equal(usage.querySelector("p.side-usage-line").textContent, "词元 不少于 1.8万 · 尝试 3 次 · 模型耗时 3 分 20 秒 · 费用 0.42 美元");
+  assert.equal(usage.querySelector("details.side-rec").open, true, "局部替换保留明细的开合");
+  assert.equal(f.body.replacements, changes); assert.equal(f.context.sideSig, sig);
+  assert.equal(f.body.querySelector("textarea"), input); assert.equal(f.document.activeElement, input);
+  // 有过成功结果后读不到:写「暂时读不到」,上次的结果还在。
+  status = 503; f.context.usageByCard = { 7: { rows: 5 } };
+  await f.context.sideUsageLoad(f.task);
+  assert.match(usage.textContent, /暂时读不到/);
+  assert.match(usage.querySelector("p.side-usage-line").textContent, /^词元 不少于 1\.8万/);
+  // 卡版本变了整栏重建:用量一节带着已有读数重建,不用再等一次请求。
+  f.task.aggregate_version++; f.context.renderSide();
+  assert.ok(f.document.getElementById("task-side-usage") && f.document.getElementById("task-side-usage") !== usage);
+  assert.equal(asked, 3);
+});
+
+test("还没有用量记录的卡写明没有记录；其他电脑的卡不取用量", async () => {
+  const empty = { rows: 0, attempts: 0, calls: null, in: null, cc: null, cr: null, out: null, duration_ms: null, cost_usd: null, cost_source: "unknown", cost_sources: {}, known: {}, unknown: {} };
+  const f = fixture({ status: "not_started", released: true });
+  f.context.fetch = async () => reply(200, { card: 7, rows_through: 0, totals: empty, by: [], failed: empty, settlements: [] });
+  f.context.renderSide(); await f.context.sideUsageLoad(f.task, true);
+  const usage = f.document.getElementById("task-side-usage");
+  assert.equal(usage.textContent, "用量还没有用量记录");
+  assert.equal(usage.querySelector("details"), null);
+  let asked = 0;
+  const far = fixture(); far.context.fetch = async () => { asked++; return reply(200, usageCard()); };
+  far.context.tasks = []; far.context.byId = new Map(); far.context.sideRef = { id: null, uid: "remote-1", item: null };
+  await far.context.sideUsageLoad(far.context.sideCard(), true);
+  assert.equal(asked, 0);
 });

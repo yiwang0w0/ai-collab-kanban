@@ -8,7 +8,7 @@ const start = source.indexOf("// ── display-copy(pure;tests/panelcopytest.mj
 const end = source.indexOf("// ── /display-copy ──", start);
 assert.ok(start >= 0 && end > start, "未找到纯展示文案测试边界");
 const copy = new Function(source.slice(source.indexOf("\n", start) + 1, end) +
-  "\nreturn { copyLabel, routeLabel, copyError, formatCount };")();
+  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells };")();
 
 function panelSection(start, end) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
@@ -53,6 +53,91 @@ test("用量显示使用中文计数单位，不改变计数值", () => {
   assert.match(source, /role="radiogroup"/);
   assert.match(source, /aria-label="\$\{esc\(effortName\(v\)\)\}"><span>\$\{esc\(effortName\(v\)\)\}<\/span>/);
   assert.ok(source.includes('const b = el.closest(".agent").querySelector(".cap b"); if (b) b.textContent = effortName(a.effort);'));
+});
+
+test("用量的数：未知不当 0，有已知部分写「不少于」，费用带来源标记", () => {
+  // 形状照用量接口的一组汇总:有未知行的项是 null,已知部分的和在 known。
+  const full = { rows: 3, attempts: 2, calls: 14, in: 12000, cc: 800, cr: 90000, out: 3400, duration_ms: 200000, cost_usd: 0.4213, cost_source: "reported", cost_sources: { reported: 3 }, known: {}, unknown: {} };
+  assert.equal(copy.usageValue(full, "in"), "1.2万");
+  assert.equal(copy.usageValue(full, ["in", "out"]), "1.5万", "词元 = 输入 + 输出");
+  assert.equal(copy.usageValue(full, "attempts"), "2");
+  assert.equal(copy.usageValue(full, "duration_ms"), "3 分 20 秒");
+  assert.equal(copy.usageValue(full, "cost_usd") + copy.usageCostMark(full), "0.42 美元");
+  const partial = { ...full, in: null, cost_usd: null, known: { in: 5000, cost_usd: 0.2 }, unknown: { in: 1, out: 0, cost_usd: 1 } };
+  assert.equal(copy.usageValue(partial, "in"), "不少于 5.0千", "有未知行：只有已知部分，不写成确数");
+  assert.equal(copy.usageValue(partial, ["in", "out"]), "不少于 8.4千", "和里有一项不全，整个和就是下限");
+  assert.equal(copy.usageValue(partial, "cost_usd"), "不少于 0.20 美元");
+  const blank = { rows: 2, attempts: 1, calls: null, in: null, cc: null, cr: null, out: null, duration_ms: null, cost_usd: null, cost_source: "unknown", cost_sources: { unknown: 2 }, known: {}, unknown: { in: 2 } };
+  for (const key of ["in", "out", "cr", "cc", "calls", "duration_ms", "cost_usd"]) assert.equal(copy.usageValue(blank, key), "待核实", key);
+  assert.equal(copy.usageValue(blank, ["in", "out"]), "待核实");
+  assert.ok(!/(^|[^.\d])0($|[^.\d])/.test(["in", "out", "cost_usd", "duration_ms"].map((k) => copy.usageValue(blank, k)).join(" ")), "未知的数不显示成 0");
+  assert.equal(copy.usageValue(undefined, "in"), "待核实");
+  assert.equal(copy.usageValue({ ...full, cost_usd: 0.0042 }, "cost_usd"), "0.0042 美元", "不到一分钱的费用不抹成 0.00");
+  assert.equal(copy.usageValue({ ...full, cost_usd: 0 }, "cost_usd"), "0.00 美元", "确知为 0 才写 0");
+  // 五种费用来源。
+  const mark = (cost_source, cost_sources = {}) => copy.usageCostMark({ cost_source, cost_sources });
+  assert.equal(mark("reported"), "");
+  assert.equal(mark("estimated"), " · 估算");
+  assert.equal(mark("mixed", { reported: 2, estimated: 1 }), " · 含估算");
+  assert.equal(mark("mixed", { reported: 2, "external-reported": 1 }), "", "混合但没有估算行，不标估算");
+  assert.equal(mark("external-reported"), " · 外部自报");
+  assert.equal(copy.usageValue(blank, "cost_usd") + copy.usageCostMark(blank), "待核实", "来源未知：费用只写待核实");
+  assert.equal(copy.usageValue({ ...partial, cost_source: "estimated" }, "cost_usd") + copy.usageCostMark({ ...partial, cost_source: "estimated" }), "不少于 0.20 美元 · 估算");
+  // 耗时与阶段名。
+  assert.deepEqual([999, 59000, 60000, 200000, 3600000, 5400000, 86399000].map(copy.usageDuration), ["1 秒", "59 秒", "1 分", "3 分 20 秒", "1 小时", "1 小时 30 分", "24 小时"]);
+  assert.deepEqual(copy.USAGE_PHASE, { implement: "实现", fix: "续修", review: "审阅", decompose: "拆解", compact: "压缩", coord: "协调", "?": "待核实" });
+  // 合并:rows 为 0 的组不参与(没有失败尝试 = 浪费为 0);有未知行的项只剩下限。
+  const none = { rows: 0, attempts: 0, in: null, out: null, known: {}, unknown: {} };
+  assert.deepEqual(copy.usageMerge([none, none], ["in", "out"]), { rows: 0, known: {}, in: 0, out: 0 });
+  assert.equal(copy.usageValue(copy.usageMerge([none], ["in", "out"]), ["in", "out"]), "0");
+  assert.equal(copy.usageValue(copy.usageMerge([full, none, full], ["in", "out"]), ["in", "out"]), "3.1万");
+  assert.equal(copy.usageValue(copy.usageMerge([full, partial], ["in", "out"]), ["in", "out"]), "不少于 2.4万");
+  // 最贵的几张:费用有未知行的按已知部分排;费用全未知的不进榜;"?" 单列。
+  const g = (key, cost_usd, known = {}) => ({ key, rows: 1, cost_usd, known });
+  const top = copy.usageTop([g("1", 0.5), g("2", null, { cost_usd: 2 }), g("3", null), g("?", 9), g("4", 1.5), g("5", null)], 2);
+  assert.deepEqual([top.rows.map((x) => x.key), top.unknown, top.loose.key], [["2", "4"], 2, "?"]);
+  assert.deepEqual(copy.usageTop([]), { rows: [], unknown: 0, loose: null });
+});
+
+test("执行器 CLI 四格：说法与命令行一致，判断不了新旧就不写，没配置的整行不出", () => {
+  const when = (iso) => "T" + iso.slice(5, 10);
+  const base = { id: "claude", name: "Claude CLI", state: "found", path: "C:/secret/path/claude.exe", current: "2.1.290", latest: "2.1.300", latest_state: "ok",
+    latest_checked_at: "2026-11-10T00:00:00.000Z", update_available: true, tested: { state: "boundary", at: "2026-11-09T00:00:00.000Z" } };
+  const cells = (c) => copy.cliVersionCells(c, when).cells.map((x) => [x.k, x.v, x.st]);
+  assert.deepEqual(cells(base), [["当前", "2.1.290", "ok"], ["最新", "2.1.300", "warn"], ["上次核对", "T11-10", "ok"], ["实测", "已实测", "ok"]]);
+  const up = copy.cliVersionCells(base, when);
+  assert.equal(up.cells[1].badge, "可升级");
+  assert.equal(up.next, "运行 node cli/upgrade-cli.mjs claude 查看会做什么，加 --yes 才执行");
+  assert.equal(up.cells[3].title, "实测于 T11-09");
+  assert.equal(copy.cliVersionCells({ ...base, npm_managed: false }, when).next, "用它自己的方式升级，再运行 node cli/doctor.mjs");
+  assert.equal(copy.cliVersionCells({ ...base, npm_managed: true }, when).next, up.next);
+  assert.ok(!JSON.stringify(up).includes("secret"), "可执行文件的路径不进正文");
+  // 已是最新 / 判断不了。
+  const same = copy.cliVersionCells({ ...base, current: "2.1.300", update_available: false }, when);
+  assert.deepEqual([same.cells[1].st, same.cells[1].note, same.cells[1].badge, same.next], ["ok", "已是最新", undefined, null]);
+  const unsure = copy.cliVersionCells({ ...base, update_available: null }, when);
+  assert.deepEqual([unsure.cells[1].v, unsure.cells[1].st, unsure.next], ["2.1.300", "unknown", null]);
+  assert.ok(!JSON.stringify(unsure).includes("已是最新") && !JSON.stringify(unsure).includes("可升级"), "update_available 为 null 时不判断新旧");
+  // 最新格的三种查询状态。
+  const offline = copy.cliVersionCells({ ...base, latest_state: "unavailable", update_available: true }, when);
+  assert.deepEqual([offline.cells[1].v, offline.cells[1].note, offline.cells[1].st, offline.cells[2].st, offline.next], ["未能查询", "上次查到 2.1.300", "unknown", "unknown", null]);
+  assert.equal(copy.cliVersionCells({ ...base, latest_state: "unavailable", latest: null }, when).cells[1].note, undefined);
+  assert.deepEqual(cells({ ...base, latest: null, latest_state: "not_checked", latest_checked_at: null, update_available: null }).slice(1, 3),
+    [["最新", "未查询", "unknown"], ["上次核对", "无", "unknown"]]);
+  // 当前格读不到。
+  assert.deepEqual(cells({ ...base, state: "wrapper", current: null, update_available: null })[0], ["当前", "没有找到原生可执行文件", "warn"]);
+  assert.deepEqual(cells({ ...base, state: "not_found", current: null, update_available: null })[0], ["当前", "没有找到原生可执行文件", "warn"]);
+  assert.deepEqual(cells({ ...base, current: null, update_available: null })[0], ["当前", "版本读不出", "warn"]);
+  // 实测格。
+  assert.deepEqual(cells({ ...base, tested: { state: "contract", at: "2026-11-09T00:00:00.000Z" } })[3], ["实测", "参数已核对 · 读写边界未实测", "unknown"]);
+  assert.deepEqual(cells({ ...base, tested: { state: "none", at: null } })[3], ["实测", "未实测", "unknown"]);
+  assert.equal(copy.cliVersionCells({ ...base, tested: { state: "none", at: null } }, when).cells[3].title, undefined);
+  assert.equal(copy.cliVersionCells({ ...base, state: "not_configured" }, when), null, "没有配置的 CLI 整行不出");
+  assert.equal(copy.cliVersionCells(null), null);
+  // 版本块不放升级按钮:只有「重新核对」。
+  const block = panelSection("function renderCliVersions(){", "/** The three fleet reads");
+  assert.deepEqual([...block.matchAll(/homeEl\("button", ([^)]*)\)/g)].map((m) => m[1]), ['cliChecking ? "核对中…" : "重新核对"']);
+  assert.ok(block.includes('badge.dataset.tone = "warn"') && block.includes('homeCmdText(homeEl("p", undefined, "cv-next"), r.next)'));
 });
 
 test("浏览器错误使用中文说明，中文消息及未知原始错误完整保留", () => {

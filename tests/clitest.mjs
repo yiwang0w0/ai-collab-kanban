@@ -355,7 +355,7 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   const st = cli("status.mjs");
   ok("⭐status with the board up: computer online, service fine, and the home page's own merged alerts with next steps (exit 2: something red)",
      st.code === 2 && /电脑在线 · 看板服务正常/.test(st.out) && /执行线:引擎 运行中/.test(st.out)
-     && /笔记本 B:连不上这台电脑（可能关机或断网）/.test(st.out)
+     && /笔记本 B:连不上这台电脑 —— 下一步:确认它已开机、联网/.test(st.out) && !/可能关机或断网/.test(st.out)
      && /台式机 A:调度器可能已经停了：心跳超时、没有运行锁 —— 下一步:检查调度器进程/.test(st.out)
      && st.out.split(NL).filter((l) => l.includes("台式机 A:")).length === 1, st.out.slice(-500));
   writeFileSync(join(data, "inflight"), "");

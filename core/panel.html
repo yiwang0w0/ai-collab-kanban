@@ -464,16 +464,86 @@
   .hs-line .dot{flex:none}
   .dot.warn{background:var(--warn)}
   .hs-text{min-width:0;overflow-wrap:anywhere}
-  .hs-alert{display:flex;flex-wrap:wrap;align-items:baseline;gap:var(--sp-1) var(--sp-3);padding:6px var(--sp-3);
+  /* 告警行:左边一句原因、一句下一步,右边最多一个按钮;日志折叠占整行,在最下面。首页状态条与设置页执行线共用。 */
+  .hs-alert{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:var(--sp-1) var(--sp-3);padding:6px var(--sp-3);
             border-top:1px solid var(--line);border-left:3px solid var(--warn);background:color-mix(in srgb,var(--warn) 5%,transparent)}
   .hs-alert[data-tone="bad"]{border-left-color:var(--bad);background:color-mix(in srgb,var(--bad) 5%,transparent)}
   .hs-alert:last-child{border-radius:0 0 var(--r-md) var(--r-md)}
-  .hs-where{font-weight:600;min-width:0;overflow-wrap:anywhere}
-  .hs-what{min-width:0;overflow-wrap:anywhere}
-  .hs-next{color:var(--dim);min-width:0;overflow-wrap:anywhere}
-  .hs-alert button{margin-left:auto}
-  .hs-alert button + button{margin-left:0}
+  .hs-body{display:grid;gap:2px;min-width:0}
+  .hs-what,.hs-next{margin:0;min-width:0;overflow-wrap:anywhere}
+  .hs-where{font-weight:600}
+  .hs-next{color:var(--dim)}
+  .hs-alert > button{grid-column:2}
   .hs-cmd{font-family:var(--mono);font-size:12px;padding:0 4px;border:1px solid var(--line);border-radius:4px;background:var(--bg);overflow-wrap:anywhere}
+  .hs-log{grid-column:1/-1;min-width:0;font-size:var(--fs-sm)}
+  .hs-log > summary{width:max-content;max-width:100%;cursor:pointer;color:var(--dim)}
+  .hs-log > pre{margin:var(--sp-1) 0 0;padding:var(--sp-2) var(--sp-3);max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;
+                font-family:var(--mono);font-size:var(--fs-sm);line-height:1.5;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm)}
+  .hs-log > .hs-cmd{display:inline-block;margin-top:var(--sp-1);user-select:all}
+  .hs-fault{padding:var(--sp-1) var(--sp-3);border-top:1px solid var(--line);color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  @media (max-width:620px){
+    .hs-alert{grid-template-columns:minmax(0,1fr)}
+    .hs-alert > button{grid-column:1;justify-self:start}
+  }
+  /* 设置页执行线上方的合并告警:同一种告警行,贴着区块标题,不要圆角。 */
+  .rig-faults .hs-alert{padding:var(--sp-2) var(--sp-4);border-top:0;border-bottom:1px solid var(--line);border-radius:0}
+  /* 执行器 CLI 版本:每个 CLI 一行四格(.rs),≤620px 折成 2×2。 */
+  .cli-versions{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--line)}
+  .cv-head{display:flex;align-items:center;gap:var(--sp-2);margin-bottom:var(--sp-2)}
+  .cv-head h4{flex:1;margin:0;font-size:var(--fs-md);font-weight:600}
+  .cv-stale{color:var(--dim);font-size:var(--fs-sm)}
+  .cv-row + .cv-row{margin-top:var(--sp-3)}
+  .cv-name{margin:0 0 var(--sp-1);color:var(--dim);font-size:var(--fs-sm)}
+  .cv-cells{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-2);margin:0}
+  .cv-cells dd{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:2px var(--sp-2);font-variant-numeric:tabular-nums}
+  .cv-note{color:var(--dim);font-weight:400}
+  .cv-next{margin:var(--sp-2) 0 0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  @media (max-width:620px){
+    .cli-versions{padding:var(--sp-3)}
+    .cv-cells{grid-template-columns:repeat(2,minmax(0,1fr))}
+  }
+  /* 用量:数字用等宽数字;口径说明在 title,不进正文。四个汇总数不用强调色。 */
+  .side-usage-line{margin:0 0 var(--sp-1);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+  .usage-group{padding:var(--sp-2) 0;border-top:1px solid var(--line)}
+  .usage-group-h{margin:0 0 var(--sp-1);overflow-wrap:anywhere}
+  .usage-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-1) var(--sp-2);margin:0}
+  .usage-grid dt{color:var(--dim)}
+  .usage-grid dd{margin:0;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+  .usage-note{color:var(--bad);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .usage-note:empty{display:none}
+  .side-usage .side-acts{align-items:center}
+  #history-usage{margin-bottom:var(--sp-3)}
+  .usage-head{display:flex;align-items:center;gap:var(--sp-2);min-height:40px;padding:var(--sp-1) var(--sp-3);border-bottom:1px solid var(--line)}
+  .usage-head h2{margin:0 auto 0 0;font-size:var(--fs-sm);font-weight:600;letter-spacing:.04em}
+  .usage-empty{margin:0;padding:var(--sp-2) var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
+  .usage-stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:var(--sp-3);margin:0;padding:var(--sp-3)}
+  .usage-stat{display:grid;gap:2px;min-width:0;align-content:start}
+  .usage-stat dt{color:var(--dim);font-size:var(--fs-sm)}
+  .usage-stat dd{margin:0;font-size:var(--fs-xl);font-weight:600;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+  .usage-sub{color:var(--dim);font-size:var(--fs-sm)}
+  .usage-top{border-top:1px solid var(--line);padding:0 var(--sp-3) var(--sp-2);font-size:var(--fs-sm)}
+  .usage-top > summary{cursor:pointer;color:var(--dim);padding:var(--sp-2) 0}
+  .usage-top .usage-empty{padding:var(--sp-1) var(--sp-2)}
+  /* 排行的一行:卡号、标题、费用、词元。费用和词元两列定宽右对齐,各行对得齐。 */
+  .usage-row{display:grid;grid-template-columns:4.5em minmax(0,1fr) 15em 8em;align-items:center;gap:var(--sp-1) var(--sp-3);width:100%;
+             height:auto;min-height:var(--ctl-h);padding:var(--sp-1) var(--sp-2);text-align:left;font-weight:400;border-radius:var(--r-sm)}
+  div.usage-row{grid-template-columns:minmax(0,1fr) 15em 8em;color:var(--dim);border:1px solid transparent}
+  .usage-no{font-family:var(--mono);color:var(--dim)}
+  .usage-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .usage-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  @media (max-width:620px){
+    .usage-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .usage-stat dd{font-size:var(--fs-lg)}
+    /* 手机:第一行卡号和标题,第二行费用和词元 */
+    .usage-row{grid-template-columns:4.5em minmax(0,1fr) auto}
+    .usage-row .usage-title{grid-column:2 / -1}
+    .usage-row .usage-num{grid-column:2;text-align:left}
+    .usage-row .usage-num + .usage-num{grid-column:3;text-align:right}
+    div.usage-row{grid-template-columns:minmax(0,1fr) auto}
+    div.usage-row .usage-title{grid-column:1 / -1}
+    div.usage-row .usage-num{grid-column:1}
+    div.usage-row .usage-num + .usage-num{grid-column:2}
+  }
   .home.stale .home-cols,.home.stale .home-note{opacity:.55}
   .home-cols{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);align-items:start}
   .home-sec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
@@ -666,9 +736,9 @@
   @media (max-width:620px){
     .settings-view .wk{grid-template-columns:auto minmax(0,1fr) auto;padding:var(--sp-2) var(--sp-3)}
     .settings-view .wk > .tail,.wk-state{grid-column:2}
-    .wk-log{grid-column:1/-1}
+    .wk-log{grid-column:2}
     .wk-acts{grid-column:3;grid-row:1 / span 2}
-    .wk .tail:empty{display:none}
+    .wk .tail:empty,.wk-log:has(> .tail:empty){display:none}
   }
   /* 执行器设置停靠在执行线列表下方(原来是看板上的小浮层)。 */
   #cfg{position:static;display:none;min-width:0;max-height:none;overflow:visible;box-shadow:none;border:0;border-top:1px solid var(--line);
@@ -947,6 +1017,7 @@
   /* 一切正常时设备摘要只是一行灰字,紧贴三栏;有告警才出底和框。 */
   #home-view > .home-status:not(:has(.hs-alert)){margin-top:var(--sp-1);border:0;border-radius:0;background:transparent;color:var(--dim);font-size:var(--fs-sm)}
   #home-view > .home-status:not(:has(.hs-alert)) .hs-line{padding:0}
+  #home-view > .home-status:not(:has(.hs-alert)) .hs-fault{padding:0;border:0}
   #home-view > .home-status:not(:has(.hs-alert)) + .chat-shell{margin-top:var(--sp-1)}
   .chat-shell{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:248px minmax(0,1fr) 336px;grid-template-rows:minmax(0,1fr);
               margin-top:var(--sp-2);border-top:1px solid var(--line)}
@@ -1168,7 +1239,7 @@
     body{--ctl-h:40px}
     .views button{min-height:40px}
     .card-more > summary{min-height:40px}
-    .side-rec > summary,.side-sec > summary,.cfg-about > summary{padding:11px 0}
+    .side-rec > summary,.side-sec > summary,.cfg-about > summary,.hs-log > summary,.usage-top > summary{padding:11px 0}
     label.chk{min-height:40px}
   }
 </style>
@@ -1352,6 +1423,8 @@
   </div>
 </main>
 <main class="home" id="history-view" data-view-panel="history" hidden>
+  <!-- 用量汇总:接口读得到才出现(GET /api/usage?by=card),读不到整节不出。 -->
+  <section class="home-sec" id="history-usage" aria-label="用量" hidden></section>
   <section class="home-sec" data-lane="done" aria-labelledby="history-h">
     <h2 id="history-h"><svg class="ic" aria-hidden="true"><use href="#i-success"/></svg>已完成 <span class="n" id="history-n"></span></h2>
     <div class="home-list" id="history-list"></div>
@@ -1379,7 +1452,11 @@
   <section class="set-sec set-target" id="set-lines" aria-labelledby="set-lines-h">
     <div class="set-h"><h3 id="set-lines-h"><svg class="ic" aria-hidden="true"><use href="#i-gear"/></svg>执行线与自动拉取</h3>
       <p>启动后,这条线才会领取交给它、已放行的任务。齿轮里是执行器、模型、推理强度和智能体数量。</p></div>
+    <!-- 执行线故障按原因合并成一条,日志折叠在里面;没有故障时这一块是空的。 -->
+    <div class="rig-faults" id="rig-faults"></div>
     <div class="rig" id="rig"></div>
+    <!-- 执行器 CLI 版本:接口读得到才出现(GET /api/cli-versions),读不到整块不出。 -->
+    <div class="cli-versions" id="cli-versions" hidden></div>
     <div class="cfg" id="cfg"></div>
   </section>
   <section class="set-sec set-target" id="set-coord" aria-labelledby="set-coord-h">
@@ -1517,6 +1594,81 @@ function copyError(error){
   if (error?.name === "SyntaxError") return "看板返回的数据格式无法读取，请刷新后重试。";
   if (!message) return "操作未完成，请稍后重试。";
   return "操作未完成。原始信息：" + message;
+}
+// 用量显示：未知的数是 null，不当 0。口径说明放 title，不进正文。
+const USAGE_PHASE = { implement: "实现", fix: "续修", review: "审阅", decompose: "拆解", compact: "压缩", coord: "协调", "?": "待核实" };
+const usageNumber = (value) => typeof value === "number" && Number.isFinite(value);
+/** 耗时写成秒、分、小时。 */
+function usageDuration(ms){
+  const s = Math.round(ms / 1000);
+  if (s < 60) return s + " 秒";
+  if (s < 3600) return Math.floor(s / 60) + " 分" + (s % 60 ? " " + (s % 60) + " 秒" : "");
+  const m = Math.round(s / 60);
+  return Math.floor(m / 60) + " 小时" + (m % 60 ? " " + (m % 60) + " 分" : "");
+}
+/** 一组用量里的一个数。key 给数组时求和，词元的「输入 + 输出」用它。
+ *  有未知行时只剩已知部分，写「不少于 X」；一行已知的都没有写「待核实」。 */
+function usageValue(group, key){
+  const keys = Array.isArray(key) ? key : [key];
+  const show = (value) => keys[0] === "duration_ms" ? usageDuration(value)
+    : keys[0] === "cost_usd" ? (value > 0 && value < 0.01 ? value.toFixed(4) : value.toFixed(2)) + " 美元"
+    : formatCount(Math.round(value));
+  let sum = 0, some = false, partial = false;
+  for (const k of keys) {
+    const value = group?.[k], known = group?.known?.[k];
+    if (usageNumber(value)) { sum += value; some = true; }
+    else { partial = true; if (usageNumber(known)) { sum += known; some = true; } }
+  }
+  return !some ? "待核实" : (partial ? "不少于 " : "") + show(sum);
+}
+/** 费用后面的来源标记。来源未知时费用本身已写「待核实」，不再加标记。 */
+function usageCostMark(group){
+  const source = group?.cost_source;
+  return source === "estimated" ? " · 估算" : source === "mixed" && group?.cost_sources?.estimated > 0 ? " · 含估算"
+    : source === "external-reported" ? " · 外部自报" : "";
+}
+/** 多组用量合成一组：某项只要有一组未知，合计就是 null，已知部分放进 known。rows 为 0 的组没有记录，不参与。 */
+function usageMerge(groups, keys){
+  const out = { rows: 0, known: {} }, list = (groups || []).filter((g) => g && g.rows !== 0);
+  for (const g of list) out.rows += usageNumber(g.rows) ? g.rows : 0;
+  for (const k of keys) {
+    let sum = 0, some = false, partial = false;
+    for (const g of list) {
+      if (usageNumber(g[k])) { sum += g[k]; some = true; }
+      else { partial = true; if (usageNumber(g.known?.[k])) { sum += g.known[k]; some = true; } }
+    }
+    if (!partial) out[k] = sum; else { out[k] = null; if (some) out.known[k] = sum; }
+  }
+  return out;
+}
+/** 最贵的几张卡：按费用降序；费用有未知行的按已知部分排；费用全未知的不进榜，只数张数；key 为 "?" 的组单列。 */
+function usageTop(groups, limit = 10){
+  const cost = (g) => usageNumber(g.cost_usd) ? g.cost_usd : usageNumber(g.known?.cost_usd) ? g.known.cost_usd : null;
+  const cards = (groups || []).filter((g) => g && g.key !== "?");
+  const priced = cards.filter((g) => cost(g) !== null).sort((a, b) => cost(b) - cost(a) || Number(a.key) - Number(b.key));
+  return { rows: priced.slice(0, limit), unknown: cards.length - priced.length, loose: (groups || []).find((g) => g && g.key === "?") || null };
+}
+/** 执行器 CLI 的四格：当前、最新、上次核对、实测。说法与命令行 status 的那一行相同；没有配置的返回 null。
+ *  update_available 为 null 时不判断新旧。when 把时刻写成本地时间。 */
+function cliVersionCells(c, when = (iso) => String(iso)){
+  if (!c || c.state === "not_configured") return null;
+  const newer = c.state === "found" && c.current && c.latest_state === "ok" && typeof c.update_available === "boolean" ? c.update_available : null;
+  const current = c.state !== "found" ? { k: "当前", v: "没有找到原生可执行文件", st: "warn" }
+    : !c.current ? { k: "当前", v: "版本读不出", st: "warn" } : { k: "当前", v: String(c.current), st: "ok" };
+  const latest = c.latest_state === "ok"
+    ? { k: "最新", v: String(c.latest), st: newer === true ? "warn" : newer === false ? "ok" : "unknown",
+        ...(newer === true ? { badge: "可升级" } : newer === false ? { note: "已是最新" } : {}) }
+    : c.latest_state === "unavailable" ? { k: "最新", v: "未能查询", st: "unknown", ...(c.latest ? { note: "上次查到 " + c.latest } : {}) }
+    : { k: "最新", v: "未查询", st: "unknown" };
+  const checked = { k: "上次核对", v: c.latest_checked_at ? when(c.latest_checked_at) : "无",
+                    st: c.latest_checked_at && c.latest_state === "ok" ? "ok" : "unknown" };
+  const state = c.tested?.state;
+  const tested = { k: "实测", v: state === "boundary" ? "已实测" : state === "contract" ? "参数已核对 · 读写边界未实测" : "未实测",
+                   st: state === "boundary" ? "ok" : "unknown", ...(c.tested?.at ? { title: "实测于 " + when(c.tested.at) } : {}) };
+  const next = newer !== true ? null
+    : c.npm_managed === false ? "用它自己的方式升级，再运行 node cli/doctor.mjs"
+    : "运行 node cli/upgrade-cli.mjs " + c.id + " 查看会做什么，加 --yes 才执行";
+  return { id: String(c.id ?? ""), name: String(c.name || c.id || "执行器"), cells: [current, latest, checked, tested], next };
 }
 // ── /display-copy ──
 const COLS = ["goal", "not_started", "in_progress", "waiting", "done"];
@@ -3269,29 +3421,27 @@ function liveWorkerNames(){
 }
 
 function renderRig(){
-  // 设置页的执行线列表:每条线一行——状态点、名称、身份、运行状态、最近一行日志、齿轮、启动/停止。
+  // 设置页的执行线列表:每条线一行——状态点、名称、身份、状态词、停止时间、齿轮、启动/停止。
+  // 停止原因和最近日志不写在行里:故障按原因合并成列表上方的一条告警(#rig-faults),日志折叠在那一条里。
   // 执行器设置(#cfg)停靠在列表下方、是独立元素,这里重画不会打断正在拖动的滑块。
   const rig = document.getElementById("rig");
+  const faults = homeLineFaults(workers, LINE_LABELS);
+  homeFill(document.getElementById("rig-faults"), JSON.stringify(faults), () => faults.map((a) => homeAlertRow(a)));
   rig.innerHTML = (workers.length ? "" : `<p class="set-empty">还没有执行线。用下面的「加线」加一条,或在本机配置文件里写好后重启看板。</p>`) + workers.map((w) => {
     const label = lineLabel(w.line);
     const slots = (w.slots || []).filter((sl) => sl.running);
     const xN = slots.length > 1 ? `×${slots.length}` : "";
-    // ⭐ The rig does NOT guess a stop reason from the exit code — one code carries
-    //   three meanings. Show the structured text the server recorded at the point the
-    //   stop was initiated; fall back to the old code wording only for an older server
-    //   that does not send stop_text (rolling upgrades).
-    const tail = w.running ? (w.last_log?.[w.last_log.length-1] || "")
-                           : (w.stop_text || (w.exit_code == null ? "" : `已停止（退出码 ${w.exit_code}）`));
-    // Extra slots (2+) list their tails as ②③… — melted into one, "how many are
-    // running" loses its meaning
-    const extra = slots.filter((sl) => sl.slot > 1)
-      .map((sl) => `<span class="tail">${"⓪①②③④"[sl.slot] || "#" + sl.slot}${esc(sl.tail || "")}</span>`).join("");
     const open = cfg.classList.contains("show") && cfgLine === w.line;
     const state = w.external ? "外部执行" : w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止";
-    return `<div class="wk${w.running ? " on" : ""}${open ? " editing" : ""}" title="${esc((w.last_log||[]).join(String.fromCharCode(10)))}">` +
+    // ⭐ 面板不从退出码猜停止原因(一个码有三种含义)。停止的线只写服务端记下的停止时间;
+    //   原因的原文(stop_text)放悬停说明,旧版服务端不给 stop_text 时才用退出码那一句。
+    const stopped = !w.external && !w.running;
+    const at = stopped && !w.desired_running && w.stop_reason?.at ? localTime(w.stop_reason.at) : "";
+    const why = stopped ? (w.stop_text || (w.exit_code == null ? "" : `已停止，退出码 ${w.exit_code}`)) : "";
+    return `<div class="wk${w.running ? " on" : ""}${open ? " editing" : ""}"${why ? ` title="${esc(why)}"` : ""}>` +
            `<span class="st" aria-hidden="true"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}${xN}</span>` +
            roleBadge(w) + (w.external ? `<span class="badge" data-tone="quiet" title="由持执行者令牌的外部执行者领卡">外部执行</span>` : `<span class="wk-state">${state}</span>`) +
-           `<span class="wk-log"><span class="tail">${esc(tail)}</span>${extra}</span>` +
+           `<span class="wk-log"><span class="tail"${at ? ` title="停止时间"` : ""}>${esc(at)}</span></span>` +
            (w.external ? `<span class="wk-acts"></span></div>` :
            `<span class="wk-acts"><button class="icon-btn gear" data-cfg="${w.line}" title="执行器设置：模型、推理强度与并行数量" aria-label="${esc(label)}的执行器设置" aria-expanded="${open}">${icon("gear")}</button>` +
            `<button data-wk="${w.line}" data-op="${w.running ? "stop" : "start"}">${icon(w.running ? "stop" : "play")}${w.running ? "停止" : "启动"}</button></span></div>`);
@@ -3302,10 +3452,10 @@ function renderRig(){
   + claimMisses.filter((m) => (m.n || 0) >= 3).map((m) => {
       const root = String(m.worker || "").split("@")[0];
       const known = workers.some((w) => w.line === root);
-      const mins = m.since ? Math.max(1, Math.round((Date.now() - m.since) / 60000)) : "?";
+      const mins = m.since ? Math.max(1, Math.round((Date.now() - m.since) / 60000)) : 0;
       return `<div class="wk miss" title="路由：${esc(routeLabel(m.route))} · 执行线：${esc(lineLabel(m.line))}">` +
              `<span class="tail"${known ? "" : ' style="color:var(--bad)"'}>${icon("warn")}${esc(m.worker)} 连续 ${m.n} 次空领` +
-             ` (≈${mins} 分)${known ? "" : " · 执行器名称可能有误"}</span></div>`;
+             `${mins ? `，约 ${mins} 分` : ""}${known ? "" : " · 执行器名称可能有误"}</span></div>`;
     }).join("");
 }
 
@@ -3990,9 +4140,10 @@ async function refresh(){
   }
 }
 
-function live(on, txt){
+function live(on, txt, title){
   document.getElementById("dot").className = "dot" + (on ? "" : " off");
-  document.getElementById("livetxt").textContent = txt;
+  const el = document.getElementById("livetxt");
+  el.textContent = txt; el.title = title || "";   // title = 不进正文的补充，如日志路径
 }
 // 服务探测匿名访问 /health；不能使用仅允许 /api/ 且附带凭据的面板请求封装。
 let boardDown = null;   // { at, kind: "unreachable" | "error", status }
@@ -4004,7 +4155,8 @@ async function probeBoard(){
   catch { return { kind: "unreachable", status: null }; }
 }
 const hhmm = (ms) => { const d = new Date(ms); return String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
-const downText = () => boardDown && boardDown.kind === "error" ? "看板服务出错" : "看板服务没有应答";
+// 页头只写短状态；原因和下一步在首页状态条的那一条告警里，不说第二遍。
+const downText = () => boardDown && boardDown.kind === "error" ? "出错" : "已断开";
 
 document.addEventListener("click", async (e) => {
   // ── Create goal + decompose
@@ -4338,14 +4490,15 @@ document.addEventListener("click", (e) => { if (e.target.closest("[data-rev-relo
 // The board is restarting on our request (or told us so): hold, then reload when it is back.
 function noteRestart(r){
   restartPending = { at: Date.now(), mode: r?.mode || null, log_path: r?.log_path || null, hinted: false };
-  live(false, "看板正在重启…新版本起来后这页会自己刷新");
+  live(false, "看板正在重启，回来后这页自动刷新");
 }
+// 30 秒还没回来：一句状态加一句下一步，日志路径放悬停说明。
 setInterval(() => {
   if (!restartPending || restartPending.hinted || Date.now() - restartPending.at < 30000) return;
   restartPending.hinted = true;
-  live(false, restartPending.mode === "respawn"
-    ? `看板还没回来(超过 30 秒)。看它的日志:${restartPending.log_path || "<数据目录>/board.log"}`
-    : "看板还没回来(超过 30 秒)。去起它的终端看看:npm start 那个窗口;后台起的看 <数据目录>/board.log");
+  const log = restartPending.log_path || "数据目录里的 board.log";
+  if (restartPending.mode === "respawn") live(false, "看板还没回来。下一步：查看 board.log", "日志：" + log);
+  else live(false, "看板还没回来。下一步：到启动它的终端窗口查看", "后台启动的看板，日志在" + log);
 }, 5000);
 
 // v0.6: the setup guide. Every step's state is MEASURED by the server on each
@@ -4685,7 +4838,7 @@ function homeHealthAlerts(issues, { here = "本机", skip = [] } = {}) {
     const next = HOME_HEALTH_NEXT[HOME_NEXT_FIRST.find((a) => actions.includes(a)) || actions[0]] || "检查本机看板的运行日志";
     if (items.length === 1 || !fam) {
       const count = items.reduce((sum, i) => sum + (i.count || 1), 0);
-      out.push({ tone, where: here, what: homeHealthWhat(items[0].code) + (count > 1 ? "（" + count + " 项）" : ""), next, go: null });
+      out.push({ tone, where: here, what: homeHealthWhat(items[0].code) + (count > 1 ? "，共 " + count + " 项" : ""), next, go: null });
       continue;
     }
     const tails = items.map((i) => i.code.replace(/^(SCHEDULER|NODE)_/, ""));
@@ -4701,7 +4854,7 @@ function homeHealthAlerts(issues, { here = "本机", skip = [] } = {}) {
 const HOME_SERVICE_DOWN = ["bad", "电脑在线，但它的看板服务没有应答", "到这台电脑上运行 node cli/status.mjs，它会说明原因和下一步"];
 const HOME_PEER_REJECTED = ["bad", "对方不认本机的连接凭据", "在全局视图核对两台电脑的配对"];
 const HOME_PEER_ERROR = {
-  PEER_UNREACHABLE: ["bad", "连不上这台电脑（可能关机或断网）", "确认它已开机、联网"],
+  PEER_UNREACHABLE: ["bad", "连不上这台电脑", "确认它已开机、联网"],
   PEER_REFUSED: HOME_SERVICE_DOWN, REMOTE_502: HOME_SERVICE_DOWN, REMOTE_503: HOME_SERVICE_DOWN, REMOTE_504: HOME_SERVICE_DOWN,
   REMOTE_401: HOME_PEER_REJECTED, REMOTE_403: HOME_PEER_REJECTED,
 };
@@ -4710,17 +4863,57 @@ function homeNodeState(n) {
     for (const p of n.projects || []) if (p && HOME_PEER_ERROR[p.error_code]) return HOME_PEER_ERROR[p.error_code];
   return HOME_SYNC[n && n.connection_state] || ["warn", "状态未知", "在全局视图查看"];
 }
-/** 服务断开时只显示这一件事，其余均为断开前的数据；回环地址才可断言本机在线。 */
+/** 服务断开时只显示这一件事，其余均为断开前的数据；回环地址才可断言本机在线。
+ *  原因和下一步只在这一条告警里；tip 进悬停说明，cmd 是折叠起来的查看日志命令。 */
 function homeOutage(down, here) {
-  const since = down.since ? "（" + down.since + " 起）" : "", start = "node cli/start.mjs --background";
-  if (down.kind === "error")
-    return { tone: "bad", line: "看板服务出错，下面是出错前的内容", alerts: [{ tone: "bad", where: here, go: null, copy: null,
-      what: "看板服务出错" + (down.status ? "（HTTP " + down.status + "）" : "") + since,
-      next: "看数据目录里的 board.log 找原因；重启看板：先 node cli/stop.mjs，再 " + start }] };
-  const alert = down.local
-    ? { what: "电脑在线，看板服务没有应答" + since, next: "在这台电脑上重新启动看板（已有任务和结果都保留）：" + start }
-    : { what: "连不上「" + here + "」上的看板" + since, next: "电脑关着就先开机；开着就在它上面运行 " + start };
-  return { tone: "bad", line: "看板服务没有应答，下面是断开前的内容", alerts: [{ tone: "bad", where: here, go: null, copy: start, ...alert }] };
+  const from = down.since ? "从 " + down.since + " 起" : "", start = "node cli/start.mjs --background";
+  const alert = down.kind === "error"
+    ? { copy: null, what: "看板服务" + from + "出错" + (down.status ? "，返回 HTTP " + down.status : ""),
+        next: "看数据目录里的 board.log 找原因；重启看板：先 node cli/stop.mjs，再 " + start }
+    : down.local
+      ? { copy: start, what: "看板服务" + from + "没有应答", next: "重新启动看板：" + start, tip: "已有任务和结果都保留" }
+      : { copy: "node cli/status.mjs", what: from + "连不上「" + here + "」上的看板", next: "到那台电脑上运行 node cli/status.mjs" };
+  return { tone: "bad", line: "下面是断开前的内容",
+           alerts: [{ tone: "bad", where: here, go: null, cmd: "node cli/status.mjs --log", ...alert }] };
+}
+/** 连续重复的日志行合并成一行，带次数。 */
+function homeLogLines(lines) {
+  const out = [];
+  for (const line of Array.isArray(lines) ? lines : []) {
+    const last = out[out.length - 1];
+    if (last && last.line === line) last.count += 1; else out.push({ line, count: 1 });
+  }
+  return out.map((x) => (x.count > 1 ? x.line + "  ×" + x.count : x.line));
+}
+/** 执行线故障按原因合并：同一原因的多条线只出一条，各带一句下一步。输入是 /api/workers 的 workers[]。
+ *  外部线和运行中的线不算。原因文字取服务端的 stop_text，这里不另译退出码。
+ *  命令行 status 读的也是这一份（core/home-model.mjs）。 */
+function homeLineFaults(workers, lineLabels = {}) {
+  const label = (line) => (lineLabels && Object.hasOwn(lineLabels, line) && lineLabels[line]) || line;
+  const groups = new Map();
+  for (const w of Array.isArray(workers) ? workers : []) {
+    if (!w || typeof w.line !== "string" || w.external || w.running) continue;
+    const text = typeof w.stop_text === "string" ? w.stop_text.split(" · ")[0].trim() : "";
+    const kind = !w.stop_reason && w.exit_code === 3 ? "refused" : w.stop_reason?.reason === "crash" ? "crash" : w.desired_running ? "pending" : null;
+    if (!kind) continue;
+    const what = kind === "pending" ? "已请求启动，待核实" : text || (kind === "refused" ? "启动被拒绝" : "崩溃"), key = kind + "|" + what;
+    if (!groups.has(key)) groups.set(key, { kind, what, lines: [], log: [] });
+    const group = groups.get(key);
+    group.lines.push(w.line);
+    for (const line of Array.isArray(w.last_log) ? w.last_log : [])
+      if (typeof line === "string" && line.trim()) group.log.push(label(w.line) + "：" + line.trimEnd());
+  }
+  const NEXT = { refused: "运行 node cli/doctor.mjs 找出原因，修好后在面板启动执行线",
+                 crash: "运行 node cli/status.mjs --log 查看最近日志，修好后在面板启动执行线",
+                 pending: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线" };
+  return [...groups.values()].map((g) => ({ tone: g.kind === "pending" ? "warn" : "bad", where: "执行线",
+    what: g.lines.map(label).join("、") + " " + g.what, next: NEXT[g.kind], lines: g.lines, log: g.log }));
+}
+/** 上次故障的一句话，不含时刻；字段不合格返回 null。说法与命令行 status 的「上次故障」相同。 */
+function homeLastFault(f) {
+  if (!f || typeof f !== "object" || typeof f.kind !== "string" || !f.at) return null;
+  return f.kind === "exit" ? (f.exit_code == null ? "看板服务被结束" : "看板服务退出，退出码 " + f.exit_code)
+    : f.kind === "restart_loop" ? "看板连续请求重启，守护停止重起" : "看板运行中断，可能是关机、断电或进程被结束";
 }
 /** Where one task stands for the person looking: which list, its state, the next step.
  *  `t.hb` is hbClass(t) for this board's cards; `t.progress_blockers` is the server's own
@@ -4850,7 +5043,8 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
   return { mine, running, history };
 }
 /** 设备状态及待处理提示；服务断开时不并列展示断开前的旧告警。 */
-function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null, down = null } = {}) {
+function homeStatus({ localName = "本机", nodes = null, fleetError = null, health = null, healthError = null, setup = null, down = null,
+                      workers = null, lineLabels = {} } = {}) {
   const here = homeName(localName, "本机"), alerts = [], remotes = (nodes || []).filter((n) => !n.local);
   if (down) return homeOutage(down, here);
   for (const n of remotes) {
@@ -4872,9 +5066,11 @@ function homeStatus({ localName = "本机", nodes = null, fleetError = null, hea
                     action: { path: act.path, body: act.body || {}, confirm: act.confirm || "", label: act.label || "执行" } });
     else alerts.push({ tone: "warn", where: "看板设置", what, next: "到「设置」页完成上手引导", go: "settings" });
   }
+  // 执行线故障接在其余告警之后；go = 首页这一条右边的次按钮去设置页的执行线。
+  for (const fault of homeLineFaults(workers, lineLabels)) alerts.push({ ...fault, go: "lines" });
   const count = 1 + remotes.length;
   const tone = alerts.some((a) => a.tone === "bad") ? "bad" : alerts.length ? "warn" : "ok";
-  const names = [here + "（本机）", ...remotes.map((n) => homeName(n.display_name) + " " + (HOME_SYNC[n.connection_state] || ["", "状态未知"])[1])];
+  const names = ["本机 " + here, ...remotes.map((n) => homeName(n.display_name) + " " + (HOME_SYNC[n.connection_state] || ["", "状态未知"])[1])];
   // One computer is the ordinary case: say it is fine, without making "no other computer"
   // sound like something missing.
   const line = alerts.length ? (remotes.length ? count + " 台电脑 · " : "") + alerts.length + " 项需要注意"
@@ -5426,8 +5622,12 @@ function setView(v){
   // The columns' shell (headers, goal box) is built once, from meta — never before the first
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); }
-  else if (v === "settings") { loadHomeExtras(true); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取
-  else { homeSig.clear(); renderHomeViews(); loadHomeExtras(true); if (v === "home" && homeReady) chatLoad(true); }
+  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
+  else {
+    homeSig.clear(); renderHomeViews(); loadHomeExtras(true);
+    if (v === "home" && homeReady) chatLoad(true);
+    if (v === "history") historyUsageLoad();   // 用量汇总:进入历史页时取一次
+  }
   window.scrollTo(0, 0);
 }
 document.querySelector(".views").addEventListener("click", (e) => {
@@ -5479,6 +5679,32 @@ function openHomeItem(item){
   // 第 3 批: 任务在侧栏里打开——说明、结果、进展、操作在一处,不叠两层弹窗、不跳走。
   if (item.uid || item.localId != null) openSide({ uid: item.uid || null, id: item.localId ?? null, item });
 }
+// ── optional-read(tests/panelsidetest.mjs)──
+// 用量与 CLI 版本的接口可能还没随服务端到位:读得到才显示。三处界面(侧栏用量、历史页用量、设置页版本)都经这里取数。
+/** 404 返回 null,调用方整块不画;其他非 2xx 抛错。 */
+async function homeGetOptional(path){
+  const r = await fetch(path, { headers: WH, cache: "no-store" });
+  if (r.status === 404) return null;
+  const v = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(Error(v.error || "读取失败，状态 " + r.status), { status: r.status });
+  return v;
+}
+/** 一份可选读数。value = 最近一次成功且形状对的结果,null 时整块不画;stale = 有过成功结果后这一次没读到,
+ *  界面写「暂时读不到」并保留 value;missing = 接口不在或还是旧形状,这一页不再问。 */
+const optionalSlot = () => ({ value: null, stale: false, missing: false, busy: false, at: 0, error: null });
+/** 读一次。返回 false = 没有发请求(正在读,或已知接口不在)。usable 判断应答是不是这块界面认得的形状。 */
+async function optionalLoad(slot, path, usable = () => true){
+  if (slot.busy || slot.missing) return false;
+  slot.busy = true;
+  try {
+    const v = await homeGetOptional(path);
+    if (v !== null && usable(v)) { slot.value = v; slot.stale = false; slot.error = null; }
+    else { slot.missing = true; slot.value = null; slot.stale = false; slot.error = null; }
+  } catch (e) { slot.stale = slot.value !== null; slot.error = e; }
+  finally { slot.busy = false; slot.at = Date.now(); }
+  return true;
+}
+// ── /optional-read ──
 // ── 任务侧栏(第 3 批)──────────────────────────────────────────────
 // ⭐控件不自造: 按钮与看板卡片同名同数据属性(data-a / data-open-decision / data-edit),
 //   由 document 上同一个处理器接管——两押、版本锁、operator 凭据、人工闸与看板一字不差。
@@ -5501,6 +5727,7 @@ function openSide(ref){
   document.getElementById("task-side").hidden = false;
   sideHash(sideCard()?.task_uid || ref.uid || null);
   renderSide();
+  sideUsageLoad(sideCard(), true);   // 用量:打开时取一次
   document.getElementById("task-side-close").focus({ preventScroll: true });
 }
 function closeSide(){
@@ -5888,6 +6115,63 @@ function sideProtocol(t){
   if (!others.length && !receipts.length && !stale) box.append(homeEl("p", "还没有协议记录", "side-state"));
   return box;
 }
+// ── 侧栏用量:GET /api/usage/card/<卡号>,只给本机卡。打开侧栏时取一次;之后卡面用量(usageByCard)变了才重取。
+//    不进 refresh() 的并行读取,也不进 sideSig:这一节自己局部替换,不重建留言框。接口不在(404)时整节不出。
+let sideUsage = { id: null, slot: optionalSlot(), mark: "" };
+function sideUsageLoad(t, force = false){
+  if (!t) return Promise.resolve();
+  // 换了一张卡:上一张的读数不带过来;接口不在这件事整页都一样,带过来。
+  if (sideUsage.id !== t.id) { sideUsage = { id: t.id, slot: { ...optionalSlot(), missing: sideUsage.slot.missing }, mark: "" }; force = true; }
+  const mine = sideUsage, mark = JSON.stringify(usageByCard[t.id] ?? null);
+  if ((!force && mark === mine.mark) || mine.slot.busy) return Promise.resolve();
+  mine.mark = mark;
+  return optionalLoad(mine.slot, "/api/usage/card/" + t.id, (v) => !!v.totals && typeof v.totals === "object" && Array.isArray(v.by))
+    .then(() => { if (sideUsage === mine && sideCard()?.id === t.id) sideUsagePlace(t); });
+}
+/** 用量一节:常显一行合计,下面「按阶段与模型」折叠。没有读数返回 null,整节不出。 */
+function sideUsageSection(t){
+  const slot = t && sideUsage.id === t.id ? sideUsage.slot : null, v = slot?.value;
+  if (!v) return null;
+  const section = homeEl("section", undefined, "side-sec side-usage"), total = v.totals;
+  section.id = "task-side-usage";
+  section.dataset.signature = JSON.stringify([total, v.by, v.failed, slot.stale]);
+  section.append(homeEl("h3", "用量"));
+  if (slot.stale) section.append(homeEl("p", "暂时读不到", "side-state"));
+  if (!total.rows) { section.append(homeEl("p", "还没有用量记录", "side-state")); return section; }
+  const line = homeEl("p", "词元 " + usageValue(total, ["in", "out"]) + " · 尝试 " + usageValue(total, "attempts") + " 次 · 模型耗时 " + usageValue(total, "duration_ms") +
+    " · 费用 " + usageValue(total, "cost_usd") + usageCostMark(total), "side-usage-line");
+  line.title = "词元 = 输入 + 输出，不含缓存读写；尝试只数实现与续修；未知的项不当 0";
+  section.append(line);
+  const rec = homeEl("details", undefined, "side-rec");
+  rec.append(homeEl("summary", "按阶段与模型"));
+  for (const g of v.by) {
+    const box = homeEl("div", undefined, "usage-group"), grid = homeEl("dl", undefined, "usage-grid");
+    box.append(homeEl("p", (Object.hasOwn(USAGE_PHASE, g.phase) ? USAGE_PHASE[g.phase] : "待核实") + " · " + (g.model && g.model !== "?" ? g.model : "模型待核实"), "usage-group-h"));
+    for (const [label, value] of [["输入", usageValue(g, "in")], ["输出", usageValue(g, "out")], ["缓存读", usageValue(g, "cr")], ["缓存写", usageValue(g, "cc")],
+                                  ["调用", usageValue(g, "calls")], ["尝试", usageValue(g, "attempts")], ["耗时", usageValue(g, "duration_ms")],
+                                  ["费用", usageValue(g, "cost_usd") + usageCostMark(g)]]) {
+      const cell = homeEl("div"); cell.append(homeEl("dt", label), homeEl("dd", value)); grid.append(cell);
+    }
+    box.append(grid); rec.append(box);
+  }
+  if (v.failed?.rows > 0) rec.append(homeEl("p", "失败尝试 " + usageValue(v.failed, "attempts") + " 次 · 词元 " + usageValue(v.failed, ["in", "out"]), "side-state"));
+  const acts = homeEl("div", undefined, "side-acts");
+  acts.append(usageCsvButton("导出这张卡的 CSV", "/api/usage/card/" + t.id + "?format=csv", "usage-card-" + t.id), homeEl("span", "", "usage-note"));
+  rec.append(acts);
+  section.append(rec);
+  return section;
+}
+/** 把用量一节放到步骤条之后、详细说明之前:有读数才有这一节;读数变了只换这一节的内容,折叠的开合不变。 */
+function sideUsagePlace(t){
+  const current = document.getElementById("task-side-usage"), fresh = sideUsageSection(t);
+  if (!fresh) { current?.remove(); return; }
+  if (!current) { document.getElementById("task-side-execution")?.after(fresh); return; }
+  if (current.dataset.signature === fresh.dataset.signature) return;
+  const open = !!current.querySelector("details.side-rec")?.open;
+  current.replaceChildren(...fresh.children); current.dataset.signature = fresh.dataset.signature;
+  const rec = current.querySelector("details.side-rec");
+  if (rec) rec.open = open;
+}
 /** 关联任务、执行回执或协议记录变化时，只刷新只读区，保留当前任务的输入与确认按钮。「逐项记录」开着就还开着。 */
 function updateSideContext(t){
   if (!t) return;
@@ -5902,6 +6186,7 @@ function updateSideContext(t){
     const kept = current.querySelector("details.side-rec");
     if (kept && rec) kept.open = open;
   }
+  sideUsagePlace(t);
 }
 /** 折叠区的键:有 id 用 id,没有用标题文字。 */
 const sideFoldKey = (d) => d.id || d.querySelector("summary")?.textContent || "";
@@ -5943,6 +6228,9 @@ function renderSide(){
   out.push(sideBrief(t, step, item, ctlBox, ctl, { row, fleet }));
   if (t) {
     out.push(sideExecution(t, ctl.kind === "release" && ctl.primary && !sideProtocolRelease(t), sideProtocolRelease(t)));
+    // 用量:有读数才有这一节。它不在 sideSig 里,读数到了由 sideUsagePlace 局部放进来。
+    const usage = sideUsageSection(t);
+    if (usage) out.push(usage);
     const detail = homeEl("details", undefined, "side-sec side-detail");
     detail.id = "task-side-detail";
     detail.append(homeEl("summary", "给执行者看的详细说明"));
@@ -6120,6 +6408,7 @@ function sideAfterRefresh(){
     if (t && decisionChoice.has(t.id) && t.status === "waiting" && t.decision_package?.options?.length) openDecisionModal(t);
   }
   renderSide();
+  if (sideRef && !sideRef.action) sideUsageLoad(sideCard());   // 用量:卡面用量(usageByCard)变了才重取
 }
 // ── 首页「新建任务」(第 3 批)────────────────────────────────────────
 // 写标题和说明,选交给哪条线;不填内部编号。直接建卡(不经拆解、不调模型),建好即在侧栏打开。
@@ -6263,6 +6552,69 @@ function homeEmpty(title, hint, ic = "success"){
   return box;
 }
 function homeLocalName(){ return meta.node?.display_name; }
+/** 文案里的命令画成等宽小块:node cli/… 整条命令,和单独出现的 --参数。 */
+const HOME_CMD = /(node cli\/[\w-]+\.mjs(?: [a-z][\w-]*| --?[\w-]+)*|--[a-z][\w-]*)/;
+function homeCmdText(el, text){
+  for (const part of String(text).split(HOME_CMD))
+    if (part) el.append(part.startsWith("node cli/") || part.startsWith("--") ? homeEl("code", part, "hs-cmd") : part);
+  return el;
+}
+function goLines(){
+  setView("settings");
+  requestAnimationFrame(() => { document.getElementById("set-lines")?.scrollIntoView({ block: "start" }); tocMark("set-lines"); });
+}
+const homeLogOpen = new Set();   // 展开着的日志折叠,键 = where + what;告警行重建后照原样展开
+/** 一条告警:一句原因、一句下一步、最多一个按钮;有日志时行尾一个折叠。首页状态条和设置页执行线共用。
+ *  ⭐ 日志是执行线的原始输出,原因和下一步里有服务端的字:一律 textContent,不拼 HTML。 */
+function homeAlertRow(a){
+  const row = homeEl("div", undefined, "hs-alert"); row.dataset.tone = a.tone;
+  if (a.tip) row.title = a.tip;
+  const what = homeEl("p", undefined, "hs-what"), body = homeEl("div", undefined, "hs-body");
+  // 原因一句 = 哪里 + 什么问题;原因里已经写了是哪里(连不上「X」上的看板)就不重复。
+  if (!String(a.what).includes(a.where)) what.append(homeEl("b", a.where, "hs-where"), " ");
+  what.append(a.what);
+  body.append(what, homeCmdText(homeEl("p", "下一步：", "hs-next"), a.next));
+  row.append(body);
+  // 最多一个按钮:服务端一次请求能做完的那一步,否则去处理它的地方,否则复制命令。
+  if (a.action){
+    const b = homeEl("button", a.action.label, "pri"); b.type = "button";
+    b.addEventListener("click", () => homeSetupAction(a.action, b));
+    row.append(b);
+  }
+  else if (a.go){
+    const set = a.go === "settings" || a.go === "lines";
+    const b = homeEl("button", set ? "去设置" : a.go === "retry" ? "重试连接" : "查看详情"); b.type = "button";
+    if (set) b.insertAdjacentHTML("afterbegin", icon("settings"));
+    b.addEventListener("click", () => {
+      if (a.go === "settings") setView("settings");
+      else if (a.go === "lines") goLines();
+      else if (a.go === "retry"){ b.disabled = true; b.textContent = "重试中…"; refresh().finally(() => loadHomeExtras(true)); }
+      else fleetApi?.open();
+    });
+    row.append(b);
+  }
+  else if (a.copy){
+    const b = homeEl("button", "复制命令"); b.type = "button";
+    b.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(a.copy); b.textContent = "已复制"; }
+      catch { b.textContent = "复制不了，请手动选中上面的命令"; }
+    });
+    row.append(b);
+  }
+  const fold = (label, node) => {
+    const d = homeEl("details", undefined, "hs-log"), key = a.where + " " + a.what;
+    d.append(homeEl("summary", label), node);
+    d.open = homeLogOpen.has(key);
+    d.addEventListener("toggle", () => { if (d.open) homeLogOpen.add(key); else homeLogOpen.delete(key); });
+    return d;
+  };
+  if (Array.isArray(a.log) && a.log.length){
+    const pre = homeEl("pre"); pre.textContent = homeLogLines(a.log).join(String.fromCharCode(10));
+    row.append(fold("日志", pre));
+  }
+  else if (a.cmd) row.append(fold("日志命令", homeEl("code", a.cmd, "hs-cmd")));
+  return row;
+}
 /** Other computers known to this board — until there is one, multi-computer details stay out of sight. */
 const homeMulti = () => (homeFleet?.nodes || []).some((n) => !n.local);
 function renderHomeViews(){
@@ -6276,46 +6628,23 @@ function renderHomeViews(){
   });
   if (homeView === "home"){
     const s = homeStatus({ localName: homeLocalName(), nodes, fleetError: homeFleetError, health: homeHealth,
-                           healthError: homeHealthError, setup: lastSetup,
+                           healthError: homeHealthError, setup: lastSetup, workers, lineLabels: LINE_LABELS,
                            down: boardDown && { since: hhmm(boardDown.at), kind: boardDown.kind, status: boardDown.status, local: HOME_LOCAL_PAGE } });
     // 设备列表未读到时不推断没有其他电脑；已确认服务断开则直接显示故障。
     const known = homeExtrasAt > 0 || !!boardDown;
     document.getElementById("home-view").classList.toggle("stale", !!boardDown);
-    homeFill(document.getElementById("home-status"), JSON.stringify([known, s]), () => {
+    // 上次故障:服务端带出 last_fault 才有这一行;断开时只说断开这一件事。
+    const fault = boardDown ? null : lastSetup?.last_fault || meta.last_fault, faultText = homeLastFault(fault);
+    homeFill(document.getElementById("home-status"), JSON.stringify([known, s, faultText && [fault.at, faultText]]), () => {
       const line = homeEl("div", undefined, "hs-line");
       line.append(homeEl("span", undefined, "dot" + (!known || s.tone === "ok" ? "" : s.tone === "bad" ? " off" : " warn")),
                   homeEl("span", known ? s.line : "正在读取设备状态…", "hs-text"));
-      return [line, ...(known ? s.alerts : []).map((a) => {
-        const row = homeEl("div", undefined, "hs-alert"); row.dataset.tone = a.tone;
-        const nx = homeEl("span", "下一步：", "hs-next");
-        for (const part of a.next.split(/(node cli\/[\w-]+\.mjs(?: --?[\w-]+)*)/))
-          if (part) nx.append(part.startsWith("node cli/") ? homeEl("code", part, "hs-cmd") : part);
-        row.append(homeEl("span", a.where, "hs-where"), homeEl("span", a.what, "hs-what"), nx);
-        if (a.action){
-          const b = homeEl("button", a.action.label, "pri"); b.type = "button";
-          b.addEventListener("click", () => homeSetupAction(a.action, b));
-          row.append(b);
-        }
-        else if (a.go){
-          const b = homeEl("button", a.go === "settings" ? "去设置" : a.go === "retry" ? "重试连接" : "查看详情"); b.type = "button";
-          if (a.go === "settings") b.insertAdjacentHTML("afterbegin", icon("settings"));
-          b.addEventListener("click", () => {
-            if (a.go === "settings") setView("settings");
-            else if (a.go === "retry"){ b.disabled = true; b.textContent = "重试中…"; refresh().finally(() => loadHomeExtras(true)); }
-            else fleetApi?.open();
-          });
-          row.append(b);
-        }
-        if (a.copy){
-          const b = homeEl("button", "复制命令"); b.type = "button";
-          b.addEventListener("click", async () => {
-            try { await navigator.clipboard.writeText(a.copy); b.textContent = "已复制"; }
-            catch { b.textContent = "复制不了，请手动选中上面的命令"; }
-          });
-          row.append(b);
-        }
-        return row;
-      })];
+      const rows = [line, ...(known ? s.alerts : []).map((a) => homeAlertRow(a))];
+      if (known && faultText) {
+        const last = homeEl("div", "上次故障：" + localTime(fault.at) + " " + faultText, "hs-fault");
+        last.dataset.tone = "quiet"; rows.push(last);
+      }
+      return rows;
     });
     homeLane("mine", lists.mine, ["没有需要你处理的事", "交付和提问到了会出现在这里。"]);
     homeLane("running", lists.running, ["没有正在执行的任务", "排队中的任务在「全部任务」里。", "play"]);
@@ -6340,6 +6669,7 @@ function renderHomeViews(){
     note.textContent = partial.length ? partial.map((n) => "「" + n + "」").join("、") + "的缓存任务较多，这里只读取了前 1000 项；完整列表在全局视图。" : "";
   } else {
     const items = lists.history;
+    renderHistoryUsage(items);
     document.getElementById("history-n").textContent = items.length ? String(items.length) : "";
     const partial = homeFleet?.partial || [];
     homeFill(document.getElementById("history-list"), JSON.stringify([homeReady, historyLimit, items, partial]), () => {
@@ -6347,7 +6677,7 @@ function renderHomeViews(){
       if (!items.length) return [homeEmpty("还没有已完成的任务", "验收通过或自动通过的任务会按完成时间排在这里。", "history")];
       const out = items.slice(0, historyLimit).map((item) => homeCard({ ...item, next: item.updated ? "完成于 " + localTime(item.updated) : "" }, "done"));
       if (items.length > historyLimit){
-        const more = homeEl("button", "显示更多（还有 " + (items.length - historyLimit) + " 项）", "home-more"); more.type = "button";
+        const more = homeEl("button", "还有 " + (items.length - historyLimit) + " 项 · 显示更多", "home-more"); more.type = "button";
         more.addEventListener("click", () => { historyLimit += 40; renderHomeViews(); });
         out.push(more);
       }
@@ -6373,6 +6703,184 @@ async function homeGet(path){
   const v = await r.json().catch(() => ({}));
   if (!r.ok) throw Error(v.error || "读取失败(" + r.status + ")");
   return v;
+}
+/** 导出 CSV:用面板自己的请求取文本,转成文件交给浏览器保存;没成的原因写在按钮旁边。
+ *  按钮带 data-usage-csv(接口路径)与 data-usage-name(文件名前缀:维度),由 document 上这一个处理器接管。 */
+async function usageExport(button){
+  const note = button.parentElement?.querySelector(".usage-note");
+  const say = (text) => { if (note) note.textContent = text; };
+  button.disabled = true; say("");
+  try {
+    const r = await fetch(button.dataset.usageCsv, { cache: "no-store" });
+    if (!r.ok) { const v = await r.json().catch(() => ({})); throw Error(v.error || "导出没有完成，状态 " + r.status); }
+    if (!/^text\/csv/i.test(r.headers.get("content-type") || "")) throw Error("这块看板还不能导出 CSV");
+    const url = URL.createObjectURL(new Blob([await r.text()], { type: "text/csv;charset=utf-8" }));
+    const a = document.createElement("a"), d = new Date(), two = (n) => String(n).padStart(2, "0");
+    a.href = url; a.download = button.dataset.usageName + "-" + d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate()) + ".csv";
+    a.hidden = true; document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+  } catch (e) { say(copyError(e)); }
+  finally { button.disabled = false; }
+}
+document.addEventListener("click", (e) => { const b = e.target.closest?.("[data-usage-csv]"); if (b) usageExport(b); });
+function usageCsvButton(label, path, name){
+  const b = homeEl("button", label); b.type = "button";
+  b.dataset.usageCsv = path; b.dataset.usageName = name;
+  return b;
+}
+
+// ── 历史页用量汇总:GET /api/usage?by=card,进入历史页时取一次;应答没有 groups(旧服务端)或 404 时整节不出。
+const historyUsage = optionalSlot();
+let historyTopOpen = false;
+async function historyUsageLoad(){
+  // 上次没取到的失败尝试,这次进历史页再取。
+  if (!usageFailedBusy) for (const [id, failed] of usageFailed) if (!failed) usageFailed.delete(id);
+  if (await optionalLoad(historyUsage, "/api/usage?by=card", (v) => Array.isArray(v.groups) && !!v.total && typeof v.total === "object"))
+    try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
+}
+// 过渡做法:汇总接口还不带失败尝试,按历史页当前显示的这一页完成卡逐卡取 failed,按卡号缓存;汇总接口补上后换成一次请求。
+const usageFailed = new Map();   // 卡号 → failed 汇总;null = 还在取或没取到
+let usageFailedBusy = 0, usageFailedMissing = false;
+const usageFailedQueue = [];
+function historyFailedLoad(ids){
+  if (usageFailedMissing) return;
+  for (const id of ids) if (!usageFailed.has(id)) { usageFailed.set(id, null); usageFailedQueue.push(id); }
+  const pump = () => {
+    while (usageFailedBusy < 4 && usageFailedQueue.length && !usageFailedMissing) {
+      const id = usageFailedQueue.shift();
+      usageFailedBusy++;
+      homeGetOptional("/api/usage/card/" + id).then((v) => {
+        if (v === null) usageFailedMissing = true;
+        else if (v.failed && typeof v.failed === "object") usageFailed.set(id, v.failed);
+      }, () => {}).finally(() => {
+        usageFailedBusy--; pump();
+        if (!usageFailedBusy && homeView === "history") try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
+      });
+    }
+  };
+  pump();
+}
+/** 历史页用量一节。items = 历史列表(新的在前);四个数都不用强调色。 */
+function renderHistoryUsage(items){
+  const sec = document.getElementById("history-usage"), v = historyUsage.value;
+  sec.hidden = !v;
+  if (!v) { homeFill(sec, "", () => []); return; }
+  const total = v.total, groups = v.groups;
+  // 每张完成卡的词元:分子分母都取「本机已完成的卡」与「有用量记录的卡」的交集。
+  const done = new Set(tasks.filter((t) => t.status === "done").map((t) => String(t.id)));
+  const settled = groups.filter((g) => done.has(String(g.key)));
+  const sum = usageMerge(settled, ["in", "out"]), n = settled.length;
+  const share = (x) => (usageNumber(x) ? x / n : null);
+  const per = n ? usageValue({ in: share(sum.in), out: share(sum.out), known: { in: share(sum.known.in), out: share(sum.known.out) } }, ["in", "out"]) : "没有记录";
+  // 缓存读占比:三项里有未知的就不算。
+  const base = [total.in, total.cc, total.cr].every(usageNumber) ? total.in + total.cc + total.cr : 0;
+  const cache = base > 0 ? Math.round(total.cr / base * 100) + "%" : "待核实";
+  // 失败尝试浪费:只数历史页当前这一页的本机完成卡。
+  const page = items.slice(0, historyLimit).filter((i) => i.localId != null).map((i) => i.localId);
+  const keys = new Set(groups.map((g) => String(g.key))), wanted = page.filter((id) => keys.has(String(id)));
+  historyFailedLoad(wanted);
+  const waiting = usageFailedBusy > 0 || usageFailedQueue.length > 0;
+  const burnt = usageMerge(wanted.map((id) => usageFailed.get(id)).filter(Boolean), ["in", "out"]);
+  // 有卡没取到:合计只是已知部分。
+  const lower = wanted.some((id) => !usageFailed.get(id));
+  const waste = usageFailedMissing ? "待核实" : waiting ? "正在读取"
+    : usageValue(lower ? { known: { in: burnt.in ?? burnt.known.in, out: burnt.out ?? burnt.known.out } } : burnt, ["in", "out"]);
+  const top = usageTop(groups), title = (key) => String(byId.get(Number(key))?.subject || "");
+  const row = (g) => ({ key: g.key, title: title(g.key), cost: usageValue(g, "cost_usd") + usageCostMark(g), tokens: usageValue(g, ["in", "out"]) });
+  const model = { rows: total.rows, stale: historyUsage.stale, cache, per, n, waste, page: page.length,
+    cost: usageValue(total, "cost_usd") + usageCostMark(total),
+    top: top.rows.map(row), unknown: top.unknown, loose: top.loose && row(top.loose) };
+  homeFill(sec, JSON.stringify(model), () => {
+    const head = homeEl("div", undefined, "usage-head");
+    head.append(homeEl("h2", "用量"), homeEl("span", "", "usage-note"), usageCsvButton("导出 CSV", "/api/usage?by=card&format=csv", "usage-by-card"));
+    const out = [head];
+    if (model.stale) out.push(homeEl("p", "暂时读不到", "usage-empty"));
+    if (!model.rows) { out.push(homeEl("p", "还没有用量记录", "usage-empty")); return out; }
+    const stats = homeEl("dl", undefined, "usage-stats");
+    const stat = (label, value, sub, tip) => {
+      const cell = homeEl("div", undefined, "usage-stat");
+      cell.append(homeEl("dt", label), homeEl("dd", value));
+      if (sub) cell.append(homeEl("span", sub, "usage-sub"));
+      cell.title = tip;
+      stats.append(cell);
+    };
+    stat("缓存读占比", model.cache, "", "缓存读词元占输入、缓存写、缓存读三项之和的比例；三项里有未知的写待核实");
+    stat("每张完成卡的词元", model.per, model.n ? model.n + " 张完成卡" : "", "词元 = 输入 + 输出，不含缓存读写；只数本机已完成且有用量记录的卡");
+    stat("失败尝试浪费", model.waste, "本页 " + model.page + " 张卡", "失败尝试用掉的词元，输入 + 输出；只数这一页显示的完成卡");
+    stat("费用合计", model.cost, "", "全部用量行的费用之和；有未知行时只有已知部分");
+    out.push(stats);
+    const fold = homeEl("details", undefined, "usage-top");
+    fold.open = historyTopOpen;
+    fold.addEventListener("toggle", () => { historyTopOpen = fold.open; });
+    fold.append(homeEl("summary", "最贵的 10 张"));
+    for (const r of model.top) {
+      const b = homeEl("button", undefined, "usage-row ghost"); b.type = "button";
+      b.append(homeEl("span", "#" + r.key, "usage-no"), homeEl("span", r.title, "usage-title"),
+               homeEl("span", r.cost, "usage-num"), homeEl("span", "词元 " + r.tokens, "usage-num"));
+      b.addEventListener("click", () => openSide({ id: Number(r.key), uid: null, item: null }));
+      fold.append(b);
+    }
+    if (!model.top.length) fold.append(homeEl("p", "还没有带费用的卡", "usage-empty"));
+    if (model.unknown) fold.append(homeEl("p", model.unknown + " 张费用待核实", "usage-empty"));
+    if (model.loose) {
+      const line = homeEl("div", undefined, "usage-row");
+      line.append(homeEl("span", "未记到卡上", "usage-title"), homeEl("span", model.loose.cost, "usage-num"), homeEl("span", "词元 " + model.loose.tokens, "usage-num"));
+      fold.append(line);
+    }
+    out.push(fold);
+    return out;
+  });
+}
+
+// ── 执行器 CLI 版本:GET /api/cli-versions。进入设置页时读一次,停留期间最多每 10 分钟一次;不进 refresh()。
+//    404 整块不出;读不到且从没读到过(503)整块只写接口给的那一句。
+const cliVersions = optionalSlot();
+let cliChecking = false;
+async function cliVersionsLoad(refresh = false){
+  const asked = await optionalLoad(cliVersions, "/api/cli-versions" + (refresh ? "?refresh=1" : ""), (v) => Array.isArray(v.clis));
+  if (asked) renderCliVersions();
+}
+setInterval(() => {
+  if (homeView === "settings" && !document.hidden && Date.now() - cliVersions.at >= 600000) cliVersionsLoad();
+}, 60000);
+function renderCliVersions(){
+  const box = document.getElementById("cli-versions"), v = cliVersions.value;
+  const rows = v ? v.clis.map((c) => cliVersionCells(c, localTime)).filter(Boolean) : [];
+  const error = !v && cliVersions.error?.status ? copyError(cliVersions.error) : "";
+  box.hidden = !rows.length && !error;
+  homeFill(box, JSON.stringify([rows, error, cliVersions.stale, cliChecking]), () => {
+    if (box.hidden) return [];
+    const head = homeEl("div", undefined, "cv-head"), again = homeEl("button", cliChecking ? "核对中…" : "重新核对");
+    again.type = "button"; again.disabled = cliChecking;
+    again.addEventListener("click", async () => {
+      cliChecking = true; renderCliVersions();
+      try {
+        while (cliVersions.busy) await new Promise((r) => setTimeout(r, 100));
+        await cliVersionsLoad(true);
+      } finally { cliChecking = false; renderCliVersions(); }
+    });
+    head.append(homeEl("h4", "执行器 CLI 版本"));
+    if (cliVersions.stale) head.append(homeEl("span", "暂时读不到", "cv-stale"));
+    head.append(again);
+    const out = [head];
+    if (error) out.push(homeEl("p", error, "cv-next"));
+    for (const r of rows) {
+      const row = homeEl("div", undefined, "cv-row"), cells = homeEl("dl", undefined, "cv-cells");
+      for (const c of r.cells) {
+        const cell = homeEl("div", undefined, "rs"), value = homeEl("dd", c.v);
+        cell.dataset.st = c.st;
+        if (c.title) cell.title = c.title;
+        if (c.note) value.append(homeEl("span", c.note, "cv-note"));
+        if (c.badge) { const badge = homeEl("span", c.badge, "badge"); badge.dataset.tone = "warn"; value.append(badge); }
+        cell.append(homeEl("dt", c.k), value);
+        cells.append(cell);
+      }
+      row.append(homeEl("p", r.name, "cv-name"), cells);
+      if (r.next) row.append(homeCmdText(homeEl("p", undefined, "cv-next"), r.next));
+      out.push(row);
+    }
+    return out;
+  });
 }
 /** The three fleet reads, at most every 15 s (the board's own fallback cadence), while a home
  *  view is showing. 全部任务 reads them once — enough to know whether there is another

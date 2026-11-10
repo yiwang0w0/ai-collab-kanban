@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels,homeLineFaults,homeLogLines,homeLastFault};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -163,7 +163,7 @@ test("the device line is one sentence when all is well and lists what needs atte
   const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
   const b = (state, name = "笔记本 B") => ({ node_id: NODE_B, display_name: name, local: false, connection_state: state });
   const ok = M.homeStatus({ localName: "台式机 A", nodes: [local, b("recent")], health: { issues: [] }, setup: { complete: true, steps: [] } });
-  assert.deepEqual([ok.tone, ok.alerts.length, ok.line], ["ok", 0, "2 台电脑正常：台式机 A（本机）、笔记本 B 最近已同步"]);
+  assert.deepEqual([ok.tone, ok.alerts.length, ok.line], ["ok", 0, "2 台电脑正常：本机 台式机 A、笔记本 B 最近已同步"]);
   assert.equal(M.homeStatus({ localName: "台式机 A", nodes: [local] }).line, "本机「台式机 A」运行正常",
     "one computer is the ordinary case, not a missing second one");
   assert.equal(M.homeStatus({ nodes: [local, b("syncing")] }).tone, "ok", "catching up is not a fault");
@@ -176,7 +176,7 @@ test("the device line is one sentence when all is well and lists what needs atte
   assert.deepEqual(bad.alerts.map((a) => [a.tone, a.where, a.what, a.go]), [
     ["bad", "另一台电脑", "同步失败", "fleet"],
     ["warn", "多机视图", "暂时读不到", null],
-    ["bad", "台式机 A", "磁盘空间不足（2 项）", null],
+    ["bad", "台式机 A", "磁盘空间不足，共 2 项", null],
     ["warn", "台式机 A", "调度器运行锁异常", null],
     ["warn", "看板设置", "还差 1 步：定义你自己的线", "settings"],
   ]);
@@ -557,16 +557,102 @@ test("服务没有应答时只显示一条故障与恢复命令，不并列旧�
     health: { issues: [{ code: "STORAGE_LOW", level: "problem", next_action: "inspect_storage_before_new_work", count: 1 }] },
     setup: { complete: false, done: 3, total: 4, steps: [{ state: "todo", title: "定义你自己的线" }] } };
   const down = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", status: null, local: true } });
-  assert.deepEqual([down.tone, down.line, down.alerts.length], ["bad", "看板服务没有应答，下面是断开前的内容", 1],
+  // 文案按「只说一遍、不带括号」改过;守的语义不变:断开时只有一条告警,断开前的告警不并列。
+  assert.deepEqual([down.tone, down.line, down.alerts.length], ["bad", "下面是断开前的内容", 1],
     "断开前的设备、磁盘与设置告警不能冒充现状");
-  assert.deepEqual([down.alerts[0].where, down.alerts[0].what, down.alerts[0].copy],
-    ["台式机 A", "电脑在线，看板服务没有应答（14:05 起）", "node cli/start.mjs --background"]);
-  assert.match(down.alerts[0].next, /已有任务和结果都保留/);
+  assert.deepEqual([down.alerts[0].where, down.alerts[0].what, down.alerts[0].next, down.alerts[0].copy],
+    ["台式机 A", "看板服务从 14:05 起没有应答", "重新启动看板：node cli/start.mjs --background", "node cli/start.mjs --background"]);
+  assert.match(down.alerts[0].tip, /已有任务和结果都保留/, "保留数据这一句进悬停说明，不进正文");
+  assert.equal(down.alerts[0].cmd, "node cli/status.mjs --log", "查看日志的命令折叠在告警行里");
   const away = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", local: false } });
-  assert.equal(away.alerts[0].what, "连不上「台式机 A」上的看板（14:05 起）", "远程页面不能把服务断开直接断言成电脑在线");
-  assert.match(away.alerts[0].next, /电脑关着就先开机/);
+  assert.equal(away.alerts[0].what, "从 14:05 起连不上「台式机 A」上的看板", "远程页面不能把服务断开直接断言成电脑在线");
+  assert.equal(away.alerts[0].next, "到那台电脑上运行 node cli/status.mjs");
   const err = M.homeStatus({ ...before, down: { since: "14:05", kind: "error", status: 500, local: true } });
-  assert.deepEqual([err.line, err.alerts[0].what, err.alerts[0].copy], ["看板服务出错，下面是出错前的内容", "看板服务出错（HTTP 500）（14:05 起）", null]);
+  assert.deepEqual([err.line, err.alerts[0].what, err.alerts[0].copy], ["下面是断开前的内容", "看板服务从 14:05 起出错，返回 HTTP 500", null]);
+  for (const s of [down, away, err]) {
+    assert.match(s.alerts[0].what, /从 14:05 起/);
+    assert.doesNotMatch(JSON.stringify(s), /[（）]/, "断开的原因、下一步和状态行都不带全角括号");
+  }
+  assert.equal(M.homeStatus({ ...before, down: { kind: "unreachable", local: true } }).alerts[0].what, "看板服务没有应答", "不知道从几点起就不写时刻");
+  // 页头只留短状态,原因和下一步不说第二遍。
+  assert.ok(src.includes('const downText = () => boardDown && boardDown.kind === "error" ? "出错" : "已断开";'));
+  assert.ok(src.includes('live(false, "看板还没回来。下一步：查看 board.log", "日志：" + log)'), "30 秒提示：一句状态加一句下一步，日志路径进悬停说明");
+  assert.ok(src.includes("el.textContent = txt; el.title = title || \"\";"), "live() 的第三个入参只进 title");
+});
+
+test("执行线故障按原因合并：同因的线一条，外部线与运行中的线不算，待核实是警告", () => {
+  // 样例与预期输出取自运维线 core/board-run.mjs 的 mergeLineFaults(同输入同输出);两处合并后只留这一份。
+  const workers = [
+    { line: "engine", running: true, desired_running: true, exit_code: null, stop_reason: null, stop_text: "", last_log: ["领取 #4"] },
+    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },
+    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: [] },
+    { line: "qa", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动  "] },
+    { line: "docs", running: false, desired_running: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃（退出码 1） · 2026-11-10 05:00:00Z", last_log: ["Traceback", "", 7] },
+    { line: "ops", running: false, desired_running: true, exit_code: null, stop_reason: null, stop_text: "", last_log: [] },
+    { line: "ext", running: false, external: true, desired_running: true, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）" },
+    { line: "idle", running: false, desired_running: false, exit_code: 0, stop_reason: { reason: "by_user", at: "2026-11-10T04:00:00.000Z" }, stop_text: "用户停止 · 2026-11-10 04:00:00Z" },
+    null, { running: false, exit_code: 3 },
+  ];
+  const labels = { engine: "引擎", design: "设计", review: "审阅" };
+  assert.deepEqual(M.homeLineFaults(workers, labels), [
+    { tone: "bad", where: "执行线", what: "设计、审阅、qa 启动被拒绝（退出码 3）", next: "运行 node cli/doctor.mjs 找出原因，修好后在面板启动执行线",
+      lines: ["design", "review", "qa"], log: ["设计：源码闸拒绝启动", "设计：源码闸拒绝启动", "qa：源码闸拒绝启动"] },
+    { tone: "bad", where: "执行线", what: "docs 崩溃（退出码 1）", next: "运行 node cli/status.mjs --log 查看最近日志，修好后在面板启动执行线",
+      lines: ["docs"], log: ["docs：Traceback"] },
+    { tone: "warn", where: "执行线", what: "ops 已请求启动，待核实", next: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线",
+      lines: ["ops"], log: [] },
+  ], "三条线同因合成一条；外部线、运行中的线、正常停止的线不算");
+  assert.deepEqual(M.homeLineFaults(null), []);
+  assert.deepEqual(M.homeLineFaults([{ line: "toString", running: false, exit_code: 3, stop_reason: null }], {})[0].what, "toString 启动被拒绝", "线名对不上显示名时原样写，不取原型上的键");
+  assert.deepEqual(M.homeLogLines(["设计：源码闸拒绝启动", "设计：源码闸拒绝启动", "qa：源码闸拒绝启动", "设计：源码闸拒绝启动"]),
+    ["设计：源码闸拒绝启动  ×2", "qa：源码闸拒绝启动", "设计：源码闸拒绝启动"], "只合并连续重复的行");
+  assert.deepEqual(M.homeLogLines(undefined), []);
+  // 首页:故障接在其余告警之后,计数算进状态行;断开时只出断开一条。
+  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
+  const setup = { complete: false, done: 3, total: 4, steps: [{ state: "todo", title: "定义你自己的线" }] };
+  const s = M.homeStatus({ localName: "台式机 A", nodes: [local], setup, workers, lineLabels: labels });
+  assert.deepEqual(s.alerts.map((a) => [a.tone, a.where, a.go]), [["warn", "看板设置", "settings"], ["bad", "执行线", "lines"], ["bad", "执行线", "lines"], ["warn", "执行线", "lines"]]);
+  assert.deepEqual([s.tone, s.line], ["bad", "4 项需要注意"]);
+  assert.equal(s.alerts[1].what, "设计、审阅、qa 启动被拒绝（退出码 3）");
+  const down = M.homeStatus({ localName: "台式机 A", nodes: [local], setup, workers, lineLabels: labels, down: { since: "14:05", kind: "unreachable", local: true } });
+  assert.deepEqual(down.alerts.map((a) => a.where), ["台式机 A"], "断开时不并列执行线故障");
+  assert.equal(M.homeStatus({ localName: "台式机 A", nodes: [local] }).alerts.length, 0, "不传 workers 时与原来一样");
+  // 命令行与首页读同一份。
+  const model = readFileSync(new URL("../core/home-model.mjs", import.meta.url), "utf8");
+  assert.ok(model.includes("return { homeStatus, homeName, homeLineFaults, homeLogLines };"));
+});
+
+test("上次故障一句话：字段不合格不出，说法与命令行 status 相同", () => {
+  assert.equal(M.homeLastFault({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: 3 }), "看板服务退出，退出码 3");
+  assert.equal(M.homeLastFault({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: null }), "看板服务被结束");
+  assert.equal(M.homeLastFault({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z" }), "看板连续请求重启，守护停止重起");
+  assert.equal(M.homeLastFault({ kind: "interrupted", at: "2026-11-10T05:00:00.000Z" }), "看板运行中断，可能是关机、断电或进程被结束");
+  for (const bad of [null, undefined, "x", {}, { kind: "exit" }, { at: "2026-11-10T05:00:00.000Z" }]) assert.equal(M.homeLastFault(bad), null);
+  assert.ok(src.includes('const fault = boardDown ? null : lastSetup?.last_fault || meta.last_fault, faultText = homeLastFault(fault);'), "断开时不出这一行");
+  assert.ok(src.includes('last.dataset.tone = "quiet"; rows.push(last);'));
+});
+
+test("告警行组件：首页与设置页共用，日志走 textContent，展开状态按原因记住；接口缺席的两类读取不进 refresh 的并行读取", () => {
+  const row = src.slice(src.indexOf("function homeAlertRow(a){"), src.indexOf("/** Other computers known to this board"));
+  assert.ok(row.includes("pre.textContent = homeLogLines(a.log).join(String.fromCharCode(10));"), "日志是执行线的原始输出，只按纯文本放");
+  assert.ok(!/innerHTML\s*=/.test(row) && !row.includes("insertAdjacentHTML(\"afterbegin\", a"), "告警行不把数据拼成 HTML");
+  assert.ok(row.includes("if (a.tip) row.title = a.tip;") && row.includes('fold("日志命令", homeEl("code", a.cmd, "hs-cmd"))'));
+  assert.ok(row.includes('if (!String(a.what).includes(a.where)) what.append(homeEl("b", a.where, "hs-where"), " ");'), "原因里已经写了是哪里，就不再重复一遍");
+  assert.ok(row.includes("d.open = homeLogOpen.has(key);") && row.includes('key = a.where + " " + a.what'), "重建后照原样展开");
+  assert.equal(row.split("row.append(b);").length - 1, 3, "三种按钮");
+  assert.ok(/if \(a\.action\)\{[^]*?\n  else if \(a\.go\)\{[^]*?\n  else if \(a\.copy\)\{/.test(row), "三种按钮互斥：一条告警最多一个");
+  const rig = src.slice(src.indexOf("function renderRig(){"), src.indexOf("let MODELS = []"));
+  assert.ok(rig.includes('homeFill(document.getElementById("rig-faults"), JSON.stringify(faults), () => faults.map((a) => homeAlertRow(a)));'));
+  assert.ok(!rig.includes("last_log") && !rig.includes("sl.tail"), "执行线行里不再写日志");
+  assert.ok(rig.includes("w.stop_reason?.at ? localTime(w.stop_reason.at)"), "停止时间取服务端记下的时刻");
+  assert.match(src, /<div class="rig-faults" id="rig-faults"><\/div>\s*<div class="rig" id="rig"><\/div>/);
+  assert.ok(src.includes("healthError: homeHealthError, setup: lastSetup, workers, lineLabels: LINE_LABELS,"), "首页把执行线交给 homeStatus");
+  const refresh = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt, title){"));
+  const all = refresh.slice(refresh.indexOf("await Promise.all(["), refresh.indexOf("]);"));
+  assert.ok(all.includes('fetch("/api/usage")') && !all.includes("/api/usage/card") && !all.includes("/api/usage?by=") && !all.includes("/api/cli-versions"),
+    "单卡用量、用量汇总与 CLI 版本不进每次刷新的并行读取");
+  assert.ok(src.includes('else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad();') && src.includes('if (v === "history") historyUsageLoad();'));
+  assert.ok(src.includes("if (homeView === \"settings\" && !document.hidden && Date.now() - cliVersions.at >= 600000) cliVersionsLoad();"), "停留在设置页时最多十分钟读一次");
 });
 
 test("同一故障家族合并原因、症状和优先下一步，未知代码仍可显示", () => {
@@ -579,10 +665,10 @@ test("同一故障家族合并原因、症状和优先下一步，未知代码�
     "调度器状态待核对：运行锁与记录不符、看不出进程还在不在", "没有停止证据时不能断言已经停机");
   const apart = M.homeHealthAlerts([i("NODE_HEARTBEAT_STALE", "inspect_node_runtime"), i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer", "notice"),
                                     i("STORAGE_LOW", "inspect_storage_before_new_work", "problem", 2)]);
-  assert.deepEqual(apart.map((a) => a.what), ["节点运行器心跳超时", "同步正在重试", "磁盘空间不足（2 项）"]);
+  assert.deepEqual(apart.map((a) => a.what), ["节点运行器心跳超时", "同步正在重试", "磁盘空间不足，共 2 项"]);
   assert.equal(M.homeHealthAlerts([i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer")], { skip: ["NODE_SYNC_RETRY"] }).length, 0);
   assert.deepEqual(M.homeHealthAlerts([i("FUTURE_ISSUE", "future"), i("FUTURE_ISSUE", "future")]).map((a) => a.what),
-    ["运行检查报告了问题（2 项）"], "未知家族的重复记录不导致整页渲染失败");
+    ["运行检查报告了问题，共 2 项"], "未知家族的重复记录不导致整页渲染失败");
 });
 
 test("远端电脑连不上与电脑在线但看板没有应答分开说明", () => {
@@ -592,7 +678,7 @@ test("远端电脑连不上与电脑在线但看板没有应答分开说明", ()
                                                           peer("台式机 D", "PEER_REFUSED"), peer("台式机 E", "NETWORK_ERROR")],
     health: { issues: [{ code: "NODE_SYNC_RETRY", level: "notice", next_action: "inspect_node_sync_then_peer", count: 1 }] } });
   assert.deepEqual(s.alerts.map((a) => [a.where, a.what]), [
-    ["笔记本 B", "连不上这台电脑（可能关机或断网）"],
+    ["笔记本 B", "连不上这台电脑"],
     ["台式机 C", "电脑在线，但它的看板服务没有应答"],
     ["台式机 D", "电脑在线，但它的看板服务没有应答"],
     ["台式机 E", "同步失败"],
@@ -603,7 +689,7 @@ test("远端电脑连不上与电脑在线但看板没有应答分开说明", ()
 
 test("页面经匿名健康探测确认故障，成功读取和实时重连都可恢复", () => {
   assert.ok(src.includes('await window.fetch("/health", { cache: "no-store", credentials: "omit" })'));
-  const r = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt){"));
+  const r = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt, title){"));
   assert.ok(r.includes("const p = await probeBoard();") && r.includes("if (restartPending) return;") && r.includes("boardDown = null;"));
   assert.ok(r.includes("if (wasDown) loadHomeExtras(true);"), "恢复后重新读取设备与运行检查，不展示断开前旧值");
   assert.ok(r.includes("if (lastGoodRead > started) return;") && r.includes('if (liveOpen) live(true, "实时");'), "过时的失败不能覆盖新成功");
