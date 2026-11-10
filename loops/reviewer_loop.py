@@ -18,7 +18,7 @@
    `--permission-mode dontAsk` 下没有放行规则就写不出去,而放行规则只有判决目录一条
    (`cli_write_allow_rules([OUTDIR])`)⇒ 工作仓是只读的。此前这里是提示词约束,
    注释原话是"别把它当成保证" —— 现在它是机器保证了(argv 形状由 reviewtest §2b 钉住;
-   真 CLI 的越界读/越界写实测记在卡 #1 的证据里)。
+   真 CLI 的越界读/越界写由 tests/cli-boundary-probe.mjs 实测,它直接取 review_cli_argv)。
    另外兜底的还是:它的判决只有经过 /resolve 才会变成状态——那一步在服务端,
    而它持有的 review_token **只能**以 resolved_by=auto 裁定(server 强制)。
 
