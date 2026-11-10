@@ -689,3 +689,62 @@ test("协作安全:放行确认事项带工作目录、权限与预算;中断后
     assert.ok(again.execution_profile.workspace_path === p.workspace_path);
   } finally { await B.stop(); }
 });
+
+test("协作安全:远程入口再次放行(上次运行中断、结果未知)要带 confirm_rerun:true;首次放行、拒绝、本机面板与命令行不变", { timeout: 120000 }, async () => {
+  const rport = await freePort("127.0.0.2");
+  const B = await board({ ...PROFILE, config: { ...PROFILE.config, remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32"] } } });
+  try {
+    for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    const cards = [];
+    for (const subject of ["远程再次放行", "远程拒绝", "面板再次放行", "命令行再次放行"])
+      cards.push(await B.card({ subject, line: "alpha", execution_profile_id: "claude-api", model: "claude-haiku-4-5", effort: "high" }));
+    const [a, b, c, d] = cards.map((t) => t.id);
+    const item = async (id) => (await B.list()).find((x) => x.kind === "release" && x.detail_ref.id === id);
+    const far = (it, decision = "approve", extra = {}) => raw(rport, { token: tok, method: "POST", path: `/api/approvals/${encodeURIComponent(it.id)}/decide`,
+      body: { decision, source: { client: "phone-app" }, expected_version: it.expected_version, ...extra } });
+    const released = async (id) => (await B.api("GET", `/api/tasks/${id}`, B.operator)).body.task.released;
+    // 首次放行:远程入口不需要额外字段
+    const first = await item(a);
+    assert.ok(first && !first.rerun, JSON.stringify(first));
+    const d0 = await far(first);
+    assert.equal(d0.status, 200, `首次放行不要求 confirm_rerun:${JSON.stringify(d0.body)}`);
+    assert.equal(await released(a), true);
+    for (const id of [b, c, d]) { const it = await item(id); assert.equal((await B.decide(it.id, { decision: "approve", source: src("panel"), expected_version: it.expected_version })).status, 200); }
+    // 四张卡都「执行中断、结果未知、放行被收回」(同上一个用例:直接写回收后的那一行状态)
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    for (const id of [a, b, c, d])
+      assert.equal(db.prepare("UPDATE tasks SET released=0, attempts=1, result=? WHERE id=? AND status='not_started' AND released=1")
+        .run("本轮执行已中断，结果未知。已取消放行，请本人核对后重新放行。", id).changes, 1);
+    db.close();
+    const again = await item(a);
+    assert.equal(again.rerun, true, JSON.stringify(again));
+    // 远程入口:不带 confirm_rerun 的批准 409,写明原因;卡没有放行,也没有留下决定记录
+    const no = await far(again);
+    assert.equal(no.status, 409, `远程入口再次放行必须带 confirm_rerun:true:${JSON.stringify(no.body)}`);
+    assert.match(no.body.error, /confirm_rerun:true/, "写明要带什么");
+    assert.match(no.body.error, /结果未知/, "写明为什么");
+    assert.equal(no.body.needs_confirm_rerun, true);
+    assert.equal(no.body.current.id, again.id);
+    for (const v of ["true", 1, false, null])
+      assert.equal((await far(again, "approve", { confirm_rerun: v })).status, 409, `confirm_rerun 必须是布尔值 true,收到 ${JSON.stringify(v)}`);
+    assert.equal(await released(a), false, "被拒的批准没有放行");
+    assert.equal((await B.api("GET", `/api/approvals/${encodeURIComponent(again.id)}`, B.operator)).body.decision, null, "被拒的批准不留决定记录");
+    const yes = await far(again, "approve", { confirm_rerun: true });
+    assert.equal(yes.status, 200, JSON.stringify(yes.body));
+    assert.equal(await released(a), true);
+    assert.deepEqual([yes.body.decision.via, yes.body.decision.result.rerun, yes.body.decision.result.confirm_rerun], ["remote", true, true], "决定记录写明这是确认过的再次放行");
+    // 远程拒绝不放行任何东西,不要求确认字段
+    const rej = await far(await item(b), "reject");
+    assert.equal(rej.status, 200, JSON.stringify(rej.body));
+    assert.equal(await released(b), false);
+    // 本机面板与命令行不变:不带 confirm_rerun 照常放行
+    const itc = await item(c);
+    const loc = await B.decide(itc.id, { decision: "approve", source: src("panel"), expected_version: itc.expected_version });
+    assert.equal(loc.status, 200, `本机决定不要求 confirm_rerun:${JSON.stringify(loc.body)}`);
+    assert.equal(await released(c), true);
+    const cli = B.cli("approvals", "approve", (await item(d)).id);
+    assert.equal(cli.code, 0, cli.out);
+    assert.equal(await released(d), true);
+  } finally { await B.stop(); }
+});

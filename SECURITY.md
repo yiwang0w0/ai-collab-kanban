@@ -202,6 +202,8 @@ before treating this development branch as a production deployment.
 - **没有自带 TLS。** 令牌与内容在链路上是明文，加密靠 VPN；只适合经 VPN 或可信局域网访问，不要做公网转发、隧道或反代。
   来源白名单不是认证，能借用白名单地址的人仍需令牌；批准令牌能批准列表里的一切（含让看板更新重启、强制释放锁），
   设备丢失就立即吊销。
+- 远程入口批准「再次放行」（卡跑过、上次运行中断且结果未知、放行已被收回的事项，带 `rerun`）时，决定正文必须带
+  `confirm_rerun: true`，否则 409 并写明原因；本机面板与命令行不变。这是防误触的确认，不是权限边界。
 
 ## What it deliberately does not defend against
 

@@ -3043,6 +3043,11 @@ function decideApproval(rawId, body, who) {
   if (!current.actions.includes(d.decision))
     throw approvalConflict(current.blocked || `这一项现在不能${DECISION_VERB[d.decision]}`, { current });
   const r = entry.route, now = Date.now(), approve = d.decision === "approve";
+  // 远程入口的再次放行:这张卡跑过,上次运行中断、结果未知,放行被收回(事项带 rerun)。再放行可能重复计费或重复副作用,
+  // 远程客户端要在正文里明确带 confirm_rerun:true 才放行(客户端应当先把 held_note 给人看)。拒绝不需要;本机面板与命令行不变。
+  if (who.via === "remote" && approve && ref.kind === "release" && current.rerun && body.confirm_rerun !== true)
+    throw approvalConflict(`这张卡跑过,上次运行中断、结果未知,放行已被收回(${current.held_note || "没有留下说明"})。` +
+      "再次放行可能重复计费或重复副作用:远程入口要求决定正文带 confirm_rerun:true", { current, needs_confirm_rerun: true });
   let result = {}, after = null;
   if (ref.kind === "decision" || ref.kind === "delivery") {
     // 与面板、board.py 的 approve/reject 同一条路:note 是给执行者的指示,写了就交回原线(store.legacyDisposition)。
@@ -3053,7 +3058,9 @@ function decideApproval(rawId, body, who) {
     if (approve) releaseTask(r.taskId, { released: true, expected_version: r.version,
       confirm_execution_profile_digest: r.profileDigest, confirm_verification_repair_digest: r.repairDigest });
     const t = store.get(db, r.taskId);
-    result = { task_id: t.id, released: !!t.released, aggregate_version: t.aggregate_version };
+    // 再次放行在决定记录里写明;远程入口确认过的另记 confirm_rerun。
+    result = { task_id: t.id, released: !!t.released, aggregate_version: t.aggregate_version,
+               ...(approve && current.rerun ? { rerun: true, ...(body.confirm_rerun === true ? { confirm_rerun: true } : {}) } : {}) };
   } else if (ref.kind === "version" && approve) {
     if (r.op === "bless") result = acceptTree(r.tree, `approval-${who.via}`);
     else {
@@ -3092,6 +3099,7 @@ function decideApproval(rawId, body, who) {
 const decisionErrorBody = (e) => ({ error: String(e?.message || e),
   ...(e?.current !== undefined ? { current: e.current } : {}), ...(e?.decision ? { decision: e.decision } : {}),
   ...(e?.needs_force ? { needs_force: true, in_progress: e.in_progress } : {}),
+  ...(e?.needs_confirm_rerun ? { needs_confirm_rerun: true } : {}),
   ...(Number.isSafeInteger(e?.current_version) ? { expected_version: e.expected_version, current_version: e.current_version } : {}) });
 function sendDecision(res, id, body, who) {
   let out;
