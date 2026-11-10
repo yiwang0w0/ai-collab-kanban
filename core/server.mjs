@@ -1479,6 +1479,7 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
   //   out-of-domain name" (typo) are DIFFERENT things — the latter is recorded on
   //   the card face and counted in the response (never silently converted).
   const demoted = [];
+  const held = [];   // 建好没放行的卡号(needs_confirm)
   list.forEach((t, i) => {
     const deps = (t.after || []).map((n) => made[Number(n) - 1]).filter((x) => x != null);
     const want = t.line && t.line !== "null" ? String(t.line) : null;
@@ -1492,10 +1493,12 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
         `⚠拆解时给的线名「${want}」不在实现线可选表内(${IMPL_LINES.join("/")};评审线不接实现卡),已落为「不指定线」` +
         "——谁都能领,但没人被点名。请人工确认该派给哪条线。";
     }
-    // 只有对话计划带 needs_confirm(拆解的 schema 里没有这个字段):写在卡面上,执行者动手前先停下来问人。
-    if (t.needs_confirm === true)
+    // 只有对话计划带 needs_confirm(拆解的 schema 里没有这个字段):这张卡建好不放行,线领不到;
+    //   操作者看过、确认后放行。不挂人工闸(人工闸是「等人裁定」,这里等的是放行这一下)。
+    const hold = t.needs_confirm === true;
+    if (hold)
       description += String.fromCharCode(10, 10) +
-        "⚠这张卡涉及需要人确认的动作(生产数据、迁移、删除、推送或花钱)。动手前先停下来,把要做的事交给人确认。";
+        "⚠这张卡涉及需要人确认的动作(生产数据、迁移、删除、推送或花钱),建卡时没有放行。要操作者确认后放行。";
     made[i] = store.add(db, {
       subject: String(t.subject || "(无题)"), description,
       // 给人看的「要做什么」:拆解计划里带就带上,没带就是 null(退路在 store.cardBrief)。
@@ -1506,14 +1509,15 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
       // The release valve moved to worker start/stop (ruling): decomposed children
       // are claimable from birth; "not yet" is expressed by not starting that
       // line's worker.
-      released: 1,
+      released: hold ? 0 : 1,
       // v0.23: a decompose that overrode the review gate says so on every child's `add`
       // event — "ran because the human forced it" must not read like a plain decompose.
       // 对话的按计划建卡写 operator(人按下的)。
       ...(actor ? { actor } : {}),
     });
+    if (hold) held.push(made[i]);
   });
-  return { made, demoted };
+  return { made, demoted, held };
 }
 
 /**
@@ -3306,7 +3310,8 @@ function finishCoordinatorTurn(convId, r, wallMs) {
 const stopCoordinatorRuns = () => Promise.all([...coordinatorRuns.values()].map(async (run) => { try { await run.stop(); await run.finished; } catch {} }));
 
 /** 按计划建卡:同一对话只成功一次。目标卡、子卡、建卡标记与 system 消息在同一事务里,任何一步失败都不留半份。
- *  子卡复用拆解的建卡段(createPlanChildren):线名不在实现线里就降为「不指定线」并记进 demoted。 */
+ *  子卡复用拆解的建卡段(createPlanChildren):线名不在实现线里就降为「不指定线」并记进 demoted;
+ *  needs_confirm 的子卡不放行,卡号记进 needs_release。 */
 function applyConversationPlan(convId, rev, expectedRev, by) {
   let out;
   db.exec("BEGIN IMMEDIATE");
@@ -3318,15 +3323,18 @@ function applyConversationPlan(convId, rev, expectedRev, by) {
     const dropped = [];
     const list = enabled.map((t) => ({ ...t,
       after: t.after.filter((n) => position.has(n) || (dropped.push(`第 ${t.n} 张原本排在第 ${n} 张之后`), false)).map((n) => position.get(n)) }));
-    const goalId = store.add(db, { subject: plan.goal.subject, description: plan.goal.description, kind: "goal", released: 0, actor: "operator" });
+    // 目标卡建好即放行:人按下「按计划建卡」就是放行这一批。祖先未放行时子卡一张都领不到
+    // (store 的祖先放行规则),而合同要求子卡建好即可领。要人确认的子卡各自不放行(createPlanChildren)。
+    const goalId = store.add(db, { subject: plan.goal.subject, description: plan.goal.description, kind: "goal", released: 1, actor: "operator" });
     const made = createPlanChildren(goalId, list, { actor: "operator" });
     const demoted = made.demoted.map((d) => ({ ...d, n: enabled[d.n - 1].n }));
     conversations.markApplied(db, convId, rev, { by, goalId, taskIds: made.made });
     conversations.addSystemMessage(db, convId, { kind: "applied", text:
       `已按计划第 ${rev} 版建卡:目标 #${goalId},子卡 ${made.made.map((id) => "#" + id).join(" ")}。` +
+      (made.held.length ? `${made.held.map((id) => "#" + id).join(" ")} 涉及要人确认的动作,没有放行,要操作者确认后放行。` : "") +
       demoted.map((d) => `第 ${d.n} 张的线名「${d.line}」不在实现线里,已改为不指定线。`).join("") +
       (dropped.length ? `${dropped.join(";")},被依赖的卡已停用,这些先后关系没有带上。` : "") });
-    out = { goal_id: goalId, task_ids: made.made, demoted };
+    out = { goal_id: goalId, task_ids: made.made, demoted, needs_release: made.held };
     db.exec("COMMIT");
   } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
   emit("task.created", { id: out.goal_id });

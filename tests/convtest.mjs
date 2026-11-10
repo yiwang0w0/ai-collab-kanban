@@ -323,18 +323,32 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     assert.equal((await b.api("GET", "/api/tasks", b.operator)).body.tasks.length, 0, "被拒的建卡不留卡");
     const applied = await b.api("POST", `/api/conversations/${id}/plans/2/apply`, b.operator, { expected_rev: 2 });
     assert.equal(applied.status, 201, JSON.stringify(applied.body));
-    const { goal_id: goalId, task_ids: ids, demoted } = applied.body;
+    const { goal_id: goalId, task_ids: ids, demoted, needs_release: needsRelease } = applied.body;
     assert.equal(ids.length, 3); assert.deepEqual(demoted, [{ n: 2, subject: "补导出配置项", line: "ghost" }]);
+    assert.deepEqual(needsRelease, [ids[2]], "要人确认的那张在 needs_release 里");
     const card = async (n) => (await b.api("GET", `/api/tasks/${n}`, b.operator)).body.task;
     const goal = await card(goalId), kids = [await card(ids[0]), await card(ids[1]), await card(ids[2])];
-    assert.deepEqual([goal.kind, goal.subject, goal.description], ["goal", "导出改造(一期)", "把导出做成可配置的"]);
-    assert.deepEqual(kids.map((k) => [k.kind, k.parent_id, k.subject, k.line, k.blocked_by, k.needs_bash, k.released]), [
-      ["task", goalId, "梳理导出入口", "alpha", [], false, true],
-      ["task", goalId, "补导出配置项", null, [ids[0]], false, true],
-      ["task", goalId, "迁移旧导出记录", "alpha", [ids[0], ids[1]], true, true]]);
+    assert.deepEqual([goal.kind, goal.subject, goal.description, goal.released], ["goal", "导出改造(一期)", "把导出做成可配置的", true]);
+    // 要人确认的子卡不放行、不挂人工闸;其余子卡放行。
+    assert.deepEqual(kids.map((k) => [k.kind, k.parent_id, k.subject, k.line, k.blocked_by, k.needs_bash, k.released, k.human_gate]), [
+      ["task", goalId, "梳理导出入口", "alpha", [], false, true, false],
+      ["task", goalId, "补导出配置项", null, [ids[0]], false, true, false],
+      ["task", goalId, "迁移旧导出记录", "alpha", [ids[0], ids[1]], true, false, false]]);
     assert.match(kids[1].description, /线名「ghost」不在实现线可选表内/);
-    assert.match(kids[2].description, /需要人确认的动作/); assert.ok(!/需要人确认的动作/.test(kids[0].description));
+    assert.match(kids[2].description, /建卡时没有放行。要操作者确认后放行/); assert.ok(!/要操作者确认后放行/.test(kids[0].description));
     assert.equal(kids[0].summary, "梳理现有导出入口的一句话说明");
+    // 建好即可领:没有依赖的那张现在就领得到;没放行的那张领不到,操作者放行后才不再因放行被拒。
+    const claim = (k, worker) => b.api("POST", `/api/tasks/${k.id}/claim`, b.operator, { worker, expected_version: k.aggregate_version });
+    const took = await claim(kids[0], "probe-a");
+    assert.equal(took.status, 200, JSON.stringify(took.body)); assert.equal(took.body.task.status, "in_progress");
+    const refused = await claim(kids[2], "probe-b");
+    assert.equal(refused.status, 409, JSON.stringify(refused.body)); assert.match(refused.body.error, /未放行/);
+    const released = await b.api("POST", `/api/tasks/${ids[2]}/release`, b.operator, { released: true, expected_version: kids[2].aggregate_version });
+    assert.equal(released.status, 200, JSON.stringify(released.body));
+    const after = await card(ids[2]);
+    assert.equal(after.released, true);
+    const waiting = await claim(after, "probe-b");
+    assert.ok(waiting.status === 409 && !/未放行/.test(waiting.body.error), `放行后只剩依赖在挡:${JSON.stringify(waiting.body)}`);
     d = await b.detail(id);
     assert.deepEqual([d.conversation.goal_id, d.conversation.plan_applied, d.conversation.plan_rev], [goalId, true, 2]);
     assert.equal(d.plans[0].applied, null);
@@ -342,6 +356,7 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     const note = d.messages.at(-1);
     assert.deepEqual([note.role, note.kind], ["system", "applied"]);
     assert.ok(note.text.includes(`目标 #${goalId}`) && ids.every((n) => note.text.includes(`#${n}`)) && note.text.includes("「ghost」"), note.text);
+    assert.ok(note.text.includes(`#${ids[2]} 涉及要人确认的动作,没有放行,要操作者确认后放行。`), note.text);
     for (const [method, path, body] of [["POST", `/api/conversations/${id}/plans/2/apply`, { expected_rev: 2 }],
                                         ["PUT", `/api/conversations/${id}/plans/2`, { expected_rev: 2, tasks: [{ n: 1, enabled: false }] }]]) {
       const again = await b.api(method, path, b.operator, body);
