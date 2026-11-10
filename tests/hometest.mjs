@@ -533,10 +533,10 @@ test("手动建卡：原表单、编号和处理器都在，入口是输入框�
     { body: { subject: "手动建的卡", description: "", line: "engine" } });
 });
 
-test("计划卡：夹具进去，勾选、合计、已建卡三态和要提交的改动都由纯函数算出", () => {
+test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、要提交的改动和输入框上方那一行都由纯函数算出", () => {
   const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
   assert.ok(c0 > 0 && c1 > c0, "chat-model block not found in core/panel.html");
-  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline};")();
+  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend};")();
   const task = (n, extra) => ({ n, subject: "第 " + n + " 步", summary: "摘要 " + n, description: "", acceptance: "", line: "engine", after: [],
     needs_confirm: false, needs_bash: false, enabled: true, edited: [], ...extra });
   const plan = { rev: 2, author: "coordinator", base_rev: 1, created_at: at(3), goal: { subject: "<b>目标</b>", description: "说明" }, applied: null,
@@ -548,7 +548,7 @@ test("计划卡：夹具进去，勾选、合计、已建卡三态和要提交�
   assert.deepEqual([open.state, open.editable, open.canApply, open.dirty], ["open", true, true, 0]);
   assert.deepEqual(open.tasks.map((t) => [t.n, t.enabled, t.lineName, t.lineKnown, t.after, t.needsConfirm]),
     [[1, true, "引擎", true, [], false], [2, true, "设计", true, [1], true], [3, false, "ghost", false, [1, 2], false]]);
-  assert.equal(open.total, "将建 1 张目标卡、2 张子任务卡，其中 1 张要你确认；1 项不建");
+  assert.equal(open.total, "将建 1 张目标卡、2 张子任务卡，其中 1 张要你确认后放行；1 项不建");
   assert.equal(open.goal.subject, "<b>目标</b>", "协调线写的字原样带出，页面按纯文本放");
 
   // 本地改动:逐行标出,合计跟着变;发消息或建卡前要 PUT 的只有改了的字段
@@ -556,18 +556,24 @@ test("计划卡：夹具进去，勾选、合计、已建卡三态和要提交�
   const edited = C.planView(plan, { ...opts, draft });
   assert.deepEqual(edited.tasks.map((t) => [t.enabled, t.line, t.changed, t.afterOff]),
     [[false, "engine", ["enabled"], []], [true, null, ["line"], [1]], [false, "ghost", [], []]]);
-  assert.deepEqual([edited.dirty, edited.tasks[1].lineName, edited.total], [2, "不指定线", "将建 1 张目标卡、1 张子任务卡，其中 1 张要你确认；2 项不建"]);
+  assert.deepEqual([edited.dirty, edited.tasks[1].lineName, edited.total], [2, "不指定线", "将建 1 张目标卡、1 张子任务卡，其中 1 张要你确认后放行；2 项不建"]);
   assert.deepEqual(C.planPutBody(plan, draft), { expected_rev: 2, tasks: [{ n: 1, enabled: false }, { n: 2, line: null }] });
+  assert.equal(C.planPutBody(plan, null), null, "没有改动就不发 PUT（服务端对无变化的 PUT 也会出新版本）");
   const none = C.planView(plan, { ...opts, draft: C.planEdit(plan, draft, 2, { enabled: false }) });
   assert.deepEqual([none.canApply, none.total], [false, "至少勾选 1 项才能建卡"]);
   assert.equal(C.planEdit(plan, C.planEdit(plan, null, 1, { enabled: false }), 1, { enabled: true }), null, "改回原值 = 没有改动");
   const stale = { rev: 1, tasks: { 1: { enabled: false } } };
   assert.deepEqual([C.planPutBody(plan, stale), C.planView(plan, { ...opts, draft: stale }).dirty], [null, 0], "别的版本上的改动不显示也不提交");
 
-  // 已建卡态:只读,给出目标卡号和子任务卡号;本地改动不再叠上去
-  const applied = C.planView({ ...plan, applied: { at: at(4), by: "panel", goal_id: 12, task_ids: [13, 14] } }, { ...opts, draft });
+  // 已建卡态:只读,给出目标卡号和子任务卡号;本地改动不再叠上去。要你确认的卡建好后不放行:
+  // 看板的卡还没读到时按计划里标的张数写,读到了按还没放行的卡号写,都放行了就不再提。
+  const built = { ...plan, applied: { at: at(4), by: "panel", goal_id: 12, task_ids: [13, 14] } };
+  const applied = C.planView(built, { ...opts, draft });
   assert.deepEqual([applied.state, applied.editable, applied.canApply, applied.dirty, applied.total, applied.applied],
-    ["applied", false, false, 0, "已建 1 张目标卡、2 张子任务卡", { goalId: 12, taskIds: [13, 14] }]);
+    ["applied", false, false, 0, "已建 1 张目标卡、2 张子任务卡，其中 1 张要你确认后放行", { goalId: 12, taskIds: [13, 14], pending: [] }]);
+  const waiting = C.planView(built, { ...opts, pending: [14] }), released = C.planView(built, { ...opts, pending: [] });
+  assert.deepEqual([waiting.total, waiting.applied.pending], ["已建 1 张目标卡、2 张子任务卡，其中 1 张要你确认后放行", [14]]);
+  assert.equal(released.total, "已建 1 张目标卡、2 张子任务卡");
   // 旧版本、这个对话已按别的版本建过卡:都不能改也不能建
   const old = C.planView(plan, { ...opts, latest: false, draft }), locked = C.planView(plan, { ...opts, appliedRev: 1 });
   assert.deepEqual([old.state, old.editable, old.canApply, old.dirty], ["old", false, false, 0]);
@@ -579,6 +585,18 @@ test("计划卡：夹具进去，勾选、合计、已建卡三态和要提交�
   const plans = [{ ...plan, rev: 1, created_at: at(2) }, { ...plan, rev: 2, author: "human", created_at: at(4) }];
   assert.deepEqual(C.chatTimeline(messages, plans).map((x) => x.kind === "plan" ? "计划" + x.plan.rev + (x.latest ? "*" : "") : "消息" + x.message.id),
     ["消息1", "消息2", "计划1", "计划2*", "消息3"]);
+
+  // 输入框上方那一行:协调线不可用的原因照服务端给的写;失败的一轮只有对话上的 error;一条消息最多 4000 字
+  const ok = { available: true }, down = { available: false, reason: "CLI 登录已过期。" };
+  assert.equal(C.chatStateLine({ coordinator: down }).text, "协调线现在不可用：CLI 登录已过期。可以先用「手动建卡」。");
+  assert.deepEqual([C.chatCanSend({ coordinator: down, text: "做" }), C.chatCanSend({ coordinator: ok, text: "做" }), C.chatCanSend({ coordinator: ok, text: "  " })], [false, true, false]);
+  const failed = C.chatStateLine({ coordinator: ok, conversation: { status: "failed", error: "协调线超时" } });
+  assert.deepEqual([failed.text, failed.act], ["上一轮没有完成：协调线超时", "retry"]);
+  assert.deepEqual([C.chatStateLine({ coordinator: ok, conversation: { status: "running" } }).act, C.chatCanSend({ coordinator: ok, conversation: { status: "running" }, text: "做" })], ["stop", false]);
+  const long = "字".repeat(4001);
+  assert.deepEqual([C.chatCanSend({ coordinator: ok, text: "字".repeat(4000) }), C.chatCanSend({ coordinator: ok, text: long })], [true, false]);
+  assert.equal(C.chatStateLine({ coordinator: ok, text: long }).text, "这条消息 4001 字，一条最多 4000 字。删短或分几条发。");
+  assert.equal(C.chatStateLine({ coordinator: ok, conversation: { status: "idle" }, text: "做" }), null);
 
   // 页面只用 textContent 放协调线的字:消息与计划卡这一段不拼 HTML
   const dom = src.slice(src.indexOf("function chatMessage(m){"), src.indexOf("function chatSync(){"));

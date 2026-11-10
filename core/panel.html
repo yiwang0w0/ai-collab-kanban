@@ -947,7 +947,8 @@
   .msg-text{margin:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65}
   .msg[data-role="user"]{align-items:flex-end}
   .msg[data-role="user"] .msg-text{max-width:86%;padding:var(--sp-2) var(--sp-3);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md)}
-  .msg[data-role="system"]{align-items:center}
+  .msg[data-role="system"]{flex-direction:row;justify-content:center;align-items:center}
+  .msg[data-role="system"][data-kind="plan_rejected"],.msg[data-role="system"][data-kind="plan_rejected"] .msg-text{color:var(--warn)}
   .msg[data-role="system"] .msg-text{color:var(--dim);font-size:var(--fs-sm);text-align:center}
   .msg-tools{display:flex;align-items:center;gap:var(--sp-1);max-width:100%;color:var(--dim);font-size:var(--fs-sm)}
   .msg-tools .ic{width:14px;height:14px}
@@ -1052,6 +1053,8 @@
   .plan-sum{flex:1 1 180px;min-width:0;color:var(--dim);font-size:var(--fs-sm)}
   .plan-note{flex-basis:100%;margin:0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
   .plan-note[data-tone="warn"]{color:var(--warn)}
+  .plan-note[data-tone="need"]{color:var(--accent);font-weight:600}
+  .plan-id[data-need]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
   .plan-note[data-tone="bad"]{color:var(--bad)}
   .plan-links{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1)}
   .plan-id{font-family:var(--mono)}
@@ -4844,21 +4847,29 @@ function chatToolsLine(tools) {
   const text = String(tools.summary || "").trim();
   return text || (tools.count > 0 ? "用了 " + tools.count + " 次工具" : "");
 }
-/** 输入框上方的那一行:没发出去 > 正在回复 > 协调线不可用 > 上一轮没有完成。null = 不显示。
+const CHAT_MESSAGE_MAX = 4000;   // 一条消息的字数上限(服务端同值)
+const chatLength = (text) => [...String(text ?? "").trim()].length;
+/** 输入框上方的那一行:没发出去 > 正在回复 > 这条太长 > 协调线不可用 > 上一轮没有完成。null = 不显示。
+ *  协调线不可用的原因照服务端给的原样写(未找到 Claude CLI、源码未确认、CLI 登录已过期…)。
  *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。 */
-function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null } = {}) {
+function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "" } = {}) {
   if (fail) return { tone: "bad", icon: "warn", text: "没有发出去：" + fail, act: "resend", label: "重试" };
   if (conversation && conversation.status === "running") return { tone: "run", icon: "chat", text: "协调线正在回复", act: "stop", label: "停止本轮" };
   if (sending) return { tone: "run", icon: "chat", text: "正在发送", act: null, label: "" };
-  if (coordinator && coordinator.available === false)
-    return { tone: "warn", icon: "warn", text: "协调线现在不可用：" + (String(coordinator.reason || "").trim() || "原因未记录") + "。可以先用「手动建卡」。", act: null, label: "" };
+  if (chatLength(text) > CHAT_MESSAGE_MAX)
+    return { tone: "warn", icon: "warn", text: "这条消息 " + chatLength(text) + " 字，一条最多 " + CHAT_MESSAGE_MAX + " 字。删短或分几条发。", act: null, label: "" };
+  if (coordinator && coordinator.available === false) {
+    const reason = String(coordinator.reason || "").trim().replace(/[。．.\s]+$/, "") || "原因未记录";
+    return { tone: "warn", icon: "warn", text: "协调线现在不可用：" + reason + "。可以先用「手动建卡」。", act: null, label: "" };
+  }
   if (conversation && conversation.status === "failed")
     return { tone: "bad", icon: "warn", text: "上一轮没有完成：" + (String(conversation.error || "").trim() || "原因未记录"), act: "retry", label: "重试" };
   return null;
 }
-/** 能不能发:协调线可用、这个对话没有在跑、没有正在发、写了字。 */
+/** 能不能发:协调线可用、这个对话没有在跑、没有正在发、写了字且不超上限。 */
 function chatCanSend({ coordinator = null, conversation = null, sending = false, text = "" } = {}) {
-  return !!(coordinator && coordinator.available) && !sending && !(conversation && conversation.status === "running") && !!String(text).trim();
+  const n = chatLength(text);
+  return !!(coordinator && coordinator.available) && !sending && !(conversation && conversation.status === "running") && n > 0 && n <= CHAT_MESSAGE_MAX;
 }
 /** 消息流的顺序:消息照原序;带 plan_rev 的消息后面跟它那一版计划;人改出的版本没有对应消息,
  *  按时间插到它之后的第一条消息前面,排不进去就放最后。latest = 最新一版;appliedRev = 已建卡的那一版。 */
@@ -4904,8 +4915,10 @@ function planPutBody(plan, draft) {
   return tasks.length ? { expected_rev: plan.rev, tasks } : null;
 }
 /** 一版计划怎么显示。state: open 最新、还没建卡 / applied 已建卡 / old 已有新版本 / locked 这个对话已按别的版本建过卡。
- *  只有 open 能改能建;本地改动(draft)只叠在 open 上。合计与每一行的字都在这里定,页面只管摆。 */
-function planView(plan, { lines = [], lineName = (l) => l, draft = null, latest = true, appliedRev = null } = {}) {
+ *  只有 open 能改能建;本地改动(draft)只叠在 open 上。合计与每一行的字都在这里定,页面只管摆。
+ *  要你确认的子任务建卡后不放行:建卡前合计写「其中 N 张要你确认后放行」;建卡后 pending = 还没放行的卡号
+ *  (调用方从看板现有的卡里数;null = 还不知道,按计划里标了要确认的张数写)。 */
+function planView(plan, { lines = [], lineName = (l) => l, draft = null, latest = true, appliedRev = null, pending = null } = {}) {
   const applied = plan.applied || null;
   const state = applied ? "applied" : !latest ? "old" : appliedRev != null ? "locked" : "open", editable = state === "open";
   const local = editable && draft && draft.rev === plan.rev ? draft.tasks || {} : {};
@@ -4921,14 +4934,16 @@ function planView(plan, { lines = [], lineName = (l) => l, draft = null, latest 
   const off = new Set(tasks.filter((t) => !t.enabled).map((t) => t.n));
   for (const t of tasks) t.afterOff = t.enabled ? t.after.filter((n) => off.has(n)) : [];
   const on = tasks.filter((t) => t.enabled), confirm = on.filter((t) => t.needsConfirm).length;
-  const total = applied ? "已建 1 张目标卡、" + (Array.isArray(applied.task_ids) ? applied.task_ids.length : 0) + " 张子任务卡"
+  const built = applied && Array.isArray(applied.task_ids) ? applied.task_ids : [], waiting = Array.isArray(pending) ? pending : null;
+  const release = (n) => n ? "，其中 " + n + " 张要你确认后放行" : "";
+  const total = applied ? "已建 1 张目标卡、" + built.length + " 张子任务卡" + release(waiting ? waiting.length : confirm)
     : state === "locked" ? "这个对话已按第 " + appliedRev + " 版建过卡"
     : !on.length ? "至少勾选 1 项才能建卡"
-    : "将建 1 张目标卡、" + on.length + " 张子任务卡" + (confirm ? "，其中 " + confirm + " 张要你确认" : "") + (off.size ? "；" + off.size + " 项不建" : "");
+    : "将建 1 张目标卡、" + on.length + " 张子任务卡" + release(confirm) + (off.size ? "；" + off.size + " 项不建" : "");
   return { rev: plan.rev, author: plan.author === "human" ? "human" : "coordinator", state, editable,
     goal: { subject: String(plan.goal?.subject || ""), description: String(plan.goal?.description || "") },
     tasks, dirty: tasks.reduce((sum, t) => sum + t.changed.length, 0), total, canApply: editable && on.length > 0,
-    applied: applied ? { goalId: applied.goal_id ?? null, taskIds: Array.isArray(applied.task_ids) ? applied.task_ids : [] } : null };
+    applied: applied ? { goalId: applied.goal_id ?? null, taskIds: built, pending: waiting || [] } : null };
 }
 // ── /chat-model ──
 
@@ -5622,12 +5637,13 @@ function chatDraftSave(){
 async function chatApi(method, path, body){
   const r = await fetch(path, { method, headers: WH, cache: "no-store", ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   const v = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(Error(v.error || "看板没有完成这次请求，状态 " + r.status), { status: r.status, code: v.code || null, issues: v.issues || null });
+  if (!r.ok) throw Object.assign(Error(v.error || "看板没有完成这次请求，状态 " + r.status), { status: r.status, code: v.code || null, issues: v.issues || null, currentRev: v.current_rev ?? null });
   return v;
 }
 const CHAT_ERROR = { COORDINATOR_UNAVAILABLE: "协调线现在不可用", TURN_RUNNING: "协调线还在回复上一条",
   PLAN_CONFLICT: "计划已有新版本，已重新读取，请核对后再试", PLAN_APPLIED: "这份计划已经建过卡" };
-const chatErrorText = (e) => Object.hasOwn(CHAT_ERROR, e?.code) ? CHAT_ERROR[e.code] : copyError(e);
+const chatErrorText = (e) => e?.code === "PLAN_CONFLICT" && Number.isInteger(e.currentRev) ? "计划已更新到第 " + e.currentRev + " 版，已重新读取，请核对后再试"
+  : Object.hasOwn(CHAT_ERROR, e?.code) ? CHAT_ERROR[e.code] : copyError(e);
 const chatPath = (rest = "") => "/api/conversations/" + encodeURIComponent(chatId) + rest;
 /** 协调线状态、对话列表、当前对话。平时最多 5 秒读一次;发消息、建卡、收到对话事件、实时通道重连时立即读。 */
 async function chatLoad(force = false){
@@ -5709,6 +5725,8 @@ function chatMessage(m){
   const role = m.role === "user" ? "user" : m.role === "system" ? "system" : "coordinator";
   const box = homeEl("div", undefined, "msg"); box.dataset.role = role;
   if (role !== "system") box.append(homeEl("span", role === "user" ? "你" : "协调线", "msg-who"));
+  // 系统事件的 kind:applied 已建卡 / stopped 已停止 / plan_rejected 计划没过校验 / plan_ignored 建卡后又出的计划没有记。正文是服务端写的。
+  else { box.dataset.kind = String(m.kind || ""); if (m.kind === "plan_rejected") box.append(chatIcon("warn")); }
   const tools = chatToolsLine(m.tools);
   if (tools) { const t = homeEl("div", undefined, "msg-tools"); t.append(chatIcon("doc"), homeEl("span", tools)); box.append(t); }
   if (m.text) { const p = homeEl("p", String(m.text), "msg-text"); if (m.created_at) p.title = localTime(m.created_at); box.append(p); }
@@ -5729,6 +5747,11 @@ function chatPlanDraftSet(draft){
   const plan = { ...(chatStore().plan || {}) };
   if (draft) plan[chatKey()] = draft; else delete plan[chatKey()];
   chatSave({ plan });
+}
+/** 这版计划建出的子任务卡里还没放行的卡号(要你确认的卡建好后不放行);看板的卡还没读到 = null。 */
+function chatPending(plan){
+  if (!plan.applied || !homeReady) return null;
+  return (Array.isArray(plan.applied.task_ids) ? plan.applied.task_ids : []).filter((id) => { const t = byId.get(Number(id)); return !!t && t.status === "not_started" && !t.released; });
 }
 function chatPlanChange(plan, n, patch){
   chatPlanDraftSet(planEdit(plan, chatPlanDraft(), n, patch));
@@ -5751,8 +5774,11 @@ async function chatPlanApply(){
   try {
     const plan = await chatPlanFlush();
     const v = await chatApi("POST", chatPath("/plans/" + plan.rev + "/apply"), { expected_rev: plan.rev });
-    const demoted = Array.isArray(v.demoted) ? v.demoted : [];
-    if (demoted.length) chatPlanNote = { tone: "warn", text: demoted.length + " 项的执行线不在可用范围，已改成不指定线：" + demoted.map((d) => String(d.subject || "第 " + d.n + " 项")).join("、"), issues: null };
+    const demoted = Array.isArray(v.demoted) ? v.demoted : [], gated = Array.isArray(v.needs_release) ? v.needs_release : [];
+    const said = [];
+    if (gated.length) said.push(gated.length + " 张要你确认后放行：" + gated.map((id) => "#" + id).join("、") + "。点卡号打开，核对后放行。");
+    if (demoted.length) said.push(demoted.length + " 项的执行线不在可用范围，已改成不指定线：" + demoted.map((d) => String(d.subject || "第 " + d.n + " 项")).join("、") + "。");
+    if (said.length) chatPlanNote = { tone: gated.length ? "need" : "warn", text: said.join(""), issues: null };
     await Promise.allSettled([chatLoad(true), refresh()]);
   } catch (e) {
     chatPlanNote = { tone: "bad", text: chatErrorText(e), issues: Array.isArray(e.issues) ? e.issues : null };
@@ -5765,7 +5791,7 @@ function chatBadge(text, tone, ic){
 }
 function chatPlan(plan, latest, appliedRev){
   const lines = chatLines();
-  const v = planView(plan, { lines, lineName: lineLabel, draft: latest ? chatPlanDraft() : null, latest, appliedRev });
+  const v = planView(plan, { lines, lineName: lineLabel, draft: latest ? chatPlanDraft() : null, latest, appliedRev, pending: chatPending(plan) });
   const goal = homeEl("div", undefined, "plan-goal");
   goal.append(homeEl("span", "目标", "plan-k"), homeEl("h3", v.goal.subject));
   if (v.goal.description) goal.append(homeEl("p", v.goal.description));
@@ -5821,9 +5847,11 @@ function chatPlanRows(plan, v, lines){
     if (!t.lineKnown) lineCell.append(homeEl("span", "这条线不在可用范围", "pl-warn"));
     const dep = cell("依赖");
     dep.append(homeEl("span", t.after.length ? "第 " + t.after.join("、") + " 项之后" : "无", t.after.length ? "" : "pl-dim"));
-    if (t.afterOff.length) dep.append(homeEl("span", "第 " + t.afterOff.join("、") + " 项没有勾选", "pl-warn"));
+    if (t.afterOff.length) dep.append(homeEl("span", "第 " + t.afterOff.join("、") + " 项不建，建卡时不带这条依赖", "pl-warn"));
     const confirm = cell("要你确认");
-    confirm.append(t.needsConfirm ? chatBadge("要你确认", "quiet", "wait") : homeEl("span", "不用", "pl-dim"));
+    const gate = t.needsConfirm ? chatBadge("要你确认", "quiet", "wait") : homeEl("span", "不用", "pl-dim");
+    if (t.needsConfirm) gate.title = "建卡后不放行，你确认后放行才会被领取";
+    confirm.append(gate);
     if (t.needsBash) confirm.append(homeEl("span", "要跑命令", "pl-dim"));
     meta.append(lineCell, dep, confirm);
     const more = homeEl("button", undefined, "pl-more icon-btn ghost"); more.type = "button"; more.dataset.fk = "more:" + key;
@@ -5845,7 +5873,11 @@ function chatPlanFoot(v, latest){
       return b;
     };
     if (v.applied.goalId != null) links.append(link(v.applied.goalId, "目标 #" + v.applied.goalId));
-    for (const id of v.applied.taskIds) links.append(link(id, "#" + id));
+    for (const id of v.applied.taskIds) {
+      const wait = v.applied.pending.some((x) => chatSame(x, id)), b = link(id, "#" + id + (wait ? " 待放行" : ""));
+      if (wait) { b.dataset.need = ""; b.title = "打开这张卡，核对后放行"; }
+      links.append(b);
+    }
     foot.append(homeEl("span", v.total, "plan-sum"), links);
   } else {
     foot.append(homeEl("span", v.total, "plan-sum"));
@@ -5895,8 +5927,23 @@ function chatFill(box, sig, build){
   if (held) for (const el of box.querySelectorAll("[data-fk]")) if (el.dataset.fk === held) { el.focus({ preventScroll: true }); break; }
   return true;
 }
+/** 输入区:状态一行和发送按钮。打字时也走这里(超过字数上限要当场写明),不动消息流。 */
 function chatSync(){
   const conversation = chatData?.conversation || null;
+  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value });
+  const state = document.getElementById("chat-state");
+  state.hidden = !line;
+  if (line) state.dataset.tone = line.tone;
+  homeFill(state, JSON.stringify(line), () => {
+    if (!line) return [];
+    const out = [chatIcon(line.icon), homeEl("span", line.text, "cs-text")];
+    if (line.act) {
+      const b = homeEl("button", line.label); b.type = "button";
+      b.addEventListener("click", () => line.act === "stop" ? chatStop() : line.act === "retry" ? chatRetryTurn() : chatSend(chatFail?.text));
+      out.push(b);
+    }
+    return out;
+  });
   document.getElementById("chat-send").disabled = !chatCanSend({ coordinator: chatCoord, conversation, sending: chatSending, text: chatInput.value });
 }
 function renderChat(){
@@ -5911,6 +5958,7 @@ function renderChat(){
     for (const c of chatRows) {
       const b = homeEl("button", undefined, "cl-item"); b.type = "button"; b.dataset.st = String(c.status || "idle"); b.dataset.fk = "conv:" + c.id;
       if (chatSame(c.id, chatId)) b.setAttribute("aria-current", "true");
+      if (c.status === "failed" && c.error) b.title = String(c.error);
       b.append(homeEl("span", String(c.title || "").trim() || "未命名对话", "cl-t"), homeEl("span", chatListLine(c), "cl-s"));
       b.addEventListener("click", () => chatOpen(c.id));
       out.push(b);
@@ -5920,6 +5968,8 @@ function renderChat(){
   // 中栏:标题、消息流
   const title = String(conversation?.title || row?.title || "").trim();
   document.getElementById("chat-title").textContent = chatId == null ? "新对话" : title || "未命名对话";
+  const usage = conversation?.usage;
+  document.getElementById("chat-title").title = usage && usage.turns ? "协调线回复了 " + usage.turns + " 轮" + (typeof usage.cost_usd === "number" ? "，约 " + usage.cost_usd.toFixed(2) + " 美元" : "") : "";
   const flow = document.getElementById("chat-flow");
   const rebuilt = chatFill(flow, JSON.stringify([chatId, chatData, chatDataError, chatFlowSig()]), () => {
     if (chatId == null) return [chatEmpty()];
@@ -5927,25 +5977,10 @@ function renderChat(){
     return chatFlowItems();
   });
   if (rebuilt && chatStick) flow.scrollTop = flow.scrollHeight;
-  // 输入区:状态一行、发送按钮
-  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null });
-  const state = document.getElementById("chat-state");
-  state.hidden = !line;
-  if (line) state.dataset.tone = line.tone;
-  homeFill(state, JSON.stringify(line), () => {
-    if (!line) return [];
-    const out = [chatIcon(line.icon), homeEl("span", line.text, "cs-text")];
-    if (line.act) {
-      const b = homeEl("button", line.label); b.type = "button";
-      b.addEventListener("click", () => line.act === "stop" ? chatStop() : line.act === "retry" ? chatRetryTurn() : chatSend(chatFail?.text));
-      out.push(b);
-    }
-    return out;
-  });
   chatSync();
 }
 /** 消息流里除了对话数据之外、变了也要重画的东西(计划卡的本地改动等)。 */
-function chatFlowSig(){ return [chatPlanDraft(), chatPlanBusy, chatPlanNote, [...chatPlanOpen], chatLines(), LINE_LABELS]; }
+function chatFlowSig(){ return [chatPlanDraft(), chatPlanBusy, chatPlanNote, [...chatPlanOpen], chatLines(), LINE_LABELS, (chatData?.plans || []).map(chatPending)]; }
 // 离底部不远才跟着新内容滚到底:往上翻看旧消息时不被拽回去。
 document.getElementById("chat-flow").addEventListener("scroll", (e) => {
   const el = e.currentTarget; chatStick = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
