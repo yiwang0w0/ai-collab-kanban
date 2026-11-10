@@ -171,6 +171,13 @@ export function coordinatorTurnOf(stdout){
  const usage={cost_usd:numberOrNull(result.total_cost_usd),in:numberOrNull(u.input_tokens),out:numberOrNull(u.output_tokens),
   cr:numberOrNull(u.cache_read_input_tokens),cc:numberOrNull(u.cache_creation_input_tokens),num_turns:numberOrNull(result.num_turns),
   duration_ms:numberOrNull(result.duration_ms),denials:Array.isArray(result.permission_denials)?result.permission_denials.length:null};
+ // total_cost_usd 不一定是这一轮的:--resume 续接到 CLI 记着的上一个会话时,它与 modelUsage 都从上次退出时的累计接着记,
+ // usage 则只是这一轮(2026-11-10 CLI 2.1.322 实测:第二轮 total 0.0413 = 首轮 0.0329 + 本轮 0.0084)。
+ // 是否接着记,看 modelUsage 的词元合计是否大于这一轮 usage;没有 modelUsage 就是未知(null)。差额由 conversations 按上一轮的 total 算。
+ const tokensOf=o=>[o.input_tokens??o.inputTokens,o.output_tokens??o.outputTokens,o.cache_read_input_tokens??o.cacheReadInputTokens,
+  o.cache_creation_input_tokens??o.cacheCreationInputTokens].reduce((n,v)=>n+(numberOrNull(v)??0),0);
+ const models=result.modelUsage&&typeof result.modelUsage==="object"?Object.values(result.modelUsage).filter(m=>m&&typeof m==="object"):[];
+ const cliCost={total_usd:usage.cost_usd,restored:models.length?models.reduce((n,m)=>n+tokensOf(m),0)>tokensOf(u):null};
  const counts=new Map();
  for(const item of items){
   if(item?.type!=="assistant"||!Array.isArray(item.message?.content))continue;
@@ -180,7 +187,7 @@ export function coordinatorTurnOf(stdout){
  const count=[...counts.values()].reduce((a,b)=>a+b,0);
  const tools=count?{count,summary:[...counts].map(([name,n])=>`${name} ×${n}`).join("、")}:null;
  const sessionId=typeof result.session_id==="string"?result.session_id:null;
- const fail=reason=>({ok:false,reason,usage,tools,sessionId});
+ const fail=reason=>({ok:false,reason,usage,tools,sessionId,cliCost});
  if(result.is_error||result.subtype!=="success"){
   const said=String(result.result||"").replace(/\s+/g," ").slice(0,200);
   // 登录失效时 CLI 交回的是 subtype:"success" + is_error:true,正文是英文报错(2026-11-10 真实 CLI 2.1.312 实测)。
@@ -191,7 +198,7 @@ export function coordinatorTurnOf(stdout){
  if(!Object.hasOwn(result,"structured_output"))return fail("协调线没有按约定的结构交回结果");
  const turn=result.structured_output,errors=schemaErrors(turn,TURN_SCHEMA);
  if(errors.length)return fail(`协调线交回的结果不合约定的结构:${errors.slice(0,5).join(";")}`);
- return {ok:true,turn,usage,tools,sessionId};
+ return {ok:true,turn,usage,tools,sessionId,cliCost};
 }
 
 const isFile=path=>{try{return statSync(path).isFile();}catch{return false;}};

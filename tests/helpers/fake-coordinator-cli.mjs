@@ -4,7 +4,7 @@
 //   【无结构】result 里没有 structured_output          【慢】起一个子进程后一直不结束(测停止与超时)
 //   【登录失效】真实 CLI 登录失效时的输出形状
 //   其余:只回一句话,plan 为 null
-import { appendFileSync, readdirSync } from "node:fs";
+import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
 const argv = process.argv.slice(2);
@@ -35,9 +35,20 @@ if (message.includes("【计划】")) turn = { reply: "计划出好了,请过目
 else if (message.includes("【坏计划】")) turn = { reply: "改好了。", plan: plan([task("甲", "alpha", [2]), task("乙", "alpha", [])]) };
 else turn = { reply: `收到:${message.slice("[用户消息]".length).trim().slice(0, 40)}`, plan: null };
 
+// 用量与真实 CLI 同形(2026-11-10 CLI 2.1.322 实测):usage 是这一轮各次调用之和;
+// --resume 续接同一会话时 total_cost_usd 与 modelUsage 是会话累计(上一轮退出时记下的 + 这一轮)。
+// 每轮固定花 0.0125、词元 11/22/333/44;累计记在 CONVTEST_LOG 旁的文件里,按会话号分开。
+const ROUND = { cost: 0.0125, in: 11, out: 22, cr: 333, cc: 44 };
+const costFile = process.env.CONVTEST_LOG + ".cost.json";
+const saved = (() => { try { return JSON.parse(readFileSync(costFile, "utf8")); } catch { return {}; } })();
+const prior = argv.includes("--resume") && saved[sessionId] ? saved[sessionId] : { cost: 0, in: 0, out: 0, cr: 0, cc: 0 };
+const total = Object.fromEntries(Object.keys(ROUND).map((k) => [k, prior[k] + ROUND[k]]));
+if (!slow && !message.includes("【登录失效】")) writeFileSync(costFile, JSON.stringify({ ...saved, [sessionId]: total }));
 const result = {
   type: "result", subtype: "success", is_error: false, session_id: sessionId, num_turns: 3, duration_ms: 1200,
-  total_cost_usd: 0.0125, usage: { input_tokens: 11, output_tokens: 22, cache_read_input_tokens: 333, cache_creation_input_tokens: 44 },
+  total_cost_usd: total.cost, usage: { input_tokens: ROUND.in, output_tokens: ROUND.out, cache_read_input_tokens: ROUND.cr, cache_creation_input_tokens: ROUND.cc },
+  modelUsage: { "claude-opus-5": { inputTokens: total.in, outputTokens: total.out, cacheReadInputTokens: total.cr,
+                                   cacheCreationInputTokens: total.cc, costUSD: total.cost } },
   permission_denials: [], result: JSON.stringify(turn),
   ...(message.includes("【无结构】") ? {} : { structured_output: turn }),
 };

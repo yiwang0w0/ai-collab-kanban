@@ -49,12 +49,16 @@ function migrate(db) {
     usage_out INTEGER,
     usage_cr INTEGER,
     usage_cc INTEGER,
+    cli_cost_seen REAL,
     applied_rev INTEGER,
     applied_at TEXT,
     applied_by TEXT,
     goal_id INTEGER,
     applied_task_ids TEXT
   )`);
+  // 旧库补列:上一轮 CLI 报的 total_cost_usd(续接时它是会话累计,下一轮按差额记)。只在服务端用,不进接口。
+  if (!db.prepare("PRAGMA table_info(conversations)").all().some((c) => c.name === "cli_cost_seen"))
+    db.exec("ALTER TABLE conversations ADD COLUMN cli_cost_seen REAL");
   db.exec(`CREATE TABLE IF NOT EXISTS conversation_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     conversation_id INTEGER NOT NULL REFERENCES conversations(id),
@@ -222,6 +226,19 @@ function unanswered(db, id, exceptId, limit = 3) {
 }
 
 const numberOrNull = (v) => typeof v === "number" && Number.isFinite(v) ? v : null;
+/** 这一轮实际花的钱。CLI 的 total_cost_usd 在续接时可能是会话累计(cliCost.restored 为真):
+ *  减去上一轮记下的 total 得这一轮;上一轮的 total 不知道就记为未知(null),不把累计当成这一轮。
+ *  累计不会变小:比上一轮还小说明没有接着记,按这一轮算。total 记下来给下一轮用;
+ *  没有 modelUsage(restored 为 null,如登录失效时 total 为 0)看不出会话状态,不记、按报的算。 */
+function roundCost(db, r, usage, cliCost) {
+  if (!usage || !cliCost) return usage;
+  const total = numberOrNull(cliCost.total_usd), prev = numberOrNull(r.cli_cost_seen);
+  if (total == null || cliCost.restored == null) return usage;
+  db.prepare("UPDATE conversations SET cli_cost_seen=? WHERE id=?").run(total, Number(r.id));
+  if (!r.session_started || cliCost.restored !== true) return usage;
+  return { ...usage, cost_usd: prev == null ? null : total >= prev ? total - prev : total };
+}
+
 /** 把一轮的用量累计到对话上。未知的项不计入(保持 null),不当成 0。 */
 function addUsage(db, id, usage) {
   if (!usage) return;
@@ -273,9 +290,10 @@ function insertPlan(db, convId, { author, baseRev, goal, goalEdited = false, tas
 
 /** 一轮正常结束:追加协调线消息(带用量),有合格的计划就生成新版本。
  *  计划不合格、或对话已经建过卡时不生成版本,另追加一条 system 消息说明。 */
-function completeTurn(db, id, { reply, title = null, plan = null, rawPlan = null, tools = null, usage = null } = {}, now = Date.now()) {
+function completeTurn(db, id, { reply, title = null, plan = null, rawPlan = null, tools = null, usage: reported = null, cliCost = null } = {}, now = Date.now()) {
   return tx(db, () => {
     const r = row(db, id);
+    const usage = roundCost(db, r, reported, cliCost);
     let checked = null, note = null;
     if (plan != null && r.applied_rev != null)
       note = { kind: "plan_ignored", text: "这次对话已经建过卡,这一轮给出的计划没有记录。要再拆一批,请开新对话。" };
@@ -302,10 +320,10 @@ function completeTurn(db, id, { reply, title = null, plan = null, rawPlan = null
 /** 一轮没有得到可用的结果:状态记为失败,原因写成人话。
  *  会话还没成功过一轮就换一个新的会话号,下一条消息从头开始:失败的首轮有没有落下会话文件看板无从知道
  *  (登录失效时 CLI 也会带回会话号),续接可能找不到会话,重用旧号可能撞上半截的会话。成功过的会话保持续接。 */
-function failTurn(db, id, reason, { usage = null } = {}, now = Date.now()) {
+function failTurn(db, id, reason, { usage = null, cliCost = null } = {}, now = Date.now()) {
   return tx(db, () => {
     const r = row(db, id);
-    addUsage(db, r.id, usage);
+    addUsage(db, r.id, roundCost(db, r, usage, cliCost));
     db.prepare(`UPDATE conversations SET status='failed', error=?, updated_at=?, session_id=? WHERE id=?`)
       .run(oneLine(reason, 400), iso(now), r.session_started ? r.session_id : crypto.randomUUID(), r.id);
   });
