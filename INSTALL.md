@@ -94,7 +94,9 @@ node cli/open.mjs
 | 打开面板；换了浏览器、清了浏览器数据、连接过期 | `node cli/open.mjs` |
 | 让所有浏览器都重新连接（比如电脑借给过别人） | `node cli/open.mjs --forget-browsers` |
 | 体检 | `node cli/doctor.mjs` |
-| 看看板现在怎么样、出了问题下一步做什么 | `node cli/status.mjs`（看板停了会打印上次的日志和重新启动的命令） |
+| 看看板现在怎么样、出了问题下一步做什么 | `node cli/status.mjs`；展开日志用 `node cli/status.mjs --log` |
+| 看执行器 CLI 的当前版本、最新版本、上次核对时间、是否实测过 | `node cli/status.mjs` 的「执行器」一行；`node cli/doctor.mjs` 也会列出 |
+| 升级执行器 CLI | `node cli/upgrade-cli.mjs claude` 先列出会做什么；确认后加 `--yes`。升级失败会装回原版本 |
 | 登录 Windows 后自动在后台启动（可选） | `node cli/autostart.mjs on`；关闭用 `off`，查看用 `node cli/autostart.mjs` |
 | 更新看板 | `git pull`，然后在面板顶部的横幅里点「更新到新代码」，它会先列出改动 |
 
@@ -121,15 +123,20 @@ node cli/open.mjs
   `codex_cmd` 必须是原生的 `codex.exe` 绝对路径，不能是 `codex.cmd` 或 `codex.ps1`。用 npm 装的
   Codex，原生文件在 npm 全局目录的 `node_modules\@openai\` 下面；`node cli/doctor.mjs` 找到它时会把路径打出来。
 - **换端口**：设 `"port": 47900`（默认 47824）。
+- **CLI 版本查询**：看板每天向 npm 查询一次 Claude CLI 与 Codex CLI 的最新版本，查不到时写「未能查询」。
+  改间隔设 `"cli_versions": { "check_hours": 24 }`，设成 `0` 就不联网；用内网镜像再加 `"registry": "https://..."`。
 
 ## 出问题
 
-- 先运行 `node cli/status.mjs`：它说明看板服务在不在运行、哪里有问题、下一步做什么。
+- 先运行 `node cli/status.mjs`：一屏列出电脑、看板服务、各执行线和上次故障。同一原因的故障只出一条，各带一句下一步；它只读取，不启动、不停止、不重派任务。
+- 看板停了：它给出一句原因和恢复命令。恢复命令重复运行不会产生重复任务；要看日志加 `--log`。
 - 面板首页显示「看板服务没有应答」：在这台电脑上运行 `node cli/start.mjs --background`。已有任务和结果都保留，面板会自己恢复。
 - 后台启动说没起来：它会打印这次的日志；完整日志在 `core\.data\board.log`。
-- 后台启动说已在运行，紧接着 `node cli/open.mjs` 却说看板没有在运行：你所在的工具在每条命令结束时会结束它
+- 后台启动说已在运行，紧接着 `node cli/open.mjs` 却说看板服务没有应答：你所在的工具在每条命令结束时会结束它
   启动的所有进程。请用户自己开一个 PowerShell 窗口，进入看板目录运行 `node cli/start.mjs`，并让这个窗口一直开着。
 - 端口被别的程序占用：换端口（见上），再 `node cli/start.mjs --background`。
+- 升级了 Claude CLI 或 Codex CLI 之后执行线起不来：运行 `node cli/doctor.mjs`，它核对参数和权限规则的写法。
+  用 `node cli/upgrade-cli.mjs` 升级时这一步会自动做，体检不过就装回原版本。
 - 面板显示要重新连接：`node cli/open.mjs`。
 - 想从头再来：`node cli/stop.mjs`，然后 `node cli/reset.mjs --yes`。它只清运行数据，不动配置和仓库；
   之后要重新确认版本。
@@ -147,6 +154,7 @@ node cli/open.mjs
 
 - 不替用户确认版本（bless），也不启用用户没要求的执行器。
 - 不替用户开启登录后自动启动（`node cli/autostart.mjs on`）；用户要求时才开。
+- 不替用户升级执行器 CLI（`node cli/upgrade-cli.mjs ... --yes`）；先把不加 `--yes` 的输出给用户看，用户同意后才执行。
 - 不替用户配置第三方转发（中转站）；用户已经配了的，把 doctor 标黄的那一行告诉用户。
 - 不把 `core\.data\board_token` 的内容贴进聊天、网址或其他文件；把面板交给用户用 `node cli/open.mjs`，不用这个令牌。
 - 不把看板装进要执行任务的项目里，也不把看板自己的目录当成 `--repo`（setup 会拒绝）。

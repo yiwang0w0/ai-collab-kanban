@@ -143,8 +143,8 @@ def call(method, path, body=None):
         raw = e.read().decode("utf-8")
         return e.code, (json.loads(raw) if raw.strip() else {})
     except urllib.error.URLError as e:
-        sys.exit(f"看板不可达({BASE}):{e.reason}\n"
-                 f" → 先启动:node core/server.mjs(或设 BOARD_URL)")
+        sys.exit(f"看板服务没有应答:{BASE},{e.reason}\n"
+                 f"下一步:node cli/status.mjs")
 
 def die(s, d):
     sys.exit(f"{s} {json.dumps(d, ensure_ascii=False)}")

@@ -1755,6 +1755,25 @@ try {
     V.kill();
   }
 
+  // ══ §X 执行器 CLI 版本巡检:接口只给操作员;registry 连不上时照常应答 ═══════════
+  console.log(NL + "[§X 执行器 CLI 版本(GET /api/cli-versions)]");
+  {
+    // registry 指向一个没有监听的本机端口:不访问外网,走「未能查询」这条路。node 自己当 Claude CLI 的替身。
+    const X = await mk({ env: { WORKER_CLAUDE_CLI: process.execPath, BOARD_CLI_VERSION_REGISTRY: "http://127.0.0.1:9" } });
+    const r = await X.api("GET", "/api/cli-versions");
+    const claude = r.body?.clis?.find((c) => c.id === "claude"), codex = r.body?.clis?.find((c) => c.id === "codex");
+    ok("X1 ⭐操作员读到两个 CLI:当前版本读出,registry 连不上记未能查询且不报错,未实测;没配置的 Codex 标成没有配置",
+       r.status === 200 && r.body?.format === "ai-collab-cli-versions/v1" && claude?.current === process.version.slice(1)
+       && claude?.latest_state === "unavailable" && claude?.tested?.state === "none" && codex?.state === "not_configured",
+       JSON.stringify(r.body).slice(0, 300));
+    const WK = readFileSync(join(X.DATA, "worker_token"), "utf8").trim();
+    const asWorker = await fetch(X.BASE + "/api/cli-versions", { headers: { "X-Board-Token": WK } });
+    const anon = await fetch(X.BASE + "/api/cli-versions");
+    ok("X2 执行线令牌 403、不带令牌 401(CLI 的路径只给操作员看)", asWorker.status === 403 && anon.status === 401, `worker=${asWorker.status} anon=${anon.status}`);
+    ok("X3 查询结果缓存在数据目录的 probes 子目录", existsSync(join(X.DATA, "probes", "cli_versions.json")));
+    X.kill();
+  }
+
   if (fail) for (const b of boards) console.log(`\n──── board :${b.PORT} output ────\n` + b.out().slice(-1200));
   for (const b of boards) { try { rmSync(b.DATA, { recursive: true, force: true }); } catch {} }
   try { rmSync(STUBS, { recursive: true, force: true }); } catch {}

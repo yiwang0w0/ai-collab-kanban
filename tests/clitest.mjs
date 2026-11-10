@@ -300,12 +300,14 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   const port = await new Promise((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
   const stub = join(TMP, "stub-board.mjs");
   writeFileSync(stub, [
-    'import http from "node:http"; import { readFileSync, existsSync } from "node:fs"; import { join } from "node:path";',
+    'import http from "node:http"; import { readFileSync, existsSync, appendFileSync } from "node:fs"; import { join } from "node:path";',
     'const D = process.env.BOARD_DATA_DIR, T = readFileSync(join(D, "board_token"), "utf8").trim();',
     'console.log(`stub boot supervised=${process.env.BOARD_SUPERVISED}`);',
     'const send = (res, code, v) => { res.writeHead(code, { "Content-Type": "application/json" }); res.end(JSON.stringify(v)); };',
-    'http.createServer((req, res) => { let b = ""; req.on("data", (c) => b += c); req.on("end", () => {',
-    '  if (req.url === "/health") return send(res, 200, { status: "ok" });',
+    // Every request is written down: cli/status.mjs must read only (GET), and a second start must not write.
+    'const handle = (req, res) => { let b = ""; req.on("data", (c) => b += c); req.on("end", () => {',
+    '  appendFileSync(join(D, "requests.txt"), req.method + " " + req.url + String.fromCharCode(10));',
+    '  if (req.url === "/health") return existsSync(join(D, "gateway502")) ? send(res, 502, {}) : send(res, 200, { status: "ok" });',
     '  if (req.headers["x-board-token"] !== T) return send(res, 401, { error: "token" });',
     '  if (req.method === "POST" && req.url === "/api/pair/code") return send(res, 201, { code: "123456" });',
     '  if (req.method === "POST" && req.url === "/api/pair/revoke") return send(res, 200, { revoked: JSON.parse(b || "{}").all === true ? 2 : 0 });',
@@ -314,14 +316,24 @@ console.log(NL + "[⑧ start:bg / open / stop]");
     '    send(res, 202, { stopping: true }); setTimeout(() => process.exit(0), 50); return; }',
     // What cli/status.mjs reads: a computer that cannot be reached and a scheduler that stopped (two records, one cause).
     '  if (req.method === "GET" && req.url === "/api/meta") return send(res, 200, { node: { display_name: "台式机 A" } });',
-    '  if (req.method === "GET" && req.url === "/api/workers") return send(res, 200, { lines: ["engine"], line_labels: { engine: "引擎" }, workers: [{ line: "engine", running: true }] });',
+    // One line running and two refused at the gate for the same reason (one fault, not two).
+    '  if (req.method === "GET" && req.url === "/api/workers") return send(res, 200, { lines: ["engine", "design", "review"], line_labels: { engine: "引擎", design: "设计", review: "审阅" }, workers: [{ line: "engine", running: true },',
+    '    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },',
+    '    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: [] }] });',
     '  if (req.method === "GET" && req.url === "/api/setup") return send(res, 200, { version: "stub-rev", complete: true, steps: [] });',
     '  if (req.method === "GET" && req.url === "/api/fleet?limit=1") return send(res, 200, { nodes: [{ node_id: "n-a", display_name: "台式机 A", local: true, connection_state: "local" },',
     '    { node_id: "n-b", display_name: "笔记本 B", local: false, connection_state: "failed", projects: [{ project_id: "p", error_code: "PEER_UNREACHABLE" }] }] });',
     '  if (req.method === "GET" && req.url === "/api/fleet/health") return send(res, 200, { issues: [',
     '    { code: "SCHEDULER_HEARTBEAT_STALE", level: "problem", next_action: "inspect_scheduler_owner", count: 1 },',
     '    { code: "SCHEDULER_LOCK_MISSING", level: "problem", next_action: "inspect_scheduler_owner", count: 1 }] });',
-    '  send(res, 404, {}); }); }).listen(Number(process.env.BOARD_PORT), "127.0.0.1");',
+    // The executor CLIs as GET /api/cli-versions reports them: one behind and never measured, one not configured.
+    '  if (req.method === "GET" && req.url === "/api/cli-versions") return send(res, 200, { clis: [',
+    '    { id: "claude", name: "Claude CLI", state: "found", current: "2.1.300", latest: "2.1.305", latest_state: "ok", latest_checked_at: "2026-11-10T01:00:00.000Z", update_available: true, tested: { state: "none" } },',
+    '    { id: "codex", name: "Codex CLI", state: "not_configured", current: null, latest: null, latest_state: "not_checked", tested: { state: "none" } }] });',
+    '  send(res, 404, {}); }); };',
+    'http.createServer(handle).listen(Number(process.env.BOARD_PORT), "127.0.0.1");',
+    // The same board reached through an address that is not this computer's own loopback name.
+    'http.createServer(handle).on("error", () => {}).listen(Number(process.env.BOARD_PORT), "127.0.0.2");',
   ].join(NL));
   const env = { ...HOST_ENV, BOARD_SERVER_SCRIPT: stub, BOARD_PORT: String(port), BOARD_DATA_DIR: data,
                 BOARD_CONFIG: join(TMP, "none.json"), BOARD_URL: "" };
@@ -339,6 +351,9 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   const again = cli("start.mjs", ["--background"]);
   ok("a second start:bg sees the running board and starts nothing", again.code === 0 && /已经在运行/.test(again.out) &&
      (readFileSync(join(data, "board.log"), "utf8").match(/stub boot/g) || []).length === 1);
+  const requests = () => readFileSync(join(data, "requests.txt"), "utf8").split(NL).filter(Boolean);
+  ok("⭐starting twice sent the board nothing but /health: no task is created or dispatched again",
+     requests().length > 0 && requests().every((r) => r === "GET /health"), requests().filter((r) => r !== "GET /health").join(" | "));
   const link = cli("open.mjs", ["--print"]);
   ok("⭐open --print: asks the board for a one-time code with the operator token and prints <board>/#pair=<code>",
      link.code === 0 && link.out.trim() === `http://127.0.0.1:${port}/#pair=123456`, link.out.trim());
@@ -352,12 +367,38 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   ok("状态命令在服务在线但授权失败时返回 2，给出授权指引而不是正常或停机",
      denied.code === 2 && /看板服务有应答/.test(denied.out) && /操作员授权未通过/.test(denied.out)
      && /核对启动命令、数据目录和操作员授权/.test(denied.out) && !/看板服务正常|没有运行/.test(denied.out));
+  const seen = requests().length;
   const st = cli("status.mjs");
   ok("⭐status with the board up: computer online, service fine, and the home page's own merged alerts with next steps (exit 2: something red)",
-     st.code === 2 && /电脑在线 · 看板服务正常/.test(st.out) && /执行线:引擎 运行中/.test(st.out)
-     && /笔记本 B:连不上这台电脑（可能关机或断网）/.test(st.out)
-     && /台式机 A:调度器可能已经停了：心跳超时、没有运行锁 —— 下一步:检查调度器进程/.test(st.out)
+     st.code === 2 && /电脑在线 · 看板服务正常/.test(st.out) && /执行线:引擎 运行中、设计 已停止、审阅 已停止/.test(st.out)
+     && /笔记本 B:连不上这台电脑（可能关机或断网）。下一步:确认它已开机、联网/.test(st.out)
+     && /台式机 A:调度器可能已经停了：心跳超时、没有运行锁。下一步:检查调度器进程/.test(st.out)
      && st.out.split(NL).filter((l) => l.includes("台式机 A:")).length === 1, st.out.slice(-500));
+  ok("⭐two lines refused for the same reason are one fault with one next step; the last fault is named; the log stays folded",
+     st.out.split(NL).filter((l) => l.includes("启动被拒绝")).length === 1
+     && /✗ 执行线:设计、审阅 启动被拒绝（退出码 3）。下一步:运行 node cli\/doctor\.mjs/.test(st.out)
+     && /上次故障:没有记录/.test(st.out) && /3 项需要注意/.test(st.out)
+     && /详细日志:node cli\/status\.mjs --log/.test(st.out) && !/源码闸拒绝启动|stub boot/.test(st.out), st.out.slice(-500));
+  ok("⭐the executor CLI row: current / latest / last checked / measured or not; a CLI that is not configured is not listed",
+     /执行器:Claude CLI 当前 2\.1\.300 · 最新 2\.1\.305，可升级 · 上次核对 \d\d-\d\d \d\d:\d\d · 未实测/.test(st.out) && !/Codex CLI/.test(st.out),
+     st.out.split(NL).find((l) => l.includes("执行器:")) || "");
+  const stLog = cli("status.mjs", ["--log"]);
+  ok("status --log expands the lines' recent log (repeats folded into one line) and the end of the board log",
+     stLog.code === 2 && /设计：源码闸拒绝启动 {2}×2/.test(stLog.out) && /stub boot supervised=1/.test(stLog.out), stLog.out.slice(-400));
+  ok("⭐status only reads: every request it sent is a GET",
+     requests().length > seen && requests().slice(seen).every((r) => r.startsWith("GET ")), requests().slice(seen).join(" | "));
+  ok("an unknown flag prints the usage with the other commands and exits 1",
+     (() => { const r = cli("status.mjs", ["--frobnicate"]); return r.code === 1 && /用法: node cli\/status\.mjs/.test(r.out) && /node cli\/doctor\.mjs/.test(r.out); })());
+  // The computer answers and the board does not: a 502 from whatever sits in front of it (a reverse proxy, Tailscale serve).
+  writeFileSync(join(data, "gateway502"), "");
+  const far = cli("status.mjs", [], { BOARD_URL: `http://127.0.0.2:${port}` });
+  ok("⭐another computer's address answering 502: the computer is online, its board service is not answering (exit 1)",
+     far.code === 1 && /电脑在线，但它的看板服务没有应答/.test(far.out) && /下一步:到这台电脑上运行 node cli\/status\.mjs/.test(far.out)
+     && !/本机:/.test(far.out), far.out.slice(-300));
+  const bad = cli("status.mjs");
+  ok("this computer's own address answering 502: the service is in error, with the status code and the cause",
+     bad.code === 1 && /本机:电脑在线，看板服务出错（HTTP 502）/.test(bad.out) && /原因:这个地址返回 HTTP 502/.test(bad.out), bad.out.slice(-300));
+  rmSync(join(data, "gateway502"));
   writeFileSync(join(data, "inflight"), "");
   const held = cli("stop.mjs");
   ok("⭐stop with a card in flight: refuses, says how to force it, the board keeps running",
@@ -367,9 +408,15 @@ console.log(NL + "[⑧ start:bg / open / stop]");
      stopped.code === 0 && /已停止/.test(stopped.out) && !(await up()), stopped.out.slice(-160));
   ok("stop with nothing running says so and exits 0", (() => { const r = cli("stop.mjs"); return r.code === 0 && /没有在运行/.test(r.out); })());
   const down = cli("status.mjs");
-  ok("⭐status with the board stopped: says so, shows the end of its log and the command that brings it back (exit 1)",
-     down.code === 1 && /电脑在线 · 看板服务没有运行/.test(down.out) && /stub boot supervised=1/.test(down.out)
-     && /下一步:node cli\/start\.mjs --background/.test(down.out), down.out.slice(-500));
+  ok("⭐status with the board stopped: one cause (stopped on request), the data kept, the command that brings it back, the log folded (exit 1)",
+     down.code === 1 && /本机:电脑在线，看板服务没有应答/.test(down.out) && /原因:看板已在 \d\d-\d\d \d\d:\d\d 正常停止/.test(down.out)
+     && /已有的任务和结果保留在/.test(down.out) && /下一步:.*node cli\/start\.mjs --background/.test(down.out)
+     && !/stub boot supervised=1/.test(down.out) && /详细日志:node cli\/status\.mjs --log/.test(down.out), down.out.slice(-500));
+  ok("status --log with the board stopped shows the end of that run's log",
+     (() => { const r = cli("status.mjs", ["--log"]); return r.code === 1 && /stub boot supervised=1/.test(r.out); })());
+  ok("another computer's address refusing the connection: the computer is online, its board service is not answering",
+     (() => { const r = cli("status.mjs", [], { BOARD_URL: `http://127.0.0.2:${port}` });
+              return r.code === 1 && /电脑在线，但它的看板服务没有应答/.test(r.out) && !/本机:/.test(r.out); })());
   // ⭐ On Windows (Node v24.16.0, 2026-10-14) the open/stop runs above printed their result and
   //   then aborted in libuv (Assertion failed … src\win\async.c): process.exit() after two
   //   requests to a running board. Pinned in the source too, so a Linux run — where it does not
@@ -382,11 +429,34 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   // bytes, then decoded — cutting the decoded text at a byte offset lost this run's lines.
   appendFileSync(join(data, "board.log"), "看板已启动,端口与数据目录都正常。\n".repeat(40));
   const dead = join(TMP, "stub-dies.mjs");
-  writeFileSync(dead, 'console.log("端口已被占用,看板起不来"); process.exit(3);');
+  writeFileSync(dead, 'for (let i = 0; i < 3; i++) console.log("端口 " + process.env.BOARD_PORT + " 已被占用 —— 是不是已经有一个看板在跑?"); process.exit(1);');
   const failed = cli("start.mjs", ["--background"], { BOARD_SERVER_SCRIPT: dead });
   ok("⭐a board that dies on boot: start:bg exits 1 and prints that run's log lines (not earlier runs', not none)",
-     failed.code === 1 && /退出码 3/.test(failed.out) && /端口已被占用,看板起不来/.test(failed.out) && !/端口与数据目录都正常/.test(failed.out),
+     failed.code === 1 && /退出码 1/.test(failed.out) && failed.out.includes(`端口 ${port} 已被占用`) && !/端口与数据目录都正常/.test(failed.out),
      failed.out.slice(-200));
+  const why = cli("status.mjs", ["--log"]);
+  ok("⭐status after that: the exit code and the cause read from that run's log, one next step; --log folds the repeated line and leaves earlier runs out",
+     why.code === 1 && why.out.includes(`退出，退出码 1。端口 ${port} 已被别的程序占用`) && why.out.includes(`下一步:关掉占用端口 ${port} 的程序`)
+     && /是不是已经有一个看板在跑\? {2}×3/.test(why.out) && !/端口与数据目录都正常/.test(why.out), why.out.slice(-500));
+  // Recovery is the same command again; the board comes back and status names the fault it recovered from.
+  const back = cli("start.mjs", ["--background"]);
+  const after = cli("status.mjs");
+  ok("⭐the usual start brings the board back, and status then names the last fault",
+     back.code === 0 && /电脑在线 · 看板服务正常/.test(after.out) && /上次故障:\d\d-\d\d \d\d:\d\d 看板服务退出，退出码 1/.test(after.out), after.out.slice(-400));
+  // A wrapper that went away without a stop (power loss, a killed process): the record still says running.
+  cli("stop.mjs", ["--force"]);
+  const gone = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
+  writeFileSync(join(data, "probes", "board_run.json"), JSON.stringify({ current: { pid: gone.pid, started_at: new Date().toISOString(), state: "running" } }));
+  const cut = cli("status.mjs");
+  ok("a run that ended without a stop is named as interrupted, with the usual start as the next step",
+     cut.code === 1 && /原因:\d\d-\d\d \d\d:\d\d 启动的看板运行中断，可能是关机、断电或进程被结束/.test(cut.out)
+     && /下一步:.*node cli\/start\.mjs --background/.test(cut.out), cut.out.slice(-300));
+  // A record that ended an hour ago while the log has newer lines: the board ran since, outside the wrapper.
+  writeFileSync(join(data, "probes", "board_run.json"), JSON.stringify({ current: { pid: gone.pid, state: "stopped",
+    started_at: new Date(Date.now() - 7200e3).toISOString(), ended_at: new Date(Date.now() - 3600e3).toISOString() } }));
+  const older = cli("status.mjs");
+  ok("a record older than the log's last lines is not taken for the latest stop",
+     older.code === 1 && /原因:运行记录之后看板还运行过/.test(older.out) && !/正常停止/.test(older.out), older.out.slice(-300));
 }
 
 // ⑨ doctor says where the model traffic goes: a third-party relay (中转站) receives every
@@ -416,6 +486,30 @@ console.log(NL + "[⑨ doctor: 模型请求发往哪里]");
   ok("⭐no key and no full URL is ever printed", !out.includes("sk-relay-secret-value-0001") && !out.includes("relay.example.net/v1"));
   rmSync(join(home, ".claude", "settings.json")); rmSync(join(repo, ".claude", "settings.local.json")); rmSync(join(codexHome, "config.toml"));
   ok("nothing configured: says the CLIs use their default official endpoints", /PASS\s+模型请求走各 CLI 的默认官方地址/.test(doctor({})));
+  // ⑨a the executor CLI versions, read-only: doctor runs `--version` (node stands in for both CLIs), does not
+  //     go online and writes nothing; `--record-tested` records only when every check passed.
+  const v = process.version.slice(1).replace(/\./g, "\\.");
+  ok("⭐doctor lists each CLI: current / latest (not queried: doctor never goes online) / last checked / measured or not",
+     new RegExp(`PASS\\s+Claude CLI 当前 ${v} · 最新 未查询 · 上次核对 无 · 未实测`).test(out)
+     && new RegExp(`PASS\\s+Codex CLI 当前 ${v} · 最新 未查询`).test(out) && !existsSync(join(TMP, "doc-data", "probes")), line(/Claude CLI 当前/));
+  const noted = spawnSync(process.execPath, [join(ROOT, "cli", "doctor.mjs"), "--record-tested"], { encoding: "utf8", windowsHide: true, timeout: 120000,
+    env: { ...clean, HOME: home, USERPROFILE: home, CODEX_HOME: codexHome, WORKER_CLAUDE_CLI: process.execPath, BOARD_REPO: repo,
+           BOARD_CONFIG: join(TMP, "none.json"), BOARD_VERIFY_REGISTRY: join(TMP, "missing-registry.json"), BOARD_DATA_DIR: join(TMP, "doc-data"), BOARD_PORT: "0" } });
+  ok("⭐--record-tested with a FAIL on the board (node is not a Claude CLI: its flags do not match): nothing is recorded",
+     noted.status === 1 && /没有记录实测版本/.test(noted.stdout) && !existsSync(join(TMP, "doc-data", "probes", "cli_tested.json")), (noted.stdout || "").slice(-200));
+  // ⑨b the write-allow rules (--allowedTools) this deployment would send, produced by the real
+  //     verify_lib function: the usual layout passes; a repo below the evidence directory and a
+  //     relative repo each fail with their own line. (The three shapes are pinned one by one in
+  //     tests/doctorallowtest.mjs; a path-less tool name cannot come out of the real function.)
+  ok("⭐the write-allow rules of the usual layout pass: three rules (work repo, evidence, verdicts), Edit with absolute paths, none above the work repo",
+     /PASS\s+写放行规则写法正确\(3 条/.test(out), line(/写放行规则/));
+  const above = doctor({ BOARD_DATA_DIR: join(TMP, "doc-data-2"), BOARD_REPO: join(TMP, "doc-data-2", "evidence", "repo") });
+  ok("⭐a work repo below the evidence directory: FAIL, the allowed directory is above the work repo",
+     /FAIL\s+写放行目录是工作仓的上级目录/.test(above) && !/PASS\s+写放行规则写法正确/.test(above), above.split(/\r?\n/).find((l) => /写放行/.test(l)) || "");
+  const relative = doctor({ BOARD_REPO: "doc-repo-relative" });
+  ok("⭐a relative work repo: FAIL, the allow rules cannot be built for the line that writes there",
+     /FAIL\s+写放行规则组不出来:执行线的放行目录不是绝对路径/.test(relative) && !/PASS\s+写放行规则写法正确/.test(relative),
+     relative.split(/\r?\n/).find((l) => /写放行/.test(l)) || "");
 }
 
 // ⑩ autostart (optional): one Task Scheduler task of the operator's account that runs exactly

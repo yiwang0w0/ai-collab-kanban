@@ -21,6 +21,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { boardUp, localBoard, sleep } from "../core/local-board.mjs";
+import { localDataDir, noteRunEnd, noteRunStart } from "../core/board-run.mjs";
 
 const CODE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // BOARD_SERVER_SCRIPT is a test hook (a stub that exits 75 once); production is the board.
@@ -29,34 +30,38 @@ const SCRIPT = process.env.BOARD_SERVER_SCRIPT || join(CODE_ROOT, "core", "serve
 if (process.argv.includes("--background")) process.exit(await background());
 async function background() {
   const { url, dataDir, logFile } = localBoard();
-  if (await boardUp(url)) { console.log(`[start] 看板已经在运行: ${url}`); return 0; }
+  if (await boardUp(url)) { console.log(`[start] 看板已经在运行:${url}`); return 0; }
   mkdirSync(dataDir, { recursive: true });
   const fd = openSync(logFile, "a", 0o600);    // same mode as the tokens next to it
   const from = statSync(logFile).size;         // on failure, show this run's lines only
   const child = spawn(process.execPath, [...process.execArgv, fileURLToPath(import.meta.url),
                                          ...process.argv.slice(2).filter((a) => a !== "--background")], {
-    cwd: CODE_ROOT, detached: true, stdio: ["ignore", fd, fd], windowsHide: true, env: process.env,
+    cwd: CODE_ROOT, detached: true, stdio: ["ignore", fd, fd], windowsHide: true,
+    // BOARD_RUN_LOG_FROM: where this run's lines begin in the log, kept in the run record so
+    // cli/status.mjs reads this run's lines and not an earlier run's.
+    env: { ...process.env, BOARD_RUN_LOG_FROM: String(from) },
   });
   let exited = null;
   child.on("exit", (code) => { exited = code ?? 1; });
-  child.on("error", (e) => { exited = 1; console.error(`[start] 起不了看板: ${e.message}`); });
+  child.on("error", (e) => { exited = 1; console.error(`[start] 看板启动失败:${e.message}`); });
   child.unref();
   closeSync(fd);
   for (let waited = 0; waited < 60_000 && exited === null; waited += 500) {
     await sleep(500);
     if (await boardUp(url)) {
-      console.log(`[start] 看板已在后台运行: ${url}`);
-      console.log(`        日志: ${logFile}`);
-      console.log("        打开面板: node cli/open.mjs    停止: node cli/stop.mjs");
+      console.log(`[start] 看板已在后台运行:${url}`);
+      console.log(`        日志:${logFile}`);
+      console.log("        打开面板:node cli/open.mjs    看状态:node cli/status.mjs    停止:node cli/stop.mjs");
       return 0;
     }
   }
   let tail = "";
   // `from` counts BYTES (statSync): slice the buffer, then decode — the board writes Chinese.
   try { tail = readFileSync(logFile).subarray(from).toString("utf8").trimEnd().split(/\r?\n/).slice(-20).join("\n"); } catch {}
-  console.error(exited === null ? `[start] 一分钟内 ${url} 没有应答 —— 看板进程还在,看日志找原因: ${logFile}`
-                                : `[start] 看板没起来(退出码 ${exited})。日志 ${logFile} 的最后几行:`);
+  console.error(exited === null ? `[start] 一分钟内 ${url} 没有应答，看板进程还在。日志 ${logFile} 的最后几行:`
+                                : `[start] 看板没有启动成功，退出码 ${exited}。日志 ${logFile} 的最后几行:`);
   if (tail) console.error(tail);
+  console.error("        下一步:node cli/status.mjs");
   return 1;
 }
 const RESTART_CODE = 75;
@@ -67,6 +72,12 @@ let child = null;
 let restarts = 0;
 const recent = [];
 let stopping = false;
+// The run record (core/board-run.mjs): one note when this wrapper starts and one when it ends, so
+// cli/status.mjs can name the last fault and why the board is down. Never in the way of starting.
+const DATA = localDataDir();
+let recorded = false;
+try { recorded = noteRunStart(DATA, { logFrom: process.env.BOARD_RUN_LOG_FROM ? Number(process.env.BOARD_RUN_LOG_FROM) : null }).owned; } catch {}
+const noteEnd = (kind, code) => { if (recorded) try { noteRunEnd(DATA, { kind, code }); } catch {} };
 
 function launch(from) {
   child = spawn(process.execPath, [...process.execArgv, SCRIPT, ...process.argv.slice(2)], {
@@ -75,25 +86,28 @@ function launch(from) {
     env: { ...process.env, BOARD_SUPERVISED: "1", BOARD_RESTART_MODE: "exit", ...(from ? { BOARD_RESTARTED_FROM: from } : {}) },
   });
   child.on("exit", (code, signal) => {
-    if (stopping) process.exit(code ?? 0);
+    if (stopping) { noteEnd("stopped", code); process.exit(code ?? 0); }
     if (code === RESTART_CODE) {
       restarts += 1;
       recent.push(Date.now());
       while (recent.length && Date.now() - recent[0] > RESTART_WINDOW_MS) recent.shift();
       if (recent.length > RESTART_MAX) {
-        console.error(`[start] ${RESTART_WINDOW_MS / 1000} 秒内已重起 ${recent.length - 1} 次,看板一起来就又要求重启 —— 不再重起。看上面的日志找原因,修好后重新 npm start`);
+        console.error(`[start] ${RESTART_WINDOW_MS / 1000} 秒内已重起 ${recent.length - 1} 次，不再重起。下一步:看上面的日志，修好后重新启动`);
+        noteEnd("restart_loop", code);
         process.exit(1);
       }
-      console.log(`[start] 看板请求重启(第 ${restarts} 次)—— 同一条命令、同一个终端,马上回来`);
+      console.log(`[start] 看板请求重启，第 ${restarts} 次，正在原地重起`);
       // The port is released by the exiting process; a short pause keeps the successor from
       // racing it. Successive requests are not throttled: each one was a human's button.
       setTimeout(() => launch("supervised"), 300);
       return;
     }
     if (signal) console.log(`[start] 看板被 ${signal} 结束`);
+    else if (code) console.log(`[start] 看板服务退出，退出码 ${code}`);
+    noteEnd(code === 0 ? "stopped" : "exit", code);
     process.exit(code ?? 1);
   });
-  child.on("error", (e) => { console.error(`[start] 起不了看板: ${e.message}`); process.exit(1); });
+  child.on("error", (e) => { console.error(`[start] 看板启动失败:${e.message}`); noteEnd("exit", null); process.exit(1); });
 }
 
 // Ctrl+C / kill on the wrapper stops the board too — the wrapper never outlives it.

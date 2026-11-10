@@ -6,7 +6,8 @@
 //
 // ⚠ Read-only by design: doctor never writes config, never creates directories,
 //   never touches a database. A preflight that "helpfully" mutates state turns
-//   diagnosis into a second thing to diagnose.
+//   diagnosis into a second thing to diagnose. The one exception is asked for by
+//   name: `--record-tested` notes the checked CLI version when every check passed.
 
 import { execFileSync, execSync, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, accessSync, constants } from "node:fs";
@@ -18,6 +19,7 @@ import {inspectSeatCLI} from "../core/seat-cli-evidence.mjs";
 import { MIN_GIT_VERSION, probeGitVersion } from "../core/git-version.mjs";
 import { applyConfigDefaults, nodeTooOld } from "../core/env.mjs";
 import { detectCodex } from "../core/config-setup.mjs";
+import { readCliVersions, recordTestedVersion, versionLine } from "../core/cli-versions.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -92,7 +94,7 @@ try {
 // Same resolution the worker loop uses: host env wins, then PATH; a .cmd shim on
 // Windows is refused by the BatBadBut gate, so probe for the native sibling.
 // CLI_PATH / CLI_IS_SHIM are read again by ⑤b — resolve the CLI once, here.
-let CLI_PATH = null, CLI_IS_SHIM = false;
+let CLI_PATH = null, CLI_IS_SHIM = false, CLI_CONTRACT_OK = false;
 {
   const envCli = process.env.WORKER_CLAUDE_CLI;
   // PATH is walked by hand rather than via `where`: its output arrives in the
@@ -223,7 +225,7 @@ await new Promise((resolve) => {
       if (missing.length)
         no(`CLI 不认识这些参数: ${missing.join(" ")}`,
            "这个 CLI 版本与本板驱动它的方式不匹配 —— worker 会起不来。升级看板,或把 CLI 降回兼容版本");
-      else ok(`CLI 参数契约吻合(${CLI_FLAGS.length} 个)`);
+      else { CLI_CONTRACT_OK = true; ok(`CLI 参数契约吻合(${CLI_FLAGS.length} 个)`); }
       for (const [flag, want] of Object.entries(CLI_CHOICES)) {
         const bad = want.filter((v) => !help.includes(v));
         if (bad.length)
@@ -253,6 +255,19 @@ await new Promise((resolve) => {
     }catch{wr("座席 CLI 版本或摘要未能核实","未执行模型；此项不能作为权限语义验收");}
   }else wr("没有可核实的原生座席 CLI","不把包装器或缺失文件视为已测量执行器");
 }
+
+// ── ⑤b2 执行器 CLI 版本:当前 / 最新 / 上次核对 / 是否实测过(core/cli-versions.mjs)。
+//    doctor 只读:不联网、不写缓存,最新版本取看板上次查到的那一个。
+let CLI_VERSIONS = null;
+try {
+  CLI_VERSIONS = await readCliVersions({ dataDir: resolve(process.env.BOARD_DATA_DIR || join(ROOT, "core", ".data")), network: "never", write: false });
+  for (const c of CLI_VERSIONS.clis) {
+    const text = versionLine(c);
+    if (!text) continue;
+    if (c.state === "found" && c.current) ok(text, c.update_available ? `升级用 node cli/upgrade-cli.mjs ${c.id}` : "");
+    else wr(text, "版本没有核对成");
+  }
+} catch (e) { wr(`执行器 CLI 版本没读到(${String(e.message).slice(0, 60)})`, "这一项没测成 —— 不是通过,是没测"); }
 
 // ── ⑤c the trust boundary: are the tokens and the registry inside the worker's reach? ─
 // Measured 2026-09-07 with the real CLI (Windows): a Claude worker in -p mode can Read any
@@ -294,6 +309,48 @@ await new Promise((resolve) => {
       else ok(`deny 规则写法正确(${rules.length} 条,Read/Edit,${process.platform === "win32" ? "盘符" : "//"} 绝对路径)`);
     } catch (e) {
       wr(`deny 规则没读到(${String(e.message).slice(0, 60)})`, "这一项没测成 —— 不是通过,是没测");
+    }
+    // ⑤d2 写放行规则(--allowedTools)的写法。dontAsk 下写要显式放行,规则由 verify_lib.cli_write_allow_rules
+    // 的真函数产出;目录清单照 loops 的写法列在这里(执行线:工作仓与证据目录,只读执行线:证据目录,
+    // 审阅线:判决目录),环境变量取值方式与 loops 相同。三种坏写法各出声一条:不带路径的工具名、
+    // 非绝对路径、放行目录是工作仓的上级目录。和 deny 规则一样只核写法,语义要用真实 CLI 量。
+    try {
+      const snippet = [
+        "import json,os,sys", "sys.path.insert(0,sys.argv[1])", "import verify_lib as v",
+        "repo=os.environ.get('BOARD_REPO',v.CODE_ROOT)",
+        "data=os.environ.get('BOARD_DATA_DIR') or os.path.join(v.CODE_ROOT,'core','.data')",
+        "sets=(('执行线',[repo,os.path.join(data,'evidence')]),('只读执行线',[os.path.join(data,'evidence')]),('审阅线',[os.path.join(data,'review')]))",
+        "out=[]",
+        "for name,dirs in sets:",
+        "    try: out.append({'name':name,'rules':v.cli_write_allow_rules(dirs)})",
+        "    except ValueError as e: out.append({'name':name,'error':str(e)})",
+        "print(json.dumps(out,ensure_ascii=True))"].join(String.fromCharCode(10));
+      const sets = JSON.parse(execFileSync(PY, ["-c", snippet, join(ROOT, "loops")],
+                                           { encoding: "utf8", windowsHide: true, timeout: 15000, env: { ...process.env, PYTHONIOENCODING: "utf-8" } }));
+      // 动态引入:这个模块连带引入 node:sqlite,Node 版本过低时 ① 已经报了,这里只算没测成。
+      const { checkWriteAllowRules } = await import("../core/executor-readiness.mjs");
+      const refused = sets.filter((x) => x.error), rules = [...new Set(sets.flatMap((x) => x.rules || []))];
+      const found = checkWriteAllowRules(rules, { repoRoot: resolve(process.env.BOARD_REPO || ROOT) });
+      const of = (kind) => [...new Set(found.filter((f) => f.kind === kind).map((f) => f.rule))];
+      const bare = of("bare_tool"), relative = of("relative_path"), ancestor = of("repo_ancestor");
+      if (refused.length)
+        no(`写放行规则组不出来:${refused.map((x) => x.name).join("、")}的放行目录不是绝对路径`,
+           "BOARD_REPO 与 BOARD_DATA_DIR 改成绝对路径。这些执行线会拒绝启动");
+      if (bare.length)
+        no(`写放行规则里有不带路径的工具名:${bare.slice(0, 3).join(" ")}`,
+           "不带路径的放行规则等于放行任意路径。规则只能是带绝对路径的 Edit");
+      if (relative.length)
+        no(`写放行规则的路径不是绝对形:${relative[0].slice(0, 80)}`,
+           `CLI 把这种路径按项目根相对解释,放行的不是想要的目录。路径要写成${process.platform === "win32" ? "盘符开头" : " // 开头"}的绝对形`);
+      if (ancestor.length)
+        no(`写放行目录是工作仓的上级目录:${ancestor[0].slice(0, 80)}`,
+           "工作仓之外的同级内容也会被放行写入。把数据目录移到不包含工作仓的位置");
+      if (!refused.length && !found.length) {
+        if (rules.length) ok(`写放行规则写法正确(${rules.length} 条,带路径的 Edit,${process.platform === "win32" ? "盘符" : "//"} 绝对路径,不越出工作仓)`);
+        else no("写放行规则为空", "verify_lib.cli_write_allow_rules 没有产出。dontAsk 下执行线写不出证据");
+      }
+    } catch (e) {
+      wr(`写放行规则没读到(${String(e.message).slice(0, 60)})`, "这一项没测成 —— 不是通过,是没测");
     }
   }
 }
@@ -403,9 +460,21 @@ console.log(`\n${"─".repeat(56)}`);
 const envPrefix = process.env.BOARD_URL ? `BOARD_URL=${process.env.BOARD_URL} ` :
   HAD_PORT_ENV ? `BOARD_PORT=${process.env.BOARD_PORT} ` : "";
 console.log(`result: ${pass} PASS / ${warn} WARN / ${fail} FAIL` +
-            (fail ? "\n⛔ 有 FAIL —— 修完再起板(每条 FAIL 下面都写了修法)"
-                  : (warn ? "\n可以起板(WARN 不拦路,但建议看一眼): "
-                          : "\n一切就绪: ") +
-                    `${envPrefix}node cli/start.mjs --background(后台;停止用 node cli/stop.mjs),或 ${envPrefix}node cli/start.mjs(在这个窗口里跑,面板按「更新」时原地重起)` +
-                    (envPrefix ? "(PowerShell 用 $env: 形式设同名变量)" : "")));
+            (fail ? "\n有 FAIL，修好后再启动看板。每条 FAIL 下面写了修法"
+                  : (warn ? "\n可以启动看板，WARN 不拦路。" : "\n可以启动看板。") +
+                    `后台启动:${envPrefix}node cli/start.mjs --background；在这个窗口里运行:${envPrefix}node cli/start.mjs；` +
+                    "看状态:node cli/status.mjs；停止:node cli/stop.mjs" +
+                    (envPrefix ? "。PowerShell 用 $env: 形式设同名变量" : "")));
+// --record-tested:体检全部通过时,把当前 Claude CLI 版本记进「实测过的版本」清单,来源 doctor(只核对了参数)。
+// 这是 doctor 唯一会写文件的地方,不带这个参数时什么都不写。
+if (process.argv.includes("--record-tested")) {
+  const claude = CLI_VERSIONS?.clis.find((c) => c.id === "claude");
+  if (fail || !CLI_CONTRACT_OK || !claude?.current) console.log("没有记录实测版本:体检有 FAIL,或 Claude CLI 的参数、版本没有核对成");
+  else {
+    try {
+      recordTestedVersion(resolve(process.env.BOARD_DATA_DIR || join(ROOT, "core", ".data")), { cli: "claude", version: claude.current, source: "doctor" });
+      console.log(`已记录:Claude CLI ${claude.current} 的参数已核对`);
+    } catch (e) { console.log(`实测版本没有记下来:${e.message}`); }
+  }
+}
 process.exit(fail ? 1 : 0);

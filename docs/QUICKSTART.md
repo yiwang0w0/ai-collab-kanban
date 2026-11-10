@@ -74,6 +74,11 @@ catch a renamed flag, because they drive a stub and a stub accepts anything. If
 this line goes red, the CLI on your machine and this board no longer agree, and
 a worker would fail at start time rather than at test time.
 
+Doctor also checks the spelling of the permission rules this deployment would
+send to the CLI: the deny rules for the token directory, and the write-allow
+rules (`--allowedTools`). A tool name without a path, a path that is not
+absolute, or an allowed directory above the work repo each gets its own red line.
+
 ## 1 · Install your config (recommended)
 
 ```

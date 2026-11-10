@@ -19,7 +19,7 @@ process.exitCode = await main();
 async function main() {
   const args = new Set(process.argv.slice(2));
   const { url, token } = localBoard();
-  if (!(await boardUp(url))) { console.error(`看板没有在运行(${url})—— 先 node cli/start.mjs --background`); return 1; }
+  if (!(await boardUp(url))) { console.error(`看板服务没有应答:${url}。下一步:node cli/start.mjs --background`); return 1; }
   const call = async (path, body) => {
     const r = await fetch(url + path, { method: "POST", signal: AbortSignal.timeout(10000),
       headers: { "X-Board-Token": token(), "Content-Type": "application/json" }, body: JSON.stringify(body) });
@@ -29,25 +29,25 @@ async function main() {
     try {
       const { status, v } = await call("/api/pair/revoke", { all: true });
       if (status !== 200) throw new Error(v.error || `看板返回 ${status}`);
-      console.log(`已撤销 ${v.revoked} 个浏览器的连接;要再用面板:node cli/open.mjs`);
+      console.log(`已撤销 ${v.revoked} 个浏览器的连接。再用面板:node cli/open.mjs`);
       return 0;
-    } catch (e) { console.error(`撤销失败: ${e.message}`); return 1; }
+    } catch (e) { console.error(`没有撤销:${e.message}`); return 1; }
   }
   let code;
   try {
     const { status, v } = await call("/api/pair/code", {});
     if (status !== 201 || !/^\d{6}$/.test(String(v.code))) throw new Error(v.error || `看板返回 ${status}`);
     code = v.code;
-  } catch (e) { console.error(`拿不到配对码: ${e.message}`); return 1; }
+  } catch (e) { console.error(`没有拿到配对码:${e.message}`); return 1; }
   const link = `${url}/#pair=${code}`;
   if (args.has("--print")) { console.log(link); return 0; }
   // Only a plain http(s) address reaches the opener — nothing a shell or rundll32 could read
   // as more than one argument.
   const opened = /^https?:\/\/[A-Za-z0-9.:[\]-]+\/#pair=\d{6}$/.test(link) && openBrowser(link);
-  console.log(opened ? "已在浏览器里打开面板。没打开的话,复制这个地址(10 分钟内有效,只能用一次):"
-                     : "复制这个地址到浏览器(10 分钟内有效,只能用一次):");
+  console.log(opened ? "已在浏览器里打开面板。没有打开就复制这个地址，10 分钟内有效，只能用一次:"
+                     : "复制这个地址到浏览器，10 分钟内有效，只能用一次:");
   console.log(`  ${link}`);
-  console.log(`或者打开 ${url} ,在连接页填配对码 ${code}。`);
+  console.log(`或者打开 ${url}，在连接页填配对码 ${code}。`);
   return 0;
 }
 
