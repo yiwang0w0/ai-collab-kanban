@@ -60,13 +60,18 @@ function policy(db,input,sourceGate){
  }
  return {...structuredClone(input),root};
 }
-function inflight(db,node){
+function blockers(db,node){
  const runs=db.prepare("SELECT r.* FROM task_runs r JOIN broker_dispatches d ON d.run_id=r.run_id WHERE d.node_id=? AND d.node_epoch=? AND d.execution_mode='provider'").all(node.node_id,node.sync_epoch);
- return new Set(inspectStoppedRuns(db,{nodeId:node.node_id,nodeEpoch:node.sync_epoch,members:[],runs}).blockers.map(b=>b.run_id)).size;
+ return inspectStoppedRuns(db,{nodeId:node.node_id,nodeEpoch:node.sync_epoch,members:[],runs}).blockers;
 }
+function inflight(db,node){return new Set(blockers(db,node).map(b=>b.run_id)).size;}
+/** 只读:本节点当前代次里仍占着并发位的 provider 运行。与 tick 的并发判定是同一个函数,外层循环据此说明「为什么不启动」。 */
+export function inflightBlockers(db){return blockers(db,localIdentity(db));}
 /** Construct once per process. The canonical database lock is shared across root aliases/configurations. */
-export function openScheduler(db,{dbPath,sourceGate,config,environment=process.env,onEvent=()=>{},promptAppendix=''}){
+export function openScheduler(db,{dbPath,sourceGate,config,environment=process.env,onEvent=()=>{},promptAppendix='',admit=null}){
  if(typeof promptAppendix!=='string'||promptAppendix.length>2000||promptAppendix.includes('\0'))fail('BAD_INPUT','提示附录无效或超限',400);
+ // 可选的接卡判定:领取之前逐个请求问一次,返回拒收码即不领取。只能收紧,放宽不了任何既有闸。
+ if(admit!==null&&typeof admit!=='function')fail('BAD_INPUT','接卡判定须为函数',400);
  if(process.platform!=='win32')fail('WINDOWS_REQUIRED','持续调度仅支持 Windows');
  if(db.isTransaction)fail('TRANSACTION_CONTEXT','调度须使用独立数据库连接');
  const database=realpathSync(dbPath),attached=db.prepare('PRAGMA database_list').all().find(x=>x.name==='main')?.file;
@@ -104,6 +109,7 @@ export function openScheduler(db,{dbPath,sourceGate,config,environment=process.e
    check();
    // 环境钥匙在领取之前核对:缺钥匙时不领取、不占预算、不消耗卡的尝试次数。prepareAdapter 里是同一道门。
    if(p.installation.runtime==='zcode')requireZcodeReleased(environment);
+   if(admit){const refused=admit(a);if(refused)fail(typeof refused==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(refused)?refused:'ADMISSION_REFUSED','外层循环拒收此请求');}
    const q=quotaStatus(db,p.quota_id);
    if(!q?.enabled||q.used+q.reserved>=q.limit_total)fail('BUDGET_EXHAUSTED','预算未启用或已用尽');
    const dir=join(c.root,a.assignment_id);checkDirectoryPath(dir);

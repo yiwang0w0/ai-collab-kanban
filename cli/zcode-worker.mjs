@@ -8,7 +8,7 @@ import {createSourceGate} from '../core/execution/source-gate.mjs';
 import {openSchedulerControlDatabase} from '../core/execution/lifecycle.mjs';
 import {readRecoveryJSON} from '../core/recovery.mjs';
 import {openZcodeWorker,requireZcodeLaunchSwitch,validateZcodeWorkerConfig,zcodeWorkerPlan,zcodeWorkerStatus,setupZcodeLine,enqueueZcodeTask} from '../core/execution/zcode-worker.mjs';
-const usage=['node cli/zcode-worker.mjs plan|status --db <本机DB绝对路径> --config-file <配置JSON>      只读:开关、预算、候选卡与拒收码',
+const usage=['node cli/zcode-worker.mjs plan|status --db <本机DB绝对路径> --config-file <配置JSON>      只读:开关、预算、未结清的分派、已有请求与候选卡的拒收码',
  'node cli/zcode-worker.mjs setup --db <本机DB绝对路径> --line <线名> --project <项目> --out-dir <仓库外的已有目录>      登记角色、凭据与未启用的预算,写出开关全关的配置骨架',
  'node cli/zcode-worker.mjs enqueue --db <本机DB绝对路径> --task <卡ID> --version <所见任务版本> --config-file <配置JSON>      把一张卡交给 Zcode 线并登记祖先链',
  'node cli/zcode-worker.mjs once|watch --db <本机DB绝对路径> --config-file <配置JSON> --accepted-rev <治理验收文件>',
@@ -16,6 +16,7 @@ const usage=['node cli/zcode-worker.mjs plan|status --db <本机DB绝对路径> 
  'once / watch 需要三把钥匙:预算已启用;配置 launch.enabled=true 且 authorization 有效;环境变量 BOARD_ZCODE_RELEASED=1。',
  '其中预算与环境变量在 dispatch 链里,任何入口都要过;launch.enabled、authorization 与拒收规则只在本命令这一层。',
  'watch 首次 Ctrl+C 等待在途结束;再次 Ctrl+C 或 SIGTERM 取消在途。已消费许可的任务不会自动重启,额度不退。',
+ '有分派没结清时 once / watch 以退出码 2 结束(status=needs_attention):先 reconcile,仍不行再走 dispatch.mjs 的人工步骤。',
  '异常退出残留锁:使用 cli/runtime-lock.mjs prepare/apply;结果不明的运行:cli/dispatch.mjs prepare-uncertain / record-uncertain。'].join('\n');
 const FIELDS={plan:['db','config-file'],status:['db','config-file'],setup:['db','line','project','out-dir'],enqueue:['db','task','version','config-file'],
  once:['db','config-file','accepted-rev'],watch:['db','config-file','accepted-rev'],reconcile:['db','config-file','accepted-rev','assignment']};
@@ -48,11 +49,13 @@ try{
    const stop=new AbortController(),cancel=new AbortController();
    const interrupt=()=>{if(stop.signal.aborted)cancel.abort();stop.abort();},terminate=()=>{cancel.abort();stop.abort();};
    process.on('SIGINT',interrupt);process.on('SIGTERM',terminate);
+   let last;
    try{
-    if(command==='watch')console.log(JSON.stringify(await worker.watch({stopSignal:stop.signal,cancelSignal:cancel.signal})));
-    else if(command==='once')console.log(JSON.stringify(await worker.tick({stopSignal:stop.signal,cancelSignal:cancel.signal})));
-    else console.log(JSON.stringify(worker.reconcile(o.assignment)));
+    if(command==='reconcile')console.log(JSON.stringify(worker.reconcile(o.assignment)));
+    else{last=command==='watch'?await worker.watch({stopSignal:stop.signal,cancelSignal:cancel.signal}):await worker.tick({stopSignal:stop.signal,cancelSignal:cancel.signal});console.log(JSON.stringify(last));}
    }finally{process.removeListener('SIGINT',interrupt);process.removeListener('SIGTERM',terminate);}
+   // 没结清不是正常结束:退出码与预算用尽、空闲区分开。
+   if(last?.status==='needs_attention'){console.error(JSON.stringify({status:'needs_attention',code:'UNSETTLED_DISPATCH',message:'有分派没有结清,本线不会再启动;先用 reconcile 补回执,不行再按 dispatch.mjs 的人工步骤处理。'}));process.exitCode=2;}
   }
  }
 }catch(e){failure=errorCode(e);if(e?.message===usage)console.error(usage);console.error(JSON.stringify({status:'failed',code:failure,message:'Zcode 执行循环命令失败;请核对开关、配置、预算、治理验收和运行回执。未授权自动重试。'}));process.exitCode=1;}

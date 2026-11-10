@@ -18,10 +18,9 @@ import {exact,fail,getRole,putRole,issuePrincipal,authenticateCredential,loadPri
 import {callTool,chooseRole,enrollTask} from '../mcp/tools.mjs';
 import {listenBroker} from '../mcp/gateway.mjs';
 import {boardURL} from '../mcp/context.mjs';
-import {migrateDispatch,putQuota,quotaStatus,dispatchStatus} from './dispatch.mjs';
-import {executionResolution} from './resolutions.mjs';
+import {migrateDispatch,putQuota,quotaStatus,dispatchStatus,withdrawAssignment} from './dispatch.mjs';
 import {schedulerStatus} from './lifecycle.mjs';
-import {openScheduler} from './scheduler.mjs';
+import {openScheduler,inflightBlockers} from './scheduler.mjs';
 import {ZCODE_RELEASE_VARIABLE,zcodeReleased} from './adapters.mjs';
 import {pinFile} from './supervisor.mjs';
 const store=createRequire(import.meta.url)('../store.js');
@@ -143,30 +142,65 @@ function lineage(db,taskId){
  }
  return chain; // 自根向下,末项是本卡
 }
-/** 未结清 = 已保留或已消费许可、结果还没落定,也没有人工恢复回执。 */
-function unsettled(db,column,value){
- return db.prepare("SELECT dispatch_id,task_id,phase FROM broker_dispatches WHERE "+(column==='task'?'task_id':'quota_id')+"=? AND phase IN('prepared','launch_committed','interrupted') ORDER BY created_at,dispatch_id").all(value)
-  .filter(d=>d.phase!=='interrupted'||!executionResolution(db,d.dispatch_id));
+/**
+ * 未结清 = 调度器眼里仍占着并发位的运行。用的是调度器自己的判定(inflightBlockers),不另写一份口径:
+ * 并发为 1,任何一条都让调度器不再启动。人工恢复回执(record-uncertain)不清并发位,调度器只采信机器停止证明。
+ */
+function occupied(db){
+ const attested=table(db,'broker_execution_resolutions');
+ return inflightBlockers(db).map(b=>{
+  const d=db.prepare('SELECT dispatch_id,task_id,phase FROM broker_dispatches WHERE run_id=?').get(b.run_id);
+  return {dispatch_id:d?.dispatch_id??null,task_id:d?.task_id??null,phase:d?.phase??null,reason:b.kind,
+   operator_attested:!!(d&&attested&&db.prepare('SELECT 1 FROM broker_execution_resolutions WHERE dispatch_id=?').get(d.dispatch_id))};
+ }).sort((a,b)=>String(a.dispatch_id)<String(b.dispatch_id)?-1:1);
+}
+/** 这张卡名下还有已保留或已消费许可、结果没落定的分派。 */
+const pendingDispatch=(db,taskId)=>!!db.prepare("SELECT 1 FROM broker_dispatches WHERE task_id=? AND phase IN('prepared','launch_committed','interrupted') LIMIT 1").get(taskId);
+/** 候选条件只写在这一处:接卡查询与「别人建的请求」都按它判。 */
+function eligible(c,t){
+ if(t.kind!=='task'||t.archived_at)return 'NOT_A_TASK';
+ if(t.status!=='not_started')return 'NOT_QUEUED';
+ if(!t.released)return 'NOT_RELEASED';
+ if(t.route!=='mcp')return 'ROUTE_MISMATCH';
+ if(t.line!==c.line)return 'LINE_MISMATCH';                 // 线为空也不接
+ if(t.human_gate)return 'HUMAN_GATE';
+ return null;
 }
 function candidates(db,c){
- return db.prepare("SELECT * FROM tasks WHERE status='not_started' AND released=1 AND kind='task' AND route='mcp' AND line=? AND human_gate=0 AND archived_at IS NULL ORDER BY id LIMIT 200").all(c.line);
+ return db.prepare("SELECT * FROM tasks WHERE status='not_started' AND line=? AND archived_at IS NULL ORDER BY id").all(c.line).filter(t=>eligible(c,t)===null).slice(0,200);
 }
-/** 返回拒收码;null 表示可以接。拒收都发生在领取之前,不消耗预算。 */
+/** 返回拒收码;null 表示可以接。拒收都发生在领取之前,不消耗预算。候选卡与已有请求用的是这同一个函数。 */
 function refusal(db,c,t){
+ const out=eligible(c,t);if(out)return out;
  const p=profileOf(c),mine=x=>chooseRole(db,x)?.role_id===p.role_id?null:'ROLE_MISMATCH';
  if(t.verify_cmd)return 'VERIFY_UNSUPPORTED';              // 无工具执行跑不了登记验证,不静默跳过
  let fixed;try{fixed=store.taskExecutionProfile(db,t.id);}catch{fixed=true;}
  if(fixed)return 'PROFILE_BOUND';                          // 已绑定别的执行通道
  if(t.attempts>=Math.min(t.max_attempts,1))return 'ATTEMPTS_EXHAUSTED';
- if(unsettled(db,'task',t.id).length)return 'UNSETTLED_DISPATCH';
- const a=admission(db,t.id);
- if(a)return a.project_id!==p.project_id?'PROJECT_MISMATCH':mine({...a});
- if(!c.intake.auto_enroll)return 'NOT_ENROLLED';
- for(const up of lineage(db,t.id).slice(0,-1)){const row=admission(db,up.id);if(row&&row.project_id!==p.project_id)return 'PROJECT_MISMATCH';}
- return mine({project_id:p.project_id,work_kind:'implement',capabilities_json:'["board-tools"]'});
+ if(pendingDispatch(db,t.id))return 'UNSETTLED_DISPATCH';
+ const a=admission(db,t.id);let role;
+ if(a)role=a.project_id!==p.project_id?'PROJECT_MISMATCH':mine({...a});
+ else if(!c.intake.auto_enroll)role='NOT_ENROLLED';
+ else role=lineage(db,t.id).slice(0,-1).some(up=>{const row=admission(db,up.id);return row&&row.project_id!==p.project_id;})?'PROJECT_MISMATCH':mine({project_id:p.project_id,work_kind:'implement',capabilities_json:'["board-tools"]'});
+ if(role)return role;
+ // 领取时才查的条件(依赖、未完成子任务、祖先放行、执行锁、同根在途上限、任务树 / 拓扑 / 委派持有):
+ // 用 store 回答「这张卡为什么领不走」的那一份判定,它与 claimById 共用同一批闸,这里不抄。
+ // 无进展闸不在其中:dispatch_fp 与 attempts+1 是领取时同一条 UPDATE 写入的,有它的卡上面已按 ATTEMPTS_EXHAUSTED 拒。
+ // 其余没料到的领取期拒绝由循环兜住:领不到的请求下一轮不再挡住后面的卡(见 tick)。
+ return store.stuckWhy(db,t.id)[0]?.code??null;
 }
 // 判定本身出错(例如父链损坏)也落在拒收一侧,并带出错误码。
 const verdict=(db,c,t)=>{try{return refusal(db,c,t);}catch(e){return code(e);}};
+/**
+ * 本项目/角色下所有等待执行器的请求,各带一个拒收码(null = 调度器可以领)。
+ * TASK_CHANGED:卡在请求之后被改过,调度器的版本核对永远不会放它过。
+ */
+function pendingRequests(db,c){
+ const p=profileOf(c);
+ return db.prepare("SELECT a.assignment_id,a.task_uid,a.task_version requested,t.id task_id,t.aggregate_version present FROM broker_assignments a LEFT JOIN tasks t ON t.task_uid=a.task_uid WHERE a.state='waiting_executor' AND a.project_id=? AND a.role_id=? ORDER BY a.created_at,a.assignment_id").all(p.project_id,p.role_id)
+  .map(a=>({assignment_id:a.assignment_id,task_uid:a.task_uid,task_id:a.task_id??null,
+   refused:a.present!==a.requested?'TASK_CHANGED':verdict(db,c,db.prepare('SELECT * FROM tasks WHERE id=?').get(a.task_id))}));
+}
 /** 本机操作者动作:自根向下把祖先链(能力 [])和本卡(board-tools)登记到项目。已登记的不改。 */
 export function enrollZcodeTask(db,{taskId,projectId}){
  return atomic(db,()=>{
@@ -194,19 +228,21 @@ export function enqueueZcodeTask(db,{taskId,expectedVersion,config}){
  });
 }
 
-/** 只读:开关、各道门、预算与候选卡的拒收码。不写库、不启动、不调用 Python。 */
+/** 只读:开关、各道门、预算、未结清的分派、已有请求与候选卡的拒收码。不写库、不启动、不调用 Python。 */
 export function zcodeWorkerPlan(db,config,environment=process.env){
  const c=validateZcodeWorkerConfig(config),p=profileOf(c),sw={config_enabled:c.launch.enabled===true,environment_released:zcodeReleased(environment)};
  const out={format:'ai-fleet-zcode-worker-plan/v1',configured:false,line:c.line,project_id:p.project_id,switch:{...sw,open:sw.config_enabled&&sw.environment_released},max_launches:c.launch.max_launches,hard_max_launches:HARD_MAX_LAUNCHES,launched:false};
- if(!['broker_roles','broker_task_projects','broker_assignments','broker_call_quotas','broker_dispatches'].every(name=>table(db,name)))return out;
+ if(!['broker_roles','broker_task_projects','broker_assignments','broker_call_quotas','broker_dispatches','broker_execution_records'].every(name=>table(db,name)))return out;
  const gate=check=>{try{check();return null;}catch(e){return code(e);}};
- const q=quotaStatus(db,p.quota_id),open=unsettled(db,'quota',p.quota_id);
+ const q=quotaStatus(db,p.quota_id),open=occupied(db),requests=pendingRequests(db,c);
  const gates={authorization:gate(()=>authorizationGate(c)),role:gate(()=>roleGate(db,c)),budget:gate(()=>budgetGate(db,c)),coordinator:gate(()=>coordinatorGate(db,c))};
- const state=!out.switch.open?'disabled':Object.values(gates).some(Boolean)?'blocked':!q.enabled?'budget_disabled':q.used+q.reserved>=q.limit_total?'budget_exhausted':open.length?'needs_attention':'ready';
+ // 未结清排在最前:它不因开关关着或预算用尽而消失,不能被这些状态遮住。
+ const state=open.length?'needs_attention':!out.switch.open?'disabled':Object.values(gates).some(Boolean)?'blocked':!q.enabled?'budget_disabled':q.used+q.reserved>=q.limit_total?'budget_exhausted':'ready';
  return {...out,configured:true,state,authorization:c.launch.authorization.kind,gates,
   budget:q?{quota_id:q.quota_id,enabled:!!q.enabled,limit_total:q.limit_total,used:q.used,reserved:q.reserved}:null,
-  unsettled:open.map(d=>({dispatch_id:d.dispatch_id,phase:d.phase})),
-  request_pending:!!db.prepare("SELECT 1 FROM broker_assignments WHERE state='waiting_executor' AND project_id=? AND role_id=? LIMIT 1").get(p.project_id,p.role_id),
+  // reason 是调度器给的占位原因;operator_attested=true 表示已做过 record-uncertain,但并发位仍被占着。
+  unsettled:open.map(d=>({dispatch_id:d.dispatch_id,phase:d.phase,reason:d.reason,operator_attested:d.operator_attested})),
+  request_pending:requests.length>0,requests:requests.map(a=>({assignment_id:a.assignment_id,task_id:a.task_id,refused:a.refused})),
   candidates:candidates(db,c).map(t=>({task_id:t.id,task_uid:t.task_uid,refused:verdict(db,c,t)}))};
 }
 /** 只读:plan 之外再给最近的分派与调度实例,供人判断「跑没跑、卡在哪」。 */
@@ -235,7 +271,42 @@ function buildAppendix(c,sourceGate){
  return appendix;
 }
 
+// ── 记账 ──────────────────────────────────────────────────────────────────
+/** 结算后记一次账:四个布尔各自独立,不合并成一个「成功」。 */
+function account({db,c,sourceGate,root,emit},dispatchId){
+ const d=dispatchStatus(db,dispatchId);if(d.phase!=='settled')return null;
+ const directory=join(root,d.assignment_id);if(!existsSync(directory))return null;
+ // 排他创建的标记保证同一分派最多记一次;已存在即已记过。
+ let fd;try{fd=openSync(join(directory,'ACCOUNTED.json'),'wx',0o600);}catch(e){if(e.code==='EEXIST')return null;throw e;}
+ try{writeFileSync(fd,JSON.stringify({format:'ai-fleet-zcode-accounted/v1',dispatch_id:d.dispatch_id,at:new Date().toISOString()})+'\n');fsyncSync(fd);}finally{closeSync(fd);}
+ const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(d.task_id),run=db.prepare('SELECT * FROM task_runs WHERE run_id=?').get(d.run_id),context=run?JSON.parse(run.policy_json).context:{};
+ const settled_success=d.result?.status==='success',delivered_via=d.result?.delivery??null;
+ const task_read_observed=!!db.prepare("SELECT 1 FROM broker_audit WHERE principal_id=? AND tool_name='get_task' AND outcome='succeeded' LIMIT 1").get(d.principal_id);
+ // 只核对这次运行自己交付的正文;卡已属于别的 run 或没有成功交付时记 null,不拿别人的结果充数。
+ let contract_ok=null,contract_errors=null;
+ if(settled_success&&t?.run_id===d.run_id&&['reported','existing_mcp_report_preserved'].includes(delivered_via)){
+  try{const v=evidenceTool(c,sourceGate,['validate','--max-chars',String(c.evidence.max_chars)],String(t.result??''));contract_ok=v.ok===true;contract_errors=contract_ok?null:(Array.isArray(v.errors)?v.errors.map(String):[]);}
+  catch(e){emit({kind:'attention',code:code(e),dispatch_id:d.dispatch_id});}
+ }
+ // 供应商没有给用量:五个键一律 null。看板归并遇 null 显示「待核实」,不会记成 0。
+ const row={ts:stamp(),card:d.task_id,attempt:run?.last_attempt??null,worker:d.worker,run_id:d.run_id,agent_instance_id:d.agent_instance_id,model:context.model??null,effort:context.effort??null,runtime:'zcode',
+  calls:null,in:null,cc:null,cr:null,out:null,note:'供应商未提供用量',round:1,phase:'initial',reason:d.execution?.observation?.diagnostic??d.result?.status??null,
+  dispatch_id:d.dispatch_id,delivered_via,contract_ok,...(contract_errors?{contract_errors}:{}),task_read_observed,settled_success,host_verify:'not_applicable',host_commit:'not_applicable'};
+ // 一次写入一整行。写不进去只报告,不阻塞结算;标记已落,不会补写出第二行。
+ let written=false;
+ if(c.ledger_file!==null)try{appendFileSync(c.ledger_file,JSON.stringify(row)+'\n');written=true;}catch{emit({kind:'attention',code:'LEDGER_WRITE_FAILED',dispatch_id:d.dispatch_id});}
+ emit({kind:'accounted',task_id:d.task_id,task_uid:d.task_uid,dispatch_id:d.dispatch_id,settled_success,delivered_via,task_read_observed,contract_ok,ledger_written:written});
+ if(contract_ok===false)emit({kind:'attention',code:'EVIDENCE_CONTRACT',task_id:d.task_id,task_uid:d.task_uid,dispatch_id:d.dispatch_id,errors:contract_errors.length});
+ return row;
+}
+
 async function closeServer(server){if(!server?.listening)return;await new Promise((done,failed)=>{server.close(e=>e?failed(e):done());server.closeAllConnections();});}
+const emitter=onEvent=>event=>{try{onEvent({format:'ai-fleet-zcode-worker-event/v1',at:new Date().toISOString(),...event});}catch{/* 日志不决定是否启动。 */}};
+function prerequisites(sourceGate){
+ if(process.platform!=='win32')fail('WINDOWS_REQUIRED','Zcode 执行循环仅支持 Windows');
+ if(typeof sourceGate?.check!=='function')fail('BAD_INPUT','需要治理代码闸',400);
+ sourceGate.check();
+}
 
 /**
  * 每个进程构造一次。关着开关时在任何副作用之前抛 ZCODE_LAUNCH_DISABLED。
@@ -244,30 +315,45 @@ async function closeServer(server){if(!server?.listening)return;await new Promis
 export async function openZcodeWorker(db,{dbPath,sourceGate,config,environment=process.env,onEvent=()=>{}}){
  const c=validateZcodeWorkerConfig(config),p=profileOf(c);
  requireZcodeLaunchSwitch(c,environment);
- if(process.platform!=='win32')fail('WINDOWS_REQUIRED','Zcode 执行循环仅支持 Windows');
- if(typeof sourceGate?.check!=='function')fail('BAD_INPUT','需要治理代码闸',400);
- sourceGate.check();authorizationGate(c);ledgerGate(c);
+ prerequisites(sourceGate);authorizationGate(c);ledgerGate(c);
  migratePeers(db);migrateDispatch(db);
  const gates=()=>{authorizationGate(c);return {role:roleGate(db,c),quota:budgetGate(db,c),coordinator:coordinatorGate(db,c)};};
  gates();
- const appendix=buildAppendix(c,sourceGate);
- const emit=event=>{try{onEvent({format:'ai-fleet-zcode-worker-event/v1',at:new Date().toISOString(),...event});}catch{/* 日志不决定是否启动。 */}};
- const scheduler=openScheduler(db,{dbPath,sourceGate,config:c.scheduler,environment,promptAppendix:appendix,onEvent:e=>{try{onEvent(e);}catch{}}});
+ const appendix=buildAppendix(c,sourceGate),emit=emitter(onEvent);
+ // admit:调度器在领取每个请求之前再问一次同一个 refusal()。接卡前的清扫与领取之间即使插进别人的请求,也领不走不合格的卡。
+ const admit=a=>{const t=db.prepare('SELECT * FROM tasks WHERE task_uid=?').get(a.task_uid);return t?verdict(db,c,t):'TASK_MISSING';};
+ const scheduler=openScheduler(db,{dbPath,sourceGate,config:c.scheduler,environment,promptAppendix:appendix,admit,onEvent:e=>{try{onEvent(e);}catch{}}});
  let server=null;
  try{if(c.mcp!==null)server=await listenBroker(db,{port:c.mcp.port,boardUrl:c.mcp.board_url});}
  catch(e){try{scheduler.close({errorCode:code(e)});}catch{/* 保留现场供人工核对。 */}throw e;}
- const root=realpathSync(c.scheduler.root),notices=new Set();let closed=false,busy=false,held='',fault=null;
+ const root=realpathSync(c.scheduler.root),books={db,c,sourceGate,root,emit},notices=new Set(),parked=new Map();let closed=false,busy=false,held='',fault=null;
  server?.on('error',e=>{fault??=code(e);});
  // 每卡每码只通知一次;事件只带代码与 ID,不带卡面正文和路径。
- const reject=(t,reason)=>{const key=t.task_uid+'\0'+reason;if(notices.has(key))return;if(notices.size>=1024)notices.clear();notices.add(key);emit({kind:'rejected',task_id:t.id,task_uid:t.task_uid,code:reason});};
+ const noted=(t,reason)=>{const key=t.task_uid+'\0'+reason;if(notices.has(key))return true;if(notices.size>=1024)notices.clear();notices.add(key);return false;};
+ const reject=(t,reason)=>{if(!noted(t,reason))emit({kind:'rejected',task_id:t.id,task_uid:t.task_uid,code:reason});};
 
+ /**
+  * tick 之前的清扫:本项目/角色下每个等待执行器的请求都过同一个 refusal(),不管是谁建的。
+  * 不合格的当场撤回并把拒收码写进请求。返回还在等调度器领取的请求数,以及上一轮没领到、请求仍留着的那些卡。
+  */
+ function sweep(){
+  let live=0;const waiting=new Set();
+  for(const a of pendingRequests(db,c)){
+   if(a.refused){
+    try{withdrawAssignment(db,{assignmentId:a.assignment_id,reason:'ZCODE_REFUSED:'+a.refused});}catch{continue;}
+    if(a.task_id!==null)noted({task_uid:a.task_uid},a.refused);
+    emit({kind:'rejected',task_id:a.task_id,task_uid:a.task_uid,code:a.refused,assignment_id:a.assignment_id,request:'withdrawn'});
+   }else if(parked.has(a.assignment_id))waiting.add(a.task_uid);   // 上一轮没领到:不再占队首,调度器照旧每轮重试它
+   else live++;
+  }
+  return {live,waiting};
+ }
  /** 每轮最多新建一个分派请求;以协调身份在进程内调 request_assignment。 */
  function intake(coordinator){
-  // 已有仍然有效的请求就等调度器领取。卡在请求之后被改过(版本不同)的旧请求永远领不到,
-  // 不能让它把整条线静默卡住:此时照常接卡,同一张卡的新请求会取代旧请求。
-  const pending=db.prepare("SELECT a.task_version requested,t.aggregate_version present FROM broker_assignments a LEFT JOIN tasks t ON t.task_uid=a.task_uid WHERE a.state='waiting_executor' AND a.project_id=? AND a.role_id=?").all(p.project_id,p.role_id);
-  if(pending.some(x=>x.present===x.requested))return null;
+  // 还有一个等调度器领取的有效请求时不接新卡。被改过的、不合格的、上一轮领不到的请求都不算,不能让它们把整条线卡住。
+  const {live,waiting}=sweep();if(live)return null;
   for(const t of candidates(db,c)){
+   if(waiting.has(t.task_uid))continue;   // 这张卡的请求还在、上一轮没领到:不重建请求,接它后面的卡
    const refused=verdict(db,c,t);if(refused){reject(t,refused);continue;}
    try{
     if(!admission(db,t.id))enrollZcodeTask(db,{taskId:t.id,projectId:p.project_id});
@@ -279,33 +365,6 @@ export async function openZcodeWorker(db,{dbPath,sourceGate,config,environment=p
   }
   return null;
  }
- /** 结算后记一次账:四个布尔各自独立,不合并成一个「成功」。 */
- function account(dispatchId){
-  const d=dispatchStatus(db,dispatchId);if(d.phase!=='settled')return null;
-  const directory=join(root,d.assignment_id);if(!existsSync(directory))return null;
-  // 排他创建的标记保证同一分派最多记一次;已存在即已记过。
-  let fd;try{fd=openSync(join(directory,'ACCOUNTED.json'),'wx',0o600);}catch(e){if(e.code==='EEXIST')return null;throw e;}
-  try{writeFileSync(fd,JSON.stringify({format:'ai-fleet-zcode-accounted/v1',dispatch_id:d.dispatch_id,at:new Date().toISOString()})+'\n');fsyncSync(fd);}finally{closeSync(fd);}
-  const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(d.task_id),run=db.prepare('SELECT * FROM task_runs WHERE run_id=?').get(d.run_id),context=run?JSON.parse(run.policy_json).context:{};
-  const settled_success=d.result?.status==='success',delivered_via=d.result?.delivery??null;
-  const task_read_observed=!!db.prepare("SELECT 1 FROM broker_audit WHERE principal_id=? AND tool_name='get_task' AND outcome='succeeded' LIMIT 1").get(d.principal_id);
-  // 只核对这次运行自己交付的正文;卡已属于别的 run 或没有成功交付时记 null,不拿别人的结果充数。
-  let contract_ok=null,contract_errors=null;
-  if(settled_success&&t?.run_id===d.run_id&&['reported','existing_mcp_report_preserved'].includes(delivered_via)){
-   try{const v=evidenceTool(c,sourceGate,['validate','--max-chars',String(c.evidence.max_chars)],String(t.result??''));contract_ok=v.ok===true;contract_errors=contract_ok?null:(Array.isArray(v.errors)?v.errors.map(String):[]);}
-   catch(e){emit({kind:'attention',code:code(e),dispatch_id:d.dispatch_id});}
-  }
-  // 供应商没有给用量:五个键一律 null。看板归并遇 null 显示「待核实」,不会记成 0。
-  const row={ts:stamp(),card:d.task_id,attempt:run?.last_attempt??null,worker:d.worker,run_id:d.run_id,agent_instance_id:d.agent_instance_id,model:context.model??null,effort:context.effort??null,runtime:'zcode',
-   calls:null,in:null,cc:null,cr:null,out:null,note:'供应商未提供用量',round:1,phase:'initial',reason:d.execution?.observation?.diagnostic??d.result?.status??null,
-   dispatch_id:d.dispatch_id,delivered_via,contract_ok,...(contract_errors?{contract_errors}:{}),task_read_observed,settled_success,host_verify:'not_applicable',host_commit:'not_applicable'};
-  // 一次写入一整行。写不进去只报告,不阻塞结算;标记已落,不会补写出第二行。
-  let written=false;
-  if(c.ledger_file!==null)try{appendFileSync(c.ledger_file,JSON.stringify(row)+'\n');written=true;}catch{emit({kind:'attention',code:'LEDGER_WRITE_FAILED',dispatch_id:d.dispatch_id});}
-  emit({kind:'accounted',task_id:d.task_id,task_uid:d.task_uid,dispatch_id:d.dispatch_id,settled_success,delivered_via,task_read_observed,contract_ok,ledger_written:written});
-  if(contract_ok===false)emit({kind:'attention',code:'EVIDENCE_CONTRACT',task_id:d.task_id,task_uid:d.task_uid,dispatch_id:d.dispatch_id,errors:contract_errors.length});
-  return row;
- }
  const worker={
   instance_id:scheduler.instance_id,
   async tick({stopSignal=null,cancelSignal=null}={}){
@@ -313,23 +372,32 @@ export async function openZcodeWorker(db,{dbPath,sourceGate,config,environment=p
    try{
     if(fault)fail(fault,'本机 MCP 监听异常,请核对后重启执行循环');
     requireZcodeLaunchSwitch(c,environment);const g=gates(),q=g.quota;
+    // 未结清排在预算之前:唯一一次预算恰好用在没结清的启动上时,要报的是「没结清」,不是「预算用尽、正常结束」。
+    // 未结清的分派扣住整条线:本轮不接卡,也不调调度器。
+    const open=occupied(db);
+    if(open.length){
+     const dispatches=open.map(d=>d.dispatch_id),key=canonical(open.map(d=>[d.dispatch_id,d.reason]));
+     if(held!==key){held=key;emit({kind:'attention',code:'UNSETTLED_DISPATCH',dispatches,reasons:open.map(d=>d.reason)});}
+     return {status:'needs_attention',requested:null,results:[],accounted:0,dispatches,holds:open.map(d=>({dispatch_id:d.dispatch_id,phase:d.phase,reason:d.reason,operator_attested:d.operator_attested}))};
+    }
+    held='';
     // 预算未启用或已用尽:不接卡、不调调度器。失败与超时同样占用额度,不退。
     if(!q.enabled)return {status:'budget_disabled',requested:null,results:[],accounted:0};
     if(q.used+q.reserved>=q.limit_total)return {status:'budget_exhausted',requested:null,results:[],accounted:0};
-    // 未结清的分派扣住整条线:本轮不接卡,也不让调度器再启动。
-    const open=unsettled(db,'quota',q.quota_id);
-    if(open.length){
-     const key=canonical(open.map(d=>d.dispatch_id));if(held!==key){held=key;emit({kind:'attention',code:'UNSETTLED_DISPATCH',dispatches:open.map(d=>d.dispatch_id)});}
-     return {status:'needs_attention',requested:null,results:[],accounted:0,dispatches:open.map(d=>d.dispatch_id)};
-    }
-    held='';
     const requested=stopSignal?.aborted?null:intake(g.coordinator);
     const round=await scheduler.tick({stopSignal,cancelSignal});
-    let accounted=0;for(const r of round.results)if(r.dispatch_id&&account(r.dispatch_id))accounted++;
-    return {status:round.results.length?'ran':'idle',requested,results:round.results,accounted,stopping:round.stopping};
+    let accounted=0,ran=0;const blocked=[];
+    for(const r of round.results){
+     if(r.dispatch_id){ran++;if(account(books,r.dispatch_id))accounted++;continue;}
+     // 没领到(不占预算):记下来,下一轮不让它挡住后面的卡;每个请求每个码只提示一次。
+     blocked.push({assignment_id:r.assignment_id,code:r.code});
+     if(parked.get(r.assignment_id)!==r.code){if(parked.size>=1024)parked.clear();parked.set(r.assignment_id,r.code);emit({kind:'attention',code:'REQUEST_UNCLAIMABLE',assignment_id:r.assignment_id,reason:r.code});}
+    }
+    // 只有真的领取过才算 ran;有请求却一个也没领到是 blocked,不是 ran 也不是 idle。
+    return {status:ran?'ran':blocked.length?'blocked':'idle',requested,results:round.results,accounted,...(blocked.length?{blocked}:{}),stopping:round.stopping};
    }finally{busy=false;}
   },
-  /** 预算用尽即正常退出;不会为等新预算而空转。 */
+  /** 预算用尽是正常结束;有分派没结清也停下(调度锁要让给 reconcile),但那不是正常结束,调用方据 status 区分。 */
   async watch({stopSignal,cancelSignal=null}={}){
    if(!(stopSignal instanceof AbortSignal))fail('BAD_INPUT','持续运行需要停止信号',400);
    emit({kind:'started',line:c.line,poll_ms:c.scheduler.poll_ms,max_launches:c.launch.max_launches});
@@ -337,7 +405,7 @@ export async function openZcodeWorker(db,{dbPath,sourceGate,config,environment=p
    while(!stopSignal.aborted){
     const before=last?.status;last=await worker.tick({stopSignal,cancelSignal});
     if(last.status!==before)emit({kind:'status',status:last.status});
-    if(last.status==='budget_exhausted'||last.stopping)break;
+    if(last.status==='budget_exhausted'||last.status==='needs_attention'||last.stopping)break;
     if(!stopSignal.aborted)try{await delay(c.scheduler.poll_ms,undefined,{signal:stopSignal});}catch(e){if(e.name!=='AbortError')throw e;}
    }
    emit({kind:'stopped',status:last?.status??null});return last;
@@ -345,7 +413,7 @@ export async function openZcodeWorker(db,{dbPath,sourceGate,config,environment=p
   /** 只补交回执并补记账,从不启动。可重复执行。 */
   reconcile(assignmentId){
    if(closed)fail('ZCODE_WORKER_CLOSED','执行循环已经关闭');if(busy)fail('ZCODE_WORKER_BUSY','轮次执行时不能恢复');
-   const r=scheduler.reconcile(assignmentId);return {...r,accounted:!!account(r.dispatch_id)};
+   const r=scheduler.reconcile(assignmentId);return {...r,accounted:!!account(books,r.dispatch_id)};
   },
   status(){return {...zcodeWorkerStatus(db,c,environment),instance_id:scheduler.instance_id,appendix_units:appendix.length};},
   async close({errorCode=null}={}){

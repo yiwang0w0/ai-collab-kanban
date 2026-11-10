@@ -16,7 +16,7 @@ import net from 'node:net';
 import {openSchedulerControlDatabase} from '../core/execution/lifecycle.mjs';
 import {migrateSync} from '../core/federation/sync-store.mjs';
 import {localIdentity} from '../core/federation/peers.mjs';
-import {migrateDispatch,putQuota,quotaStatus} from '../core/execution/dispatch.mjs';
+import {migrateDispatch,putQuota,quotaStatus,prepareUncertainResolution,recordUncertainResolution} from '../core/execution/dispatch.mjs';
 import {putRole,getRole,issuePrincipal,revokePrincipal} from '../core/mcp/policy.mjs';
 import {callTool,enrollTask} from '../core/mcp/tools.mjs';
 import {listenBroker} from '../core/mcp/gateway.mjs';
@@ -465,6 +465,8 @@ test('命令行:plan/status 只读,enqueue 登记,once 走同一条闸并只输�
 // ── 只读复核后补的门:开关所在的层、对所有请求生效的拒收、队首阻塞、未结清的顺序与口径、补回执 ──
 const assignmentRow=(f,id)=>({...f.db.prepare('SELECT state,reason FROM broker_assignments WHERE assignment_id=?').get(id)});
 const request=(f,t)=>{const now=store.get(f.db,t.id);return callTool(f.db,f.auth,'request_assignment',{request_id:randomUUID(),task_uid:now.task_uid,expected_version:now.aggregate_version});};
+const dispatchesOf=(f,id)=>f.db.prepare('SELECT count(*) n FROM broker_dispatches WHERE task_id=?').get(id).n;
+const REJECT_SETTLE="CREATE TRIGGER reject_settle BEFORE INSERT ON broker_dispatch_events WHEN NEW.kind='settled' BEGIN SELECT RAISE(ABORT,'fixture database failure'); END";
 test('环境钥匙在 dispatch 链里:同一块 scheduler 配置不经包装层直接开调度器或跑 cli/scheduler.mjs,缺钥匙也启动不了,且不领取、不占预算',{skip},async()=>{
  const f=await fixture(),t=card(f),a=request(f,t);
  for(const env of [environment,{...environment,BOARD_ZCODE_RELEASED:'true'}]){
@@ -482,4 +484,120 @@ test('环境钥匙在 dispatch 链里:同一块 scheduler 配置不经包装层�
  const run=spawnSync(process.execPath,[join(source,'cli','scheduler.mjs'),'once','--db',f.dbPath,'--config-file',file,'--accepted-rev',approval],{env:CLI_ENV,encoding:'utf8',windowsHide:true,timeout:90000});
  assert.equal(run.status,0,run.stderr);assert.ok(run.stdout.includes('ZCODE_LAUNCH_DISABLED'),run.stdout);
  untouchedCard();assert.equal(existsSync(schedulerLock(f)),false);
+});
+test('拒收规则管所有请求:别人建的请求(线为空、已派发过、带登记验证)被撤回并写上拒收码,调度器领不走;后面的合格卡照常执行',{skip},async()=>{
+ const f=await fixture({limit:2});
+ const loose=card(f,{line:null}),spent=card(f),verify=card(f);
+ f.db.prepare('UPDATE tasks SET attempts=1 WHERE id=?').run(spent.id);f.db.prepare("UPDATE tasks SET verify_cmd='fixture-check' WHERE id=?").run(verify.id);
+ // 这两个请求不是循环自己建的。dispatch 链自己不查「线为空」,也不查登记验证。
+ const a1=request(f,loose),a2=request(f,spent);assert.equal(a1.state,'waiting_executor');assert.equal(a2.state,'waiting_executor');
+ const good=card(f);
+ // 只读计划先说出同一套拒收码。
+ assert.deepEqual(new Map(zcodeWorkerPlan(f.db,f.config,RELEASED).requests.map(x=>[x.assignment_id,x.refused])),new Map([[a1.assignment_id,'LINE_MISMATCH'],[a2.assignment_id,'ATTEMPTS_EXHAUSTED']]));
+ // 第三个请求在清扫之后、调度器领取之前才插进来(借清扫发出的第一条事件):靠领取前的同一个判定挡住。
+ // 请求按创建时刻排队;插入后空转几毫秒,保证它排在循环随后自己建的请求前面。
+ let late=null;
+ const w=await open(f,{onEvent:e=>{f.events.push(e);if(e.request==='withdrawn'&&!late){late=request(f,verify);for(const until=Date.now()+5;Date.now()<until;);}}});
+ const r=await w.tick();assert.equal(r.status,'ran',JSON.stringify([r,f.events]));
+ assert.deepEqual(assignmentRow(f,a1.assignment_id),{state:'cancelled',reason:'ZCODE_REFUSED:LINE_MISMATCH'});
+ assert.deepEqual(assignmentRow(f,a2.assignment_id),{state:'cancelled',reason:'ZCODE_REFUSED:ATTEMPTS_EXHAUSTED'});
+ assert.deepEqual(f.events.filter(e=>e.request==='withdrawn').map(e=>[e.kind,e.assignment_id,e.code]).sort(),[['rejected',a1.assignment_id,'LINE_MISMATCH'],['rejected',a2.assignment_id,'ATTEMPTS_EXHAUSTED']].sort());
+ // 插进来的那个请求:调度器问过、没领,这一轮记为领不到;带登记验证的卡没有被执行。
+ assert.ok(late);assert.deepEqual(r.blocked,[{assignment_id:late.assignment_id,code:'VERIFY_UNSUPPORTED'}]);
+ assert.deepEqual(r.results.map(x=>[x.assignment_id,x.phase]),[[late.assignment_id,'waiting'],[r.requested,'settled']]);
+ for(const t of [loose,spent,verify]){assert.equal(dispatchesOf(f,t.id),0);assert.equal(row(f,t.id).status,'not_started');}
+ assert.equal(row(f,verify.id).attempts,0);assert.equal(row(f,loose.id).attempts,0);
+ // 合格的那张照常跑完,账本只有它一行。
+ assert.equal(row(f,good.id).waiting_for,'review');assert.equal(used(f),1);assert.equal(launches(f),1);assert.deepEqual(ledger(f).map(x=>x.card),[good.id]);
+ // 下一轮清扫把插进来的请求也撤回并写码;没有新的启动。
+ const next=await w.tick();assert.equal(next.status,'idle');
+ assert.deepEqual(assignmentRow(f,late.assignment_id),{state:'cancelled',reason:'ZCODE_REFUSED:VERIFY_UNSUPPORTED'});
+ assert.equal(used(f),1);assert.equal(launches(f),1);assert.equal(f.db.prepare("SELECT count(*) n FROM broker_assignments WHERE state='waiting_executor'").get().n,0);
+ await w.close();
+});
+test('领取时才查的条件在建请求之前就拒:依赖未完成、执行锁被占的卡不建请求,后面的卡照常接',{skip},async()=>{
+ const f=await fixture({limit:2});
+ // 依赖卡与占锁卡都不在这条线上;占锁卡由别的执行者领走,处于进行中。
+ const dependency=card(f,{route:'default',line:'claude',enroll:false}),holder=card(f,{route:'default',line:'claude',enroll:false,extra:{lockKey:'fixture-lock'}});
+ assert.equal(store.claimById(f.db,{id:holder.id,worker:'fixture-holder',expectedVersion:holder.aggregate_version}).ok,true);
+ const waitsOnDependency=card(f,{extra:{blockedBy:[dependency.id]}}),waitsOnLock=card(f,{extra:{lockKey:'fixture-lock'}}),free=card(f);
+ const expected=[[waitsOnDependency.id,'DEPENDENCIES_UNFINISHED'],[waitsOnLock.id,'LOCK_HELD']];
+ assert.deepEqual(zcodeWorkerPlan(f.db,f.config,RELEASED).candidates.map(x=>[x.task_id,x.refused]),[...expected,[free.id,null]]);
+ const w=await open(f),r=await w.tick();assert.equal(r.status,'ran',JSON.stringify([r,f.events]));
+ assert.deepEqual(rejected(f).map(e=>[e.task_id,e.code]),expected);
+ // 只为能领的那张建了请求;被拒的两张没有请求、没有尝试、没有占预算。
+ assert.equal(count(f,'broker_assignments'),1);assert.equal(row(f,free.id).waiting_for,'review');assert.equal(used(f),1);
+ for(const t of [waitsOnDependency,waitsOnLock]){assert.equal(row(f,t.id).status,'not_started');assert.equal(row(f,t.id).attempts,0);assert.equal(dispatchesOf(f,t.id),0);}
+ assert.equal((await w.tick()).status,'idle');assert.deepEqual(rejected(f).map(e=>[e.task_id,e.code]),expected);assert.equal(count(f,'broker_assignments'),1);
+ await w.close();
+});
+test('队首不阻塞:已有请求领不到时这一轮报 blocked 而不是 ran,下一轮跳过它接后面的卡;条件解除后它照常被领走',{skip},async()=>{
+ const f=await fixture({limit:3}),stuck=card(f),behind=card(f),w=await open(f);
+ // 一种接卡判定料不到的领取期拒绝:只让这一张卡的领取落库失败(整笔回滚,请求留在等待执行器)。
+ f.db.exec("CREATE TRIGGER fixture_no_claim BEFORE INSERT ON broker_dispatches WHEN NEW.task_id="+stuck.id+" BEGIN SELECT RAISE(ABORT,'fixture claim refusal'); END");
+ const first=await w.tick();
+ assert.equal(first.status,'blocked',JSON.stringify([first,f.events]));assert.equal(first.accounted,0);assert.equal(first.blocked.length,1);assert.equal(first.blocked[0].assignment_id,first.requested);
+ assert.equal(used(f),0);assert.equal(launches(f),0);assert.equal(row(f,stuck.id).status,'not_started');assert.equal(row(f,stuck.id).attempts,0);assert.equal(assignmentRow(f,first.requested).state,'waiting_executor');
+ const unclaimable=()=>f.events.filter(e=>e.code==='REQUEST_UNCLAIMABLE');
+ assert.deepEqual(unclaimable().map(e=>[e.kind,e.assignment_id]),[['attention',first.requested]]);
+ // 第二轮:不再等它,接后面的卡并跑完;领不到的那个请求原样留着,提示不重复。
+ const second=await w.tick();
+ assert.equal(second.status,'ran',JSON.stringify([second,f.events]));assert.ok(second.requested&&second.requested!==first.requested);
+ assert.equal(row(f,behind.id).waiting_for,'review');assert.equal(used(f),1);assert.equal(launches(f),1);
+ assert.equal(count(f,'broker_assignments'),2);assert.equal(assignmentRow(f,first.requested).state,'waiting_executor');assert.equal(unclaimable().length,1);
+ // 第三轮:没有别的卡,它还是领不到,状态是 blocked,不是 idle 也不是 ran。
+ const third=await w.tick();assert.equal(third.status,'blocked');assert.equal(third.requested,null);assert.equal(count(f,'broker_assignments'),2);
+ // 条件解除:同一个请求被领走执行,不用重建。
+ f.db.exec('DROP TRIGGER fixture_no_claim');
+ const fourth=await w.tick();assert.equal(fourth.status,'ran',JSON.stringify([fourth,f.events]));assert.equal(fourth.results[0].assignment_id,first.requested);
+ assert.equal(row(f,stuck.id).waiting_for,'review');assert.equal(used(f),2);assert.equal(launches(f),2);assert.equal(count(f,'broker_assignments'),2);assert.equal(ledger(f).length,2);
+ await w.close();
+});
+test('未结清排在预算之前:唯一一次预算用在没结清的启动上时报 needs_attention,watch 不当作预算用尽正常结束',{skip},async()=>{
+ const f=await fixture(),t=card(f),w=await open(f);   // 预算缺省 1
+ f.db.exec(REJECT_SETTLE);
+ const first=await w.tick();assert.equal(first.results[0].phase,'attention',JSON.stringify([first,f.events]));
+ const q=quotaStatus(f.db,f.q.quota_id);assert.equal(q.used+q.reserved,q.limit_total);assert.equal(ledger(f).length,0);
+ const held=await w.tick();
+ assert.equal(held.status,'needs_attention');assert.equal(held.dispatches.length,1);assert.deepEqual(held.holds.map(x=>[x.reason,x.operator_attested]),[['outcome_missing',false]]);
+ assert.equal(f.events.filter(e=>e.code==='UNSETTLED_DISPATCH').length,1);
+ // 只读计划:开关开着或关着,都说 needs_attention,不说 budget_exhausted / disabled。
+ for(const env of [RELEASED,environment]){const plan=zcodeWorkerPlan(f.db,f.config,env);assert.equal(plan.state,'needs_attention');assert.deepEqual(plan.unsettled.map(x=>[x.dispatch_id,x.reason]),[[held.dispatches[0],'outcome_missing']]);}
+ // watch 停下来把调度锁让给 reconcile,但结束状态是 needs_attention。
+ const last=await w.watch({stopSignal:new AbortController().signal});
+ assert.equal(last.status,'needs_attention');assert.deepEqual([f.events.at(-1).kind,f.events.at(-1).status],['stopped','needs_attention']);assert.equal(f.events.filter(e=>e.code==='UNSETTLED_DISPATCH').length,1);
+ await w.close();assert.equal(await listening(f.port),false);
+ // 命令行同样:once 以退出码 2 结束,不是 0。
+ const configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
+ const once=cli(['once','--db',f.dbPath,'--config-file',configFile,'--accepted-rev',approval],{released:true});
+ assert.equal(once.status,2,once.err+once.out);assert.ok(once.err.includes('UNSETTLED_DISPATCH'));assert.ok(once.rows.some(x=>x.status==='needs_attention'));assert.equal(launches(f),1);
+ // 补回执结清之后,才是预算用尽。
+ f.db.exec('DROP TRIGGER reject_settle');
+ const again=await open(f),assignment=f.db.prepare('SELECT assignment_id FROM broker_dispatches').get().assignment_id;
+ assert.equal(again.reconcile(assignment).phase,'settled');assert.equal((await again.tick()).status,'budget_exhausted');
+ assert.equal(zcodeWorkerPlan(f.db,f.config,RELEASED).state,'budget_exhausted');assert.equal(used(f),1);assert.equal(launches(f),1);assert.equal(row(f,t.id).status,'waiting');
+ await again.close();
+});
+test('人工恢复回执不清并发位:record-uncertain 之后循环报 needs_attention 并写明原因,不再静默空转',{skip},async()=>{
+ const f=await fixture({limit:2}),one=card(f),w=await open(f);
+ f.db.exec(REJECT_SETTLE);
+ const first=await w.tick();assert.equal(first.results[0].phase,'attention',JSON.stringify([first,f.events]));
+ f.db.exec('DROP TRIGGER reject_settle');
+ // 操作者声明这次运行结果不明并已停止(合成声明,只引用本测试)。
+ const d=dispatch(f),plan=prepareUncertainResolution(f.db,d.dispatch_id);
+ const receipt=recordUncertainResolution(f.db,{plan,expectedPlanDigest:plan.plan_digest,attestation:{format:'ai-fleet-uncertain-execution-attestation/v1',node_id:plan.node_id,node_epoch:plan.node_epoch,dispatch_id:plan.dispatch_id,run_id:plan.run_id,launch_digest:plan.launch_digest,plan_digest:plan.plan_digest,
+  supervisor_stopped:true,process_tree_stopped:true,remote_session_stopped:true,no_automatic_retry:true,evidence_ref:'fixture:explicit-operator-stop-check',attested_at:new Date().toISOString()}});
+ assert.equal(receipt.code,'OPERATOR_ATTESTED_LOST');
+ // 线上还有一张能接的卡,预算也还有余量;但调度器的并发位仍被那次运行占着。
+ const two=card(f);assert.equal(used(f),1);
+ const hold=[{dispatch_id:d.dispatch_id,phase:'interrupted',reason:'outcome_missing',operator_attested:true}];
+ for(let i=0;i<2;i++){
+  const held=await w.tick();assert.equal(held.status,'needs_attention',JSON.stringify(held));assert.equal(held.requested,null);assert.deepEqual(held.holds,hold);
+ }
+ assert.equal(count(f,'broker_assignments'),1);assert.equal(row(f,two.id).status,'not_started');assert.equal(launches(f),1);
+ assert.equal(f.events.filter(e=>e.code==='UNSETTLED_DISPATCH').length,1);
+ const state=zcodeWorkerPlan(f.db,f.config,RELEASED);
+ assert.equal(state.state,'needs_attention');assert.deepEqual(state.unsettled,hold);
+ assert.equal(row(f,one.id).human_gate,1);
+ await w.close();
 });

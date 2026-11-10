@@ -7,7 +7,7 @@
 ## 能做什么、不能做什么
 
 - 只接**文字交付卡**。执行角色只有 5 个看板工具(`get_task`、`list_roles`、`report_result`、`heartbeat`、`split_task`),没有文件、命令、网络工具,改不了仓库。
-- 带登记验证(`verify_cmd`)的卡**拒收**。它跑不了验证,不会静默跳过。
+- 带登记验证(`verify_cmd`)的卡**拒收**。它跑不了验证,不会静默跳过。别人替这种卡建的分派请求同样会被撤回,见「接卡规则」。
 - 宿主验证和宿主按卡提交都不适用,账本里记为 `not_applicable`。
 - 每张卡结构上**最多派发一次**。失败、超时、取消都占用额度,不退、不重试。
 - 用量一律记 `null`:供应商没有给可核对的用量,面板显示「待核实」,不显示 0。
@@ -15,9 +15,11 @@
 ## 一轮做什么
 
 1. 复核开关、角色、预算、协调凭据、授权。
-2. 接卡:挑出合格的卡,以协调身份建一个分派请求(每轮最多一个)。
-3. 调一轮既有调度器:领取 → 准备 → 一次性许可 → 在 Windows Job 里执行 → 结算回写卡片。
-4. 记账:核对四节证据合同,往账本追加一行。
+2. 看有没有没结清的分派。有就停在这一步,报 `needs_attention`,这一轮不接卡也不启动。
+3. 清扫:本项目、本角色下所有等待执行器的分派请求(不管是谁建的)都按接卡规则过一遍,不合格的撤回并写上拒收码。
+4. 接卡:挑出合格的卡,以协调身份建一个分派请求(每轮最多一个)。
+5. 调一轮既有调度器:领取 → 准备 → 一次性许可 → 在 Windows Job 里执行 → 结算回写卡片。领取前调度器会就每个请求再问一次同一套接卡规则。
+6. 记账:核对四节证据合同,往账本追加一行。
 
 领取、许可、预算扣减、进程托管都是既有 dispatch 链做的,循环本身不复制这些逻辑。
 
@@ -88,7 +90,7 @@ node cli/zcode-worker.mjs plan --db <看板DB> --config-file <配置>
 node cli/zcode-worker.mjs enqueue --db <看板DB> --task <卡ID> --version <所见任务版本> --config-file <配置>
 ```
 
-`plan` 和 `status` 只读:列出开关、各道门、预算已用与上限、候选卡和拒收码。`enqueue` 把卡的路由改为 `mcp`、线改为线名,并自根向下把祖先链登记到项目;它不启动任何东西。
+`plan` 和 `status` 只读:列出开关、各道门、预算已用与上限、没结清的分派及原因、已有请求与候选卡各自的拒收码。`enqueue` 把卡的路由改为 `mcp`、线改为线名,并自根向下把祖先链登记到项目;它不启动任何东西。
 
 **6. 运行**
 
@@ -97,7 +99,14 @@ node cli/zcode-worker.mjs once  --db <看板DB> --config-file <配置> --accepte
 node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepted-rev <验收文件>
 ```
 
-`watch` 在预算用尽后正常退出。首次 Ctrl+C 等在途调用结束,再次 Ctrl+C 或 SIGTERM 取消在途调用。
+`watch` 在两种情况下自己停:
+
+- 预算用尽:正常结束,退出码 0。
+- 有分派没结清(`needs_attention`):退出码 2。它停下是为了把调度锁让给 `reconcile`,不是正常结束,见「出问题时」。`once` 遇到同样情况也以 2 退出。
+
+首次 Ctrl+C 等在途调用结束,再次 Ctrl+C 或 SIGTERM 取消在途调用。
+
+每一轮的 `status`:`ran` 是真的领取并执行过;`blocked` 是有请求但这一轮一个也没领到;`idle` 是没有可做的事。
 
 同一个库不要同时运行 `cli/scheduler.mjs` 或带调度器的 `cli/node-runtime.mjs`:调度锁按数据库唯一,会互斥(`SCHEDULER_BUSY`)。
 
@@ -179,8 +188,32 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 | `NOT_ENROLLED` | 没有登记到项目,且 `auto_enroll` 关着 |
 | `PROJECT_MISMATCH` | 卡或它的祖先登记在别的项目 |
 | `ROLE_MISMATCH` | 按项目、类别与能力选出的不是这个执行角色 |
+| `DEPENDENCIES_UNFINISHED`、`BROKEN_DEPENDENCIES` | 依赖的卡还没完成,或依赖字段损坏 |
+| `CHILDREN_UNFINISHED` | 还有没完成的子任务 |
+| `ANCESTOR_NOT_RELEASED` | 祖先任务没有放行 |
+| `LOCK_HELD` | 执行锁被另一张进行中的卡占着 |
+| `ROOT_WIP_LIMIT` | 同一根任务树里进行中的卡已到上限 |
+| `TASK_TREE_HELD`、`TOPOLOGY_NOT_READY`、`DELEGATION_NOT_READY` | 任务树、拓扑登记或委派正持有这张卡 |
 
-路由为 `mcp` 的卡不动时,面板目前不会说原因,用 `plan` 看。
+后面几行是「领取时才查」的条件。它们不是另写的一份判据,用的是看板回答「这张卡为什么领不走」的那一份,所以条件解除后下一轮自然会接。
+
+### 别人建的请求
+
+任何持有本项目协调凭据的调用方都能替一张卡建分派请求。循环对这些请求一视同仁:每轮开头把本项目、本角色下所有等待执行器的请求按上面同一套规则过一遍,不合格的**撤回**(请求状态变为 `cancelled`,原因写 `ZCODE_REFUSED:<拒收码>`),调度器领不走。除上表外,请求还可能得到这些码:
+
+| 拒收码 | 意思 |
+|---|---|
+| `LINE_MISMATCH` | 卡的线不是这条线(包括线为空) |
+| `ROUTE_MISMATCH`、`NOT_RELEASED`、`HUMAN_GATE`、`NOT_QUEUED`、`NOT_A_TASK` | 卡不满足候选条件 |
+| `TASK_CHANGED` | 卡在请求之后被改过,这个请求永远领不到 |
+
+撤回只结束请求,不动卡、不占预算。卡以后合格了,循环会自己重新建请求。
+
+### 请求领不到时
+
+请求合格、但调度器这一轮没能领取(领取期出现了接卡规则没有料到的拒绝):这一轮报 `blocked`,发一条 `REQUEST_UNCLAIMABLE` 提示(每个请求每个码一次)。请求原样留着,调度器每轮照旧重试;循环从下一轮起不再等它,接它后面的卡。
+
+路由为 `mcp` 的卡不动时,面板目前不会说原因,用 `plan` 看:`candidates` 是候选卡,`requests` 是已有请求,各带拒收码。
 
 ## 账本
 
@@ -200,11 +233,23 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 | 现象 | 做什么 |
 |---|---|
-| `status` 显示 `needs_attention` | 有分派没结清,整条线被扣住。先 `node cli/zcode-worker.mjs reconcile --assignment <请求ID>`:只补交回执并补记账,不启动。 |
+| `status` / `plan` 显示 `needs_attention`,或 `once` / `watch` 以退出码 2 结束 | 有分派没结清,整条线被扣住。这个状态排在「开关没开」「预算用尽」之前,不会被它们遮住。`unsettled` 里每条带一个 `reason`,见下表。先 `node cli/zcode-worker.mjs reconcile --assignment <请求ID>`。 |
 | 开关已经关掉,但要补回执 | `node cli/scheduler.mjs reconcile` 只补回执,它的配置文件就是本配置里 `scheduler` 那一块原样另存。账本行等开关再打开后用上一条命令补,不会重复。 |
 | 领取后还没启动就中断 | `node cli/dispatch.mjs abandon`。许可没有消费,保留的那一次额度随之释放。 |
-| 结果不明的运行 | `node cli/dispatch.mjs prepare-uncertain`,核对后 `record-uncertain`。 |
+| 结果不明的运行 | `node cli/dispatch.mjs prepare-uncertain`,核对后 `record-uncertain`。注意下面的说明。 |
 | 异常退出留下调度锁 | `node cli/runtime-lock.mjs prepare`,核对后 `apply`。不按心跳超时自动接管。 |
+| 一轮的 `status` 是 `blocked` | 有请求但没领到。看同一轮的 `blocked` 列表和 `REQUEST_UNCLAIMABLE` 提示里的原因码。 |
+
+`unsettled` 的 `reason` 是调度器判定「这次运行还占着并发位」的原因,循环用的就是调度器那一份判定。并发位按本节点当前代次的全部受管运行计,不只这条线:别的入口留下的未结清运行同样会列在这里,那一条要用它自己的入口处理。
+
+| reason | 意思 |
+|---|---|
+| `unsettled_preparation` | 已领取、还没消费许可,也没有放弃 |
+| `run_active` | 运行还没结束 |
+| `outcome_missing` | 许可已消费,结果没有落定 |
+| `observation_missing`、`process_stop_unconfirmed` | 已结算,但没有机器给出的进程停止证明 |
+
+**`record-uncertain` 之后线不会自己恢复。** 调度器只采信机器给出的停止证明,人工声明不清并发位;这条线并发为 1,所以它仍被占着。此时 `unsettled` 里那一条会带 `operator_attested: true`,状态仍是 `needs_attention`。这是既有调度器的规则,不是本循环加的;本批没有提供清掉这个并发位的办法,循环只负责把原因说出来。
 
 这些都是人工步骤,没有自动恢复,也没有自动重试。
 
@@ -213,7 +258,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 - 真实登录兼容性和真实模型任务都还没有验证过。
 - 面板没有 Zcode 的入口和状态:交卡靠 `enqueue`,看原因靠 `plan` / `status`。
 - 用量拿不到,只能事后对供应商账单。
-- 被操作者声明为「结果不明」的运行不产生账本行。
+- 被操作者声明为「结果不明」的运行不产生账本行,并且在本节点当前代次内一直占着并发位(见上)。
 - 已经在别的线上尝试过的卡,转到 Zcode 线后会以 `ATTEMPTS_EXHAUSTED` 被拒:尝试次数是累计的,从不清零。
 - 授权时间窗、次数交叉校验和拒收规则只守 `cli/zcode-worker.mjs` 这一个入口(见「哪道门在哪一层」)。
 
