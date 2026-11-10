@@ -491,3 +491,119 @@ test("页面经匿名健康探测确认故障，成功读取和实时重连都�
   assert.ok(src.includes('document.getElementById("home-view").classList.toggle("stale", !!boardDown);'));
   assert.ok(src.includes("navigator.clipboard.writeText(a.copy)"));
 });
+
+test("首页卡只露标题、所属电脑、状态和下一步；长串编号只在侧栏折叠的「技术信息」里", () => {
+  const lists = M.homeLists({ localName: NODE_B, tasks: [
+    card(1, { task_uid: NODE_B, run_id: NODE_B, status: "in_progress", last_runtime: "codex", hb: "fresh" }),
+    card(2, { task_uid: NODE_B, waiting_for: "review" }), card(3, { task_uid: NODE_B, status: "done", resolved_by: "auto" }) ],
+    remote: [{ read_only: true, task_uid: NODE_B + ":9", owner_name: NODE_B, subject: "远端卡", status: "waiting", waiting_for: "decision", updated_at: at(2) }] });
+  const shown = [...lists.mine, ...lists.running, ...lists.history].map((r) => [r.title, r.computer, r.state, r.next]);
+  assert.equal(shown.length, 4);
+  assert.equal(UUID.test(JSON.stringify(shown)), false, "卡面四样里没有长串编号");
+  const face = src.slice(src.indexOf("function homeCard(item, lane){"), src.indexOf("/** Rebuild one list only when what it shows changed"));
+  assert.ok(face.length > 0);
+  for (const field of ["item.title", "item.computer", "item.state", "item.next"]) assert.ok(face.includes(field), "卡面写 " + field);
+  for (const hidden of ["uid", "localId", "item.key", "run_id"]) assert.ok(!face.includes(hidden), "卡面不读 " + hidden);
+  const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
+  assert.ok(side.includes("out.push(more, sideTech(t));") && !side.includes("UID"), "侧栏正文只留短卡号");
+  const tech = src.slice(src.indexOf("function sideTech(t){"), src.indexOf("/** 关联任务或执行回执变化时"));
+  assert.ok(tech.includes('homeEl("details"') && tech.includes('homeEl("summary", "技术信息")') && tech.includes('["任务 UID", t.task_uid]'),
+    "任务 UID、运行号在默认折叠的「技术信息」里");
+});
+
+test("手动建卡：原表单、编号和处理器都在，入口是输入框操作行里的次要按钮", () => {
+  const cut = (open, close) => { const i = src.indexOf(open), j = src.indexOf(close, i); assert.ok(i > 0 && j > i, open); return src.slice(i, j); };
+  const acts = cut('<div class="chat-acts">', "</div>");
+  assert.match(acts, /<button type="button" id="home-new-open">.*手动建卡<\/button>/, "入口在输入框的操作行里，不是主按钮");
+  assert.equal(src.split('id="home-new-open"').length - 1, 1, "入口只有一个");
+  assert.ok(acts.indexOf('id="home-new-open"') < acts.indexOf('id="chat-send" class="pri"'), "发送是这一行唯一的主按钮");
+  const form = cut('<form id="home-new-form" class="form-panel" hidden', "</form>");
+  for (const id of ["home-new-title", "home-new-desc", "home-new-line", "home-new-execution", "home-new-profile", "home-new-model", "home-new-preview", "home-new-err", "home-new-cancel", "home-new-x"])
+    assert.ok(form.includes(`id="${id}"`), "表单里还有 " + id);
+  assert.match(form, /<button type="submit" class="pri">.*创建任务<\/button>/);
+  const show = cut("function newShow(on){", "function newSave(){");
+  assert.ok(show.includes('getElementById("home-new-form").hidden = !on') && show.includes('getElementById("home-new-open").hidden = on'), "按下入口展开表单并收起入口");
+  for (const wired of ['document.getElementById("home-new-open").addEventListener("click", () => newShow(true));',
+    'document.getElementById("home-new-cancel").addEventListener("click", newClear);', 'document.getElementById("home-new-x").addEventListener("click", newClear);',
+    'document.getElementById("home-new-form").addEventListener("input", newSave);'])
+    assert.ok(src.includes(wired), wired);
+  const submit = cut('getElementById("home-new-form").addEventListener("submit"', "finally { btn.disabled = false; }");
+  assert.ok(submit.includes("newTaskBody(") && submit.includes('await post("/api/tasks", r.body)') && submit.includes("openSide({ id: j.task.id"), "提交照旧直接建卡并打开任务侧栏");
+  assert.deepEqual(M.newTaskBody({ title: " 手动建的卡 ", line: "engine" }, { lines: ["engine", "review"], reviewLines: ["review"] }),
+    { body: { subject: "手动建的卡", description: "", line: "engine" } });
+});
+
+test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、要提交的改动和输入框上方那一行都由纯函数算出", () => {
+  const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
+  assert.ok(c0 > 0 && c1 > c0, "chat-model block not found in core/panel.html");
+  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend};")();
+  const task = (n, extra) => ({ n, subject: "第 " + n + " 步", summary: "摘要 " + n, description: "", acceptance: "", line: "engine", after: [],
+    needs_confirm: false, needs_bash: false, enabled: true, edited: [], ...extra });
+  const plan = { rev: 2, author: "coordinator", base_rev: 1, created_at: at(3), goal: { subject: "<b>目标</b>", description: "说明" }, applied: null,
+    tasks: [task(1), task(2, { after: [1], line: "design", needs_confirm: true }), task(3, { after: [1, 2], line: "ghost", enabled: false, edited: ["enabled"] })] };
+  const opts = { lines: ["engine", "design"], lineName: (l) => ({ engine: "引擎", design: "设计" })[l] || l };
+
+  // 勾选态:显示已存版本的勾选、执行线、依赖和确认;不在可用范围的线标出来
+  const open = C.planView(plan, opts);
+  assert.deepEqual([open.state, open.editable, open.canApply, open.dirty], ["open", true, true, 0]);
+  assert.deepEqual(open.tasks.map((t) => [t.n, t.enabled, t.lineName, t.lineKnown, t.after, t.needsConfirm]),
+    [[1, true, "引擎", true, [], false], [2, true, "设计", true, [1], true], [3, false, "ghost", false, [1, 2], false]]);
+  assert.equal(open.total, "将建 1 张目标卡、2 张子任务卡，其中 1 张要你确认后放行；1 项不建");
+  assert.equal(open.goal.subject, "<b>目标</b>", "协调线写的字原样带出，页面按纯文本放");
+
+  // 本地改动:逐行标出,合计跟着变;发消息或建卡前要 PUT 的只有改了的字段
+  const draft = C.planEdit(plan, C.planEdit(plan, null, 1, { enabled: false }), 2, { line: null });
+  const edited = C.planView(plan, { ...opts, draft });
+  assert.deepEqual(edited.tasks.map((t) => [t.enabled, t.line, t.changed, t.afterOff]),
+    [[false, "engine", ["enabled"], []], [true, null, ["line"], [1]], [false, "ghost", [], []]]);
+  assert.deepEqual([edited.dirty, edited.tasks[1].lineName, edited.total], [2, "不指定线", "将建 1 张目标卡、1 张子任务卡，其中 1 张要你确认后放行；2 项不建"]);
+  assert.deepEqual(C.planPutBody(plan, draft), { expected_rev: 2, tasks: [{ n: 1, enabled: false }, { n: 2, line: null }] });
+  assert.equal(C.planPutBody(plan, null), null, "没有改动就不发 PUT（服务端对无变化的 PUT 也会出新版本）");
+  const none = C.planView(plan, { ...opts, draft: C.planEdit(plan, draft, 2, { enabled: false }) });
+  assert.deepEqual([none.canApply, none.total], [false, "至少勾选 1 项才能建卡"]);
+  assert.equal(C.planEdit(plan, C.planEdit(plan, null, 1, { enabled: false }), 1, { enabled: true }), null, "改回原值 = 没有改动");
+  const stale = { rev: 1, tasks: { 1: { enabled: false } } };
+  assert.deepEqual([C.planPutBody(plan, stale), C.planView(plan, { ...opts, draft: stale }).dirty], [null, 0], "别的版本上的改动不显示也不提交");
+
+  // 已建卡态:只读,给出目标卡号和子任务卡号;本地改动不再叠上去。要你确认的卡建好后不放行:
+  // 看板的卡还没读到时按计划里标的张数写,读到了按还没放行的卡号写,都放行了就不再提。
+  const built = { ...plan, applied: { at: at(4), by: "panel", goal_id: 12, task_ids: [13, 14] } };
+  const applied = C.planView(built, { ...opts, draft });
+  assert.deepEqual([applied.state, applied.editable, applied.canApply, applied.dirty, applied.total, applied.applied],
+    ["applied", false, false, 0, "已建 1 张目标卡、2 张子任务卡，其中 1 张要你确认后放行", { goalId: 12, taskIds: [13, 14], pending: [] }]);
+  const waiting = C.planView(built, { ...opts, pending: [14] }), released = C.planView(built, { ...opts, pending: [] });
+  assert.deepEqual([waiting.total, waiting.applied.pending], ["已建 1 张目标卡、2 张子任务卡，其中 1 张要你确认后放行", [14]]);
+  assert.equal(released.total, "已建 1 张目标卡、2 张子任务卡");
+  // 旧版本、这个对话已按别的版本建过卡:都不能改也不能建
+  const old = C.planView(plan, { ...opts, latest: false, draft }), locked = C.planView(plan, { ...opts, appliedRev: 1 });
+  assert.deepEqual([old.state, old.editable, old.canApply, old.dirty], ["old", false, false, 0]);
+  assert.deepEqual([locked.state, locked.canApply, locked.total], ["locked", false, "这个对话已按第 1 版建过卡"]);
+
+  // 消息流:带 plan_rev 的消息后面跟那一版;人改出的版本没有消息,按时间插入;只有最新一版可以操作
+  const messages = [{ id: 1, role: "user", text: "做", created_at: at(1) }, { id: 2, role: "coordinator", text: "好", created_at: at(2), plan_rev: 1 },
+    { id: 3, role: "user", text: "再改", created_at: at(5) }];
+  const plans = [{ ...plan, rev: 1, created_at: at(2) }, { ...plan, rev: 2, author: "human", created_at: at(4) }];
+  assert.deepEqual(C.chatTimeline(messages, plans).map((x) => x.kind === "plan" ? "计划" + x.plan.rev + (x.latest ? "*" : "") : "消息" + x.message.id),
+    ["消息1", "消息2", "计划1", "计划2*", "消息3"]);
+
+  // 输入框上方那一行:协调线不可用的原因照服务端给的写;失败的一轮只有对话上的 error;一条消息最多 4000 字
+  const ok = { available: true }, down = { available: false, reason: "CLI 登录已过期。" };
+  assert.equal(C.chatStateLine({ coordinator: down }).text, "协调线现在不可用：CLI 登录已过期。可以先用「手动建卡」。");
+  assert.deepEqual([C.chatCanSend({ coordinator: down, text: "做" }), C.chatCanSend({ coordinator: ok, text: "做" }), C.chatCanSend({ coordinator: ok, text: "  " })], [false, true, false]);
+  const failed = C.chatStateLine({ coordinator: ok, conversation: { status: "failed", error: "协调线超时" } });
+  assert.deepEqual([failed.text, failed.act], ["上一轮没有完成：协调线超时", "retry"]);
+  assert.deepEqual([C.chatStateLine({ coordinator: ok, conversation: { status: "running" } }).act, C.chatCanSend({ coordinator: ok, conversation: { status: "running" }, text: "做" })], ["stop", false]);
+  const long = "字".repeat(4001);
+  assert.deepEqual([C.chatCanSend({ coordinator: ok, text: "字".repeat(4000) }), C.chatCanSend({ coordinator: ok, text: long })], [true, false]);
+  assert.equal(C.chatStateLine({ coordinator: ok, text: long }).text, "这条消息 4001 字，一条最多 4000 字。删短或分几条发。");
+  assert.equal(C.chatStateLine({ coordinator: ok, conversation: { status: "idle" }, text: "做" }), null);
+
+  // 页面只用 textContent 放协调线的字:消息与计划卡这一段不拼 HTML
+  const dom = src.slice(src.indexOf("function chatMessage(m){"), src.indexOf("function chatSync(){"));
+  assert.ok(dom.length > 0 && !dom.includes("innerHTML") && !dom.includes("insertAdjacentHTML"), "消息与计划卡不拼 HTML");
+  assert.ok(dom.includes('homeEl("p", String(m.text), "msg-text")') && dom.includes('homeEl("h3", v.goal.subject)') && dom.includes('homeEl("b", t.n + ". " + t.subject)'));
+  // 建卡只走 apply;本地改动先 PUT 成新版本
+  const apply = src.slice(src.indexOf("async function chatPlanApply(){"), src.indexOf("function chatBadge("));
+  assert.ok(apply.indexOf("await chatPlanFlush()") > 0 && apply.indexOf("await chatPlanFlush()") < apply.indexOf('"/apply"'), "建卡前先把本地改动存成新版本");
+  assert.ok(src.includes("async function chatBeforeSend(){ await chatPlanFlush(); }"), "发消息前也先存");
+});

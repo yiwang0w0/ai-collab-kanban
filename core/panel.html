@@ -431,7 +431,7 @@
   .side-sec summary{cursor:pointer;color:var(--dim);font-size:13px}
   .side-sec pre{white-space:pre-wrap;word-break:break-word;margin:0;font:inherit;font-size:13px;background:var(--panel2);
                 border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-2) var(--sp-3)}
-  .home-new{margin-bottom:var(--sp-3)}
+  .home-new{margin:0}
   .home-new form{display:grid;gap:var(--sp-2);background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);padding:var(--sp-3)}
   .home-new form[hidden],.home-new button[hidden]{display:none}
   .home-new .row{display:flex;gap:var(--sp-2);flex-wrap:wrap;align-items:center}
@@ -454,8 +454,7 @@
   .hs-alert button + button{margin-left:0}
   .hs-cmd{font-family:var(--mono);font-size:12px;padding:0 4px;border:1px solid var(--line);border-radius:4px;background:var(--bg);overflow-wrap:anywhere}
   .home.stale .home-cols,.home.stale .home-note{opacity:.55}
-  .home-cols{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3);align-items:start}
-  @media (max-width:900px){ .home-cols{grid-template-columns:minmax(0,1fr)} }
+  .home-cols{display:grid;grid-template-columns:minmax(0,1fr);gap:var(--sp-3);align-items:start}
   .home-sec{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);min-width:0}
   .home-sec > h2{margin:0;padding:var(--sp-2) var(--sp-3);font-size:var(--fs-sm);font-weight:600;letter-spacing:.04em;
                  border-bottom:1px solid var(--line);display:flex;align-items:center;gap:var(--sp-2)}
@@ -737,7 +736,6 @@
   .home-sec[data-lane="mine"] > h2 .ic{color:var(--accent)}
   .home-sec[data-lane="running"] > h2 .ic{color:var(--cc)}
   .home-sec[data-lane="done"] > h2 .ic{color:var(--ok)}
-  @media (min-width:901px){ .home-list{min-height:132px} }
   .hcard{gap:6px;padding:10px 12px;cursor:pointer;align-items:stretch;justify-content:flex-start}
   .hc-top{display:flex;align-items:flex-start;gap:var(--sp-2);min-width:0}
   .hc-title{flex:1;min-width:0;font-size:var(--fs-lg);font-weight:600;line-height:1.45}
@@ -751,7 +749,7 @@
   .home-foot{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);margin-top:var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
   .home-foot .hf-text{margin-right:auto}
   .home-foot:empty{display:none}
-  .home-new{margin-bottom:var(--sp-3)}
+  .home-new{margin:0}
   .home-new form{display:block;padding:0}
   .form-panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--r-md);overflow:hidden}
   .fp-head{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4);border-bottom:1px solid var(--line)}
@@ -911,6 +909,181 @@
     .seg-o span{width:100%;min-width:0;padding:0 var(--sp-1)}
     .cfg-save-wrap{margin-left:0;flex-basis:100%;order:5}
   }
+  /* ══ 对话式首页(docs/style-guide.md §五 对话与计划卡):首页占满页头以下的整屏,三栏各自滚动,页面本身不滚。
+     左 对话列表 / 中 对话 / 右 待我处理与正在执行。只用既有令牌;强调色仍只给「轮到你」。 ══ */
+  #board-shell:has(> #home-view:not([hidden])){display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:auto}
+  #board-shell:has(> #home-view:not([hidden])) > :not(#home-view){flex:none}
+  /* 横幅和告警占得多时对话区不被压没:低于 400px 就让整页滚。 */
+  #home-view{display:flex;flex-direction:column;flex:1 1 0;min-height:400px;max-width:none;margin:0;padding:0}
+  #home-view > .home-status{flex:none;margin:var(--sp-2) var(--sp-4) 0;max-height:32vh;overflow:auto}
+  .chat-shell{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:248px minmax(0,1fr) 336px;grid-template-rows:minmax(0,1fr);
+              margin-top:var(--sp-2);border-top:1px solid var(--line)}
+  .chat-list{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--line);background:var(--bg)}
+  .cl-head{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-3) var(--sp-2)}
+  #chat-new{flex:1;justify-content:flex-start}
+  #chat-list-close,#chat-list-open,.work-toggle{display:none}
+  .cl-items{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:2px;padding:0 var(--sp-2) var(--sp-3)}
+  .cl-item{flex:none;flex-direction:column;align-items:stretch;justify-content:center;gap:2px;min-height:48px;padding:6px var(--sp-3);
+           text-align:left;border-color:transparent;background:transparent}
+  .cl-item:hover{background:var(--hover);border-color:transparent}
+  .cl-item[aria-current="true"]{background:var(--panel2);border-color:var(--line)}
+  .cl-t,.cl-s{display:block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .cl-t{font-size:var(--fs-md);font-weight:500;line-height:1.4}
+  .cl-item[aria-current="true"] .cl-t{font-weight:600}
+  .cl-s{font-size:var(--fs-sm);font-weight:400;line-height:1.4;color:var(--dim)}
+  .cl-item[data-st="running"] .cl-s{color:var(--cc)}
+  .cl-item[data-st="failed"] .cl-s{color:var(--bad)}
+  .cl-empty{margin:0;padding:var(--sp-2) var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
+  .chat-scrim{display:none}
+  .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
+  .chat-top{flex:none;display:flex;align-items:center;gap:var(--sp-2);min-height:44px;padding:var(--sp-1) var(--sp-4)}
+  .chat-top h2{flex:1;min-width:0;margin:0;font-size:var(--fs-lg);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chat-flow{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:var(--sp-4);padding:var(--sp-3) var(--sp-4) var(--sp-4)}
+  .chat-flow > *{flex:none;width:100%;max-width:760px;margin-inline:auto}
+  .chat-flow:focus-visible{outline-offset:-2px}
+  /* 消息:你的话靠右、带底;协调线的话靠左、不带底;系统事件居中的一行小字。文字一律纯文本(pre-wrap)。 */
+  .msg{display:flex;flex-direction:column;align-items:flex-start;gap:var(--sp-1);min-width:0}
+  .msg-who{color:var(--dim);font-size:var(--fs-xs);letter-spacing:.06em}
+  .msg-text{margin:0;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.65}
+  .msg[data-role="user"]{align-items:flex-end}
+  .msg[data-role="user"] .msg-text{max-width:86%;padding:var(--sp-2) var(--sp-3);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-md)}
+  .msg[data-role="system"]{flex-direction:row;justify-content:center;align-items:center}
+  .msg[data-role="system"][data-kind="plan_rejected"],.msg[data-role="system"][data-kind="plan_rejected"] .msg-text{color:var(--warn)}
+  .msg[data-role="system"] .msg-text{color:var(--dim);font-size:var(--fs-sm);text-align:center}
+  .msg-tools{display:flex;align-items:center;gap:var(--sp-1);max-width:100%;color:var(--dim);font-size:var(--fs-sm)}
+  .msg-tools .ic{width:14px;height:14px}
+  .msg-tools span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .chat-empty{margin-block:auto;display:flex;flex-direction:column;align-items:center;gap:var(--sp-3);padding:var(--sp-4) 0;text-align:center}
+  .chat-empty > .ic{width:28px;height:28px;color:var(--dim2)}
+  .chat-empty h3{margin:0;font-size:var(--fs-xl);font-weight:600}
+  .chat-empty p{margin:0;color:var(--dim)}
+  .chat-eg{display:flex;flex-direction:column;gap:var(--sp-2);width:100%;max-width:520px;margin-top:var(--sp-2)}
+  .chat-eg button{justify-content:flex-start;padding:var(--sp-2) var(--sp-3);text-align:left;white-space:normal;font-weight:400;font-size:var(--fs-md);line-height:1.45}
+  /* 输入区:状态一行(正在回复 / 没发出去 / 协调线不可用)、手动建卡表单、输入框。焦点环画在外框上。 */
+  .chat-compose{flex:none;display:flex;flex-direction:column;padding:0 var(--sp-4) var(--sp-3)}
+  .chat-compose > *{width:100%;max-width:760px;margin-inline:auto}
+  .chat-state{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-3);margin-bottom:var(--sp-2);padding:6px var(--sp-3);
+              border:1px solid var(--line);border-left:3px solid var(--cc);border-radius:var(--r-sm);background:var(--panel);font-size:var(--fs-sm)}
+  .chat-state[data-tone="warn"]{border-left-color:var(--warn);background:color-mix(in srgb,var(--warn) 5%,var(--panel))}
+  .chat-state[data-tone="bad"]{border-left-color:var(--bad);background:color-mix(in srgb,var(--bad) 5%,var(--panel))}
+  .chat-state .ic{color:var(--cc)}
+  .chat-state[data-tone="warn"] .ic{color:var(--warn)}
+  .chat-state[data-tone="bad"] .ic{color:var(--bad)}
+  .cs-text{flex:1;min-width:0;overflow-wrap:anywhere}
+  .chat-compose .home-new form{margin-bottom:var(--sp-2);max-height:min(56vh,520px);overflow:auto}
+  .chat-box{display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-2);background:var(--panel);border:1px solid var(--line);
+            border-radius:var(--r-md);transition:border-color .15s,box-shadow .15s}
+  .chat-box:hover{border-color:var(--dim2)}
+  .chat-box:focus-within{border-color:var(--accent);box-shadow:var(--ring)}
+  #chat-input{display:block;width:100%;min-height:40px;max-height:200px;padding:var(--sp-1) var(--sp-2);border:0;border-radius:0;background:transparent;resize:none}
+  #chat-input:focus{box-shadow:none}
+  .chat-acts{display:flex;align-items:center;gap:var(--sp-2)}
+  .chat-hint{flex:1;min-width:0;text-align:right;color:var(--dim2);font-size:var(--fs-sm);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  /* 右栏:两段紧凑卡。标题一行、状态徽标换到下一行,窄栏里不挤标题。 */
+  .home-work{display:flex;flex-direction:column;gap:var(--sp-3);min-width:0;min-height:0;overflow:auto;padding:var(--sp-3);border-left:1px solid var(--line)}
+  .home-work > *{flex:none}
+  .home-work .hc-top{flex-direction:column;gap:var(--sp-1)}
+  .home-work .hc-top .badge{max-width:100%}
+  .home-work .home-empty{padding:var(--sp-3)}
+  .home-work .home-foot{margin-top:0}
+  .home-work .hf-text{flex-basis:100%}
+  @media (max-width:1100px){
+    .chat-shell{grid-template-columns:minmax(0,1fr) minmax(248px,34%)}
+    #chat-list-open,#chat-list-close{display:inline-flex}
+    .chat-list{position:fixed;top:0;bottom:0;left:0;z-index:31;width:min(300px,86vw);box-shadow:12px 0 32px rgba(0,0,0,.18);
+               transform:translateX(-100%);visibility:hidden;transition:transform .18s ease,visibility 0s linear .18s}
+    /* 打开时立刻可见(焦点要能马上进抽屉),收起时等滑出去再藏。 */
+    .chat-shell.list-open .chat-list{transform:none;visibility:visible;transition:transform .18s ease,visibility 0s}
+    .chat-shell.list-open .chat-scrim{display:block;position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.35)}
+  }
+  @media (max-width:620px){
+    #home-view > .home-status{margin:var(--sp-2) var(--sp-3) 0}
+    .chat-shell{grid-template-columns:minmax(0,1fr)}
+    .chat-top{height:48px;min-height:0;padding:0 var(--sp-3)}
+    .chat-top h2{display:none}
+    .work-toggle{display:flex;flex:1;min-width:0;justify-content:flex-start;gap:var(--sp-2);font-size:var(--fs-md)}
+    .work-toggle #home-work-sum{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .work-toggle .fold-ic{margin-left:auto;color:var(--dim);transition:transform .15s}
+    .work-toggle[aria-expanded="true"] .fold-ic{transform:rotate(180deg)}
+    .work-toggle[data-need]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+    .home-work{display:none;position:absolute;top:48px;left:0;right:0;z-index:6;max-height:calc(100% - 48px);border-left:0;
+               border-top:1px solid var(--line);border-bottom:1px solid var(--line);background:var(--bg);box-shadow:0 12px 28px rgba(0,0,0,.18)}
+    .chat-shell.work-open .home-work{display:flex}
+    .chat-flow{padding:var(--sp-3)}
+    .chat-compose{padding:0 var(--sp-3) var(--sp-2)}
+    .chat-hint{visibility:hidden}
+    .msg[data-role="user"] .msg-text{max-width:92%}
+  }
+  @media (prefers-reduced-motion: reduce){ .chat-list,.work-toggle .fold-ic,.chat-box{transition:none} }
+  /* ── 计划卡(在消息流里):目标、子任务表、合计与「按计划建卡」。强调色只给还没建卡的最新一版。
+     子任务一行的摆法跟着对话栏的宽度走:够宽是五列的表;窄了执行线、依赖、确认换到第二行;手机上折成一行,点开才展开。 */
+  .chat-flow{container-type:inline-size}
+  .plan{min-width:0;border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel)}
+  .plan[data-state="open"]{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+  .plan-h{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-bottom:1px solid var(--line)}
+  .plan-h b{font-size:var(--fs-sm);font-weight:600;letter-spacing:.04em}
+  .plan-by{margin-left:auto;color:var(--dim);font-size:var(--fs-sm)}
+  .plan-goal{padding:var(--sp-3);border-bottom:1px solid var(--line)}
+  .plan-k{color:var(--dim);font-size:var(--fs-xs);letter-spacing:.06em}
+  .plan-goal h3{margin:2px 0 0;font-size:var(--fs-lg);font-weight:600;line-height:1.45;overflow-wrap:anywhere}
+  .plan-goal p{margin:var(--sp-1) 0 0;color:var(--dim);font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere}
+  .plan-rows{list-style:none;margin:0;padding:0}
+  .pl-head{display:none}
+  .pl-row{display:grid;grid-template-columns:28px minmax(0,1fr);gap:var(--sp-1) var(--sp-2);align-items:start;padding:var(--sp-2) var(--sp-3);
+          border-bottom:1px solid var(--line)}
+  .pl-row[data-dirty]{box-shadow:inset 3px 0 0 var(--cc)}
+  .pl-ck{display:grid;place-items:center;min-height:22px;cursor:pointer}
+  .pl-sub{min-width:0}
+  .pl-sub b{display:block;font-weight:500;line-height:1.5;overflow-wrap:anywhere}
+  .pl-sum{display:block;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .pl-mark{display:inline-block;margin-top:2px;padding:0 var(--sp-1);border:1px dashed var(--dim2);border-radius:var(--r-sm);color:var(--dim);font-size:var(--fs-xs)}
+  .pl-row[data-dirty] .pl-mark{border-color:var(--cc);color:var(--cc)}
+  .pl-row[data-off] .pl-sub b,.pl-row[data-off] .pl-sum{color:var(--dim2)}
+  .pl-meta{grid-column:2;display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-4);min-width:0}
+  .pl-cell{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-2);min-width:0;font-size:var(--fs-sm)}
+  .pl-cell::before{content:attr(data-k);color:var(--dim)}
+  .pl-cell select{width:auto;min-width:120px}
+  .pl-dim{color:var(--dim)}
+  .pl-warn{color:var(--warn)}
+  .pl-more{display:none}
+  .plan-f{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-3);padding:var(--sp-2) var(--sp-3);background:var(--panel2);
+          border-radius:0 0 var(--r-md) var(--r-md)}
+  .plan-rows > .pl-row:last-child{border-bottom:0}
+  .plan-f{border-top:1px solid var(--line)}
+  .plan-sum{flex:1 1 180px;min-width:0;color:var(--dim);font-size:var(--fs-sm)}
+  .plan-note{flex-basis:100%;margin:0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .plan-note[data-tone="warn"]{color:var(--warn)}
+  .plan-note[data-tone="need"]{color:var(--accent);font-weight:600}
+  .plan-id[data-need]{color:var(--accent);border-color:color-mix(in srgb,var(--accent) 60%,transparent)}
+  .plan-note[data-tone="bad"]{color:var(--bad)}
+  .plan-links{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1)}
+  .plan-id{font-family:var(--mono)}
+  .plan-old > summary{padding:var(--sp-2) var(--sp-3);cursor:pointer;color:var(--dim);font-size:var(--fs-sm);border-radius:var(--r-md)}
+  .plan-old[open] > summary{border-bottom:1px solid var(--line);border-radius:var(--r-md) var(--r-md) 0 0}
+  @container (min-width:640px){
+    .pl-head,.pl-row{grid-template-columns:28px minmax(0,1fr) 150px 112px 96px;align-items:center}
+    .pl-head{display:grid;gap:var(--sp-2);padding:6px var(--sp-3);border-bottom:1px solid var(--line);color:var(--dim);font-size:var(--fs-xs);letter-spacing:.06em}
+    .pl-meta{display:contents}
+    .pl-cell::before{content:none}
+    .pl-cell select{width:100%;min-width:0}
+  }
+  @media (max-width:620px){
+    .pl-row{grid-template-columns:40px minmax(0,1fr) 40px;align-items:center;padding:var(--sp-1) var(--sp-2)}
+    .pl-ck{min-height:40px}
+    .pl-ck{grid-area:1 / 1}
+    .pl-sub{grid-area:1 / 2}
+    .pl-more{display:inline-flex;grid-area:1 / 3}
+    .pl-row[data-open]{align-items:start}
+    .pl-row[data-open] .pl-sub{padding-top:var(--sp-2)}
+    .pl-row[data-open] .pl-more .ic{transform:rotate(180deg)}
+    .pl-row:not([data-open]) .pl-sub b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .pl-row:not([data-open]) :is(.pl-sum,.pl-mark,.pl-meta){display:none}
+    .pl-row[data-open] .pl-meta{grid-area:2 / 2 / auto / -1;flex-direction:column;align-items:stretch;gap:var(--sp-2);padding-bottom:var(--sp-2)}
+    .pl-cell select{flex:1}
+    .plan-f .pri{flex:1 1 100%}
+  }
+  @media (pointer:coarse){ .pl-ck{min-height:40px} }
+
   /* ── 手机看板选栏(docs/style-guide.md §五 全部任务):≤620px 五栏只显示一栏,栏上方的分段控件选栏;桌面不出现。
      只在脚本选定了栏(#cols 带 data-col)后才藏别的栏,脚本没跑到时照旧五栏堆叠。 */
   .seg.board-seg{display:none}
@@ -968,6 +1141,10 @@
   <symbol id="i-success" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="m8.3 12.2 2.6 2.6 4.9-5.4"/></symbol>
   <symbol id="i-wait" viewBox="0 0 24 24"><path d="M7 3.5h10M7 20.5h10"/><path d="M8 3.5c0 4.5 8 4.5 8 8.5s-8 4-8 8.5M16 3.5c0 4.5-8 4.5-8 8.5s8 4 8 8.5"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M10 4.5H5.5v15H10"/><path d="M14 8l4 4-4 4M18 12H9"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M4.5 5.5h15v10.5h-8l-4.5 3.5V16H4.5z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="M12 19V5.5"/><path d="m6 11 6-6 6 6"/></symbol>
+  <symbol id="i-menu" viewBox="0 0 24 24"><path d="M4.5 7h15M4.5 12h15M4.5 17h15"/></symbol>
+  <symbol id="i-doc" viewBox="0 0 24 24"><path d="M7 3.5h7l4 4v13H7z"/><path d="M14 3.5v4h4M9.5 12.5h5M9.5 16h5"/></symbol>
 </svg>
 <header>
   <h1><svg class="ic brand" aria-hidden="true"><use href="#i-board"/></svg>AI 协作看板</h1>
@@ -1039,43 +1216,75 @@
 
 <main class="home" id="home-view" data-view-panel="home">
   <section class="home-status" id="home-status" aria-live="polite"></section>
-  <section class="home-new" id="home-new">
-    <button type="button" id="home-new-open" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>新建任务</button>
-    <form id="home-new-form" class="form-panel" hidden autocomplete="off" aria-labelledby="home-new-h">
-      <div class="fp-head"><h2 id="home-new-h">新建任务</h2>
-        <button type="button" class="icon-btn ghost" id="home-new-x" aria-label="取消新建任务" title="取消新建任务"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
-      <div class="fp-grid">
-        <label class="fp-l" for="home-new-title">标题</label>
-        <input id="home-new-title" placeholder="要做什么(标题)" aria-label="任务标题">
-        <label class="fp-l" for="home-new-desc">说明</label>
-        <textarea id="home-new-desc" rows="3" placeholder="说明(可选):背景、要求、怎样算做完" aria-label="任务说明"></textarea>
-        <label class="fp-l" for="home-new-line">交给</label>
-        <select id="home-new-line"></select>
+  <!-- 对话式首页(docs/style-guide.md §五 对话与计划卡):左 对话列表 / 中 对话 / 右 待我处理与正在执行。
+       ≤1100px 对话列表收进抽屉;≤620px 单栏,任务两段收在顶部一行里,输入框吸底。 -->
+  <div class="chat-shell" id="chat-shell">
+    <aside class="chat-list" id="chat-list" aria-label="对话列表">
+      <div class="cl-head">
+        <button type="button" id="chat-new"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>新对话</button>
+        <button type="button" class="icon-btn ghost" id="chat-list-close" aria-label="收起对话列表" title="收起对话列表"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button>
       </div>
-      <div class="fp-grid" id="home-new-execution" hidden>
-        <label class="fp-l" for="home-new-profile">执行配置</label>
-        <div class="fp-pair"><select id="home-new-profile" aria-label="任务执行配置"></select>
-          <label class="fp-l" for="home-new-model">模型</label><select id="home-new-model" aria-label="任务模型"></select></div>
-        <span class="fp-l" aria-hidden="true"></span>
-        <p class="execution-preview" id="home-new-preview" hidden></p>
+      <nav class="cl-items" id="chat-items" aria-label="对话"></nav>
+    </aside>
+    <div class="chat-scrim" id="chat-scrim"></div>
+    <section class="chat-main" aria-labelledby="chat-title">
+      <div class="chat-top">
+        <button type="button" class="icon-btn ghost" id="chat-list-open" aria-label="打开对话列表" title="打开对话列表" aria-expanded="false" aria-controls="chat-list"><svg class="ic" aria-hidden="true"><use href="#i-menu"/></svg></button>
+        <h2 id="chat-title">新对话</h2>
+        <button type="button" class="work-toggle" id="home-work-toggle" aria-expanded="false" aria-controls="home-work"><svg class="ic" aria-hidden="true"><use href="#i-wait"/></svg><span id="home-work-sum">正在读取…</span><svg class="ic fold-ic" aria-hidden="true"><use href="#i-chevron"/></svg></button>
       </div>
-      <div class="fp-foot"><p class="err" id="home-new-err" hidden></p>
-        <button type="button" id="home-new-cancel">取消</button>
-        <button type="submit" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>创建任务</button></div>
-    </form>
-  </section>
-  <div class="home-cols">
-    <section class="home-sec" data-lane="mine" aria-labelledby="home-mine-h">
-      <h2 id="home-mine-h"><svg class="ic" aria-hidden="true"><use href="#i-wait"/></svg>待我处理 <span class="n" id="home-mine-n"></span></h2>
-      <div class="home-list" id="home-mine"></div>
+      <div class="chat-flow" id="chat-flow" tabindex="0" aria-label="对话内容"></div>
+      <div class="chat-compose">
+        <div class="chat-state" id="chat-state" role="status" hidden></div>
+        <section class="home-new" id="home-new">
+          <form id="home-new-form" class="form-panel" hidden autocomplete="off" aria-labelledby="home-new-h">
+            <div class="fp-head"><h2 id="home-new-h">手动建卡</h2>
+              <button type="button" class="icon-btn ghost" id="home-new-x" aria-label="关闭手动建卡" title="关闭手动建卡"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+            <div class="fp-grid">
+              <label class="fp-l" for="home-new-title">标题</label>
+              <input id="home-new-title" placeholder="要做什么(标题)" aria-label="任务标题">
+              <label class="fp-l" for="home-new-desc">说明</label>
+              <textarea id="home-new-desc" rows="3" placeholder="说明(可选):背景、要求、怎样算做完" aria-label="任务说明"></textarea>
+              <label class="fp-l" for="home-new-line">交给</label>
+              <select id="home-new-line"></select>
+            </div>
+            <div class="fp-grid" id="home-new-execution" hidden>
+              <label class="fp-l" for="home-new-profile">执行配置</label>
+              <div class="fp-pair"><select id="home-new-profile" aria-label="任务执行配置"></select>
+                <label class="fp-l" for="home-new-model">模型</label><select id="home-new-model" aria-label="任务模型"></select></div>
+              <span class="fp-l" aria-hidden="true"></span>
+              <p class="execution-preview" id="home-new-preview" hidden></p>
+            </div>
+            <div class="fp-foot"><p class="err" id="home-new-err" hidden></p>
+              <button type="button" id="home-new-cancel">取消</button>
+              <button type="submit" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>创建任务</button></div>
+          </form>
+        </section>
+        <div class="chat-box">
+          <textarea id="chat-input" rows="1" placeholder="写下要做的事，协调线先回一份计划" aria-label="给协调线的消息" title="Enter 发送，Shift+Enter 换行"></textarea>
+          <div class="chat-acts">
+            <button type="button" id="home-new-open"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>手动建卡</button>
+            <span class="chat-hint">Enter 发送 · Shift+Enter 换行</span>
+            <button type="button" id="chat-send" class="pri"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg>发送</button>
+          </div>
+        </div>
+      </div>
     </section>
-    <section class="home-sec" data-lane="running" aria-labelledby="home-running-h">
-      <h2 id="home-running-h"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>正在执行 <span class="n" id="home-running-n"></span></h2>
-      <div class="home-list" id="home-running"></div>
-    </section>
+    <aside class="home-work" id="home-work" aria-label="待我处理与正在执行">
+      <div class="home-cols">
+        <section class="home-sec" data-lane="mine" aria-labelledby="home-mine-h">
+          <h2 id="home-mine-h"><svg class="ic" aria-hidden="true"><use href="#i-wait"/></svg>待我处理 <span class="n" id="home-mine-n"></span></h2>
+          <div class="home-list" id="home-mine"></div>
+        </section>
+        <section class="home-sec" data-lane="running" aria-labelledby="home-running-h">
+          <h2 id="home-running-h"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>正在执行 <span class="n" id="home-running-n"></span></h2>
+          <div class="home-list" id="home-running"></div>
+        </section>
+      </div>
+      <div class="home-foot" id="home-foot"></div>
+      <p class="home-note" id="home-note" hidden></p>
+    </aside>
   </div>
-  <div class="home-foot" id="home-foot"></div>
-  <p class="home-note" id="home-note" hidden></p>
 </main>
 <main class="home" id="history-view" data-view-panel="history" hidden>
   <section class="home-sec" data-lane="done" aria-labelledby="history-h">
@@ -4259,6 +4468,7 @@ es.onopen = () => {
   }
   live(true, "实时");
   if (boardDown) refresh();   // 恢复时立即读取，不等后续轮询。
+  if (homeReady) chatLoad(true);   // 断线期间的对话事件收不到:重连后整拉对话列表和当前对话。
 };
 es.onerror = () => {
   liveOpen = false;
@@ -4271,7 +4481,11 @@ es.onerror = () => {
 //   everything as `change`; the kind rides in data.type.
 es.addEventListener("change", (e) => {
   // v0.18: the board announces its own restart; hold the page and reload when it is back.
-  try { const d = JSON.parse(e.data); if (d.type === "board.restarting"){ noteRestart(d); return; } } catch {}
+  try {
+    const d = JSON.parse(e.data);
+    if (d.type === "board.restarting"){ noteRestart(d); return; }
+    if (d.type === "conversation.changed"){ chatChanged(); return; }   // 对话有变:只重读对话列表和当前对话
+  } catch {}
   refresh();
 });
 // Worker stdout arrives per line; refreshing on all of it thrashes — throttle.
@@ -4614,6 +4828,125 @@ function sideRelations(t, rows = []) {
 }
 // ── /home-model ──
 
+// ── chat-model(pure;tests/hometest.mjs)──
+// 对话式首页的显示模型:输入是对话接口的原样数据,输出只有显示用的字。不碰 DOM、不读全局、不看时钟。
+// 协调线和人写的文字原样带出,由调用方按纯文本(textContent)放进页面。
+const CHAT_EXAMPLES = ["把登录页的报错提示补全，先给我一份计划", "看一下首页在手机上的排版，列出要改的地方", "把月报导出改成按部门汇总，分几步做"];
+/** 对话列表里标题下面的那一行状态。 */
+function chatListLine(c) {
+  if (!c) return "";
+  if (c.status === "running") return "协调线正在回复";
+  if (c.status === "failed") return "上一轮没有完成";
+  if (c.plan_applied) return "已建卡";
+  if (c.plan_rev != null) return "计划第 " + c.plan_rev + " 版 · 待建卡";
+  return String(c.last_snippet || "").trim() || "还没有计划";
+}
+/** 一轮里的工具调用折成一行;没有摘要时只报次数。 */
+function chatToolsLine(tools) {
+  if (!tools) return "";
+  const text = String(tools.summary || "").trim();
+  return text || (tools.count > 0 ? "用了 " + tools.count + " 次工具" : "");
+}
+const CHAT_MESSAGE_MAX = 4000;   // 一条消息的字数上限(服务端同值)
+const chatLength = (text) => [...String(text ?? "").trim()].length;
+/** 输入框上方的那一行:没发出去 > 正在回复 > 这条太长 > 协调线不可用 > 上一轮没有完成。null = 不显示。
+ *  协调线不可用的原因照服务端给的原样写(未找到 Claude CLI、源码未确认、CLI 登录已过期…)。
+ *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。 */
+function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "" } = {}) {
+  if (fail) return { tone: "bad", icon: "warn", text: "没有发出去：" + fail, act: "resend", label: "重试" };
+  if (conversation && conversation.status === "running") return { tone: "run", icon: "chat", text: "协调线正在回复", act: "stop", label: "停止本轮" };
+  if (sending) return { tone: "run", icon: "chat", text: "正在发送", act: null, label: "" };
+  if (chatLength(text) > CHAT_MESSAGE_MAX)
+    return { tone: "warn", icon: "warn", text: "这条消息 " + chatLength(text) + " 字，一条最多 " + CHAT_MESSAGE_MAX + " 字。删短或分几条发。", act: null, label: "" };
+  if (coordinator && coordinator.available === false) {
+    const reason = String(coordinator.reason || "").trim().replace(/[。．.\s]+$/, "") || "原因未记录";
+    return { tone: "warn", icon: "warn", text: "协调线现在不可用：" + reason + "。可以先用「手动建卡」。", act: null, label: "" };
+  }
+  if (conversation && conversation.status === "failed")
+    return { tone: "bad", icon: "warn", text: "上一轮没有完成：" + (String(conversation.error || "").trim() || "原因未记录"), act: "retry", label: "重试" };
+  return null;
+}
+/** 能不能发:协调线可用、这个对话没有在跑、没有正在发、写了字且不超上限。 */
+function chatCanSend({ coordinator = null, conversation = null, sending = false, text = "" } = {}) {
+  const n = chatLength(text);
+  return !!(coordinator && coordinator.available) && !sending && !(conversation && conversation.status === "running") && n > 0 && n <= CHAT_MESSAGE_MAX;
+}
+/** 消息流的顺序:消息照原序;带 plan_rev 的消息后面跟它那一版计划;人改出的版本没有对应消息,
+ *  按时间插到它之后的第一条消息前面,排不进去就放最后。latest = 最新一版;appliedRev = 已建卡的那一版。 */
+function chatTimeline(messages = [], plans = []) {
+  const byRev = new Map(plans.map((p) => [p.rev, p])), used = new Set(), out = [];
+  const latest = plans.reduce((max, p) => Math.max(max, p.rev), 0), done = plans.find((p) => p.applied), appliedRev = done ? done.rev : null;
+  const card = (p) => ({ kind: "plan", plan: p, latest: p.rev === latest, appliedRev });
+  for (const m of messages) {
+    out.push({ kind: "message", message: m });
+    if (m.plan_rev != null && byRev.has(m.plan_rev) && !used.has(m.plan_rev)) { used.add(m.plan_rev); out.push(card(byRev.get(m.plan_rev))); }
+  }
+  for (const p of plans) {
+    if (used.has(p.rev)) continue;
+    const at = out.findIndex((x) => x.kind === "message" && String(x.message.created_at || "") > String(p.created_at || ""));
+    if (at < 0) out.push(card(p)); else out.splice(at, 0, card(p));
+  }
+  return out;
+}
+/** 计划卡里还没提交的本地改动:{ rev, tasks: { [n]: { enabled?, line? } } }。改回和已存版本一样的值就不留;null = 没有改动。 */
+function planEdit(plan, draft, n, patch) {
+  const base = draft && draft.rev === plan.rev ? draft : { rev: plan.rev, tasks: {} };
+  const t = (plan.tasks || []).find((x) => x.n === n);
+  if (!t) return Object.keys(base.tasks).length ? base : null;
+  const mine = { ...(base.tasks[n] || {}), ...patch };
+  if ("enabled" in mine && !!mine.enabled === (t.enabled !== false)) delete mine.enabled;
+  if ("line" in mine && (mine.line || null) === (t.line ?? null)) delete mine.line;
+  const tasks = { ...base.tasks };
+  if (Object.keys(mine).length) tasks[n] = mine; else delete tasks[n];
+  return Object.keys(tasks).length ? { rev: plan.rev, tasks } : null;
+}
+/** 把本地改动存成新版本的请求体(PUT …/plans/:rev);没有改动 = null。只带改了的字段。 */
+function planPutBody(plan, draft) {
+  if (!draft || draft.rev !== plan.rev) return null;
+  const tasks = [];
+  for (const t of plan.tasks || []) {
+    const mine = (draft.tasks || {})[t.n];
+    if (!mine) continue;
+    const row = { n: t.n };
+    if ("enabled" in mine && !!mine.enabled !== (t.enabled !== false)) row.enabled = !!mine.enabled;
+    if ("line" in mine && (mine.line || null) !== (t.line ?? null)) row.line = mine.line || null;
+    if (Object.keys(row).length > 1) tasks.push(row);
+  }
+  return tasks.length ? { expected_rev: plan.rev, tasks } : null;
+}
+/** 一版计划怎么显示。state: open 最新、还没建卡 / applied 已建卡 / old 已有新版本 / locked 这个对话已按别的版本建过卡。
+ *  只有 open 能改能建;本地改动(draft)只叠在 open 上。合计与每一行的字都在这里定,页面只管摆。
+ *  要你确认的子任务建卡后不放行:建卡前合计写「其中 N 张要你确认后放行」;建卡后 pending = 还没放行的卡号
+ *  (调用方从看板现有的卡里数;null = 还不知道,按计划里标了要确认的张数写)。 */
+function planView(plan, { lines = [], lineName = (l) => l, draft = null, latest = true, appliedRev = null, pending = null } = {}) {
+  const applied = plan.applied || null;
+  const state = applied ? "applied" : !latest ? "old" : appliedRev != null ? "locked" : "open", editable = state === "open";
+  const local = editable && draft && draft.rev === plan.rev ? draft.tasks || {} : {};
+  const tasks = (plan.tasks || []).map((t) => {
+    const mine = local[t.n] || {}, was = t.enabled !== false, wasLine = t.line ?? null;
+    const enabled = "enabled" in mine ? !!mine.enabled : was, line = "line" in mine ? mine.line || null : wasLine;
+    return { n: t.n, subject: String(t.subject || ""), summary: String(t.summary || ""), enabled, line,
+      lineName: line ? lineName(line) : "不指定线", lineKnown: !line || lines.includes(line),
+      after: Array.isArray(t.after) ? t.after.filter(Number.isInteger) : [], needsConfirm: !!t.needs_confirm, needsBash: !!t.needs_bash,
+      edited: Array.isArray(t.edited) ? t.edited : [],
+      changed: [...(enabled !== was ? ["enabled"] : []), ...(line !== wasLine ? ["line"] : [])] };
+  });
+  const off = new Set(tasks.filter((t) => !t.enabled).map((t) => t.n));
+  for (const t of tasks) t.afterOff = t.enabled ? t.after.filter((n) => off.has(n)) : [];
+  const on = tasks.filter((t) => t.enabled), confirm = on.filter((t) => t.needsConfirm).length;
+  const built = applied && Array.isArray(applied.task_ids) ? applied.task_ids : [], waiting = Array.isArray(pending) ? pending : null;
+  const release = (n) => n ? "，其中 " + n + " 张要你确认后放行" : "";
+  const total = applied ? "已建 1 张目标卡、" + built.length + " 张子任务卡" + release(waiting ? waiting.length : confirm)
+    : state === "locked" ? "这个对话已按第 " + appliedRev + " 版建过卡"
+    : !on.length ? "至少勾选 1 项才能建卡"
+    : "将建 1 张目标卡、" + on.length + " 张子任务卡" + release(confirm) + (off.size ? "；" + off.size + " 项不建" : "");
+  return { rev: plan.rev, author: plan.author === "human" ? "human" : "coordinator", state, editable,
+    goal: { subject: String(plan.goal?.subject || ""), description: String(plan.goal?.description || "") },
+    tasks, dirty: tasks.reduce((sum, t) => sum + t.changed.length, 0), total, canApply: editable && on.length > 0,
+    applied: applied ? { goalId: applied.goal_id ?? null, taskIds: built, pending: waiting || [] } : null };
+}
+// ── /chat-model ──
+
 let lastSetup = null;            // /api/setup as refresh() last saw it (the guide's data)
 let fleetApi = null;             // { showTask, open } — set by the global-view block below
 const HOME_VIEWS = ["home", "board", "history", "settings"];
@@ -4634,7 +4967,7 @@ function setView(v){
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); }
   else if (v === "settings") { loadHomeExtras(true); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取
-  else { homeSig.clear(); renderHomeViews(); loadHomeExtras(true); }
+  else { homeSig.clear(); renderHomeViews(); loadHomeExtras(true); if (v === "home" && homeReady) chatLoad(true); }
   window.scrollTo(0, 0);
 }
 document.querySelector(".views").addEventListener("click", (e) => {
@@ -4909,6 +5242,16 @@ function sideRelationshipBox(t){
   }
   return section;
 }
+/** 长串编号只在这一块里,默认折叠(style-guide §五 技术信息):侧栏其余部分只留短卡号。 */
+function sideTech(t){
+  const box = homeEl("details", undefined, "side-sec fleet-tech"), dl = homeEl("dl");
+  box.id = "task-side-tech";
+  box.append(homeEl("summary", "技术信息"));
+  for (const [label, value] of [["任务 UID", t.task_uid], ["运行", t.run_id], ["任务版本", t.aggregate_version]])
+    if (value != null && value !== "") dl.append(homeEl("dt", label), homeEl("dd", String(value)));
+  box.append(dl);
+  return box;
+}
 /** 关联任务或执行回执变化时，只刷新只读区，保留当前任务的输入与确认按钮。 */
 function updateSideContext(t){
   if (!t) return;
@@ -4961,8 +5304,8 @@ function renderSide(){
     const loc = homeEl("button", "在「全部任务」中定位"); loc.type = "button";
     loc.addEventListener("click", () => { const id = t.id; closeSide(); locateOnBoard(id); });
     acts.append(loc);
-    more.append(acts, homeEl("p", "编号 #" + t.id + (t.task_uid ? " · UID " + t.task_uid : ""), "side-state"));
-    out.push(more);
+    more.append(acts, homeEl("p", "编号 #" + t.id, "side-state"));
+    out.push(more, sideTech(t));
   } else if (sideRef.uid && fleetApi) {
     const b = homeEl("button", "查看全局详情"); b.type = "button";
     b.addEventListener("click", () => fleetApi.showTask(sideRef.uid));
@@ -5179,8 +5522,13 @@ function renderHomeViews(){
         return row;
       })];
     });
-    homeLane("mine", lists.mine, ["没有需要你处理的事", "交付和提问到了会出现在这里。要派新活,点上面的「新建任务」。"]);
-    homeLane("running", lists.running, ["没有正在执行的任务", "排队中的任务在「全部任务」里;执行线在「设置」里启动。", "play"]);
+    homeLane("mine", lists.mine, ["没有需要你处理的事", "交付和提问到了会出现在这里。"]);
+    homeLane("running", lists.running, ["没有正在执行的任务", "排队中的任务在「全部任务」里。", "play"]);
+    // 手机顶部一行:两段的件数。有待处理的才用强调色。
+    const sum = document.getElementById("home-work-toggle");
+    document.getElementById("home-work-sum").textContent = homeReady ? lists.mine.length + " 件待你处理 · " + lists.running.length + " 件执行中" : "正在读取…";
+    if (homeReady && lists.mine.length) sum.dataset.need = ""; else delete sum.dataset.need;
+    renderChat();
     // 页脚一行:首页之外还有什么,一键过去。只数本机看板已有的数据。
     const queued = tasks.filter((t) => t.kind !== "goal" && t.status === "not_started");
     const held = queued.filter((t) => !t.released).length;
@@ -5267,9 +5615,398 @@ function homeAfterRefresh(){
   homeReady = true;
   try { renderHomeViews(); } catch (e) { console.error("home view", e); }
   loadHomeExtras();
+  if (homeView === "home") chatLoad().catch((e) => console.error("对话读取失败", e));
 }
+// ═══ 对话式首页 ════════════════════════════════════════════════════════════════
+// 操作者在首页说要做什么,协调线回计划;建卡只发生在计划卡的「按计划建卡」。接口:GET /api/coordinator、
+// /api/conversations…;事件 conversation.changed 只当「该刷新了」,收到后重新读列表和当前对话。
+// ⭐ 协调线、人和系统写的字一律走 textContent(homeEl);这一段不拼 innerHTML,图标只用 icon() 的固定标记。
+let chatCoord = null, chatRows = null, chatRowsError = null, chatId = null, chatData = null, chatDataError = null;
+let chatLoadedAt = 0, chatSeq = 0, chatSending = false, chatFail = null, chatTimer = 0, chatStick = true;
+const chatInput = document.getElementById("chat-input"), chatShell = document.getElementById("chat-shell");
+const chatKey = (id = chatId) => id == null ? "new" : "c:" + id;
+const chatSame = (a, b) => a != null && b != null && String(a) === String(b);
+// 输入草稿、当前对话记在本标签页(sessionStorage,读写都在 loadDrafts / persistDrafts 的 try 里)。
+const chatStore = () => { const c = loadDrafts().chat; return c && typeof c === "object" ? c : {}; };
+const chatSave = (patch) => persistDrafts({ chat: { ...chatStore(), ...patch } });
+function chatDraftSave(){
+  const input = { ...(chatStore().input || {}) };
+  if (chatInput.value.trim()) input[chatKey()] = chatInput.value; else delete input[chatKey()];
+  chatSave({ input });
+}
+async function chatApi(method, path, body){
+  const r = await fetch(path, { method, headers: WH, cache: "no-store", ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  const v = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(Error(v.error || "看板没有完成这次请求，状态 " + r.status), { status: r.status, code: v.code || null, issues: v.issues || null, currentRev: v.current_rev ?? null });
+  return v;
+}
+const CHAT_ERROR = { COORDINATOR_UNAVAILABLE: "协调线现在不可用", TURN_RUNNING: "协调线还在回复上一条",
+  PLAN_CONFLICT: "计划已有新版本，已重新读取，请核对后再试", PLAN_APPLIED: "这份计划已经建过卡" };
+const chatErrorText = (e) => e?.code === "PLAN_CONFLICT" && Number.isInteger(e.currentRev) ? "计划已更新到第 " + e.currentRev + " 版，已重新读取，请核对后再试"
+  : Object.hasOwn(CHAT_ERROR, e?.code) ? CHAT_ERROR[e.code] : copyError(e);
+const chatPath = (rest = "") => "/api/conversations/" + encodeURIComponent(chatId) + rest;
+/** 协调线状态、对话列表、当前对话。平时最多 5 秒读一次;发消息、建卡、收到对话事件、实时通道重连时立即读。 */
+async function chatLoad(force = false){
+  if (!force && Date.now() - chatLoadedAt < 5000) return;
+  chatLoadedAt = Date.now();
+  const seq = ++chatSeq, id = chatId;
+  const [c, l, d] = await Promise.allSettled([chatApi("GET", "/api/coordinator"), chatApi("GET", "/api/conversations?archived=0"),
+    id == null ? null : chatApi("GET", chatPath())]);
+  if (seq !== chatSeq || !chatSame(id ?? "", chatId ?? "")) return;   // 更晚的一次读取或换了对话:这一次的结果不用
+  chatCoord = c.status === "fulfilled" ? c.value
+    : { available: false, reason: c.reason?.status === 404 ? "这个版本的看板没有协调线对话接口" : copyError(c.reason) };
+  if (l.status === "fulfilled") { chatRows = Array.isArray(l.value.conversations) ? l.value.conversations : []; chatRowsError = null; }
+  else { chatRowsError = l.reason?.status === 404 ? "" : copyError(l.reason); chatRows = chatRows || []; }
+  if (id != null) {
+    if (d.status === "fulfilled") { chatData = d.value; chatDataError = null; }
+    else if (d.reason?.status === 404) { chatOpen(null); return; }     // 对话已不在:回到新对话
+    else chatDataError = copyError(d.reason);
+  }
+  renderChat();
+}
+function chatChanged(){ if (homeView !== "home") return; clearTimeout(chatTimer); chatTimer = setTimeout(() => chatLoad(true), 150); }   // 不在首页时不读,回到首页会整拉
+/** 换到一个对话(null = 新对话):各对话的输入草稿分开记。 */
+function chatOpen(id){
+  chatDraftSave();
+  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatPlanNote = null; chatStick = true;
+  chatSave({ cur: chatId });
+  chatInput.value = (chatStore().input || {})[chatKey()] || "";
+  chatGrow(); chatDrawer(false); renderChat();
+  if (chatId != null) chatLoad(true);
+}
+function chatGrow(){ chatInput.style.height = "auto"; chatInput.style.height = Math.min(200, chatInput.scrollHeight + 2) + "px"; }
+function chatDrawer(open){
+  const opener = document.getElementById("chat-list-open"), inside = document.getElementById("chat-list").contains(document.activeElement);
+  chatShell.classList.toggle("list-open", open);
+  opener.setAttribute("aria-expanded", String(open));
+  if (!open && inside && opener.offsetParent) opener.focus({ preventScroll: true });   // 抽屉收起后焦点回到打开它的按钮
+}
+function chatWork(open){
+  chatShell.classList.toggle("work-open", open);
+  document.getElementById("home-work-toggle").setAttribute("aria-expanded", String(open));
+}
+/** 发一条消息。新对话 = 建对话并带上第一条;text 给了就发它(重试上一轮),不动输入框里正在写的字。 */
+async function chatSend(text){
+  const typed = text === undefined, message = String(typed ? chatInput.value : text).trim();
+  if (!chatCanSend({ coordinator: chatCoord, conversation: chatData?.conversation, sending: chatSending, text: message })) return;
+  chatSending = true; chatFail = null; chatStick = true; renderChat();
+  try {
+    if (chatId == null) {
+      const v = await chatApi("POST", "/api/conversations", { message });
+      chatId = v.conversation.id; chatData = null;
+      const input = { ...(chatStore().input || {}) }; delete input.new;
+      chatSave({ cur: chatId, input });
+    } else {
+      await chatBeforeSend();
+      await chatApi("POST", chatPath("/messages"), { message });
+    }
+    if (typed) { chatInput.value = ""; chatGrow(); chatDraftSave(); }
+  } catch (e) {
+    chatFail = { why: chatErrorText(e), text: typed ? undefined : message };
+  } finally {
+    chatSending = false;
+    await chatLoad(true);
+    renderChat();
+  }
+}
+/** 发消息前要先做完的事:计划卡的本地改动存成新版本,协调线读到的才是你改过的那一版。 */
+async function chatBeforeSend(){ await chatPlanFlush(); }
+async function chatStop(){
+  try { await chatApi("POST", chatPath("/stop"), {}); } catch (e) { chatFail = { why: chatErrorText(e), text: undefined }; }
+  await chatLoad(true);
+}
+function chatRetryTurn(){
+  const last = [...(chatData?.messages || [])].reverse().find((m) => m.role === "user");
+  if (last) chatSend(last.text);
+}
+/** 图标节点:名字只来自本文件的固定表,标记由 icon() 生成。 */
+function chatIcon(name){ const t = document.createElement("template"); t.innerHTML = icon(name); return t.content.firstChild; }
+function chatMessage(m){
+  const role = m.role === "user" ? "user" : m.role === "system" ? "system" : "coordinator";
+  const box = homeEl("div", undefined, "msg"); box.dataset.role = role;
+  if (role !== "system") box.append(homeEl("span", role === "user" ? "你" : "协调线", "msg-who"));
+  // 系统事件的 kind:applied 已建卡 / stopped 已停止 / plan_rejected 计划没过校验 / plan_ignored 建卡后又出的计划没有记。正文是服务端写的。
+  else { box.dataset.kind = String(m.kind || ""); if (m.kind === "plan_rejected") box.append(chatIcon("warn")); }
+  const tools = chatToolsLine(m.tools);
+  if (tools) { const t = homeEl("div", undefined, "msg-tools"); t.append(chatIcon("doc"), homeEl("span", tools)); box.append(t); }
+  if (m.text) { const p = homeEl("p", String(m.text), "msg-text"); if (m.created_at) p.title = localTime(m.created_at); box.append(p); }
+  return box;
+}
+/** 对话区里的一段段内容:消息,以及跟在消息后面的计划卡。 */
+function chatFlowItems(){
+  return chatTimeline(chatData.messages || [], chatData.plans || []).map((x) => x.kind === "plan" ? chatPlan(x.plan, x.latest, x.appliedRev) : chatMessage(x.message));
+}
+// ── 计划卡 ──────────────────────────────────────────────────────────────
+// 勾选和执行线的改动先留在本地(sessionStorage)并标出;发消息或建卡前先 PUT 成新版本。建卡只发生在「按计划建卡」。
+let chatPlanBusy = false, chatPlanNote = null;          // 正在存 / 建卡;上一次存或建卡的结果 { tone, text, issues }
+const chatPlanOpen = new Set();                         // 手机上展开的子任务行 "版本:序号"
+const chatLines = () => LINES.filter((l) => !REVIEW_LINES.includes(l));
+const chatLatestPlan = () => (chatData?.plans || []).reduce((best, p) => !best || p.rev > best.rev ? p : best, null);
+const chatPlanDraft = () => (chatStore().plan || {})[chatKey()] || null;
+function chatPlanDraftSet(draft){
+  const plan = { ...(chatStore().plan || {}) };
+  if (draft) plan[chatKey()] = draft; else delete plan[chatKey()];
+  chatSave({ plan });
+}
+/** 这版计划建出的子任务卡里还没放行的卡号(要你确认的卡建好后不放行);看板的卡还没读到 = null。 */
+function chatPending(plan){
+  if (!plan.applied || !homeReady) return null;
+  return (Array.isArray(plan.applied.task_ids) ? plan.applied.task_ids : []).filter((id) => { const t = byId.get(Number(id)); return !!t && t.status === "not_started" && !t.released; });
+}
+function chatPlanChange(plan, n, patch){
+  chatPlanDraftSet(planEdit(plan, chatPlanDraft(), n, patch));
+  chatPlanNote = null; renderChat();
+}
+/** 本地有改动就存成新版本(作者是人),返回建卡该用的那一版;没有改动原样返回最新一版。 */
+async function chatPlanFlush(){
+  const plan = chatLatestPlan();
+  if (!plan || plan.applied) return plan;
+  const body = planPutBody(plan, chatPlanDraft());
+  if (!body) return plan;
+  const v = await chatApi("PUT", chatPath("/plans/" + plan.rev), body);
+  chatPlanDraftSet(null);
+  if (chatData && v.plan) chatData = { ...chatData, plans: [...chatData.plans.filter((p) => p.rev !== v.plan.rev), v.plan] };
+  return v.plan || plan;
+}
+async function chatPlanApply(){
+  if (chatPlanBusy || chatId == null) return;
+  chatPlanBusy = true; chatPlanNote = null; renderChat();
+  try {
+    const plan = await chatPlanFlush();
+    const v = await chatApi("POST", chatPath("/plans/" + plan.rev + "/apply"), { expected_rev: plan.rev });
+    const demoted = Array.isArray(v.demoted) ? v.demoted : [], gated = Array.isArray(v.needs_release) ? v.needs_release : [];
+    const said = [];
+    if (gated.length) said.push(gated.length + " 张要你确认后放行：" + gated.map((id) => "#" + id).join("、") + "。点卡号打开，核对后放行。");
+    if (demoted.length) said.push(demoted.length + " 项的执行线不在可用范围，已改成不指定线：" + demoted.map((d) => String(d.subject || "第 " + d.n + " 项")).join("、") + "。");
+    if (said.length) chatPlanNote = { tone: gated.length ? "need" : "warn", text: said.join(""), issues: null };
+    await Promise.allSettled([chatLoad(true), refresh()]);
+  } catch (e) {
+    chatPlanNote = { tone: "bad", text: chatErrorText(e), issues: Array.isArray(e.issues) ? e.issues : null };
+    await chatLoad(true);
+  } finally { chatPlanBusy = false; renderChat(); }
+}
+function chatBadge(text, tone, ic){
+  const b = homeEl("span", text, "badge"); b.dataset.tone = tone; b.prepend(chatIcon(ic));
+  return b;
+}
+function chatPlan(plan, latest, appliedRev){
+  const lines = chatLines();
+  const v = planView(plan, { lines, lineName: lineLabel, draft: latest ? chatPlanDraft() : null, latest, appliedRev, pending: chatPending(plan) });
+  const goal = homeEl("div", undefined, "plan-goal");
+  goal.append(homeEl("span", "目标", "plan-k"), homeEl("h3", v.goal.subject));
+  if (v.goal.description) goal.append(homeEl("p", v.goal.description));
+  const rows = chatPlanRows(plan, v, lines);
+  // 旧版本:折成一行,点开只读。
+  if (v.state === "old") {
+    const fold = homeEl("details", undefined, "plan plan-old");
+    fold.append(homeEl("summary", "计划第 " + v.rev + " 版 · 已有新版本"), goal, rows);
+    return fold;
+  }
+  const card = homeEl("section", undefined, "plan"); card.dataset.state = v.state;
+  card.setAttribute("aria-label", "计划第 " + v.rev + " 版");
+  const head = homeEl("div", undefined, "plan-h");
+  head.append(homeEl("b", "计划 · 第 " + v.rev + " 版"),
+    v.state === "applied" ? chatBadge("已建卡", "ok", "success") : v.state === "open" ? chatBadge("待建卡", "need", "wait") : chatBadge("不再建卡", "quiet", "wait"),
+    homeEl("span", v.author === "human" ? "你改过的版本" : "协调线拟定", "plan-by"));
+  card.append(head, goal, rows, chatPlanFoot(v, latest));
+  return card;
+}
+function chatPlanRows(plan, v, lines){
+  const list = homeEl("ul", undefined, "plan-rows");
+  const head = homeEl("li", undefined, "pl-head"); head.setAttribute("aria-hidden", "true");
+  for (const k of ["建", "子任务", "执行线", "依赖", "要你确认"]) head.append(homeEl("span", k));
+  list.append(head);
+  for (const t of v.tasks) {
+    const key = v.rev + ":" + t.n, row = homeEl("li", undefined, "pl-row");
+    if (!t.enabled) row.dataset.off = "";
+    if (t.changed.length) row.dataset.dirty = "";
+    if (chatPlanOpen.has(key)) row.dataset.open = "";
+    const ck = homeEl("label", undefined, "pl-ck"), box = homeEl("input");
+    box.type = "checkbox"; box.checked = t.enabled; box.disabled = !v.editable || chatPlanBusy; box.dataset.fk = "ck:" + key;
+    box.setAttribute("aria-label", "建第 " + t.n + " 项：" + t.subject);
+    box.addEventListener("change", () => chatPlanChange(plan, t.n, { enabled: box.checked }));
+    ck.append(box);
+    const sub = homeEl("div", undefined, "pl-sub");
+    sub.append(homeEl("b", t.n + ". " + t.subject));
+    if (t.summary) sub.append(homeEl("span", t.summary, "pl-sum"));
+    if (t.changed.length) sub.append(homeEl("span", "已改，未提交", "pl-mark"));
+    else if (t.edited.length) sub.append(homeEl("span", "你改过", "pl-mark"));
+    const meta = homeEl("div", undefined, "pl-meta");
+    const cell = (k) => { const c = homeEl("div", undefined, "pl-cell"); c.dataset.k = k; return c; };
+    const lineCell = cell("执行线");
+    if (v.editable) {
+      const sel = homeEl("select"); sel.dataset.fk = "line:" + key; sel.disabled = chatPlanBusy;
+      sel.setAttribute("aria-label", "第 " + t.n + " 项的执行线");
+      const option = (value, text) => { const o = homeEl("option", text); o.value = value; return o; };
+      sel.append(option("", "不指定线"), ...lines.map((l) => option(l, lineLabel(l))));
+      if (!t.lineKnown) sel.append(option(t.line, t.lineName));
+      sel.value = t.line || "";
+      sel.addEventListener("change", () => chatPlanChange(plan, t.n, { line: sel.value || null }));
+      lineCell.append(sel);
+    } else lineCell.append(homeEl("span", t.lineName));
+    if (!t.lineKnown) lineCell.append(homeEl("span", "这条线不在可用范围", "pl-warn"));
+    const dep = cell("依赖");
+    dep.append(homeEl("span", t.after.length ? "第 " + t.after.join("、") + " 项之后" : "无", t.after.length ? "" : "pl-dim"));
+    if (t.afterOff.length) dep.append(homeEl("span", "第 " + t.afterOff.join("、") + " 项不建，建卡时不带这条依赖", "pl-warn"));
+    const confirm = cell("要你确认");
+    const gate = t.needsConfirm ? chatBadge("要你确认", "quiet", "wait") : homeEl("span", "不用", "pl-dim");
+    if (t.needsConfirm) gate.title = "建卡后不放行，你确认后放行才会被领取";
+    confirm.append(gate);
+    if (t.needsBash) confirm.append(homeEl("span", "要跑命令", "pl-dim"));
+    meta.append(lineCell, dep, confirm);
+    const more = homeEl("button", undefined, "pl-more icon-btn ghost"); more.type = "button"; more.dataset.fk = "more:" + key;
+    more.setAttribute("aria-expanded", String(chatPlanOpen.has(key)));
+    more.setAttribute("aria-label", "第 " + t.n + " 项的执行线、依赖和确认"); more.append(chatIcon("chevron"));
+    more.addEventListener("click", () => { if (chatPlanOpen.has(key)) chatPlanOpen.delete(key); else chatPlanOpen.add(key); renderChat(); });
+    row.append(ck, sub, meta, more);
+    list.append(row);
+  }
+  return list;
+}
+function chatPlanFoot(v, latest){
+  const foot = homeEl("div", undefined, "plan-f");
+  if (v.applied) {
+    const links = homeEl("span", undefined, "plan-links");
+    const link = (id, text) => {
+      const b = homeEl("button", text, "plan-id"); b.type = "button"; b.dataset.fk = "card:" + id; b.title = "打开这张卡";
+      b.addEventListener("click", () => openSide({ id, uid: byId.get(Number(id))?.task_uid || null, item: null }));
+      return b;
+    };
+    if (v.applied.goalId != null) links.append(link(v.applied.goalId, "目标 #" + v.applied.goalId));
+    for (const id of v.applied.taskIds) {
+      const wait = v.applied.pending.some((x) => chatSame(x, id)), b = link(id, "#" + id + (wait ? " 待放行" : ""));
+      if (wait) { b.dataset.need = ""; b.title = "打开这张卡，核对后放行"; }
+      links.append(b);
+    }
+    foot.append(homeEl("span", v.total, "plan-sum"), links);
+  } else {
+    foot.append(homeEl("span", v.total, "plan-sum"));
+    if (v.editable) {
+      if (v.dirty) {
+        const undo = homeEl("button", "撤销改动", "ghost"); undo.type = "button"; undo.dataset.fk = "undo"; undo.disabled = chatPlanBusy;
+        undo.addEventListener("click", () => { chatPlanDraftSet(null); chatPlanNote = null; renderChat(); });
+        foot.append(undo);
+      }
+      const running = chatData?.conversation?.status === "running";
+      const go = homeEl("button", chatPlanBusy ? "正在建卡" : "按计划建卡", "pri"); go.type = "button"; go.dataset.fk = "apply";
+      go.disabled = !v.canApply || chatPlanBusy || running;
+      if (running) go.title = "协调线回复完再建卡";
+      go.addEventListener("click", chatPlanApply);
+      foot.append(go);
+      if (v.dirty) foot.append(homeEl("p", v.dirty + " 处改动还没提交。发消息或建卡时先存成新版本。", "plan-note"));
+    }
+  }
+  if (chatPlanNote && latest) {
+    const note = homeEl("p", chatPlanNote.text, "plan-note"); note.dataset.tone = chatPlanNote.tone;
+    foot.append(note);
+    for (const i of chatPlanNote.issues || []) {
+      const line = homeEl("p", (Number.isInteger(i.n) ? "第 " + i.n + " 项：" : "") + String(i.message || ""), "plan-note"); line.dataset.tone = "bad";
+      foot.append(line);
+    }
+  }
+  return foot;
+}
+function chatEmpty(){
+  const box = homeEl("div", undefined, "chat-empty");
+  box.append(chatIcon("chat"), homeEl("h3", "要做什么"), homeEl("p", "写下要做的事。协调线先回一份计划，你点「按计划建卡」才建卡。"));
+  const eg = homeEl("div", undefined, "chat-eg");
+  for (const text of CHAT_EXAMPLES) {
+    const b = homeEl("button", text); b.type = "button";
+    b.addEventListener("click", () => { chatInput.value = text; chatGrow(); chatDraftSave(); chatSync(); chatInput.focus(); });
+    eg.append(b);
+  }
+  box.append(eg);
+  return box;
+}
+/** 重建一块内容,焦点留在同一个控件上(data-fk),不让键盘操作的人丢位置。 */
+function chatFill(box, sig, build){
+  if (homeSig.get(box.id) === sig) return false;
+  homeSig.set(box.id, sig);
+  const held = box.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
+  box.replaceChildren(...build());
+  if (held) for (const el of box.querySelectorAll("[data-fk]")) if (el.dataset.fk === held) { el.focus({ preventScroll: true }); break; }
+  return true;
+}
+/** 输入区:状态一行和发送按钮。打字时也走这里(超过字数上限要当场写明),不动消息流。 */
+function chatSync(){
+  const conversation = chatData?.conversation || null;
+  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value });
+  const state = document.getElementById("chat-state");
+  state.hidden = !line;
+  if (line) state.dataset.tone = line.tone;
+  homeFill(state, JSON.stringify(line), () => {
+    if (!line) return [];
+    const out = [chatIcon(line.icon), homeEl("span", line.text, "cs-text")];
+    if (line.act) {
+      const b = homeEl("button", line.label); b.type = "button";
+      b.addEventListener("click", () => line.act === "stop" ? chatStop() : line.act === "retry" ? chatRetryTurn() : chatSend(chatFail?.text));
+      out.push(b);
+    }
+    return out;
+  });
+  document.getElementById("chat-send").disabled = !chatCanSend({ coordinator: chatCoord, conversation, sending: chatSending, text: chatInput.value });
+}
+function renderChat(){
+  if (homeView !== "home") return;
+  const conversation = chatData?.conversation || null, row = (chatRows || []).find((c) => chatSame(c.id, chatId));
+  // 左栏:对话列表
+  chatFill(document.getElementById("chat-items"), JSON.stringify([chatRows, chatRowsError, chatId]), () => {
+    if (chatRows === null) return [homeEl("p", "正在读取…", "cl-empty")];
+    const out = [];
+    if (chatRowsError) out.push(homeEl("p", "对话列表暂时读不到：" + chatRowsError, "cl-empty"));
+    if (!chatRows.length && !chatRowsError) out.push(homeEl("p", "还没有对话。", "cl-empty"));
+    for (const c of chatRows) {
+      const b = homeEl("button", undefined, "cl-item"); b.type = "button"; b.dataset.st = String(c.status || "idle"); b.dataset.fk = "conv:" + c.id;
+      if (chatSame(c.id, chatId)) b.setAttribute("aria-current", "true");
+      if (c.status === "failed" && c.error) b.title = String(c.error);
+      b.append(homeEl("span", String(c.title || "").trim() || "未命名对话", "cl-t"), homeEl("span", chatListLine(c), "cl-s"));
+      b.addEventListener("click", () => chatOpen(c.id));
+      out.push(b);
+    }
+    return out;
+  });
+  // 中栏:标题、消息流
+  const title = String(conversation?.title || row?.title || "").trim();
+  document.getElementById("chat-title").textContent = chatId == null ? "新对话" : title || "未命名对话";
+  const usage = conversation?.usage;
+  document.getElementById("chat-title").title = usage && usage.turns ? "协调线回复了 " + usage.turns + " 轮" + (typeof usage.cost_usd === "number" ? "，约 " + usage.cost_usd.toFixed(2) + " 美元" : "") : "";
+  const flow = document.getElementById("chat-flow");
+  const rebuilt = chatFill(flow, JSON.stringify([chatId, chatData, chatDataError, chatFlowSig()]), () => {
+    if (chatId == null) return [chatEmpty()];
+    if (!chatData) return [homeEl("p", chatDataError ? "这个对话暂时读不到：" + chatDataError : "正在读取对话…", "cl-empty")];
+    return chatFlowItems();
+  });
+  if (rebuilt && chatStick) flow.scrollTop = flow.scrollHeight;
+  chatSync();
+}
+/** 消息流里除了对话数据之外、变了也要重画的东西(计划卡的本地改动等)。 */
+function chatFlowSig(){ return [chatPlanDraft(), chatPlanBusy, chatPlanNote, [...chatPlanOpen], chatLines(), LINE_LABELS, (chatData?.plans || []).map(chatPending)]; }
+// 离底部不远才跟着新内容滚到底:往上翻看旧消息时不被拽回去。
+document.getElementById("chat-flow").addEventListener("scroll", (e) => {
+  const el = e.currentTarget; chatStick = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+}, { passive: true });
+chatInput.addEventListener("input", () => { chatGrow(); chatDraftSave(); chatSync(); });
+// Enter 发送,Shift+Enter 换行;输入法选字时的 Enter 不发。触摸屏的软键盘没有 Shift+Enter:Enter 换行,用按钮发。
+chatInput.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229 || matchMedia("(pointer:coarse)").matches) return;
+  e.preventDefault(); chatSend();
+});
+document.getElementById("chat-send").addEventListener("click", () => chatSend());
+document.getElementById("chat-new").addEventListener("click", () => { chatOpen(null); chatInput.focus({ preventScroll: true }); });
+document.getElementById("chat-list-open").addEventListener("click", () => { chatDrawer(true); document.getElementById("chat-new").focus({ preventScroll: true }); });
+document.getElementById("chat-list-close").addEventListener("click", () => chatDrawer(false));
+document.getElementById("chat-scrim").addEventListener("click", () => chatDrawer(false));
+document.getElementById("home-work-toggle").addEventListener("click", () => chatWork(!chatShell.classList.contains("work-open")));
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !document.getElementById("task-side").hidden || document.querySelector("dialog[open]")) return;
+  if (chatShell.classList.contains("list-open")) chatDrawer(false);
+  else if (chatShell.classList.contains("work-open")) chatWork(false);
+});
+{ const saved = chatStore(); chatId = saved.cur ?? null; chatInput.value = (saved.input || {})[chatKey()] || ""; }
+
 homeNarrow.addEventListener("change", () => renderHomeViews());
 setView(homeView);
+chatGrow();
 
 refresh();
 setInterval(tick, 1000);        // running numbers update in place (no full redraw = open state survives)
