@@ -410,6 +410,7 @@
   .side-trace{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-1) var(--sp-3);font-size:var(--fs-sm)}
   .side-trace dt{color:var(--dim)}
   .side-trace dd{margin:0;overflow-wrap:anywhere}
+  .zc-side{margin:var(--sp-2) 0}
   .side-links{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin:var(--sp-2) 0}
   .side-acts{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-2)}
   /* 卡片最上面给人看的小块(卡 #14):标签在左、内容在右;窄屏标签换到上一行。
@@ -498,9 +499,16 @@
   .cv-cells dd{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:2px var(--sp-2);font-variant-numeric:tabular-nums}
   .cv-note{color:var(--dim);font-weight:400}
   .cv-next{margin:var(--sp-2) 0 0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  /* Zcode 独立执行循环:与 CLI 版本同一套格子;标题行右侧循环状态徽标,下一行白话原因。 */
+  .zcode-box{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--line)}
+  .zcode-box .cv-head .badge{flex:none}
+  .zc-model{color:var(--dim);font-size:var(--fs-sm);font-weight:400}
+  .zc-off{margin:0;color:var(--dim);font-size:var(--fs-sm)}
+  .zc-reason{margin:0 0 var(--sp-2);font-size:var(--fs-sm);overflow-wrap:anywhere}
   @media (max-width:620px){
     .cli-versions{padding:var(--sp-3)}
     .cv-cells{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .zcode-box{padding:var(--sp-3)}
   }
   /* 用量:数字用等宽数字;口径说明在 title,不进正文。四个汇总数不用强调色。 */
   .side-usage-line{margin:0 0 var(--sp-1);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
@@ -1533,6 +1541,8 @@
     <div class="rig" id="rig"></div>
     <!-- 执行器 CLI 版本:接口读得到才出现(GET /api/cli-versions),读不到整块不出。 -->
     <div class="cli-versions" id="cli-versions" hidden></div>
+    <!-- Zcode 独立执行循环的只读状态(GET /api/zcode/status):接口读得到才出现,不进 refresh()。 -->
+    <div class="zcode-box" id="zcode-box" hidden></div>
     <div class="cfg" id="cfg"></div>
   </section>
   <section class="set-sec set-target" id="set-coord" aria-labelledby="set-coord-h">
@@ -1750,6 +1760,45 @@ function cliVersionCells(c, when = (iso) => String(iso)){
     : c.npm_managed === false ? "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs"
     : "运行 node cli/upgrade-cli.mjs " + c.id + " 查看会做什么，加 --yes 才执行";
   return { id: String(c.id ?? ""), name: String(c.name || c.id || "执行器"), cells: [current, latest, checked, tested], next };
+}
+// Zcode 独立执行循环(GET /api/zcode/status,只读)。循环的状态词、分派的阶段与结果;认不得的写「待核实」。
+const ZCODE_LOOP = { __proto__: null, not_configured: ["未配置", "quiet", "wait"], disabled: ["已关闭", "quiet", "stop"], blocked: ["受阻", "warn", "warn"],
+  budget_exhausted: ["预算用完", "warn", "warn"], unsettled: ["有分派没结清", "run", "wait"], needs_attention: ["要你处理", "need", "warn"],
+  ready: ["有卡待接手", "run", "play"], idle: ["空闲", "ok", "success"] };
+const ZCODE_PHASE = { __proto__: null, prepared: "已准备", launch_committed: "已启动", settled: "已结算", abandoned: "未启动", interrupted: "已中断" };
+const ZCODE_OUTCOME = { __proto__: null, success: "成功", failed: "失败", timeout: "超时", cancelled: "已取消" };
+const ZCODE_REQUEST = { __proto__: null, waiting_policy: "等待策略核对", waiting_release: "等待放行", waiting_executor: "等待 Zcode 接手",
+  claimed: "Zcode 已接手", ended: "已结束", cancelled: "已撤回" };
+/** 设置页「Zcode」块的字。没配置只有一句;配置读不到时开关与预算写「待核实」。 */
+function zcodeView(s, when = (iso) => String(iso)){
+  if (!s || typeof s !== "object" || !s.loop || typeof s.loop !== "object") return null;
+  const reason = typeof s.loop.reason === "string" ? s.loop.reason.trim() : "";
+  if (s.configured !== true) return { configured: false, text: "没有配置 Zcode", title: reason };
+  const [label, tone, ic] = ZCODE_LOOP[s.loop.state] || ["待核实", "quiet", "wait"];
+  const sw = s.switches && typeof s.switches === "object" ? s.switches : {}, b = s.budget && typeof s.budget === "object" ? s.budget : null;
+  const d = s.last_dispatch && typeof s.last_dispatch === "object" ? s.last_dispatch : null;
+  const word = (v, on, off) => v === true ? on : v === false ? off : "待核实";
+  const num = (v) => Number.isSafeInteger(v) && v >= 0;
+  const switches = { k: "开关", v: "预算" + word(sw.budget_enabled, "已启用", "未启用") + " · 启动" + word(sw.launch_enabled, "已打开", "已关闭"),
+    st: sw.budget_enabled === true && sw.launch_enabled === true ? "ok" : typeof sw.budget_enabled !== "boolean" || typeof sw.launch_enabled !== "boolean" ? "unknown" : "warn" };
+  const budget = b && num(b.used) && num(b.limit)
+    ? { k: "预算", v: "已用 " + b.used + " / 上限 " + b.limit + (num(b.reserved) && b.reserved > 0 ? " · 预留 " + b.reserved : ""), st: b.used >= b.limit ? "warn" : "ok" }
+    : { k: "预算", v: "待核实", st: "unknown" };
+  const last = d ? { k: "最近一次分派", st: d.outcome === "success" ? "ok" : d.outcome == null ? "unknown" : "warn",
+      v: (Number.isSafeInteger(d.task_id) ? "#" + d.task_id + " · " : "") + (ZCODE_PHASE[d.phase] || "待核实") +
+         (d.outcome == null ? "" : " · " + (ZCODE_OUTCOME[d.outcome] || "待核实")) + (d.at ? " · " + when(d.at) : "") }
+    : { k: "最近一次分派", v: "还没有分派", st: "unknown" };
+  const beat = typeof s.loop.last_heartbeat_at === "string" && s.loop.last_heartbeat_at
+    ? { k: "心跳", v: when(s.loop.last_heartbeat_at), st: "ok" } : { k: "心跳", v: "没有心跳", st: "unknown" };
+  return { configured: true, state: { label, tone, icon: ic }, reason, model: typeof s.model === "string" ? s.model.trim() : "", cells: [switches, budget, last, beat] };
+}
+/** Zcode 卡的分派请求状态与拒收白话(卡上的 zcode 字段);不是 Zcode 卡返回 null。 */
+function zcodeCardRows(z){
+  if (!z || typeof z !== "object") return null;
+  const rows = [["Zcode 分派请求", z.request_state == null ? "还没有分派请求" : ZCODE_REQUEST[z.request_state] || "待核实"]];
+  if (typeof z.refusal_text === "string" && z.refusal_text.trim()) rows.push(["拒收原因", z.refusal_text.trim()]);
+  if (Number.isSafeInteger(z.dispatches)) rows.push(["分派次数", z.dispatches + " 次"]);
+  return rows;
 }
 // ── /display-copy ──
 const COLS = ["goal", "not_started", "in_progress", "waiting", "done"];
@@ -3512,8 +3561,15 @@ function renderRig(){
   const rig = document.getElementById("rig");
   const faults = homeLineFaults(workers, LINE_LABELS);
   homeFill(document.getElementById("rig-faults"), JSON.stringify(faults), () => faults.map((a) => homeAlertRow(a)));
+  const zc = zcodeLines();
   rig.innerHTML = (workers.length ? "" : `<p class="set-empty">还没有执行线。用下面的「加线」加一条,或在本机配置文件里写好后重启看板。</p>`) + workers.map((w) => {
     const label = lineLabel(w.line);
+    // Zcode 线由独立循环执行:不给模型、强度与并行的齿轮,启动钮置灰。
+    if (zc.has(w.line))
+      return `<div class="wk zc" title="由 node cli/zcode-worker.mjs watch 在它自己的终端里执行">` +
+             `<span class="st" aria-hidden="true"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}</span>` +
+             roleBadge(w) + `<span class="wk-state">由独立循环执行</span><span class="wk-log"><span class="tail"></span></span>` +
+             `<span class="wk-acts"><button type="button" disabled aria-label="${esc(label)}由独立循环执行">${icon("play")}启动</button></span></div>`;
     const slots = (w.slots || []).filter((sl) => sl.running);
     const xN = slots.length > 1 ? `×${slots.length}` : "";
     const open = cfg.classList.contains("show") && cfgLine === w.line;
@@ -6184,7 +6240,7 @@ function setView(v){
   // The columns' shell (headers, goal box) is built once, from meta — never before the first
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); }
-  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
+  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); zcodeLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
   else {
     homeSig.clear(); renderHomeViews(); loadHomeExtras(true);
     if (v === "home" && homeReady) chatLoad(true);
@@ -6552,7 +6608,7 @@ function sideReleaseNeed(t){
 function sideExecution(t, need = false, protocol = false){
   const section = homeEl("section", undefined, "side-sec");
   section.id = "task-side-execution";
-  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by, t.kind, t.line, t.aggregate_version, need, protocol]);
+  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by, t.kind, t.line, t.aggregate_version, need, protocol, t.zcode ?? null]);
   const checking = t.status === "not_started" && !t.released, goal = t.kind === "goal";
   if (need) { section.dataset.tone = "need"; section.append(homeEl("p", "要你做什么", "side-brief-k")); }
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
@@ -6574,6 +6630,13 @@ function sideExecution(t, need = false, protocol = false){
   section.append(homeEl("h3", checking ? "放行前核对执行配置" : "派发与领取"));
   section.append(homeEl("p", t.line ? "交给「" + lineLabel(t.line) + "」" : "未指派执行线", "side-state"));
   section.append(sideSteps(t, trace));
+  // Zcode 卡:分派请求状态与拒收原因常显在步骤条下面,只读。
+  const zcodeRows = zcodeCardRows(t.zcode);
+  if (zcodeRows){
+    const zl = homeEl("dl", undefined, "side-trace zc-side");
+    for (const [label, value] of zcodeRows) zl.append(homeEl("dt", label), homeEl("dd", value));
+    section.append(zl);
+  }
   const rows = [
     ["验证续修", `最多 ${t.verification_repair?.max_rounds || 1} 轮（含首轮）；同一会话与原档位，环境异常转等待`],
     ["证据正文", t.verification_repair?.evidence_contract ? `固定四节，最多 ${t.verification_repair.evidence_contract.max_chars} Unicode 字符；宿主附录另计` : "沿原证据合同"],
@@ -7477,6 +7540,50 @@ function renderCliVersions(){
       if (r.next) row.append(homeCmdText(homeEl("p", undefined, "cv-next"), r.next));
       out.push(row);
     }
+    return out;
+  });
+}
+// ── Zcode 独立执行循环:GET /api/zcode/status(只读)。进入设置页时读一次,停留期间每 30 秒一次;不进 refresh()。
+//    404 或旧形状整块不出;有过结果后读不到写「暂时读不到」并保留上次结果。面板对它不做任何写操作。
+const zcodeStatusSlot = optionalSlot();
+async function zcodeLoad(){
+  const asked = await optionalLoad(zcodeStatusSlot, "/api/zcode/status", (v) => !!v && typeof v === "object" && !!v.loop && typeof v.loop === "object");
+  if (asked){ renderZcode(); renderRig(); }
+}
+setInterval(() => {
+  if (homeView === "settings" && !document.hidden && Date.now() - zcodeStatusSlot.at >= 30000) zcodeLoad();
+}, 10000);
+/** Zcode 线:有卡带 zcode 字段的线;还没有这样的卡时,Zcode 已配置就认线名 zcode。 */
+function zcodeLines(){
+  const out = new Set();
+  for (const t of tasks) if (t && t.zcode && typeof t.line === "string") out.add(t.line);
+  if (!out.size && zcodeStatusSlot.value?.configured === true && LINES.includes("zcode")) out.add("zcode");
+  return out;
+}
+function renderZcode(){
+  const box = document.getElementById("zcode-box"), v = zcodeView(zcodeStatusSlot.value, localTime);
+  box.hidden = !v;
+  homeFill(box, JSON.stringify([v, zcodeStatusSlot.stale]), () => {
+    if (!v) return [];
+    const head = homeEl("div", undefined, "cv-head"), h = homeEl("h4", "Zcode");
+    if (v.model) h.append(" ", homeEl("span", v.model, "zc-model"));
+    head.append(h);
+    if (zcodeStatusSlot.stale) head.append(homeEl("span", "暂时读不到", "cv-stale"));
+    if (!v.configured){
+      const off = homeEl("p", v.text, "zc-off"); if (v.title) off.title = v.title;
+      return [head, off];
+    }
+    const badge = homeEl("span", v.state.label, "badge"); badge.dataset.tone = v.state.tone; badge.insertAdjacentHTML("afterbegin", icon(v.state.icon));
+    head.append(badge);
+    const out = [head];
+    if (v.reason) out.push(homeCmdText(homeEl("p", undefined, "zc-reason"), v.reason));
+    const cells = homeEl("dl", undefined, "cv-cells");
+    for (const c of v.cells){
+      const cell = homeEl("div", undefined, "rs"); cell.dataset.st = c.st;
+      cell.append(homeEl("dt", c.k), homeEl("dd", c.v));
+      cells.append(cell);
+    }
+    out.push(cells);
     return out;
   });
 }

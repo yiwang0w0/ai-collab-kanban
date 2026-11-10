@@ -8,7 +8,7 @@ const start = source.indexOf("// ── display-copy(pure;tests/panelcopytest.mj
 const end = source.indexOf("// ── /display-copy ──", start);
 assert.ok(start >= 0 && end > start, "未找到纯展示文案测试边界");
 const copy = new Function(source.slice(source.indexOf("\n", start) + 1, end) +
-  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells };")();
+  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells, zcodeView, zcodeCardRows };")();
 
 function panelSection(start, end) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
@@ -151,6 +151,25 @@ test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态
   const block = panelSection("function renderCliVersions(){", "/** The three fleet reads");
   assert.deepEqual([...block.matchAll(/homeEl\("button", ([^)]*)\)/g)].map((m) => m[1]), ['cliChecking ? "核对中…" : "重新核对"']);
   assert.ok(block.includes('badge.dataset.tone = "warn"') && block.includes('homeCmdText(homeEl("p", undefined, "cv-next"), r.next)'));
+});
+
+test("Zcode 只读块：没配置一句话；开关、预算、最近分派、心跳四格，读不到的写「待核实」；卡上写分派请求状态与拒收白话；执行线行不给齿轮、启动钮置灰", () => {
+  const when = (iso) => "T" + iso.slice(11, 16);
+  assert.deepEqual(copy.zcodeView({ configured: false, loop: { state: "not_configured", reason: "看板没有指向…" } }), { configured: false, text: "没有配置 Zcode", title: "看板没有指向…" });
+  const v = copy.zcodeView({ configured: true, switches: { budget_enabled: true, launch_enabled: false, released_env: null }, budget: { used: 1, limit: 1, reserved: 0 },
+    loop: { state: "budget_exhausted", reason: "调用预算已用完，1 / 1 次。", last_heartbeat_at: "2026-11-10T06:05:00.000Z" },
+    last_dispatch: { task_id: 12, phase: "settled", outcome: "success", at: "2026-11-10T06:00:00.000Z" }, model: "GLM-5.3" }, when);
+  assert.deepEqual([v.state.label, v.state.tone, v.reason, v.model, v.cells.map((c) => [c.k, c.v, c.st])], ["预算用完", "warn", "调用预算已用完，1 / 1 次。", "GLM-5.3", [
+    ["开关", "预算已启用 · 启动已关闭", "warn"], ["预算", "已用 1 / 上限 1", "warn"], ["最近一次分派", "#12 · 已结算 · 成功 · T06:00", "ok"], ["心跳", "T06:05", "ok"]]]);
+  const broken = copy.zcodeView({ configured: true, switches: { budget_enabled: null, launch_enabled: null, released_env: null }, budget: null, loop: { state: "future", reason: "" } });
+  assert.deepEqual([broken.state.label, broken.cells.map((c) => c.v)], ["待核实", ["预算待核实 · 启动待核实", "待核实", "还没有分派", "没有心跳"]]);
+  assert.deepEqual(copy.zcodeCardRows({ request_state: "cancelled", refusal_code: "VERIFY_UNSUPPORTED", refusal_text: "带登记验证的卡不能交给 Zcode", refusal_source: "request", dispatches: 0 }),
+    [["Zcode 分派请求", "已撤回"], ["拒收原因", "带登记验证的卡不能交给 Zcode"], ["分派次数", "0 次"]]);
+  assert.deepEqual([copy.zcodeCardRows(undefined), copy.zcodeCardRows({ request_state: null, dispatches: 0 })[0][1]], [null, "还没有分派请求"]);
+  const rig = panelSection("function renderRig(){", "// ── coord-copy");
+  const zc = rig.slice(rig.indexOf("if (zc.has(w.line))"), rig.indexOf("const slots ="));
+  assert.ok(zc.includes("由独立循环执行") && zc.includes("<button type=\"button\" disabled") && !zc.includes("data-cfg") && !zc.includes("data-wk") && !zc.includes("xN"),
+    "Zcode 线:没有齿轮和并行数,启动钮置灰、不带 data-wk");
 });
 
 test("浏览器错误使用中文说明，中文消息及未知原始错误完整保留", () => {
@@ -458,7 +477,8 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
     append(...nodes) { this.children.push(...nodes); }
     get textContent() { return this.text + this.children.map((n) => n.textContent).join(""); }
   }
-  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高", lineLabel: (line) => line });
+  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高", lineLabel: (line) => line,
+    zcodeCardRows: copy.zcodeCardRows });
   vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t, need = false, protocol = false){", "function sideRelationshipBox(t){"), context);
   const card = { id: 4, status: "not_started", released: false, aggregate_version: 7,
     verification_repair: { max_rounds: 3 }, verification_repair_digest: "b".repeat(64), execution_profile: {
