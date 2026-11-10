@@ -2667,6 +2667,8 @@ function noteForceRelease(lock) {
   // 理由可以是多行;流水一行一件,所以折成一行再记。
   coord.appendJournal(db, "operator", { kind: "lock.force_release", body: approvals.oneLine(`强制释放 ${lock.resource}:${lock.release_reason}`, 300) });
 }
+/** 释放请求带的 lock_id / holder 与当前记录不一致(409 LOCK_CHANGED)时的一句话。协作接口与批准接口共用。 */
+const lockChangedText = (l) => `锁已变化，没有释放:${l.resource} 现在是 ${l.holder_name} 持有的锁记录 #${l.lock_id}。刷新后再决定`;
 async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();
   if (m === "GET" && p === "/api/coord")
@@ -2718,7 +2720,8 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     if (boardRole !== "operator" && !asExecutor(req, res)) return;
     const b = await readBody(req);
     const actor = boardRole === "operator" ? { role: "operator" } : { role: "executor", id: req.executor.id };
-    const r = coord.release(db, actor, { resource: b.resource, force: b.force, reason: b.reason }, now, COORD_GRACE_MS);
+    const r = coord.release(db, actor, { resource: b.resource, force: b.force, reason: b.reason, lockId: b.lock_id, holder: b.holder }, now, COORD_GRACE_MS);
+    if (!r.ok && r.changed) return json(res, 409, { code: "LOCK_CHANGED", error: lockChangedText(r.lock), lock: r.lock });
     if (!r.ok) return json(res, 403, { error: `只有持有者 ${r.holder.holder_name} 能释放 ${r.holder.resource}`, holder: r.holder });
     if (actor.role === "operator") noteForceRelease(r.lock);
     emit("coord.lock", { resource: r.lock.resource, holder: r.lock.holder, op: actor.role === "operator" ? "force_release" : "release" });
@@ -3032,7 +3035,7 @@ function lockApprovalEntry(l) {
   const end = Date.parse(l.expected_end);
   return { item: { id: approvals.makeId("lock", l.id, end), kind: "lock", title: l.resource,
                    summary: approvals.oneLine(`${l.resource} 已逾期:${l.holder_name} · ${l.purpose}`),
-                   detail_ref: { type: "lock", id: l.id, resource: l.resource, api: "/api/coord/locks" },
+                   detail_ref: { type: "lock", id: l.id, lock_id: l.lock_id, holder: l.holder, resource: l.resource, api: "/api/coord/locks" },
                    created_at: l.overdue_notified_at || new Date(end + COORD_GRACE_MS).toISOString(), expected_version: end,
                    actions: [...APPROVE_REJECT], labels: { approve: "强制释放", reject: "保留" } },
            route: { resource: l.resource, lockId: l.id } };
@@ -3141,7 +3144,10 @@ function decideApproval(rawId, body, who) {
     // note 的上限是 500 字,锁理由是 200 字:理由取 note 折成一行后的前 200 字,全文留在决定记录的 note 里。
     // 没写 note 时不拿一句固定的话冒充理由:写明「未写理由」和是谁、经哪条通道决定的。
     const why = approvals.oneLine(d.note, coord.REASON_MAX) || `经批准接口强制释放(未写理由;${who.actor} 经 ${who.via})`;
-    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: why }, now, COORD_GRACE_MS);
+    // 决定正文可带客户端看到的 lock_id / holder,与事项对应的那次持有比对;不一致 409 LOCK_CHANGED,不释放、不留决定。
+    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: why,
+      lockId: body.lock_id ?? r.lockId, holder: body.holder }, now, COORD_GRACE_MS);
+    if (!rr.ok) throw approvalConflict(lockChangedText(rr.lock), { current, lock_code: "LOCK_CHANGED", lock: rr.lock });
     noteForceRelease(rr.lock);
     emit("coord.lock", { resource: rr.lock.resource, holder: rr.lock.holder, op: "force_release" });
     result = { resource: rr.lock.resource, released_at: rr.lock.released_at };
@@ -3167,6 +3173,7 @@ const decisionErrorBody = (e) => ({ error: String(e?.message || e),
   ...(e?.current !== undefined ? { current: e.current } : {}), ...(e?.decision ? { decision: e.decision } : {}),
   ...(e?.needs_force ? { needs_force: true, in_progress: e.in_progress } : {}),
   ...(e?.needs_confirm_rerun ? { needs_confirm_rerun: true } : {}),
+  ...(e?.lock_code ? { code: e.lock_code, lock: e.lock } : {}),
   ...(Number.isSafeInteger(e?.current_version) ? { expected_version: e.expected_version, current_version: e.current_version } : {}) });
 function sendDecision(res, id, body, who) {
   let out;

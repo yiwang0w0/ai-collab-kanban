@@ -677,6 +677,31 @@ test("协作安全:逾期锁经批准接口强制释放时,note 按接口上限 
   } finally { await B.stop(); }
 });
 
+test("协作安全:逾期锁的强制释放带 lock_id / holder 时与当前记录比对,不一致 409 LOCK_CHANGED,不释放、不留决定", { timeout: 120000 }, async () => {
+  const B = await board({ env: { BOARD_COORD_OVERDUE_GRACE_MIN: "0" } });
+  try {
+    const ex = await B.register("agent-lc");
+    assert.equal((await B.api("POST", "/api/coord/locks", ex, { resource: "device:lab-2", minutes: 0.01, purpose: "回归" })).status, 201);
+    await delay(1200);
+    const it = (await B.list()).find((a) => a.kind === "lock" && a.title === "device:lab-2");
+    assert.deepEqual([it.detail_ref.lock_id, it.detail_ref.holder], [it.detail_ref.id, "agent-lc"], "事项带锁记录编号与持有者,客户端照着回传");
+    const base = { decision: "approve", note: "持有者会话已结束", source: src("panel"), expected_version: it.expected_version };
+    for (const stale of [{ lock_id: it.detail_ref.id + 1 }, { holder: "agent-zz" }]) {
+      const r = await B.decide(it.id, { ...base, ...stale });
+      assert.equal(r.status, 409, `${JSON.stringify(stale)} → ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.code, "LOCK_CHANGED");
+      assert.equal(r.body.lock.holder, "agent-lc", "应答带当前那条记录");
+    }
+    assert.equal((await B.decide(it.id, { ...base, lock_id: "x" })).status, 400, "lock_id 不是正整数");
+    const locks = async () => (await B.api("GET", "/api/coord/locks", B.operator)).body.locks;
+    assert.equal((await locks()).length, 1, "不一致时不释放");
+    assert.equal((await B.api("GET", `/api/approvals/${encodeURIComponent(it.id)}`, B.operator)).body.decision, null, "也不留决定记录");
+    const ok = await B.decide(it.id, { ...base, lock_id: it.detail_ref.lock_id, holder: "agent-lc" });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal((await locks()).length, 0);
+  } finally { await B.stop(); }
+});
+
 test("协作安全:同一棵树再次待确认时是新的事项 id,旧的决定记录不会把它滤掉", { timeout: 120000 }, async () => {
   const B = await board({ config: { gated_subtree: "." } });
   try {

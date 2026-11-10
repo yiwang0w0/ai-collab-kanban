@@ -214,7 +214,7 @@ function byToken(db, token) {
 function lockOut(db, r, now = Date.now(), graceMs = 30 * 60000) {
   if (!r) return null;
   const name = db.prepare("SELECT name FROM coord_executors WHERE id=?").get(r.holder)?.name ?? r.holder;
-  return { id: Number(r.id), resource: r.resource, holder: r.holder, holder_name: name, purpose: r.purpose,
+  return { id: Number(r.id), lock_id: Number(r.id), resource: r.resource, holder: r.holder, holder_name: name, purpose: r.purpose,
            started_at: iso(r.started_at), expected_end: iso(r.expected_end),
            released_at: iso(r.released_at), released_by: r.released_by ?? null, release_reason: r.release_reason ?? null,
            overdue: r.released_at == null && now > Number(r.expected_end) + graceMs,
@@ -246,10 +246,19 @@ function acquire(db, executorId, { resource, minutes, purpose } = {}, now = Date
   }
 }
 
-/** 释放。执行者只能释放自己持有的锁;操作员必须 force:true 并写理由。 */
-function release(db, actor, { resource, force = false, reason } = {}, now = Date.now(), graceMs) {
+/** 释放。执行者只能释放自己持有的锁;操作员必须 force:true 并写理由。
+ *  lockId / holder 是请求方看到的那一次持有:给了就与当前记录比对,不一致返回 {ok:false, changed:true, lock},不释放。
+ *  不给时不比对(命令行与旧客户端照旧)。 */
+function release(db, actor, { resource, force = false, reason, lockId, holder } = {}, now = Date.now(), graceMs) {
+  const seenId = lockId == null || lockId === "" ? null : Number(lockId);
+  if (seenId !== null && (!Number.isSafeInteger(seenId) || seenId < 1 || !/^\d+$/.test(String(lockId))))
+    throw err(ERR.BAD_INPUT, `lock_id 必须是锁记录编号(正整数) —— 收到 ${JSON.stringify(lockId)}`);
+  if (holder != null && (typeof holder !== "string" || !holder))
+    throw err(ERR.BAD_INPUT, `holder 必须是执行者 id 字符串 —— 收到 ${JSON.stringify(holder)}`);
   const row = heldRow(db, resource);
   if (!row) throw err(ERR.NOT_FOUND, `资源 ${JSON.stringify(resource)} 当前没有被锁`);
+  if ((seenId !== null && Number(row.id) !== seenId) || (holder != null && row.holder !== holder))
+    return { ok: false, changed: true, lock: lockOut(db, row, now, graceMs) };
   if (actor.role === "operator") {
     const why = String(reason ?? "").trim();
     if (force !== true || !why) throw err(ERR.BAD_INPUT, "操作员强制释放需要 force:true 和理由 reason");
