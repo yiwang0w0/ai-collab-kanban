@@ -473,6 +473,19 @@ console.log(NL + "[⑨ doctor: 模型请求发往哪里]");
   ok("⭐no key and no full URL is ever printed", !out.includes("sk-relay-secret-value-0001") && !out.includes("relay.example.net/v1"));
   rmSync(join(home, ".claude", "settings.json")); rmSync(join(repo, ".claude", "settings.local.json")); rmSync(join(codexHome, "config.toml"));
   ok("nothing configured: says the CLIs use their default official endpoints", /PASS\s+模型请求走各 CLI 的默认官方地址/.test(doctor({})));
+  // ⑨b the write-allow rules (--allowedTools) this deployment would send, produced by the real
+  //     verify_lib function: the usual layout passes; a repo below the evidence directory and a
+  //     relative repo each fail with their own line. (The three shapes are pinned one by one in
+  //     tests/doctorallowtest.mjs; a path-less tool name cannot come out of the real function.)
+  ok("⭐the write-allow rules of the usual layout pass: three rules (work repo, evidence, verdicts), Edit with absolute paths, none above the work repo",
+     /PASS\s+写放行规则写法正确\(3 条/.test(out), line(/写放行规则/));
+  const above = doctor({ BOARD_DATA_DIR: join(TMP, "doc-data-2"), BOARD_REPO: join(TMP, "doc-data-2", "evidence", "repo") });
+  ok("⭐a work repo below the evidence directory: FAIL, the allowed directory is above the work repo",
+     /FAIL\s+写放行目录是工作仓的上级目录/.test(above) && !/PASS\s+写放行规则写法正确/.test(above), above.split(/\r?\n/).find((l) => /写放行/.test(l)) || "");
+  const relative = doctor({ BOARD_REPO: "doc-repo-relative" });
+  ok("⭐a relative work repo: FAIL, the allow rules cannot be built for the line that writes there",
+     /FAIL\s+写放行规则组不出来:执行线的放行目录不是绝对路径/.test(relative) && !/PASS\s+写放行规则写法正确/.test(relative),
+     relative.split(/\r?\n/).find((l) => /写放行/.test(l)) || "");
 }
 
 // ⑩ autostart (optional): one Task Scheduler task of the operator's account that runs exactly

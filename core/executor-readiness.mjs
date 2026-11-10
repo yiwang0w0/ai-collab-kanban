@@ -44,3 +44,21 @@ export function runtimeVerifications(db,workerNames){
  }
  return result;
 }
+
+/** 核对实际会发给 Claude CLI 的写放行规则（--allowedTools）的写法，返回发现的问题；空数组为合格。纯函数。
+ *  bare_tool：不带路径的工具名，等于放行任意路径。relative_path：路径不是绝对形，CLI 按项目根相对解释。
+ *  repo_ancestor：放行目录是工作仓的上级目录，工作仓之外也能写。只核写法，语义要用真实 CLI 量。 */
+export function checkWriteAllowRules(rules,{repoRoot,platform=process.platform}={}){
+ const win=platform==="win32",findings=[];
+ const form=p=>{let v=String(p).replace(/\\/g,"/").replace(/\/+$/,"");if(!win)v="//"+v.replace(/^\/+/,"");return win?v.toLowerCase():v;};
+ const repo=typeof repoRoot==="string"&&repoRoot?form(repoRoot):null;
+ for(const rule of Array.isArray(rules)?rules:[]){
+  const m=/^([A-Za-z_]+)\((.*)\)$/.exec(String(rule));
+  if(!m||!m[2].trim()){findings.push({kind:"bare_tool",rule:String(rule)});continue;}
+  const path=m[2];
+  if(win?!/^[A-Za-z]:\//.test(path):!path.startsWith("//")){findings.push({kind:"relative_path",rule:String(rule)});continue;}
+  const dir=form(path.replace(/\/\*{1,2}$/,""));
+  if(repo&&dir!==repo&&repo.startsWith(dir.endsWith("/")?dir:dir+"/"))findings.push({kind:"repo_ancestor",rule:String(rule)});
+ }
+ return findings;
+}

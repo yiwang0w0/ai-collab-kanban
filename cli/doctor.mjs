@@ -295,6 +295,48 @@ await new Promise((resolve) => {
     } catch (e) {
       wr(`deny 规则没读到(${String(e.message).slice(0, 60)})`, "这一项没测成 —— 不是通过,是没测");
     }
+    // ⑤d2 写放行规则(--allowedTools)的写法。dontAsk 下写要显式放行,规则由 verify_lib.cli_write_allow_rules
+    // 的真函数产出;目录清单照 loops 的写法列在这里(执行线:工作仓与证据目录,只读执行线:证据目录,
+    // 审阅线:判决目录),环境变量取值方式与 loops 相同。三种坏写法各出声一条:不带路径的工具名、
+    // 非绝对路径、放行目录是工作仓的上级目录。和 deny 规则一样只核写法,语义要用真实 CLI 量。
+    try {
+      const snippet = [
+        "import json,os,sys", "sys.path.insert(0,sys.argv[1])", "import verify_lib as v",
+        "repo=os.environ.get('BOARD_REPO',v.CODE_ROOT)",
+        "data=os.environ.get('BOARD_DATA_DIR') or os.path.join(v.CODE_ROOT,'core','.data')",
+        "sets=(('执行线',[repo,os.path.join(data,'evidence')]),('只读执行线',[os.path.join(data,'evidence')]),('审阅线',[os.path.join(data,'review')]))",
+        "out=[]",
+        "for name,dirs in sets:",
+        "    try: out.append({'name':name,'rules':v.cli_write_allow_rules(dirs)})",
+        "    except ValueError as e: out.append({'name':name,'error':str(e)})",
+        "print(json.dumps(out,ensure_ascii=True))"].join(String.fromCharCode(10));
+      const sets = JSON.parse(execFileSync(PY, ["-c", snippet, join(ROOT, "loops")],
+                                           { encoding: "utf8", windowsHide: true, timeout: 15000, env: { ...process.env, PYTHONIOENCODING: "utf-8" } }));
+      // 动态引入:这个模块连带引入 node:sqlite,Node 版本过低时 ① 已经报了,这里只算没测成。
+      const { checkWriteAllowRules } = await import("../core/executor-readiness.mjs");
+      const refused = sets.filter((x) => x.error), rules = [...new Set(sets.flatMap((x) => x.rules || []))];
+      const found = checkWriteAllowRules(rules, { repoRoot: resolve(process.env.BOARD_REPO || ROOT) });
+      const of = (kind) => [...new Set(found.filter((f) => f.kind === kind).map((f) => f.rule))];
+      const bare = of("bare_tool"), relative = of("relative_path"), ancestor = of("repo_ancestor");
+      if (refused.length)
+        no(`写放行规则组不出来:${refused.map((x) => x.name).join("、")}的放行目录不是绝对路径`,
+           "BOARD_REPO 与 BOARD_DATA_DIR 改成绝对路径。这些执行线会拒绝启动");
+      if (bare.length)
+        no(`写放行规则里有不带路径的工具名:${bare.slice(0, 3).join(" ")}`,
+           "不带路径的放行规则等于放行任意路径。规则只能是带绝对路径的 Edit");
+      if (relative.length)
+        no(`写放行规则的路径不是绝对形:${relative[0].slice(0, 80)}`,
+           `CLI 把这种路径按项目根相对解释,放行的不是想要的目录。路径要写成${process.platform === "win32" ? "盘符开头" : " // 开头"}的绝对形`);
+      if (ancestor.length)
+        no(`写放行目录是工作仓的上级目录:${ancestor[0].slice(0, 80)}`,
+           "工作仓之外的同级内容也会被放行写入。把数据目录移到不包含工作仓的位置");
+      if (!refused.length && !found.length) {
+        if (rules.length) ok(`写放行规则写法正确(${rules.length} 条,带路径的 Edit,${process.platform === "win32" ? "盘符" : "//"} 绝对路径,不越出工作仓)`);
+        else no("写放行规则为空", "verify_lib.cli_write_allow_rules 没有产出。dontAsk 下执行线写不出证据");
+      }
+    } catch (e) {
+      wr(`写放行规则没读到(${String(e.message).slice(0, 60)})`, "这一项没测成 —— 不是通过,是没测");
+    }
   }
 }
 
