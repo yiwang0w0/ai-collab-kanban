@@ -410,6 +410,7 @@
   .side-trace{display:grid;grid-template-columns:auto minmax(0,1fr);gap:var(--sp-1) var(--sp-3);font-size:var(--fs-sm)}
   .side-trace dt{color:var(--dim)}
   .side-trace dd{margin:0;overflow-wrap:anywhere}
+  .zc-side{margin:var(--sp-2) 0}
   .side-links{display:flex;flex-wrap:wrap;gap:var(--sp-1);margin:var(--sp-2) 0}
   .side-acts{display:flex;gap:var(--sp-2);flex-wrap:wrap;margin-top:var(--sp-2)}
   /* 卡片最上面给人看的小块(卡 #14):标签在左、内容在右;窄屏标签换到上一行。
@@ -498,9 +499,19 @@
   .cv-cells dd{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:2px var(--sp-2);font-variant-numeric:tabular-nums}
   .cv-note{color:var(--dim);font-weight:400}
   .cv-next{margin:var(--sp-2) 0 0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .cv-copy{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-2)}
+  .cv-copy .hs-cmd{user-select:all}
+  /* Zcode 独立执行循环:与 CLI 版本同一套格子;标题行右侧循环状态徽标,下一行白话原因。 */
+  .zcode-box{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--line)}
+  .zcode-box .cv-head .badge{flex:none}
+  .zc-model{color:var(--dim);font-size:var(--fs-sm);font-weight:400}
+  .zc-off{margin:0;color:var(--dim);font-size:var(--fs-sm)}
+  .zc-reason{margin:0 0 var(--sp-2);font-size:var(--fs-sm);overflow-wrap:anywhere}
   @media (max-width:620px){
     .cli-versions{padding:var(--sp-3)}
     .cv-cells{grid-template-columns:repeat(2,minmax(0,1fr))}
+    .zcode-box{padding:var(--sp-3)}
+    .zcode-box .cv-cells{grid-template-columns:minmax(0,1fr)}
   }
   /* 用量:数字用等宽数字;口径说明在 title,不进正文。四个汇总数不用强调色。 */
   .side-usage-line{margin:0 0 var(--sp-1);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
@@ -531,7 +542,26 @@
   .usage-no{font-family:var(--mono);color:var(--dim)}
   .usage-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .usage-num{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+  /* 时间范围与分组两个分段控件;按卡的排行行下多一行失败尝试与结算;按线、模型、阶段是一张常显的表。 */
+  .usage-head{flex-wrap:wrap}
+  .usage-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
+  .usage-ctl .seg-o span{min-width:3em;padding:0 var(--sp-2)}
+  .usage-what{display:flex;flex-direction:column;white-space:normal}
+  .usage-what > span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .usage-flag{color:var(--dim);font-size:var(--fs-sm)}
+  .usage-groups{padding:0 var(--sp-3) var(--sp-2);font-size:var(--fs-sm)}
+  .usage-grow{display:grid;grid-template-columns:minmax(0,1fr) 7em 15em 8em;align-items:center;gap:var(--sp-1) var(--sp-3);min-height:var(--ctl-h);
+              padding:var(--sp-1) var(--sp-2);border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .usage-grow.usage-gh{min-height:0;color:var(--dim);border-bottom-color:var(--line)}
+  .usage-grow.usage-gt{font-weight:600;border-bottom:0}
+  .usage-grow > span{min-width:0;overflow-wrap:anywhere}
   @media (max-width:620px){
+    .usage-ctl{width:100%}
+    .usage-ctl .seg{width:100%}
+    .usage-grow{grid-template-columns:minmax(0,1fr) auto auto}
+    .usage-grow > span:first-child{grid-column:1 / -1}
+    .usage-grow > .usage-num{text-align:left}
+    .usage-gh{display:none}
     .usage-stats{grid-template-columns:repeat(2,minmax(0,1fr))}
     .usage-stat dd{font-size:var(--fs-lg)}
     /* 手机:第一行卡号和标题,第二行费用和词元 */
@@ -742,10 +772,16 @@
     font-size:var(--fs-md);font-weight:500;line-height:1.5}
   button.cr-link:hover{background:transparent;border-color:transparent;text-decoration:underline}
   /* 批准行:左 种类与时间,中 标题、摘要、备注上下叠放,右 按钮。强调色左边条只给这一块。 */
-  .apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:"lead title acts" "when sum acts" ". note acts";align-items:start}
+  .apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:"lead title acts" "when sum acts" ". facts acts" ". note acts" ". review review";align-items:start}
   .apv-row .cr-lead,.apv-row .cr-when{padding-top:2px}
   .apv-row .cr-sum{color:var(--dim)}
   .apv-row .cr-note{width:100%;max-width:44em;margin-top:var(--sp-1)}
+  .apv-row .apv-flag{vertical-align:baseline}
+  .cr-facts{grid-area:facts;display:grid;gap:2px;margin-top:2px}
+  .cr-facts p{margin:0;overflow-wrap:anywhere}
+  .cr-review{grid-area:review;display:grid;gap:var(--sp-2);margin-top:var(--sp-1);padding:var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);min-width:0}
+  .cr-review p{margin:0}
+  .apv-confirm{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);font-size:var(--fs-sm);line-height:1.6;max-height:320px;overflow:auto}
   .coord-row[data-tone="need"]{box-shadow:inset 3px 0 0 var(--accent);padding-left:var(--sp-2)}
   .apv-acts{gap:var(--sp-1)}
   /* 锁行:上 资源、持有者、状态、按钮;下 用途、时间;理由输入展开时占整行。 */
@@ -779,7 +815,7 @@
     .coord-row > *{grid-area:auto}
     .coord-row > .cr-when{justify-self:end}
     .coord-row > .cr-title,.coord-row > .cr-sum,.coord-row > .cr-who,.coord-row > .cr-use,.coord-row > .cr-state,.coord-row > .cr-note,
-    .coord-row > .cr-acts,.coord-row > .cr-fold,.coord-row > .cr-form{grid-column:1/-1}
+    .coord-row > .cr-acts,.coord-row > .cr-fold,.coord-row > .cr-form,.coord-row > .cr-facts,.coord-row > .cr-review{grid-column:1/-1}
     .coord-row > .cr-state{justify-self:start}
     .coord-row > .cr-acts{justify-content:flex-start}
     .apv-acts{gap:var(--sp-2)}
@@ -888,6 +924,7 @@
   .hcard{gap:6px;padding:10px 12px;cursor:pointer;align-items:stretch;justify-content:flex-start}
   .hc-top{display:flex;align-items:flex-start;gap:var(--sp-2);min-width:0}
   .hc-title{flex:1;min-width:0;font-size:var(--fs-lg);font-weight:600;line-height:1.45}
+  .hc-title.hc-full{display:block;-webkit-line-clamp:unset;overflow:visible}
   .hc-top .badge{flex:none;max-width:55%;white-space:normal;text-align:left}
   .hcard[data-tone="warn"] .hc-st{color:var(--warn)}
   .hc-meta{gap:2px var(--sp-3)}
@@ -1100,6 +1137,17 @@
   /* 悬停底比 --bg2 深,第二行的小字用 --fg 才够 4.5:1;当前对话是 --panel 底,不在此列。 */
   .cl-item:hover:not([aria-current="true"]) .cl-s{color:var(--fg)}
   .cl-empty{margin:0;padding:var(--sp-2) var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
+  /* 当前对话下面一行:改名、归档;改名时是输入框加「保存」「取消」。已归档的对话收在「已归档」折叠里。 */
+  .cl-acts{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1);padding:0 var(--sp-1) var(--sp-1) var(--sp-2)}
+  .cl-acts > button.ghost{color:var(--dim);font-weight:400}
+  .cl-acts > button.ghost:hover{background:var(--side-hover);color:var(--fg)}
+  .cl-rename > input{flex:1 1 100%;min-width:0}
+  .cl-note{flex-basis:100%;margin:0;color:var(--bad);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .cl-arch{flex:none;display:flex;flex-direction:column;gap:2px;margin-top:var(--sp-2)}
+  .cl-arch > summary{padding:var(--sp-1) var(--sp-3);color:var(--dim);font-size:var(--fs-sm);cursor:pointer;border-radius:var(--r-sm)}
+  .cl-arch > summary:hover{background:var(--side-hover);color:var(--fg)}
+  .cl-arch[open] > summary{margin-bottom:2px}
+  .cs-wait{color:var(--dim);font-variant-numeric:tabular-nums}
   .chat-scrim{display:none}
   .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
   .chat-top{flex:none;display:flex;align-items:center;gap:var(--sp-2);min-height:44px;padding-block:var(--sp-1);
@@ -1303,6 +1351,7 @@
     .card-more > summary{min-height:40px}
     .side-rec > summary,.side-sec > summary,.cfg-about > summary,.hs-log > summary,.usage-top > summary,.coord-fold > summary,.fleet-tech > summary{padding:11px 0}
     .plan-old > summary{padding-block:11px}
+    .cl-arch > summary{padding-block:11px}
     .coord-fold.coord-sec > summary{padding:13px 0}   /* 眉标签字号小,多垫 2px 才到 40 */
     button.cr-link{min-height:40px}
     /* 没有悬停可看全文:执行者卡的「当前」和交接的目标不截断。 */
@@ -1525,6 +1574,8 @@
     <div class="rig" id="rig"></div>
     <!-- 执行器 CLI 版本:接口读得到才出现(GET /api/cli-versions),读不到整块不出。 -->
     <div class="cli-versions" id="cli-versions" hidden></div>
+    <!-- Zcode 独立执行循环的只读状态(GET /api/zcode/status):接口读得到才出现,不进 refresh()。 -->
+    <div class="zcode-box" id="zcode-box" hidden></div>
     <div class="cfg" id="cfg"></div>
   </section>
   <section class="set-sec set-target" id="set-coord" aria-labelledby="set-coord-h">
@@ -1717,6 +1768,34 @@ function usageTop(groups, limit = 10){
   const priced = cards.filter((g) => cost(g) !== null).sort((a, b) => cost(b) - cost(a) || Number(a.key) - Number(b.key));
   return { rows: priced.slice(0, limit), unknown: cards.length - priced.length, loose: (groups || []).find((g) => g && g.key === "?") || null };
 }
+// 历史页用量的时间范围与分组。范围按本地日历日:今天 = 今天零点起,7 天 = 含今天的 7 个日历日。
+const USAGE_RANGES = [["today", "今天"], ["7d", "7 天"], ["all", "全部"]];
+const USAGE_BYS = [["card", "按卡"], ["line", "按线"], ["model", "按模型"], ["phase", "按阶段"]];
+/** 范围的起点(YYYY-MM-DD,本地时间);「全部」与认不得的返回空串。 */
+function usageSince(range, now = new Date()){
+  const back = range === "today" ? 0 : range === "7d" ? 6 : null;
+  if (back === null) return "";
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - back), p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate());
+}
+/** 汇总接口的路径。by 认不得按卡;csv = 导出用。 */
+function usagePath(by, range, now = new Date(), csv = false){
+  const key = USAGE_BYS.some(([k]) => k === by) ? by : "card", since = usageSince(range, now);
+  return "/api/usage?by=" + key + (since ? "&since=" + since : "") + (csv ? "&format=csv" : "");
+}
+/** 按卡排行一行下面的那一句:失败尝试几次、结算了没有。卡号未知(attempts_failed 为 null)写「失败尝试待核实」。 */
+function usageCardFlag(g){
+  const failed = !g || !("attempts_failed" in g) ? ""
+    : Number.isSafeInteger(g.attempts_failed) ? (g.attempts_failed > 0 ? "失败尝试 " + g.attempts_failed + " 次" : "") : "失败尝试待核实";
+  const settled = g && typeof g.settled === "boolean" ? (g.settled ? "已结算" : "未结算") : "";
+  return [failed, settled].filter(Boolean).join(" · ");
+}
+/** 按线、模型、阶段的一行。name 由调用方给(线名换成显示名);尝试次数是一组里不同尝试的个数。 */
+function usageGroupRow(g, name){
+  return { key: String(g?.key ?? "?"), name: String(name || "").trim() || "待核实",
+    attempts: Number.isSafeInteger(g?.attempts) && g.rows > 0 ? g.attempts + " 次" : "待核实",
+    cost: usageValue(g, "cost_usd") + usageCostMark(g), tokens: usageValue(g, ["in", "out"]) };
+}
 /** 执行器 CLI 的四格：当前、最新、上次核对、实测。格子里只写短状态，口径说明进 title；没有配置的返回 null。
  *  update_available 为 null 时不判断新旧。when 把时刻写成本地时间。
  *  next = 行下的一句下一步：「当前」读不到（警示态）或能判断有新版本时才有。 */
@@ -1737,11 +1816,53 @@ function cliVersionCells(c, when = (iso) => String(iso)){
                    st: state === "boundary" ? "ok" : "unknown",
                    title: (state === "boundary" ? "参数与读写权限范围都已实测" : state === "contract" ? "参数已核对，读写权限范围未实测" : "这个版本没有实测记录") +
                           (c.tested?.at ? "；实测于 " + when(c.tested.at) : "") };
+  // npm 装的:服务端给出升级命令(upgrade_hint)时行下写这条命令,旁边「复制」;旧服务端不给就照旧指向 upgrade-cli。
+  const hint = newer === true && c.install_source === "npm-global" && typeof c.upgrade_hint === "string" && c.upgrade_hint.trim() ? c.upgrade_hint.trim() : null;
   const next = current.st === "warn" ? "运行 node cli/doctor.mjs 查看原因"
     : newer !== true ? null
     : c.npm_managed === false ? "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs"
-    : "运行 node cli/upgrade-cli.mjs " + c.id + " 查看会做什么，加 --yes 才执行";
-  return { id: String(c.id ?? ""), name: String(c.name || c.id || "执行器"), cells: [current, latest, checked, tested], next };
+    : hint ? "升级命令" : "运行 node cli/upgrade-cli.mjs " + c.id + " 查看会做什么，加 --yes 才执行";
+  const source = c.install_source === "npm-global" ? "npm 全局安装" : c.install_source === "native" ? "独立安装" : "";
+  return { id: String(c.id ?? ""), name: String(c.name || c.id || "执行器"), source, cells: [current, latest, checked, tested], next, ...(hint && current.st !== "warn" ? { copy: hint } : {}) };
+}
+// Zcode 独立执行循环(GET /api/zcode/status,只读)。循环的状态词、分派的阶段与结果;认不得的写「待核实」。
+const ZCODE_LOOP = { __proto__: null, not_configured: ["未配置", "quiet", "wait"], disabled: ["已关闭", "quiet", "stop"], blocked: ["受阻", "warn", "warn"],
+  budget_exhausted: ["预算用完", "warn", "warn"], unsettled: ["有分派没结清", "run", "wait"], needs_attention: ["要你处理", "need", "warn"],
+  ready: ["有卡待接手", "run", "play"], idle: ["空闲", "ok", "success"] };
+const ZCODE_PHASE = { __proto__: null, prepared: "已准备", launch_committed: "已启动", settled: "已结算", abandoned: "未启动", interrupted: "已中断" };
+const ZCODE_OUTCOME = { __proto__: null, success: "成功", failed: "失败", timeout: "超时", cancelled: "已取消" };
+const ZCODE_REQUEST = { __proto__: null, waiting_policy: "等待策略核对", waiting_release: "等待放行", waiting_executor: "等待 Zcode 接手",
+  claimed: "Zcode 已接手", ended: "已结束", cancelled: "已撤回" };
+/** 设置页「Zcode」块的字。没配置只有一句;配置读不到时开关与预算写「待核实」。 */
+function zcodeView(s, when = (iso) => String(iso)){
+  if (!s || typeof s !== "object" || !s.loop || typeof s.loop !== "object") return null;
+  const reason = typeof s.loop.reason === "string" ? s.loop.reason.trim() : "";
+  if (s.configured !== true) return { configured: false, text: "没有配置 Zcode", title: reason };
+  const [label, tone, ic] = ZCODE_LOOP[s.loop.state] || ["待核实", "quiet", "wait"];
+  const sw = s.switches && typeof s.switches === "object" ? s.switches : {}, b = s.budget && typeof s.budget === "object" ? s.budget : null;
+  const d = s.last_dispatch && typeof s.last_dispatch === "object" ? s.last_dispatch : null;
+  const word = (v, on, off) => v === true ? on : v === false ? off : "待核实";
+  const num = (v) => Number.isSafeInteger(v) && v >= 0;
+  const switches = { k: "开关", v: "预算" + word(sw.budget_enabled, "已启用", "未启用") + " · 启动" + word(sw.launch_enabled, "已打开", "已关闭"),
+    st: sw.budget_enabled === true && sw.launch_enabled === true ? "ok" : typeof sw.budget_enabled !== "boolean" || typeof sw.launch_enabled !== "boolean" ? "unknown" : "warn" };
+  const budget = b && num(b.used) && num(b.limit)
+    ? { k: "预算", v: "已用 " + b.used + " / 上限 " + b.limit + (num(b.reserved) && b.reserved > 0 ? " · 预留 " + b.reserved : ""), st: b.used >= b.limit ? "warn" : "ok" }
+    : { k: "预算", v: "待核实", st: "unknown" };
+  const last = d ? { k: "最近一次分派", st: d.outcome === "success" ? "ok" : d.outcome == null ? "unknown" : "warn",
+      v: (Number.isSafeInteger(d.task_id) ? "#" + d.task_id + " · " : "") + (ZCODE_PHASE[d.phase] || "待核实") +
+         (d.outcome == null ? "" : " · " + (ZCODE_OUTCOME[d.outcome] || "待核实")) + (d.at ? " · " + when(d.at) : "") }
+    : { k: "最近一次分派", v: "还没有分派", st: "unknown" };
+  const beat = typeof s.loop.last_heartbeat_at === "string" && s.loop.last_heartbeat_at
+    ? { k: "心跳", v: when(s.loop.last_heartbeat_at), st: "ok" } : { k: "心跳", v: "没有心跳", st: "unknown" };
+  return { configured: true, state: { label, tone, icon: ic }, reason, model: typeof s.model === "string" ? s.model.trim() : "", cells: [switches, budget, last, beat] };
+}
+/** Zcode 卡的分派请求状态与拒收白话(卡上的 zcode 字段);不是 Zcode 卡返回 null。 */
+function zcodeCardRows(z){
+  if (!z || typeof z !== "object") return null;
+  const rows = [["Zcode 分派请求", z.request_state == null ? "还没有分派请求" : ZCODE_REQUEST[z.request_state] || "待核实"]];
+  if (typeof z.refusal_text === "string" && z.refusal_text.trim()) rows.push(["拒收原因", z.refusal_text.trim()]);
+  if (Number.isSafeInteger(z.dispatches)) rows.push(["分派次数", z.dispatches + " 次"]);
+  return rows;
 }
 // ── /display-copy ──
 const COLS = ["goal", "not_started", "in_progress", "waiting", "done"];
@@ -3504,8 +3625,15 @@ function renderRig(){
   const rig = document.getElementById("rig");
   const faults = homeLineFaults(workers, LINE_LABELS);
   homeFill(document.getElementById("rig-faults"), JSON.stringify(faults), () => faults.map((a) => homeAlertRow(a)));
+  const zc = zcodeLines();
   rig.innerHTML = (workers.length ? "" : `<p class="set-empty">还没有执行线。用下面的「加线」加一条,或在本机配置文件里写好后重启看板。</p>`) + workers.map((w) => {
     const label = lineLabel(w.line);
+    // Zcode 线由独立循环执行:不给模型、强度与并行的齿轮,启动钮置灰。
+    if (zc.has(w.line))
+      return `<div class="wk zc" title="由 node cli/zcode-worker.mjs watch 在它自己的终端里执行">` +
+             `<span class="st" aria-hidden="true"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}</span>` +
+             roleBadge(w) + `<span class="wk-state">由独立循环执行</span><span class="wk-log"><span class="tail"></span></span>` +
+             `<span class="wk-acts"><button type="button" disabled aria-label="${esc(label)}由独立循环执行">${icon("play")}启动</button></span></div>`;
     const slots = (w.slots || []).filter((sl) => sl.running);
     const xN = slots.length > 1 ? `×${slots.length}` : "";
     const open = cfg.classList.contains("show") && cfgLine === w.line;
@@ -3514,7 +3642,9 @@ function renderRig(){
     //   原因的原文(stop_text)放悬停说明,旧版服务端不给 stop_text 时才用退出码那一句。
     const stopped = !w.external && !w.running;
     const at = stopped && !w.desired_running && w.stop_reason?.at ? localTime(w.stop_reason.at) : "";
-    const why = stopped ? (w.stop_text || (w.exit_code == null ? "" : `已停止，退出码 ${w.exit_code}`)) : "";
+    // 旧版服务端不给 stop_text 时只写状态与时刻;退出码只进悬停说明里的「技术信息」。
+    const why = !stopped ? "" : [w.stop_text || (w.exit_code == null ? "" : "已停止" + (w.stop_reason?.at ? " · " + localTime(w.stop_reason.at) : "")),
+      w.exit_code == null ? "" : "技术信息：退出码 " + w.exit_code].filter(Boolean).join("\n");
     return `<div class="wk${w.running ? " on" : ""}${open ? " editing" : ""}"${why ? ` title="${esc(why)}"` : ""}>` +
            `<span class="st" aria-hidden="true"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}${xN}</span>` +
            roleBadge(w) + (w.external ? `<span class="badge" data-tone="quiet" title="由持执行者令牌的外部执行者领卡">外部执行</span>` : `<span class="wk-state">${state}</span>`) +
@@ -3562,7 +3692,10 @@ const COORD_COPY = {
   handoff: { pack: "查看交接包", loading: "正在读取", failed: "交接包读取失败：", done: "已完成", next: "下一步", locks: "交接时仍持有的锁",
              journal: "最近流水编号", ack: "接手方运行", none: "没有记录" },
   approval: { openTask: "打开任务", approve: "批准", reject: "拒绝", note: "备注", notePlaceholder: "备注，可不填",
-              lockNote: "释放理由", lockNotePlaceholder: "释放理由，必填", needNote: "先写释放理由" },
+              lockNote: "释放理由", lockNotePlaceholder: "释放理由，必填", needNote: "先写释放理由",
+              rerun: "再次放行", changed: "配置已变化", workspace: "工作目录", tools: "权限", budget: "预算", held: "收回原因",
+              readOnly: "只读", write: "可改项目文件", noHeld: "没有留下说明", files: (n) => "上次确认后改了 " + n + " 个文件", first: "首次确认",
+              more: (n) => "…还有 " + n + " 行", collapse: "收起" },
   token: { created: "生成于", used: "最近使用", unused: "未使用", revoke: "吊销" },
   remote: { off: "远程入口已关闭。在配置里打开 remote_access。", on: "远程入口：", idle: "未在监听", allow: "允许来源", unset: "未设置", failed: "监听失败" },
 };
@@ -3636,21 +3769,46 @@ function coordJournalView(e){
 /** 待你批准的一行。任务类(待裁定、待验收、放行确认)只给「打开任务」,决定在侧栏里做;版本确认、逾期锁、执行者请求留按钮。
  *  逾期锁的强制释放要写理由(needsNote),理由随备注进流水;其余备注可不填。key 不带版本段,事项换了版本备注草稿还在。 */
 function approvalRowView(a){
-  const C = COORD_COPY, ref = a.detail_ref || {}, task = ref.type === "task" && ref.id != null, lock = a.kind === "lock";
+  const C = COORD_COPY, A = C.approval, ref = a.detail_ref || {}, task = ref.type === "task" && ref.id != null, lock = a.kind === "lock";
+  const version = a.kind === "version", confirm = version ? String(a.confirm ?? "").trim() : "";
+  const ch = version && a.changes && typeof a.changes === "object" ? a.changes : null;
+  // 版本确认:第一下展开确认说明与改动清单,第二下才批。清单已写在确认说明里就不再列一遍。
+  const all = coordList(ch && ch.stat), stat = all.every((s) => confirm.includes(s)) ? [] : all;
+  const review = version && (confirm || ch) ? { confirm, head: ch ? (Number.isSafeInteger(ch.files) ? A.files(ch.files) : A.first) : "",
+    stat, more: stat.length && Number(ch.more) > 0 ? A.more(Number(ch.more)) : "" } : null;
   const actions = task ? [] : (Array.isArray(a.actions) ? a.actions : []).filter((x) => x === "approve" || x === "reject").map((x) => {
-    const label = coordText(a.labels && a.labels[x]) || (x === "approve" ? C.approval.approve : C.approval.reject);
-    return { decision: x, label, armed: armedLabel(label), primary: x === "approve", needsNote: lock && x === "approve" };
+    const label = coordText(a.labels && a.labels[x]) || (x === "approve" ? A.approve : A.reject);
+    return { decision: x, label, armed: armedLabel(label), primary: x === "approve", needsNote: lock && x === "approve", review: !!review && x === "approve" };
   });
-  const id = String(a.id ?? "");
+  const id = String(a.id ?? ""), p = a.kind === "release" && a.execution_profile && typeof a.execution_profile === "object" ? a.execution_profile : null;
+  // 放行确认:摘要里的【再次放行】【配置已变化】换成徽标;工作目录、权限、预算与收回原因逐行写出。
+  const flags = a.kind !== "release" ? [] : [
+    ...(a.rerun ? [{ tone: "warn", icon: "warn", label: A.rerun }] : []),
+    ...(p && p.configuration_changed ? [{ tone: "warn", icon: "warn", label: A.changed }] : [])];
+  const facts = !p && !a.rerun ? [] : [
+    ...(p ? [[A.workspace, coordText(p.workspace_path) || C.unknown, true],
+             [A.tools, p.tools === "read-only" ? A.readOnly : p.tools === "write" ? A.write : C.unknown],
+             [A.budget, approvalBudget(p.budget) || C.unknown]] : []),
+    ...(a.rerun ? [[A.held, coordText(a.held_note) || A.noHeld]] : [])];
+  const raw = a.kind === "request" ? coordText(a.action) || coordText(a.summary) : coordText(a.summary);
   return { id, key: id.split(":").slice(0, 2).join(":"),
     kind: copyLabel(C.apvKind, a.kind, C.unknown) + (a.risk ? " · " + copyLabel(C.apvRisk, a.risk, C.unknown) : ""),
-    title: coordText(a.title) || C.unknown, summary: coordText(a.summary), blocked: coordText(a.blocked), createdAt: a.created_at || null,
-    version: a.expected_version,
-    open: task ? { type: "task", id: ref.id, label: C.approval.openTask } : lock ? { type: "lock", resource: String(ref.resource ?? a.title ?? "") } : null,
+    title: coordText(a.title) || C.unknown, summary: a.kind === "release" ? raw.replace(/^(?:【再次放行】|【配置已变化】)+/, "") : raw,
+    blocked: coordText(a.blocked), createdAt: a.created_at || null, version: a.expected_version, flags, facts, review,
+    lock: lock && (ref.lock_id ?? ref.id) != null ? { id: String(ref.lock_id ?? ref.id), holder: String(ref.holder ?? "") } : null,
+    open: task ? { type: "task", id: ref.id, label: A.openTask } : lock ? { type: "lock", resource: String(ref.resource ?? a.title ?? "") } : null,
     actions,
     note: task || !actions.length ? null
-      : lock ? { required: true, max: 200, label: C.approval.lockNote, placeholder: C.approval.lockNotePlaceholder }
-      : { required: false, max: 500, label: C.approval.note, placeholder: C.approval.notePlaceholder } };
+      : lock ? { required: true, max: 200, label: A.lockNote, placeholder: A.lockNotePlaceholder }
+      : { required: false, max: 500, label: A.note, placeholder: A.notePlaceholder } };
+}
+/** 放行确认里的预算:金额、时限、轮次,有几样写几样;一样都没有返回空串。 */
+function approvalBudget(b){
+  if (!b || typeof b !== "object") return "";
+  const n = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+  return [n(b.max_cost_usd) ? "金额上限 " + b.max_cost_usd + " 美元" : "",
+          n(b.timeout_sec) ? "时限 " + (b.timeout_sec < 60 ? b.timeout_sec + " 秒" : coordSpan(b.timeout_sec * 1000)) : "",
+          n(b.max_turns) ? "最多 " + b.max_turns + " 轮" : ""].filter(Boolean).join(" · ");
 }
 /** 批准令牌上方的一句:远程入口开没开、在哪监听、允许谁。 */
 function aptRemoteLine(r){
@@ -3678,6 +3836,8 @@ const coordSig = new Map(), coordPending = new Set();
 const coordOpen = new Set();            // 展开着的折叠,重画后照原样展开
 const coordPacks = new Map();           // 交接编号 → 正在读或已读到的交接包
 const apvNotes = new Map();             // 批准行的备注草稿,重画后填回
+const apvReviews = new Map();           // 版本确认行 → 第一下展开的确认说明与改动清单(按画出来的那一版)
+let apvNote = "";                       // 待你批准上方的一句:强制释放时锁已换人
 /** 这块里有没有不该被重画打断的状态。焦点只算看得见的那种:键盘走到的控件、正在输入的框;鼠标点过按钮留下的焦点不算,
  *  否则点一下不再按,这块就一直停在旧数据上。 */
 function coordBusy(box){
@@ -3685,7 +3845,7 @@ function coordBusy(box){
   let seen = true;
   try { seen = !a || a.matches(":focus-visible"); } catch {}
   if (a && a !== box && a !== document.body && box.contains(a) && seen) return true;
-  return !!(box.querySelector('[data-armed="1"]') || box.querySelector("[data-lock-form]"));
+  return !!(box.querySelector('[data-armed="1"]') || box.querySelector("[data-lock-form]") || box.querySelector("[data-apv-review]"));
 }
 /** 画一块:签名变了且这块不忙才换节点;live 是随时间变的字(键 → 文字),每次都原位更新,不换节点。 */
 function coordFill(box, sig, build, live){
@@ -3818,15 +3978,22 @@ function renderApprovals(){
   const sec = (title, ...nodes) => { const s = homeEl("div"); s.append(homeEl("h4", title), ...nodes); return [s]; };
   if (!d){ coordFill(box, "down", () => sec(C.head.approvals, homeEl("p", C.empty.approvalsDown, "set-empty"))); return; }
   const rows = (d.approvals || []).map(approvalRowView);
-  coordFill(box, JSON.stringify(rows), () => {
+  coordFill(box, JSON.stringify([rows, apvNote]), () => {
     const row = (a) => {
       const el = homeEl("div", undefined, "coord-row apv-row"), acts = homeEl("span", undefined, "cr-acts apv-acts");
       el.dataset.tone = "need"; el.dataset.apvRow = a.id;
       const title = homeEl(a.open ? "button" : "span", a.title, "cr-title" + (a.open ? " cr-link" : ""));
       if (a.open){ title.type = "button"; if (a.open.type === "task") title.dataset.apvTask = String(a.open.id); else title.dataset.apvLock = a.open.resource; }
-      const sum = homeEl("span", a.summary, "cr-sum");
+      const sum = homeEl("span", undefined, "cr-sum");
+      for (const f of a.flags) sum.append(coordBadge(f, "apv-flag"), " ");
+      sum.append(a.summary);
       if (a.blocked) sum.append(a.summary ? " " : "", homeEl("span", a.blocked, "dim"));
       el.append(homeEl("span", a.kind, "cr-lead"), homeEl("span", coordWhen(a.createdAt), "cr-when dim"), title, sum);
+      if (a.facts.length){
+        const facts = homeEl("div", undefined, "cr-facts");
+        for (const [k, v, mono] of a.facts){ const p = homeEl("p"); p.append(homeEl("span", k, "dim"), " ", homeEl("span", v, mono ? "mono" : "")); facts.append(p); }
+        el.append(facts);
+      }
       const draft = a.note ? apvNotes.get(a.key) || "" : "";
       if (a.note){
         const input = homeEl("input"); input.type = "text"; input.className = "cr-note"; input.maxLength = a.note.max;
@@ -3840,14 +4007,38 @@ function renderApprovals(){
       for (const x of a.actions){
         const b = homeEl("button", x.label, x.primary ? "pri" : ""); b.type = "button";
         Object.assign(b.dataset, { apv: a.id, apvDecision: x.decision, apvVersion: String(a.version) });
+        if (a.lock && x.decision === "approve") Object.assign(b.dataset, { apvLockId: a.lock.id, apvHolder: a.lock.holder });
         if (x.needsNote){ b.dataset.apvNeedsNote = "1"; b.disabled = !draft.trim(); b.title = b.disabled ? C.approval.needNote : ""; }
+        if (x.review) b.dataset.apvReviewFor = a.key;
         acts.append(b);
       }
       el.append(acts);
+      if (a.review) apvReviews.set(a.key, a.review);
       return el;
     };
-    return sec(C.head.approvals + " " + rows.length, ...(rows.length ? rows.map(row) : [homeEl("p", C.empty.approvals, "set-empty")]));
+    const note = homeEl("p", apvNote, "coord-note"); note.setAttribute("role", "status");
+    return sec(C.head.approvals + " " + rows.length, note, ...(rows.length ? rows.map(row) : [homeEl("p", C.empty.approvals, "set-empty")]));
   });
+}
+/** 版本确认第一下:在行里展开确认说明与改动清单,按钮上膛且不到时复原;「收起」或第二下之后收回。 */
+function approvalReviewOpen(b){
+  const row = b.closest("[data-apv-row]"), v = apvReviews.get(b.dataset.apvReviewFor), A = COORD_COPY.approval;
+  if (!row || !v || row.querySelector("[data-apv-review]")) return;
+  const box = homeEl("div", undefined, "cr-review"); box.dataset.apvReview = b.dataset.apvReviewFor;
+  if (v.head) box.append(homeEl("p", v.head, "apv-rv-head"));
+  if (v.confirm) box.append(homeEl("pre", v.confirm, "apv-confirm"));
+  if (v.stat.length) box.append(homeEl("pre", v.stat.join("\n") + (v.more ? "\n" + v.more : ""), "apv-confirm mono"));
+  const no = homeEl("button", A.collapse); no.type = "button"; no.dataset.apvCollapse = "1";
+  const acts = homeEl("div", undefined, "coord-acts"); acts.append(no); box.append(acts);
+  row.append(box);
+  coordArm(b, armedLabel(b.textContent), true);
+}
+function approvalReviewClose(b){
+  const row = b.closest("[data-apv-row]"), box = row ? row.querySelector("[data-apv-review]") : null;
+  if (!box) return;
+  box.remove();
+  for (const x of row.querySelectorAll('[data-armed="1"]')) coordDisarm(x);
+  coordFlush();
 }
 function renderApt(){
   const d = aptData, rem = document.getElementById("apt-remote"), box = document.getElementById("apt-list"), C = COORD_COPY;
@@ -3872,29 +4063,35 @@ function renderApt(){
 function coordDisarm(b){
   b.dataset.armed = ""; b.classList.remove("armed"); disarmRestore(b);
 }
-/** 两押的第一下:按钮写上「再按=确认…」,4 秒不按复原,复原后把等着的重画补上。 */
-function coordArm(b, text){
+/** 两押的第一下:按钮写上「再按=确认…」,4 秒不按复原,复原后把等着的重画补上。hold = 展开着核对内容,不到时复原。 */
+function coordArm(b, text, hold){
   b.dataset.armed = "1"; b.dataset.orig = b.textContent; b.classList.add("armed");
   armSwap(b, text);
-  setTimeout(() => { if (b.dataset.armed === "1"){ coordDisarm(b); coordFlush(); } }, 4000);
+  if (!hold) setTimeout(() => { if (b.dataset.armed === "1"){ coordDisarm(b); coordFlush(); } }, 4000);
 }
-/** 待你批准的按钮与批准令牌的吊销:两押。决定带上这一行的备注;逾期锁的强制释放没写理由不上膛、不发请求。 */
+/** 待你批准的按钮与批准令牌的吊销:两押。决定带上这一行的备注;逾期锁的强制释放没写理由不上膛、不发请求,
+ *  请求带锁记录编号与持有者,锁已换人(409 LOCK_CHANGED)时写在这一块上方。版本确认第一下先展开改动。 */
 async function approvalPress(b){
   const row = b.closest("[data-apv-row]"), noteEl = row ? row.querySelector("[data-apv-note]") : null;
   const note = noteEl ? String(noteEl.value || "").trim() : "";
   if (b.dataset.apvNeedsNote === "1" && !note){ noteEl?.focus(); return; }
-  if (b.dataset.armed !== "1"){ coordArm(b, armedLabel(b.textContent)); return; }
-  coordDisarm(b); b.disabled = true;
+  if (b.dataset.armed !== "1"){ if (b.dataset.apvReviewFor) approvalReviewOpen(b); else coordArm(b, armedLabel(b.textContent)); return; }
+  coordDisarm(b); b.disabled = true; apvNote = "";
+  if (row){ row.querySelector("[data-apv-review]")?.remove(); for (const x of row.querySelectorAll('[data-armed="1"]')) coordDisarm(x); }
   try {
     if (b.dataset.aptRevoke) await post(`/api/approval-tokens/${b.dataset.aptRevoke}/revoke`, {});
     else {
-      const v = b.dataset.apvVersion;
-      await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`,
-                 { decision: b.dataset.apvDecision, note, source: { client: "panel" }, expected_version: /^\d+$/.test(v) ? Number(v) : v });
+      const v = b.dataset.apvVersion, body = { decision: b.dataset.apvDecision, note, source: { client: "panel" }, expected_version: /^\d+$/.test(v) ? Number(v) : v };
+      if (b.dataset.apvLockId) Object.assign(body, { lock_id: Number(b.dataset.apvLockId), ...(b.dataset.apvHolder ? { holder: b.dataset.apvHolder } : {}) });
+      await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`, body);
       if (noteEl) apvNotes.delete(noteEl.dataset.apvNote);
     }
-  } catch (err){ alert("操作失败:" + copyError(err)); }
-  finally { b.disabled = false; coordSettle(b.closest(".coord")); refresh(); }
+  } catch (err){
+    if (err?.status === 409 && err.body?.code === "LOCK_CHANGED")
+      apvNote = (row?.querySelector(".cr-title")?.textContent || "") + "：" + COORD_COPY.lock.moved;
+    else alert("操作失败:" + copyError(err));
+  }
+  finally { b.disabled = false; coordSettle(b.closest(".coord")); if (apvNote) renderApprovals(); refresh(); }
 }
 /** 批准行的备注:记成草稿;逾期锁那一行的强制释放按钮,理由空着不可按。 */
 function approvalNoteInput(input){
@@ -3945,27 +4142,28 @@ function coordLockClose(b){
   coordFlush();
   [...document.querySelectorAll("#coord [data-lock-release]")].find((x) => x.dataset.lockRelease === resource)?.focus();
 }
-/** 强制释放的确认钮:两押。第二下提交前重读一次锁表,按现在的持有者核对(面板手上那份在实时连接断开时可能旧十几秒,
- *  重画又被这一行的输入挡着):换人了就中止、不发请求,把原因写在锁表上方;锁表读不到也不发。
- *  释放接口只认资源名,所以核对和提交之间仍隔着一次往返。 */
+/** 强制释放的确认钮:两押。第二下的请求带这一行画出来时的锁记录编号与持有者,由服务端比对:
+ *  换了人或重新加过锁回 409 LOCK_CHANGED,已经放掉回 404。这两种都中止,在锁表上方写一句,重读锁表后立即重画。 */
 async function coordLockPress(b){
   const form = b.closest("[data-lock-form]"), input = form ? form.querySelector("[data-lock-reason]") : null;
   const reason = input ? String(input.value || "").trim() : "", resource = b.dataset.lockConfirm, C = COORD_COPY.lock;
   if (!form || !reason || b.disabled) return;
   if (b.dataset.armed !== "1"){ coordArm(b, armedLabel(C.release + " " + resource + "，" + C.holder + " " + b.dataset.lockHolderName)); return; }
   coordDisarm(b); b.disabled = true;
-  const fail = (err) => { b.disabled = false; const note = form.querySelector(".coord-note"); if (note) note.textContent = C.failed + copyError(err); };
-  let locks;
-  try {
-    locks = (await homeGet("/api/coord/locks")).locks;
-    if (!Array.isArray(locks)) throw Error("锁表读不到");
-  } catch (err){ fail(err); return; }
-  if (!form.isConnected) return;                      // 读的这一下里理由框被收起了:不发
-  if (coordData) coordData = { ...coordData, locks };
-  const stale = coordLockCheck(locks, resource, b.dataset.lockHolder, b.dataset.lockId);
-  if (stale){ form.remove(); coordSettle(document.getElementById("coord")); coordLockNote = resource + "：" + stale; renderCoord(); return; }
-  try { await post("/api/coord/locks/release", { resource, force: true, reason }); }
-  catch (err){ fail(err); return; }
+  const holder = b.dataset.lockHolder || "", id = b.dataset.lockId || "";
+  const body = { resource, force: true, reason, ...(/^\d+$/.test(id) ? { lock_id: Number(id) } : {}), ...(holder ? { holder } : {}) };
+  try { await post("/api/coord/locks/release", body); }
+  catch (err){
+    const changed = err?.status === 409 && err.body?.code === "LOCK_CHANGED", gone = err?.status === 404;
+    if (!changed && !gone){ b.disabled = false; const note = form.querySelector(".coord-note"); if (note) note.textContent = C.failed + copyError(err); return; }
+    const go = form.closest(".coord-row")?.querySelector("[data-lock-release]");
+    form.remove(); if (go) go.hidden = false; coordSettle(document.getElementById("coord"));
+    let locks = null;
+    try { locks = (await homeGet("/api/coord/locks")).locks; } catch {}
+    if (Array.isArray(locks) && coordData) coordData = { ...coordData, locks };
+    coordLockNote = resource + "：" + ((Array.isArray(locks) && coordLockCheck(locks, resource, holder, id)) || (gone ? C.gone : C.moved));
+    renderCoord(); refresh(); return;
+  }
   form.remove(); coordLockNote = ""; coordSettle(document.getElementById("coord")); refresh();
 }
 // ── /coord-view ──
@@ -5098,6 +5296,7 @@ document.addEventListener("click", (e) => {
     openSide({ id, uid: byId.get(id)?.task_uid || null, item: null });
   }
   else if ((b = hit("[data-apv-lock]"))) coordLockShow(b.dataset.apvLock);
+  else if ((b = hit("button[data-apv-collapse]"))) approvalReviewClose(b);
   else if ((b = hit("button[data-lock-release]"))) coordLockOpen(b);
   else if ((b = hit("button[data-lock-confirm]"))) coordLockPress(b);
   else if ((b = hit("button[data-lock-cancel]"))) coordLockClose(b);
@@ -5380,9 +5579,12 @@ function homeLastFault(f) {
   return f.kind === "exit" ? (f.exit_code == null ? "看板服务被结束" : "看板服务退出，退出码 " + f.exit_code)
     : f.kind === "restart_loop" ? "看板连续重启，已停止自动重启" : "看板运行中断";
 }
-/** 上次故障那一行的悬停说明：运行中断时写可能的原因；其余没有。 */
+/** 上次故障那一行的悬停说明：取服务端给的原因（last_fault.reason）；退出类的退出码已在正文里，不重复。
+ *  旧版服务端不给原因时，运行中断写可能的原因，其余没有。 */
 function homeLastFaultTip(f) {
-  return homeLastFault(f) && f.kind !== "exit" && f.kind !== "restart_loop" ? "可能是关机、断电或进程被结束" : "";
+  if (!homeLastFault(f) || f.kind === "exit") return "";
+  const reason = typeof f.reason === "string" ? f.reason.trim() : "";
+  return reason || (f.kind !== "restart_loop" ? "可能是关机、断电或进程被结束" : "");
 }
 /** Where one task stands for the person looking: which list, its state, the next step.
  *  `t.hb` is hbClass(t) for this board's cards; `t.progress_blockers` is the server's own
@@ -5512,8 +5714,9 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
     if (!a || (a.kind !== "request" && a.kind !== "lock")) continue;
     const request = a.kind === "request";
     mine.push({ key: "approval:" + a.id, uid: null, localId: null, action: "approval", kind: a.kind, id: a.id,
-      title: String((request ? a.summary || a.title : a.title || a.summary) || (request ? "执行者请求" : "逾期锁")), computer: here,
-      updated: String(a.created_at || ""), state: request ? "执行者请求" : "逾期锁", tone: "", next: "到设置页处理", rank: request ? 1 : 3 });
+      title: String((request ? a.action || a.summary || a.title : a.title || a.summary) || (request ? "执行者请求" : "逾期锁")), computer: here,
+      updated: String(a.created_at || ""), state: request ? "执行者请求" : "逾期锁", tone: "", next: "到设置页处理", rank: request ? 1 : 3,
+      ...(request && a.action ? { fullTitle: true } : {}) });
   }
   const byWait = (a, b) => a.rank - b.rank || a.updated.localeCompare(b.updated);   // longest waiting first
   mine.sort(byWait); running.sort(byWait);
@@ -5991,10 +6194,12 @@ const chatLength = (text) => [...String(text ?? "").trim()].length;
 /** 输入框上方的那一行:没发出去 > 正在回复 > 这条太长 > 协调线不可用 > 上一轮没有完成。null = 不显示。
  *  协调线不可用的原因照服务端给的原样写(GET /api/coordinator 只在两种情况给 available:false:Claude CLI 找不到
  *  或不能直接启动、当前版本还没确认;CLI 登录失效不在这里,表现为那一轮 failed + error)。
- *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。 */
-function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "" } = {}) {
+ *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。
+ *  since = 这一轮开始的时刻(上一条你的话的 created_at):正在回复时带出,调用方每秒写「已等待 …」。 */
+function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "", since = null } = {}) {
   if (fail) return { tone: "bad", icon: "warn", text: "没有发出去：" + fail, act: "resend", label: "重试" };
-  if (conversation && conversation.status === "running") return { tone: "run", icon: "chat", text: "协调线正在回复", act: "stop", label: "停止本轮" };
+  if (conversation && conversation.status === "running")
+    return { tone: "run", icon: "chat", text: "协调线正在回复", act: "stop", label: "停止本轮", ...(since ? { since: String(since) } : {}) };
   if (sending) return { tone: "run", icon: "chat", text: "正在发送", act: null, label: "" };
   if (chatLength(text) > CHAT_MESSAGE_MAX)
     return { tone: "warn", icon: "warn", text: "这条消息 " + chatLength(text) + " 字，一条最多 " + CHAT_MESSAGE_MAX + " 字。删短或分几条发。", act: null, label: "" };
@@ -6005,6 +6210,12 @@ function chatStateLine({ coordinator = null, conversation = null, sending = fals
   if (conversation && conversation.status === "failed")
     return { tone: "bad", icon: "warn", text: "上一轮没有完成：" + (String(conversation.error || "").trim() || "原因未记录"), act: "retry", label: "重试" };
   return null;
+}
+/** 协调线这一轮已等了多久:「已等待 N 秒」「已等待 N 分 M 秒」。ms 不是有限数返回空串。 */
+function chatWaited(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "";
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  return "已等待 " + (s < 60 ? s + " 秒" : Math.floor(s / 60) + " 分" + (s % 60 ? " " + (s % 60) + " 秒" : ""));
 }
 /** 能不能发:协调线可用、这个对话没有在跑、没有正在发、写了字且不超上限。 */
 function chatCanSend({ coordinator = null, conversation = null, sending = false, text = "" } = {}) {
@@ -6017,7 +6228,12 @@ function chatTimeline(messages = [], plans = []) {
   const byRev = new Map(plans.map((p) => [p.rev, p])), used = new Set(), out = [];
   const latest = plans.reduce((max, p) => Math.max(max, p.rev), 0), done = plans.find((p) => p.applied), appliedRev = done ? done.rev : null;
   const card = (p) => ({ kind: "plan", plan: p, latest: p.rev === latest, appliedRev });
+  let prev = null;
   for (const m of messages) {
+    // 「重试」把上一条你的话再发一遍:紧挨着的两条相同的你的话只显示一条(中间没有回复,就是同一轮重来)。
+    const same = prev && prev.role === "user" && m.role === "user" && String(prev.text ?? "").trim() === String(m.text ?? "").trim();
+    prev = m;
+    if (same) continue;
     out.push({ kind: "message", message: m });
     if (m.plan_rev != null && byRev.has(m.plan_rev) && !used.has(m.plan_rev)) { used.add(m.plan_rev); out.push(card(byRev.get(m.plan_rev))); }
   }
@@ -6106,7 +6322,7 @@ function setView(v){
   // The columns' shell (headers, goal box) is built once, from meta — never before the first
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); }
-  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
+  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); zcodeLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
   else {
     homeSig.clear(); renderHomeViews(); loadHomeExtras(true);
     if (v === "home" && homeReady) chatLoad(true);
@@ -6474,7 +6690,7 @@ function sideReleaseNeed(t){
 function sideExecution(t, need = false, protocol = false){
   const section = homeEl("section", undefined, "side-sec");
   section.id = "task-side-execution";
-  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by, t.kind, t.line, t.aggregate_version, need, protocol]);
+  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by, t.kind, t.line, t.aggregate_version, need, protocol, t.zcode ?? null]);
   const checking = t.status === "not_started" && !t.released, goal = t.kind === "goal";
   if (need) { section.dataset.tone = "need"; section.append(homeEl("p", "要你做什么", "side-brief-k")); }
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
@@ -6496,6 +6712,13 @@ function sideExecution(t, need = false, protocol = false){
   section.append(homeEl("h3", checking ? "放行前核对执行配置" : "派发与领取"));
   section.append(homeEl("p", t.line ? "交给「" + lineLabel(t.line) + "」" : "未指派执行线", "side-state"));
   section.append(sideSteps(t, trace));
+  // Zcode 卡:分派请求状态与拒收原因常显在步骤条下面,只读。
+  const zcodeRows = zcodeCardRows(t.zcode);
+  if (zcodeRows){
+    const zl = homeEl("dl", undefined, "side-trace zc-side");
+    for (const [label, value] of zcodeRows) zl.append(homeEl("dt", label), homeEl("dd", value));
+    section.append(zl);
+  }
   const rows = [
     ["验证续修", `最多 ${t.verification_repair?.max_rounds || 1} 轮（含首轮）；同一会话与原档位，环境异常转等待`],
     ["证据正文", t.verification_repair?.evidence_contract ? `固定四节，最多 ${t.verification_repair.evidence_contract.max_chars} Unicode 字符；宿主附录另计` : "沿原证据合同"],
@@ -6839,7 +7062,9 @@ function renderSideAction(){
   const box = homeEl("section", undefined, "side-brief");
   const line = (label, ...nodes) => { const row = homeEl("div", undefined, "side-brief-row"); row.append(homeEl("span", label, "side-brief-k"), ...nodes); return row; };
   // 「要做什么」与本机卡同一条规矩:只用记录带的 brief,没有就不出这一行;任务说明全文只在下面的折叠区。
-  if (r?.brief) box.append(line("要做什么", homeEl("p", r.brief, "side-brief-v")));
+  // 交付记录本身不带 brief,用它所在绑定的那一份。
+  const brief = typeof r?.brief === "string" && r.brief.trim() ? r.brief : typeof bound?.brief === "string" && bound.brief.trim() ? bound.brief : "";
+  if (brief) box.append(line("要做什么", homeEl("p", brief, "side-brief-v")));
   const state = homeEl("p", inbox.state, "side-brief-v"); state.id = "task-side-state";
   const next = homeEl("p", "下一步：" + inbox.next, "side-brief-v side-brief-next"); next.id = "task-side-next";
   const stack = homeEl("div", undefined, "side-brief-stack"); stack.append(state, next);
@@ -7030,7 +7255,7 @@ function homeCard(item, lane){
   const [tone, ic] = item.tone === "warn" ? ["warn", "warn"] : HOME_BADGE[lane] || ["quiet", "wait"];
   const st = homeEl("span", item.state, "hc-st badge"); st.dataset.tone = tone; st.insertAdjacentHTML("afterbegin", icon(ic));
   const top = homeEl("span", undefined, "hc-top");
-  top.append(homeEl("span", item.title, "hc-title"), st);
+  top.append(homeEl("span", item.title, "hc-title" + (item.fullTitle ? " hc-full" : "")), st);
   meta.append(homeEl("span", item.computer, "hc-pc"));
   if (next) meta.append(homeEl("span", next, "hc-next"));
   b.append(top, meta);
@@ -7189,7 +7414,7 @@ function renderHomeViews(){
     note.textContent = partial.length ? partial.map((n) => "「" + n + "」").join("、") + "的缓存任务较多，这里只读取了前 1000 项；完整列表在全局视图。" : "";
   } else {
     const items = lists.history;
-    renderHistoryUsage(items);
+    renderHistoryUsage();
     document.getElementById("history-n").textContent = items.length ? String(items.length) : "";
     const partial = homeFleet?.partial || [];
     homeFill(document.getElementById("history-list"), JSON.stringify([homeReady, historyLimit, items, partial]), () => {
@@ -7249,73 +7474,95 @@ function usageCsvButton(label, path, name){
   return b;
 }
 
-// ── 历史页用量汇总:GET /api/usage?by=card,进入历史页时取一次;应答没有 groups(旧服务端)或 404 时整节不出。
+// ── 历史页用量汇总:GET /api/usage?by=…&since=…,进入历史页和换范围、换分组时各取一次;应答没有 groups(旧服务端)或 404 时整节不出。
+//    按卡时每组带失败尝试次数(attempts_failed)与有没有结算(settled),顶层带已结算的合计:一次请求,不再逐卡取。
 const historyUsage = optionalSlot();
-let historyTopOpen = false;
+let historyTopOpen = false, historyRange = "all", historyBy = "card";
+try { const s = JSON.parse(sessionStorage.getItem("kanban.history-usage") || "{}");
+      if (USAGE_RANGES.some(([k]) => k === s.range)) historyRange = s.range; if (USAGE_BYS.some(([k]) => k === s.by)) historyBy = s.by; } catch {}
 async function historyUsageLoad(){
-  // 上次没取到的失败尝试,这次进历史页再取。
-  if (!usageFailedBusy) for (const [id, failed] of usageFailed) if (!failed) usageFailed.delete(id);
-  if (await optionalLoad(historyUsage, "/api/usage?by=card", (v) => Array.isArray(v.groups) && !!v.total && typeof v.total === "object"))
-    try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
+  const path = usagePath(historyBy, historyRange);
+  historyUsage.want = path;
+  if (historyUsage.busy) return;                      // 正在读的那一次读完后按最新的选择再读
+  const asked = await optionalLoad(historyUsage, path, (v) => Array.isArray(v.groups) && !!v.total && typeof v.total === "object");
+  if (asked && !historyUsage.error) historyUsage.got = path;
+  if (historyUsage.want !== path) return historyUsageLoad();
+  if (asked) try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
 }
-// 过渡做法:汇总接口还不带失败尝试,按历史页当前显示的这一页完成卡逐卡取 failed,按卡号缓存;汇总接口补上后换成一次请求。
-const usageFailed = new Map();   // 卡号 → failed 汇总;null = 还在取或没取到
-let usageFailedBusy = 0, usageFailedMissing = false;
-const usageFailedQueue = [];
-function historyFailedLoad(ids){
-  if (usageFailedMissing) return;
-  for (const id of ids) if (!usageFailed.has(id)) { usageFailed.set(id, null); usageFailedQueue.push(id); }
-  const pump = () => {
-    while (usageFailedBusy < 4 && usageFailedQueue.length && !usageFailedMissing) {
-      const id = usageFailedQueue.shift();
-      usageFailedBusy++;
-      homeGetOptional("/api/usage/card/" + id).then((v) => {
-        if (v === null) usageFailedMissing = true;
-        else if (v.failed && typeof v.failed === "object") usageFailed.set(id, v.failed);
-      }, () => {}).finally(() => {
-        usageFailedBusy--; pump();
-        if (!usageFailedBusy && homeView === "history") try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
-      });
-    }
-  };
-  pump();
+/** 换时间范围或分组:记在本标签页,重读一次。 */
+function historyUsagePick(kind, value){
+  if (kind === "range") historyRange = value; else historyBy = value;
+  try { sessionStorage.setItem("kanban.history-usage", JSON.stringify({ range: historyRange, by: historyBy })); } catch {}
+  try { renderHomeViews(); } catch (e) { console.error("历史页用量显示失败", e); }
+  historyUsageLoad();
 }
-/** 历史页用量一节。items = 历史列表(新的在前);四个数都不用强调色。 */
-function renderHistoryUsage(items){
+/** 历史页用量一节。四个数都不用强调色。按卡:四个数加「最贵的 10 张」;按线、模型、阶段:一张表。 */
+function renderHistoryUsage(){
   const sec = document.getElementById("history-usage"), v = historyUsage.value;
   sec.hidden = !v;
   if (!v) { homeFill(sec, "", () => []); return; }
-  const total = v.total, groups = v.groups;
-  // 每张完成卡的词元:分子分母都取「本机已完成的卡」与「有用量记录的卡」的交集。
-  const done = new Set(tasks.filter((t) => t.status === "done").map((t) => String(t.id)));
-  const settled = groups.filter((g) => done.has(String(g.key)));
-  const sum = usageMerge(settled, ["in", "out"]), n = settled.length;
-  const share = (x) => (usageNumber(x) ? x / n : null);
-  const per = n ? usageValue({ in: share(sum.in), out: share(sum.out), known: { in: share(sum.known.in), out: share(sum.known.out) } }, ["in", "out"]) : "没有记录";
-  // 缓存读占比:三项里有未知的就不算。
-  const base = [total.in, total.cc, total.cr].every(usageNumber) ? total.in + total.cc + total.cr : 0;
-  const cache = base > 0 ? Math.round(total.cr / base * 100) + "%" : "待核实";
-  // 失败尝试浪费:只数历史页当前这一页的本机完成卡。
-  const page = items.slice(0, historyLimit).filter((i) => i.localId != null).map((i) => i.localId);
-  const keys = new Set(groups.map((g) => String(g.key))), wanted = page.filter((id) => keys.has(String(id)));
-  historyFailedLoad(wanted);
-  const waiting = usageFailedBusy > 0 || usageFailedQueue.length > 0;
-  const burnt = usageMerge(wanted.map((id) => usageFailed.get(id)).filter(Boolean), ["in", "out"]);
-  // 有卡没取到:合计只是已知部分。
-  const lower = wanted.some((id) => !usageFailed.get(id));
-  const waste = usageFailedMissing ? "待核实" : waiting ? "正在读取"
-    : usageValue(lower ? { known: { in: burnt.in ?? burnt.known.in, out: burnt.out ?? burnt.known.out } } : burnt, ["in", "out"]);
-  const top = usageTop(groups), title = (key) => String(byId.get(Number(key))?.subject || "");
-  const row = (g) => ({ key: g.key, title: title(g.key), cost: usageValue(g, "cost_usd") + usageCostMark(g), tokens: usageValue(g, ["in", "out"]) });
-  const model = { rows: total.rows, stale: historyUsage.stale, cache, per, n, waste, page: page.length,
-    cost: usageValue(total, "cost_usd") + usageCostMark(total),
-    top: top.rows.map(row), unknown: top.unknown, loose: top.loose && row(top.loose) };
+  const fresh = historyUsage.got === historyUsage.want, by = historyBy;
+  const model = { range: historyRange, by, fresh, stale: historyUsage.stale, rows: 0 };
+  if (fresh) {
+    const total = v.total, groups = v.groups;
+    model.rows = total.rows;
+    if (by === "card") {
+      // 每张完成卡的词元:分子分母都取「本机已完成的卡」与「有用量记录的卡」的交集。
+      const done = new Set(tasks.filter((t) => t.status === "done").map((t) => String(t.id)));
+      const settled = groups.filter((g) => done.has(String(g.key)));
+      const sum = usageMerge(settled, ["in", "out"]), n = settled.length;
+      const share = (x) => (usageNumber(x) ? x / n : null);
+      model.per = n ? usageValue({ in: share(sum.in), out: share(sum.out), known: { in: share(sum.known.in), out: share(sum.known.out) } }, ["in", "out"]) : "没有记录";
+      model.n = n;
+      // 缓存读占比:三项里有未知的就不算。
+      const base = [total.in, total.cc, total.cr].every(usageNumber) ? total.in + total.cc + total.cr : 0;
+      model.cache = base > 0 ? Math.round(total.cr / base * 100) + "%" : "待核实";
+      model.failed = Number.isSafeInteger(total.attempts_failed) ? total.attempts_failed + " 次" : "待核实";
+      model.failedCards = groups.filter((g) => g.attempts_failed > 0).length;
+      model.settled = v.settled && Number.isSafeInteger(v.settled.cards) ? v.settled.cards : null;
+      model.cost = usageValue(total, "cost_usd") + usageCostMark(total);
+      const top = usageTop(groups), title = (key) => String(byId.get(Number(key))?.subject || "");
+      const row = (g) => ({ key: g.key, title: title(g.key), flag: usageCardFlag(g), cost: usageValue(g, "cost_usd") + usageCostMark(g), tokens: usageValue(g, ["in", "out"]) });
+      model.top = top.rows.map(row); model.unknown = top.unknown; model.loose = top.loose && row(top.loose);
+    } else {
+      const name = (k) => k === "?" ? (by === "line" ? "未记到线上" : "待核实") : by === "line" ? lineLabel(k) : by === "phase" ? USAGE_PHASE[k] || k : k;
+      model.groups = groups.map((g) => usageGroupRow(g, name(String(g.key))));
+      model.total = usageGroupRow(total, "合计");
+    }
+  }
+  const held = sec.contains(document.activeElement) ? document.activeElement.dataset.fk : null;
   homeFill(sec, JSON.stringify(model), () => {
-    const head = homeEl("div", undefined, "usage-head");
-    head.append(homeEl("h2", "用量"), homeEl("span", "", "usage-note"), usageCsvButton("导出 CSV", "/api/usage?by=card&format=csv", "usage-by-card"));
+    const head = homeEl("div", undefined, "usage-head"), ctl = homeEl("div", undefined, "usage-ctl");
+    const seg = (kind, label, list, current) => {
+      const box = homeEl("div", undefined, "seg"); box.setAttribute("role", "radiogroup"); box.setAttribute("aria-label", label);
+      for (const [key, text] of list) {
+        const o = homeEl("label", undefined, "seg-o"), input = homeEl("input");
+        input.type = "radio"; input.name = "usage-" + kind; input.value = key; input.checked = key === current; input.dataset.fk = kind + ":" + key;
+        input.addEventListener("change", () => { if (input.checked) historyUsagePick(kind, key); });
+        o.append(input, homeEl("span", text)); box.append(o);
+      }
+      return box;
+    };
+    ctl.append(seg("range", "时间范围", USAGE_RANGES, model.range), seg("by", "分组", USAGE_BYS, model.by));
+    head.append(homeEl("h2", "用量"), ctl, homeEl("span", "", "usage-note"),
+      usageCsvButton("导出 CSV", usagePath(model.by, model.range, new Date(), true), "usage-by-" + model.by));
     const out = [head];
+    if (!model.fresh) { out.push(homeEl("p", historyUsage.error ? "暂时读不到" : "正在读取", "usage-empty")); return out; }
     if (model.stale) out.push(homeEl("p", "暂时读不到", "usage-empty"));
-    if (!model.rows) { out.push(homeEl("p", "还没有用量记录", "usage-empty")); return out; }
+    if (!model.rows) { out.push(homeEl("p", model.range === "all" ? "还没有用量记录" : "这段时间没有用量记录", "usage-empty")); return out; }
+    if (model.by !== "card") {
+      const table = homeEl("div", undefined, "usage-groups"), line = (r, cls) => {
+        const el = homeEl("div", undefined, "usage-grow" + (cls ? " " + cls : ""));
+        el.append(homeEl("span", r.name), homeEl("span", r.attempts, "usage-num"), homeEl("span", r.cost, "usage-num"), homeEl("span", "词元 " + r.tokens, "usage-num"));
+        return el;
+      };
+      const h = homeEl("div", undefined, "usage-grow usage-gh");
+      h.append(homeEl("span", ({ line: "执行线", model: "模型", phase: "阶段" })[model.by]), homeEl("span", "尝试", "usage-num"), homeEl("span", "费用", "usage-num"), homeEl("span", "词元", "usage-num"));
+      table.append(h, ...model.groups.map((r) => line(r)), line(model.total, "usage-gt"));
+      table.title = "词元 = 输入 + 输出，不含缓存读写；有未知行时只有已知部分";
+      out.push(table);
+      return out;
+    }
     const stats = homeEl("dl", undefined, "usage-stats");
     const stat = (label, value, sub, tip) => {
       const cell = homeEl("div", undefined, "usage-stat");
@@ -7326,17 +7573,18 @@ function renderHistoryUsage(items){
     };
     stat("缓存读占比", model.cache, "", "缓存读词元占输入、缓存写、缓存读三项之和的比例；三项里有未知的写待核实");
     stat("每张完成卡的词元", model.per, model.n ? model.n + " 张完成卡" : "", "词元 = 输入 + 输出，不含缓存读写；只数本机已完成且有用量记录的卡");
-    stat("失败尝试浪费", model.waste, "本页 " + model.page + " 张卡", "失败尝试用掉的词元，输入 + 输出；只数这一页显示的完成卡");
-    stat("费用合计", model.cost, "", "全部用量行的费用之和；有未知行时只有已知部分");
+    stat("失败尝试", model.failed, model.failedCards ? model.failedCards + " 张卡" : "", "这段时间里有用量行、最后没通过的尝试次数");
+    stat("费用合计", model.cost, model.settled !== null ? "已结算 " + model.settled + " 张卡" : "", "这段时间全部用量行的费用之和；有未知行时只有已知部分");
     out.push(stats);
     const fold = homeEl("details", undefined, "usage-top");
     fold.open = historyTopOpen;
     fold.addEventListener("toggle", () => { historyTopOpen = fold.open; });
     fold.append(homeEl("summary", "最贵的 10 张"));
     for (const r of model.top) {
-      const b = homeEl("button", undefined, "usage-row ghost"); b.type = "button";
-      b.append(homeEl("span", "#" + r.key, "usage-no"), homeEl("span", r.title, "usage-title"),
-               homeEl("span", r.cost, "usage-num"), homeEl("span", "词元 " + r.tokens, "usage-num"));
+      const b = homeEl("button", undefined, "usage-row ghost"), what = homeEl("span", undefined, "usage-title usage-what"); b.type = "button";
+      what.append(homeEl("span", r.title));
+      if (r.flag) what.append(homeEl("span", r.flag, "usage-flag"));
+      b.append(homeEl("span", "#" + r.key, "usage-no"), what, homeEl("span", r.cost, "usage-num"), homeEl("span", "词元 " + r.tokens, "usage-num"));
       b.addEventListener("click", () => openSide({ id: Number(r.key), uid: null, item: null }));
       fold.append(b);
     }
@@ -7350,6 +7598,7 @@ function renderHistoryUsage(items){
     out.push(fold);
     return out;
   });
+  if (held) for (const el of sec.querySelectorAll("[data-fk]")) if (el.dataset.fk === held) { el.focus({ preventScroll: true }); break; }
 }
 
 // ── 执行器 CLI 版本:GET /api/cli-versions。进入设置页时读一次,停留期间最多每 10 分钟一次;不进 refresh()。
@@ -7395,10 +7644,64 @@ function renderCliVersions(){
         cell.append(homeEl("dt", c.k), value);
         cells.append(cell);
       }
-      row.append(homeEl("p", r.name, "cv-name"), cells);
-      if (r.next) row.append(homeCmdText(homeEl("p", undefined, "cv-next"), r.next));
+      row.append(homeEl("p", r.name + (r.source ? " · " + r.source : ""), "cv-name"), cells);
+      if (r.copy) {
+        const p = homeEl("p", r.next + " ", "cv-next cv-copy"), cmd = homeEl("code", r.copy, "hs-cmd"), b = homeEl("button", "复制");
+        b.type = "button";
+        b.addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(r.copy); b.textContent = "已复制"; }
+          catch { b.textContent = "复制不了，请手动选中命令"; }
+        });
+        p.append(cmd, " ", b);
+        row.append(p);
+      }
+      else if (r.next) row.append(homeCmdText(homeEl("p", undefined, "cv-next"), r.next));
       out.push(row);
     }
+    return out;
+  });
+}
+// ── Zcode 独立执行循环:GET /api/zcode/status(只读)。进入设置页时读一次,停留期间每 30 秒一次;不进 refresh()。
+//    404 或旧形状整块不出;有过结果后读不到写「暂时读不到」并保留上次结果。面板对它不做任何写操作。
+const zcodeStatusSlot = optionalSlot();
+async function zcodeLoad(){
+  const asked = await optionalLoad(zcodeStatusSlot, "/api/zcode/status", (v) => !!v && typeof v === "object" && !!v.loop && typeof v.loop === "object");
+  if (asked){ renderZcode(); renderRig(); }
+}
+setInterval(() => {
+  if (homeView === "settings" && !document.hidden && Date.now() - zcodeStatusSlot.at >= 30000) zcodeLoad();
+}, 10000);
+/** Zcode 线:有卡带 zcode 字段的线;还没有这样的卡时,Zcode 已配置就认线名 zcode。 */
+function zcodeLines(){
+  const out = new Set();
+  for (const t of tasks) if (t && t.zcode && typeof t.line === "string") out.add(t.line);
+  if (!out.size && zcodeStatusSlot.value?.configured === true && LINES.includes("zcode")) out.add("zcode");
+  return out;
+}
+function renderZcode(){
+  const box = document.getElementById("zcode-box"), v = zcodeView(zcodeStatusSlot.value, localTime);
+  box.hidden = !v;
+  homeFill(box, JSON.stringify([v, zcodeStatusSlot.stale]), () => {
+    if (!v) return [];
+    const head = homeEl("div", undefined, "cv-head"), h = homeEl("h4", "Zcode");
+    if (v.model) h.append(" ", homeEl("span", v.model, "zc-model"));
+    head.append(h);
+    if (zcodeStatusSlot.stale) head.append(homeEl("span", "暂时读不到", "cv-stale"));
+    if (!v.configured){
+      const off = homeEl("p", v.text, "zc-off"); if (v.title) off.title = v.title;
+      return [head, off];
+    }
+    const badge = homeEl("span", v.state.label, "badge"); badge.dataset.tone = v.state.tone; badge.insertAdjacentHTML("afterbegin", icon(v.state.icon));
+    head.append(badge);
+    const out = [head];
+    if (v.reason) out.push(homeCmdText(homeEl("p", undefined, "zc-reason"), v.reason));
+    const cells = homeEl("dl", undefined, "cv-cells");
+    for (const c of v.cells){
+      const cell = homeEl("div", undefined, "rs"); cell.dataset.st = c.st;
+      cell.append(homeEl("dt", c.k), homeEl("dd", c.v));
+      cells.append(cell);
+    }
+    out.push(cells);
     return out;
   });
 }
@@ -7449,6 +7752,7 @@ function homeAfterRefresh(){
 // ⭐ 协调线、人和系统写的字一律走 textContent(homeEl);这一段不拼 innerHTML,图标只用 icon() 的固定标记。
 let chatCoord = null, chatRows = null, chatRowsError = null, chatId = null, chatData = null, chatDataError = null;
 let chatLoadedAt = 0, chatSeq = 0, chatSending = false, chatFail = null, chatTimer = 0, chatStick = true;
+let chatArchRows = [], chatRename = null, chatArchOpen = false, chatListNote = null;   // 已归档的对话、正在改名的对话、「已归档」开没开、改名/归档没成的原因
 const chatInput = document.getElementById("chat-input"), chatShell = document.getElementById("chat-shell");
 const chatKey = (id = chatId) => id == null ? "new" : "c:" + id;
 const chatSame = (a, b) => a != null && b != null && String(a) === String(b);
@@ -7476,9 +7780,10 @@ async function chatLoad(force = false){
   if (!force && Date.now() - chatLoadedAt < 5000) return;
   chatLoadedAt = Date.now();
   const seq = ++chatSeq, id = chatId;
-  const [c, l, d] = await Promise.allSettled([chatApi("GET", "/api/coordinator"), chatApi("GET", "/api/conversations?archived=0"),
-    id == null ? null : chatApi("GET", chatPath())]);
+  const [c, l, d, a] = await Promise.allSettled([chatApi("GET", "/api/coordinator"), chatApi("GET", "/api/conversations?archived=0"),
+    id == null ? null : chatApi("GET", chatPath()), chatApi("GET", "/api/conversations?archived=1")]);
   if (seq !== chatSeq || !chatSame(id ?? "", chatId ?? "")) return;   // 更晚的一次读取或换了对话:这一次的结果不用
+  if (a.status === "fulfilled" && Array.isArray(a.value.conversations)) chatArchRows = a.value.conversations;   // 读不到时保留上次的
   chatCoord = c.status === "fulfilled" ? c.value
     : { available: false, reason: c.reason?.status === 404 ? "这个版本的看板没有协调线对话接口" : copyError(c.reason) };
   if (l.status === "fulfilled") { chatRows = Array.isArray(l.value.conversations) ? l.value.conversations : []; chatRowsError = null; }
@@ -7494,7 +7799,7 @@ function chatChanged(){ if (homeView !== "home") return; clearTimeout(chatTimer)
 /** 换到一个对话(null = 新对话):各对话的输入草稿分开记。 */
 function chatOpen(id){
   chatDraftSave();
-  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatPlanNote = null; chatStick = true;
+  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatPlanNote = null; chatStick = true; chatRename = null; chatListNote = null;
   chatSave({ cur: chatId });
   chatInput.value = (chatStore().input || {})[chatKey()] || "";
   chatGrow(); chatDrawer(false); renderChat();
@@ -7554,6 +7859,47 @@ async function chatStop(){
 function chatRetryTurn(){
   const last = [...(chatData?.messages || [])].reverse().find((m) => m.role === "user");
   if (last) chatSend(last.text);
+}
+/** 当前对话在列表里的两个动作:改名、归档(已归档的是「取消归档」)。改名时换成一个输入框与「保存」「取消」。 */
+function chatItemActs(c, archived){
+  const box = homeEl("div", undefined, "cl-acts");
+  if (chatRename && chatSame(chatRename.id, c.id)) {
+    box.classList.add("cl-rename");
+    const input = homeEl("input"); input.type = "text"; input.maxLength = 60; input.value = chatRename.text;
+    input.dataset.fk = "rename-input"; input.setAttribute("aria-label", "对话标题");
+    input.addEventListener("input", () => { if (chatRename) chatRename.text = input.value; });
+    input.addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Enter"){ e.preventDefault(); chatRenameSave(c.id, input.value); }
+      else if (e.key === "Escape"){ e.preventDefault(); e.stopPropagation(); chatRename = null; chatListNote = null; renderChat(); }
+    });
+    const ok = homeEl("button", "保存"); ok.type = "button"; ok.dataset.fk = "rename-save";
+    ok.addEventListener("click", () => chatRenameSave(c.id, input.value));
+    const no = homeEl("button", "取消", "ghost"); no.type = "button"; no.dataset.fk = "rename-cancel";
+    no.addEventListener("click", () => { chatRename = null; chatListNote = null; renderChat(); });
+    box.append(input, ok, no);
+    if (chatRename.fresh) { chatRename.fresh = false; requestAnimationFrame(() => { if (input.isConnected){ input.focus({ preventScroll: true }); input.select(); } }); }
+  } else {
+    const rename = homeEl("button", "改名", "ghost"); rename.type = "button"; rename.dataset.fk = "rename";
+    rename.addEventListener("click", () => { chatRename = { id: c.id, text: String(c.title || "").trim(), fresh: true }; chatListNote = null; renderChat(); });
+    const arch = homeEl("button", archived ? "取消归档" : "归档", "ghost"); arch.type = "button"; arch.dataset.fk = "archive";
+    arch.addEventListener("click", () => chatArchive(c.id, !archived));
+    box.append(rename, arch);
+  }
+  if (chatListNote) { const n = homeEl("p", chatListNote, "cl-note"); n.setAttribute("role", "status"); box.append(n); }
+  return box;
+}
+async function chatRenameSave(id, value){
+  const title = String(value || "").trim();
+  if (!title) { chatListNote = "标题不能为空"; renderChat(); return; }
+  try { await chatApi("PATCH", "/api/conversations/" + encodeURIComponent(id), { title }); chatRename = null; chatListNote = null; }
+  catch (e) { chatListNote = "没有改成：" + chatErrorText(e); }
+  await chatLoad(true); renderChat();
+}
+async function chatArchive(id, archived){
+  try { await chatApi("PATCH", "/api/conversations/" + encodeURIComponent(id), { archived }); chatListNote = null; if (archived) chatArchOpen = true; }
+  catch (e) { chatListNote = (archived ? "没有归档：" : "没有取消归档：") + chatErrorText(e); }
+  await chatLoad(true); renderChat();
 }
 /** 图标节点:名字只来自本文件的固定表,标记由 icon() 生成。 */
 function chatIcon(name){ const t = document.createElement("template"); t.innerHTML = icon(name); return t.content.firstChild; }
@@ -7766,13 +8112,17 @@ function chatFill(box, sig, build){
 /** 输入区:状态一行和发送按钮。打字时也走这里(超过字数上限要当场写明),不动消息流。 */
 function chatSync(){
   const conversation = chatData?.conversation || null;
-  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value });
+  const since = [...(chatData?.messages || [])].reverse().find((m) => m.role === "user")?.created_at || conversation?.updated_at || null;
+  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value, since });
   const state = document.getElementById("chat-state");
   state.hidden = !line;
   if (line) state.dataset.tone = line.tone;
   homeFill(state, JSON.stringify(line), () => {
     if (!line) return [];
-    const out = [chatIcon(line.icon), homeEl("span", line.text, "cs-text")];
+    const text = homeEl("span", line.text, "cs-text");
+    // 已等待的秒数每秒原位更新(chatWaitTick),不重建这一行,「停止本轮」不丢焦点。
+    if (line.since && Number.isFinite(Date.parse(line.since))){ const w = homeEl("span", "", "cs-wait"); w.dataset.since = line.since; w.title = "一轮通常约 3 分钟"; text.append(" · ", w); }
+    const out = [chatIcon(line.icon), text];
     if (line.act) {
       const b = homeEl("button", line.label); b.type = "button";
       b.addEventListener("click", () => line.act === "stop" ? chatStop() : line.act === "retry" ? chatRetryTurn() : chatSend(chatFail?.text));
@@ -7780,25 +8130,43 @@ function chatSync(){
     }
     return out;
   });
+  chatWaitTick();
   document.getElementById("chat-send").disabled = !chatCanSend({ coordinator: chatCoord, conversation, sending: chatSending, text: chatInput.value });
 }
+function chatWaitTick(){
+  for (const w of document.querySelectorAll("#chat-state .cs-wait[data-since]")){
+    const text = chatWaited(Date.now() - Date.parse(w.dataset.since));
+    if (w.textContent !== text) w.textContent = text;
+  }
+}
+setInterval(chatWaitTick, 1000);
 function renderChat(){
   if (homeView !== "home") return;
   const conversation = chatData?.conversation || null, row = (chatRows || []).find((c) => chatSame(c.id, chatId));
   // 左栏:对话列表
-  chatFill(document.getElementById("chat-items"), JSON.stringify([chatRows, chatRowsError, chatId]), () => {
+  chatFill(document.getElementById("chat-items"), JSON.stringify([chatRows, chatRowsError, chatId, chatArchRows, chatRename?.id ?? null, chatListNote]), () => {
     if (chatRows === null) return [homeEl("p", "正在读取…", "cl-empty")];
     const out = [];
     if (chatRowsError) out.push(homeEl("p", "对话列表暂时读不到：" + chatRowsError, "cl-empty"));
     if (!chatRows.length && !chatRowsError) out.push(homeEl("p", "还没有对话。", "cl-empty"));
-    for (const c of chatRows) {
+    const item = (c, archived, into) => {
       const b = homeEl("button", undefined, "cl-item"); b.type = "button"; b.dataset.st = String(c.status || "idle"); b.dataset.fk = "conv:" + c.id;
       if (chatSame(c.id, chatId)) b.setAttribute("aria-current", "true");
       if (chatListNeed(c)) b.dataset.need = "";
       if (c.status === "failed" && c.error) b.title = String(c.error);
       b.append(homeEl("span", String(c.title || "").trim() || "未命名对话", "cl-t"), homeEl("span", chatListLine(c), "cl-s"));
       b.addEventListener("click", () => chatOpen(c.id));
-      out.push(b);
+      into.push(b);
+      if (chatSame(c.id, chatId)) into.push(chatItemActs(c, archived));
+    };
+    for (const c of chatRows) item(c, false, out);
+    if (chatArchRows.length) {
+      const fold = homeEl("details", undefined, "cl-arch"), list = [];
+      fold.open = chatArchOpen || chatArchRows.some((c) => chatSame(c.id, chatId));
+      fold.addEventListener("toggle", () => { chatArchOpen = fold.open; });
+      for (const c of chatArchRows) item(c, true, list);
+      fold.append(homeEl("summary", "已归档 " + chatArchRows.length), ...list);
+      out.push(fold);
     }
     return out;
   });
@@ -7824,8 +8192,17 @@ document.getElementById("chat-flow").addEventListener("scroll", (e) => {
 }, { passive: true });
 chatInput.addEventListener("input", () => { chatGrow(); chatDraftSave(); chatSync(); });
 // Enter 发送,Shift+Enter 换行;输入法选字时的 Enter 不发。触摸屏的软键盘没有 Shift+Enter:Enter 换行,用按钮发。
+const CHAT_TOUCH = matchMedia("(pointer:coarse), (hover:none) and (any-pointer:coarse)");
+function chatKeysSync(){
+  const touch = CHAT_TOUCH.matches, hint = touch ? "Enter 换行 · 按「发送」发出" : "Enter 发送 · Shift+Enter 换行";
+  chatInput.enterKeyHint = touch ? "enter" : "send";
+  chatInput.title = hint.replace(" · ", "，");
+  const tip = document.querySelector(".chat-hint"); if (tip) tip.textContent = hint;
+}
+chatKeysSync();
+CHAT_TOUCH.addEventListener?.("change", chatKeysSync);
 chatInput.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229 || matchMedia("(pointer:coarse)").matches) return;
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229 || CHAT_TOUCH.matches) return;
   e.preventDefault(); chatSend();
 });
 document.getElementById("chat-send").addEventListener("click", () => chatSend());

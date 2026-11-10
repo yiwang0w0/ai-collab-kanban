@@ -114,7 +114,7 @@ function fixture() {
     icon: (name) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`,
     localTime: (value) => String(value).slice(5, 16).replace("T", " "), lineLabel: (line) => "线·" + line,
     // 请求体是被测代码在 vm 里造的对象:转成本侧的普通对象再记,好做深比较。
-    post: async (url, body) => { posts.push({ url, body: JSON.parse(JSON.stringify(body)) }); if (postFails) throw new Error(postFails); return {}; },
+    post: async (url, body) => { posts.push({ url, body: JSON.parse(JSON.stringify(body)) }); if (postFails) throw typeof postFails === "string" ? new Error(postFails) : postFails; return {}; },
     homeGet: async (path) => {
       gets.push(path);
       if (path === "/api/coord/locks") {
@@ -154,7 +154,7 @@ const coordData = (extra) => ({ executors: [executor("a")], locks: [lock()], jou
 const request = (extra) => ({ id: "request:9:1", kind: "request", title: "ext-a 请求批准", summary: "重启共享设备上的应用", risk: "high",
   detail_ref: { type: "request", id: 9 }, created_at: iso(T0), expected_version: 1, actions: ["approve", "reject"], labels: { approve: "批准", reject: "拒绝" }, ...extra });
 const lockApproval = (extra) => ({ id: "lock:7:1790000000000", kind: "lock", title: "device:test-phone", summary: "device:test-phone 已逾期:甲 · 回归",
-  detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, created_at: iso(T0), expected_version: 1790000000000,
+  detail_ref: { type: "lock", id: 7, lock_id: 7, holder: "a", resource: "device:test-phone" }, created_at: iso(T0), expected_version: 1790000000000,
   actions: ["approve", "reject"], labels: { approve: "强制释放", reject: "保留" }, ...extra });
 const taskApproval = (kind, id) => ({ id: `${kind}:${id}:3`, kind, title: `#${id} 一张卡`, summary: "交付摘要", detail_ref: { type: "task", id },
   created_at: iso(T0), expected_version: 3, actions: ["approve", "reject"], labels: { approve: "通过", reject: "打回" } });
@@ -254,7 +254,7 @@ test("批准决定带备注：请求体含 note；逾期锁的强制释放没写
   assert.equal(release2.textContent, "再按=确认强制释放");
   await f.context.approvalPress(release2);
   assert.deepEqual(f.posts, [{ url: "/api/approvals/lock%3A7%3A1790000000000/decide",
-    body: { decision: "approve", note: "持有者已离开", source: { client: "panel" }, expected_version: 1790000000000 } }]);
+    body: { decision: "approve", note: "持有者已离开", source: { client: "panel" }, expected_version: 1790000000000, lock_id: 7, holder: "a" } }], "强制释放带锁记录编号与持有者");
   assert.equal(f.refreshes(), 1);
   assert.deepEqual(f.state().notes, [], "决定发出后草稿清掉");
   // 执行者请求:备注可不填,拒绝也带 note 字段。
@@ -303,6 +303,33 @@ test("任务类批准行只带人去侧栏：标题是按钮，只有「打开�
   assert.ok(handler.includes('hit("button[data-lock-release]")') && handler.includes('hit("button[data-lock-confirm]")') && handler.includes('hit("button[data-lock-cancel]")'));
 });
 
+test("版本确认第一下展开确认说明与改动、不到时复原，第二下才发；强制释放遇 409 LOCK_CHANGED 写「这把锁已换人」不弹窗", async () => {
+  const f = fixture(), box = f.box("approvals");
+  const ver = { id: "version:bless:t.0", kind: "version", title: "确认当前版本", summary: "确认版本 abc", detail_ref: { type: "setup" }, created_at: iso(T0),
+    expected_version: "t.0", actions: ["approve", "reject"], labels: { approve: "确认此版本", reject: "暂不确认" },
+    confirm: "确认版本 abc\n\n上次确认 → 这次,改了什么:\n  a.js | 2 +-\n\n确认之后执行线才会用这个版本起跑。", changes: { prev: "p", files: 1, stat: ["a.js | 2 +-"], more: 0 } };
+  f.set({ approvals: { approvals: [ver] } }); f.context.renderApprovals();
+  const ok = box.querySelector('[data-apv-decision="approve"]');
+  await f.context.approvalPress(ok);
+  const rv = box.querySelector("[data-apv-review]");
+  assert.deepEqual([ok.textContent, ok.dataset.armed, f.timers.length, f.posts.length, rv.querySelectorAll("pre").length], ["再按=确认确认此版本", "1", 0, 0, 1], "清单已在确认说明里:只放一块");
+  assert.match(rv.textContent, /上次确认后改了 1 个文件确认版本 abc[\s\S]*a\.js \| 2 \+-[\s\S]*收起/);
+  f.set({ approvals: { approvals: [] } }); f.context.renderApprovals();
+  assert.equal(box.replacements, 1, "展开着不重画");
+  f.context.approvalReviewClose(rv.querySelector("[data-apv-collapse]"));
+  assert.deepEqual([ok.dataset.armed, box.replacements], ["", 2], "收起:复原并补画");
+  f.set({ approvals: { approvals: [ver] } }); f.context.renderApprovals();
+  const ok2 = box.querySelector('[data-apv-decision="approve"]');
+  await f.context.approvalPress(ok2); await f.context.approvalPress(ok2);
+  assert.deepEqual(f.posts.map((p) => [p.url, p.body.expected_version]), [["/api/approvals/version%3Abless%3At.0/decide", "t.0"]]);
+  f.set({ approvals: { approvals: [lockApproval()] } }); f.context.renderApprovals();
+  const why = box.querySelector("[data-apv-note]"); why.value = "持有者已离开"; f.context.approvalNoteInput(why);
+  f.failPosts(Object.assign(new Error("锁已变化，没有释放"), { status: 409, body: { code: "LOCK_CHANGED" } }));
+  const go = box.querySelector('[data-apv-decision="approve"]');
+  await f.context.approvalPress(go); await f.context.approvalPress(go);
+  assert.deepEqual([f.alerts, box.querySelector(".coord-note").textContent, f.refreshes()], [[], "device:test-phone：这把锁已换人，请重新核对", 2]);
+});
+
 test("锁表强制释放：理由为空时确认钮禁用；上膛写明资源与持有者；请求带 force 与理由", async () => {
   const f = fixture(), box = f.box("coord");
   f.set({ coord: coordData({ locks: [lock(), lock({ id: 8, resource: "repo:main", holder: "b", holder_name: "乙", overdue: false, expected_end: iso(T0 + 30 * 60000) })] }) });
@@ -331,8 +358,9 @@ test("锁表强制释放：理由为空时确认钮禁用；上膛写明资源�
   assert.equal(box.replacements, 1); assert.deepEqual(f.state().pending, ["coord"]);
   assert.deepEqual(f.gets, [], "第一下只上膛，不读也不发");
   await f.context.coordLockPress(ok);
-  assert.deepEqual(f.gets, ["/api/coord/locks"], "第二下提交前先重读一次锁表");
-  assert.deepEqual(f.posts, [{ url: "/api/coord/locks/release", body: { resource: "repo:main", force: true, reason: "持有者说可以放" } }]);
+  assert.deepEqual(f.gets, [], "第二下直接提交，持有者由服务端比对");
+  assert.deepEqual(f.posts, [{ url: "/api/coord/locks/release", body: { resource: "repo:main", force: true, reason: "持有者说可以放", lock_id: 8, holder: "b" } }],
+    "请求带这一行画出来时的锁记录编号与持有者");
   assert.equal(f.refreshes(), 1);
   assert.equal(box.querySelector("[data-lock-form]"), null, "发出后收起理由框");
   // 取消:收起,等着的重画补上。
@@ -356,48 +384,7 @@ test("锁表强制释放：理由为空时确认钮禁用；上膛写明资源�
   assert.equal(ok3.disabled, false);
 });
 
-test("持有者变化后第二下不发请求：中止并写「这把锁已换人，请重新核对」", async () => {
-  const f = fixture(), box = f.box("coord");
-  const arm = async () => {
-    f.context.renderCoord();
-    f.context.coordLockOpen(box.querySelector("[data-lock-release]"));
-    const form = box.querySelector("[data-lock-form]"), input = form.querySelector("[data-lock-reason]"), ok = form.querySelector("[data-lock-confirm]");
-    input.value = "持有者已离开"; f.context.coordLockReasonInput(input);
-    await f.context.coordLockPress(ok);
-    assert.equal(ok.dataset.armed, "1");
-    return ok;
-  };
-  f.set({ coord: coordData() });
-  let ok = await arm();
-  assert.equal(ok.textContent, "再按=确认强制释放 device:test-phone，持有者 甲");
-  // 上膛之后这把锁换了人:重画被理由框挡着,行里还写着「甲」。
-  f.set({ coord: coordData({ locks: [lock({ id: 9, holder: "b", holder_name: "乙", overdue: false })] }) });
-  f.context.renderCoord();
-  assert.match(box.querySelector(".lock-row").textContent, /甲/);
-  await f.context.coordLockPress(ok);
-  assert.equal(f.posts.length, 0, "换人了:不发请求");
-  assert.equal(f.refreshes(), 0);
-  assert.equal(box.querySelector("[data-lock-form]"), null);
-  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已换人，请重新核对");
-  assert.match(box.querySelector(".lock-row").textContent, /乙/, "中止后立即重画,行里是现在的持有者");
-  // 同一个持有者放了又锁:不是原来那一次。
-  ok = await arm();
-  f.set({ coord: coordData({ locks: [lock({ id: 10, holder: "b", holder_name: "乙" })] }) });
-  await f.context.coordLockPress(ok);
-  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已重新加锁，请重新核对");
-  // 已经被放掉。
-  ok = await arm();
-  f.set({ coord: coordData({ locks: [] }) });
-  await f.context.coordLockPress(ok);
-  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已经释放");
-  assert.equal(f.posts.length, 0);
-  // 再开理由框,那一句清掉。
-  f.set({ coord: coordData() }); f.context.renderCoord();
-  f.context.coordLockOpen(box.querySelector("[data-lock-release]"));
-  assert.equal(f.state().lockNote, "");
-});
-
-test("面板手上的锁表还没更新、服务端已经换人：第二下重读后中止，不发请求；锁表读不到也不发", async () => {
+test("服务端回 409 LOCK_CHANGED 或 404：中止并写「这把锁已换人，请重新核对」，重读锁表后立即重画", async () => {
   const f = fixture(), box = f.box("coord");
   const arm = async () => {
     f.context.renderCoord();
@@ -408,35 +395,41 @@ test("面板手上的锁表还没更新、服务端已经换人：第二下重�
     assert.equal(ok.dataset.armed, "1");
     return { form, ok };
   };
-  // 面板这一份里持有者还是「甲」(实时连接断着,没有新数据进来);服务端那边这把锁已经换给「乙」。
+  const changed = () => Object.assign(new Error("锁已变化，没有释放"), { status: 409, body: { code: "LOCK_CHANGED" } });
+  // 面板这一份里持有者还是「甲」;服务端那边这把锁已经换给「乙」,按请求里的 lock_id / holder 比对后回 409。
   f.set({ coord: coordData() });
   let { ok } = await arm();
-  f.serverLocks([lock({ id: 9, holder: "b", holder_name: "乙", overdue: false })]);
+  assert.equal(ok.textContent, "再按=确认强制释放 device:test-phone，持有者 甲");
+  f.serverLocks([lock({ id: 9, holder: "b", holder_name: "乙", overdue: false })]); f.failPosts(changed());
   await f.context.coordLockPress(ok);
-  assert.deepEqual(f.gets, ["/api/coord/locks"]);
-  assert.equal(f.posts.length, 0, "核对用的是刚读到的锁表：换人了不发请求");
-  assert.equal(box.querySelector("[data-lock-form]"), null);
+  assert.deepEqual(f.posts.map((p) => p.body), [{ resource: "device:test-phone", force: true, reason: "持有者已离开", lock_id: 7, holder: "a" }]);
+  assert.deepEqual([f.gets, f.alerts, box.querySelector("[data-lock-form]")], [["/api/coord/locks"], [], null], "409 之后重读锁表,不弹窗,收起理由框");
   assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已换人，请重新核对");
   assert.match(box.querySelector(".lock-row").textContent, /乙/, "重画用刚读到的锁表，行里是现在的持有者");
-  // 锁表读不到:不知道现在是谁持有,不发;原因写在理由框下面,理由还在,按钮恢复可按。
+  // 同一个持有者放了又锁:不是原来那一次。锁表读不到时按「已换人」写。
   f.serverLocks(null); f.set({ coord: coordData() });
-  let form; ({ form, ok } = await arm());
-  f.failGets("读取失败(503)");
+  ({ ok } = await arm()); f.serverLocks([lock({ id: 10 })]);
   await f.context.coordLockPress(ok);
-  assert.equal(f.posts.length, 0, "读不到锁表：不发请求");
-  assert.equal(form.querySelector(".coord-note").textContent, "释放失败：读取失败(503)");
-  assert.deepEqual([ok.disabled, form.querySelector("[data-lock-reason]").value, !!box.querySelector("[data-lock-form]")], [false, "持有者已离开", true]);
-  // 读得到了:再按两下照常发出。
-  f.failGets(null);
-  await f.context.coordLockPress(ok); await f.context.coordLockPress(ok);
-  assert.deepEqual(f.posts, [{ url: "/api/coord/locks/release", body: { resource: "device:test-phone", force: true, reason: "持有者已离开" } }]);
-  // 读的这一下里理由框被收起(按了「取消」):不发。
-  f.set({ coord: coordData() });
-  ({ form, ok } = await arm());
-  const pending = f.context.coordLockPress(ok);
-  f.context.coordLockClose(form.querySelector("[data-lock-cancel]"));
-  await pending;
-  assert.equal(f.posts.length, 1, "理由框收起后不再发");
+  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已重新加锁，请重新核对");
+  f.serverLocks(null); f.set({ coord: coordData() });
+  ({ ok } = await arm()); f.failGets("读取失败(503)");
+  await f.context.coordLockPress(ok);
+  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已换人，请重新核对");
+  // 已经被放掉:服务端 404。
+  f.failGets(null); f.set({ coord: coordData() });
+  ({ ok } = await arm()); f.serverLocks([]); f.failPosts(Object.assign(new Error("资源当前没有被锁"), { status: 404, body: {} }));
+  await f.context.coordLockPress(ok);
+  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已经释放");
+  // 其他错误:原因写在理由框下面,理由还在,按钮恢复可按。
+  f.serverLocks(null); f.set({ coord: coordData() });
+  let form; ({ form, ok } = await arm()); f.failPosts("操作员强制释放需要 force:true 和理由 reason");
+  await f.context.coordLockPress(ok);
+  assert.deepEqual([form.querySelector(".coord-note").textContent, ok.disabled, form.querySelector("[data-lock-reason]").value],
+    ["释放失败：操作员强制释放需要 force:true 和理由 reason", false, "持有者已离开"]);
+  // 再开理由框,那一句清掉。
+  f.failPosts(null); f.context.coordLockClose(form.querySelector("[data-lock-cancel]"));
+  f.context.coordLockOpen(box.querySelector("[data-lock-release]"));
+  assert.equal(f.state().lockNote, "");
   // 按住回车的连发不算一下:一次长按不能走完两押。
   assert.ok(source.includes('if (e.key === "Enter"){ e.preventDefault(); if (e.repeat) return; const ok = form.querySelector("[data-lock-confirm]"); if (!ok.disabled) coordLockPress(ok); }'));
 });
@@ -529,7 +522,7 @@ test("结构钉：窄屏行的标题与按钮组占整行，各类行各有模�
   assert.ok(narrow.includes(".apv-acts{gap:var(--sp-2)}"));
   assert.ok(wide.includes(".coord-row > .badge{justify-self:start}"), "徽标不再通栏");
   // 宽屏:批准、锁、交接、令牌各一套列,不共用原来的五列模板。
-  for (const row of [".apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:\"lead title acts\" \"when sum acts\" \". note acts\"",
+  for (const row of [".apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:\"lead title acts\" \"when sum acts\" \". facts acts\" \". note acts\" \". review review\"",
     ".lock-row{grid-template-columns:", ".hand-row{grid-template-columns:", ".apt-row{grid-template-columns:"])
     assert.ok(wide.includes(row), row);
   assert.ok(!/\.coord-row\{[^}]*grid-template-columns:[^}]*\}/.test(wide), "通用行不再带列模板");

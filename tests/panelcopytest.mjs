@@ -8,7 +8,7 @@ const start = source.indexOf("// ── display-copy(pure;tests/panelcopytest.mj
 const end = source.indexOf("// ── /display-copy ──", start);
 assert.ok(start >= 0 && end > start, "未找到纯展示文案测试边界");
 const copy = new Function(source.slice(source.indexOf("\n", start) + 1, end) +
-  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells };")();
+  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells, zcodeView, zcodeCardRows, usageSince, usagePath, usageCardFlag, usageGroupRow };")();
 
 function panelSection(start, end) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
@@ -101,6 +101,14 @@ test("用量的数：未知不当 0，有已知部分写「不少于」，费用
   const top = copy.usageTop([g("1", 0.5), g("2", null, { cost_usd: 2 }), g("3", null), g("?", 9), g("4", 1.5), g("5", null)], 2);
   assert.deepEqual([top.rows.map((x) => x.key), top.unknown, top.loose.key], [["2", "4"], 2, "?"]);
   assert.deepEqual(copy.usageTop([]), { rows: [], unknown: 0, loose: null });
+  // 第三波:时间范围按本地日历日给 since;分组路径;按卡的失败尝试与结算;按线等分组行里未知写「待核实」不写 0。
+  const now = new Date(2026, 10, 10, 9, 30);
+  assert.deepEqual(["today", "7d", "all", "x"].map((r) => copy.usageSince(r, now)), ["2026-11-10", "2026-11-04", "", ""]);
+  assert.deepEqual([copy.usagePath("line", "7d", now), copy.usagePath("bogus", "all", now, true)], ["/api/usage?by=line&since=2026-11-04", "/api/usage?by=card&format=csv"]);
+  assert.deepEqual([copy.usageCardFlag({ attempts_failed: 2, settled: true }), copy.usageCardFlag({ attempts_failed: 0, settled: false }),
+    copy.usageCardFlag({ attempts_failed: null, settled: false }), copy.usageCardFlag({ rows: 1 })], ["失败尝试 2 次 · 已结算", "未结算", "失败尝试待核实 · 未结算", ""]);
+  const zc = copy.usageGroupRow({ key: "zcode", rows: 1, attempts: 1, in: null, out: null, cost_usd: null, cost_source: "unknown", known: {}, unknown: { in: 1, out: 1, cost_usd: 1 } }, "Zcode");
+  assert.deepEqual([zc.name, zc.attempts, zc.cost, zc.tokens], ["Zcode", "1 次", "待核实", "待核实"], "Zcode 账本行的词元与费用是未知,不是 0");
 });
 
 test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态都带下一步，判断不了新旧就不写，没配置的整行不出", () => {
@@ -116,6 +124,10 @@ test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态
   assert.equal(copy.cliVersionCells({ ...base, npm_managed: false }, when).next, "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs", "不是 npm 装的：写得出动作");
   assert.equal(copy.cliVersionCells({ ...base, npm_managed: true }, when).next, up.next);
   assert.ok(!JSON.stringify(up).includes("secret"), "可执行文件的路径不进正文");
+  // 第三波:安装来源写在名字后面;npm 装的、服务端给了升级命令时,行下写这条命令供复制。
+  const npm = copy.cliVersionCells({ ...base, install_source: "npm-global", npm_managed: true, upgrade_hint: "npm install -g @anthropic-ai/claude-code@latest" }, when);
+  assert.deepEqual([npm.source, npm.next, npm.copy, copy.cliVersionCells({ ...base, install_source: "native", npm_managed: false }, when).source, up.source, up.copy],
+    ["npm 全局安装", "升级命令", "npm install -g @anthropic-ai/claude-code@latest", "独立安装", "", undefined]);
   // 已是最新 / 判断不了。
   const same = copy.cliVersionCells({ ...base, current: "2.1.300", update_available: false }, when);
   assert.deepEqual([same.cells[1].st, same.cells[1].note, same.cells[1].badge, same.next], ["ok", "已是最新", undefined, null]);
@@ -147,10 +159,30 @@ test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态
   assert.ok(!/原生可执行文件|读写边界/.test(allCells), "格子正文不写内部说法");
   assert.equal(copy.cliVersionCells({ ...base, state: "not_configured" }, when), null, "没有配置的 CLI 整行不出");
   assert.equal(copy.cliVersionCells(null), null);
-  // 版本块不放升级按钮:只有「重新核对」。
+  // 版本块不放升级按钮:只有「重新核对」和升级命令旁的「复制」(只写剪贴板,不执行)。
   const block = panelSection("function renderCliVersions(){", "/** The three fleet reads");
-  assert.deepEqual([...block.matchAll(/homeEl\("button", ([^)]*)\)/g)].map((m) => m[1]), ['cliChecking ? "核对中…" : "重新核对"']);
+  assert.deepEqual([...block.matchAll(/homeEl\("button", ([^)]*)\)/g)].map((m) => m[1]), ['cliChecking ? "核对中…" : "重新核对"', '"复制"']);
+  assert.ok(block.includes("navigator.clipboard.writeText(r.copy)") && !/fetch\(|post\(/.test(block.slice(block.indexOf("if (r.copy)"), block.indexOf("else if (r.next)"))));
   assert.ok(block.includes('badge.dataset.tone = "warn"') && block.includes('homeCmdText(homeEl("p", undefined, "cv-next"), r.next)'));
+});
+
+test("Zcode 只读块：没配置一句话；开关、预算、最近分派、心跳四格，读不到的写「待核实」；卡上写分派请求状态与拒收白话；执行线行不给齿轮、启动钮置灰", () => {
+  const when = (iso) => "T" + iso.slice(11, 16);
+  assert.deepEqual(copy.zcodeView({ configured: false, loop: { state: "not_configured", reason: "看板没有指向…" } }), { configured: false, text: "没有配置 Zcode", title: "看板没有指向…" });
+  const v = copy.zcodeView({ configured: true, switches: { budget_enabled: true, launch_enabled: false, released_env: null }, budget: { used: 1, limit: 1, reserved: 0 },
+    loop: { state: "budget_exhausted", reason: "调用预算已用完，1 / 1 次。", last_heartbeat_at: "2026-11-10T06:05:00.000Z" },
+    last_dispatch: { task_id: 12, phase: "settled", outcome: "success", at: "2026-11-10T06:00:00.000Z" }, model: "GLM-5.3" }, when);
+  assert.deepEqual([v.state.label, v.state.tone, v.reason, v.model, v.cells.map((c) => [c.k, c.v, c.st])], ["预算用完", "warn", "调用预算已用完，1 / 1 次。", "GLM-5.3", [
+    ["开关", "预算已启用 · 启动已关闭", "warn"], ["预算", "已用 1 / 上限 1", "warn"], ["最近一次分派", "#12 · 已结算 · 成功 · T06:00", "ok"], ["心跳", "T06:05", "ok"]]]);
+  const broken = copy.zcodeView({ configured: true, switches: { budget_enabled: null, launch_enabled: null, released_env: null }, budget: null, loop: { state: "future", reason: "" } });
+  assert.deepEqual([broken.state.label, broken.cells.map((c) => c.v)], ["待核实", ["预算待核实 · 启动待核实", "待核实", "还没有分派", "没有心跳"]]);
+  assert.deepEqual(copy.zcodeCardRows({ request_state: "cancelled", refusal_code: "VERIFY_UNSUPPORTED", refusal_text: "带登记验证的卡不能交给 Zcode", refusal_source: "request", dispatches: 0 }),
+    [["Zcode 分派请求", "已撤回"], ["拒收原因", "带登记验证的卡不能交给 Zcode"], ["分派次数", "0 次"]]);
+  assert.deepEqual([copy.zcodeCardRows(undefined), copy.zcodeCardRows({ request_state: null, dispatches: 0 })[0][1]], [null, "还没有分派请求"]);
+  const rig = panelSection("function renderRig(){", "// ── coord-copy");
+  const zc = rig.slice(rig.indexOf("if (zc.has(w.line))"), rig.indexOf("const slots ="));
+  assert.ok(zc.includes("由独立循环执行") && zc.includes("<button type=\"button\" disabled") && !zc.includes("data-cfg") && !zc.includes("data-wk") && !zc.includes("xN"),
+    "Zcode 线:没有齿轮和并行数,启动钮置灰、不带 data-wk");
 });
 
 test("浏览器错误使用中文说明，中文消息及未知原始错误完整保留", () => {
@@ -458,7 +490,8 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
     append(...nodes) { this.children.push(...nodes); }
     get textContent() { return this.text + this.children.map((n) => n.textContent).join(""); }
   }
-  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高", lineLabel: (line) => line });
+  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高", lineLabel: (line) => line,
+    zcodeCardRows: copy.zcodeCardRows });
   vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t, need = false, protocol = false){", "function sideRelationshipBox(t){"), context);
   const card = { id: 4, status: "not_started", released: false, aggregate_version: 7,
     verification_repair: { max_rounds: 3 }, verification_repair_digest: "b".repeat(64), execution_profile: {
@@ -691,8 +724,8 @@ test("协作区文案：执行者三态与已停止、锁的逾期与持有中�
     assert.deepEqual([v.kind, v.open, v.actions, v.note], [word, { type: "task", id: 9, label: "打开任务" }, [], null], kind);
   }
   const version = coord.approvalRowView(apv("version", { id: "version:upgrade:r2.0", detail_ref: { type: "setup" }, labels: { approve: "更新并重启", reject: "暂不更新" } }));
-  assert.deepEqual(version.actions, [{ decision: "approve", label: "更新并重启", armed: "再按=确认更新并重启", primary: true, needsNote: false },
-    { decision: "reject", label: "暂不更新", armed: "再按=确认暂不更新", primary: false, needsNote: false }]);
+  assert.deepEqual(version.actions, [{ decision: "approve", label: "更新并重启", armed: "再按=确认更新并重启", primary: true, needsNote: false, review: false },
+    { decision: "reject", label: "暂不更新", armed: "再按=确认暂不更新", primary: false, needsNote: false, review: false }]);
   assert.deepEqual([version.open, version.key, version.note], [null, "version:upgrade", { required: false, max: 500, label: "备注", placeholder: "备注，可不填" }]);
   const lk = coord.approvalRowView(apv("lock", { id: "lock:7:1790000000000", title: "device:test-phone", detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, labels: { approve: "强制释放", reject: "保留" } }));
   assert.deepEqual([lk.kind, lk.open, lk.key], ["逾期锁", { type: "lock", resource: "device:test-phone" }, "lock:7"]);
@@ -703,6 +736,18 @@ test("协作区文案：执行者三态与已停止、锁的逾期与持有中�
   const odd = coord.approvalRowView({ id: "future:1:1", kind: "future_kind", risk: "toString", title: "", summary: undefined, actions: ["approve", "escalate"], detail_ref: null });
   assert.deepEqual([odd.kind, odd.title, odd.summary, odd.blocked, odd.createdAt, odd.actions.map((x) => x.decision)], ["待核实 · 待核实", "待核实", "", "", null, ["approve"]],
     "未知的种类和风险写「待核实」,认不得的动作不给按钮");
+  // 第三波:执行者请求写完整 action;放行确认的标记换成徽标并列出工作目录、权限、预算与收回原因;版本确认第一下展开的内容。
+  const full = "重启共享设备上的应用并清掉".repeat(20);
+  assert.equal(coord.approvalRowView(apv("request", { summary: full.slice(0, 159) + "…", action: full, detail_ref: { type: "request", id: 9 } })).summary, full);
+  const rel = coord.approvalRowView(apv("release", { summary: "【再次放行】【配置已变化】Claude CLI · m · high:改首页", rerun: true, held_note: "租约到期，结果未知",
+    execution_profile: { workspace_path: "C:\\work\\repo", tools: "read-only", budget: { max_cost_usd: 2, timeout_sec: 1800, max_turns: 30 }, configuration_changed: true } }));
+  assert.deepEqual([rel.summary, rel.flags.map((f) => [f.label, f.tone]), rel.facts.map(([k, v]) => k + " " + v)],
+    ["Claude CLI · m · high:改首页", [["再次放行", "warn"], ["配置已变化", "warn"]],
+     ["工作目录 C:\\work\\repo", "权限 只读", "预算 金额上限 2 美元 · 时限 30 分钟 · 最多 30 轮", "收回原因 租约到期，结果未知"]]);
+  const vr = coord.approvalRowView(apv("version", { id: "version:bless:t.0", detail_ref: { type: "setup" }, confirm: "确认版本 abc\n\n  a.js | 2 +-\n\n确认之后执行线才会用这个版本起跑。",
+    changes: { prev: "p", files: 1, stat: ["a.js | 2 +-", " 1 file changed"], more: 0 } }));
+  assert.deepEqual([vr.actions.map((x) => x.review), vr.review], [[true, false], { confirm: "确认版本 abc\n\n  a.js | 2 +-\n\n确认之后执行线才会用这个版本起跑。",
+    head: "上次确认后改了 1 个文件", stat: ["a.js | 2 +-", "1 file changed"], more: "" }], "清单里有确认说明没写到的行时另列");
 
   // 上膛的字:再按=确认 + 原按钮文字。
   assert.equal(coord.armedLabel("更新并重启"), "再按=确认更新并重启");
