@@ -32,7 +32,7 @@ export async function upgradeCli({ cli, to = null, yes = false, deps, log = cons
   if (target === info.current) { log(`${name} 已经是 ${target}，没有要做的`); return { code: 0 }; }
   if (!info.npm_managed) {
     log(`看板调用的 ${name} 不是 npm 全局安装的:${info.path}`);
-    log("本命令只处理 npm 全局安装的 CLI。下一步:用它自己的方式升级，再运行 node cli/doctor.mjs");
+    log("本命令只处理 npm 全局安装的 CLI。下一步:按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs");
     return { code: 1 };
   }
   const board = await deps.board();

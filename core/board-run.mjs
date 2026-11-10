@@ -111,13 +111,21 @@ export function shortTime(value) {
   return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
-/** 一次故障的一句话。 */
+/** 一次故障的一句话：时刻与发生了什么，与面板（core/panel.html 的 homeLastFault）同一说法。原因见 faultReason。 */
 export function faultText(f) {
   if (!f) return "没有记录";
   const what = f.kind === "exit" ? (f.exit_code == null ? "看板服务被结束" : `看板服务退出，退出码 ${f.exit_code}`)
-    : f.kind === "restart_loop" ? "看板连续请求重启，守护停止重起"
-    : "看板运行中断，可能是关机、断电或进程被结束";
+    : f.kind === "restart_loop" ? "看板连续重启，已停止自动重启"
+    : "看板运行中断";
   return `${shortTime(f.at)} ${what}`;
+}
+
+/** 这次故障的原因，一句；没有记录返回 null。命令行写在「上次故障」下一行，HTTP 接口放进 last_fault.reason。 */
+export function faultReason(f) {
+  if (!f) return null;
+  return f.kind === "exit" ? (f.exit_code == null ? "进程被结束" : `退出码 ${f.exit_code}`)
+    : f.kind === "restart_loop" ? "短时间内重启次数超过上限"
+    : "可能是关机、断电或进程被结束";
 }
 
 /** 看板在不在应答：up 正常 · http 有应答但不是看板的正常应答 · refused 端口没有程序监听 · timeout 超时 · unreachable 连不上。 */
@@ -174,7 +182,7 @@ export function logHint(lines) {
     const refused = /拒绝启动[:：]\s*(.+)$/.exec(line);
     if (refused) return { cause: `启动被拒绝：${refused[1].slice(0, 160)}`,
                           next: `按上面这一句修好后运行 ${START}；拿不准就先运行 node cli/doctor.mjs` };
-    if (/不再重起/.test(line)) return { cause: "看板连续请求重启，守护停止重起", next: "运行 node cli/status.mjs --log 查看每次重启前的日志" };
+    if (/不再重起/.test(line)) return { cause: "看板连续重启，已停止自动重启", next: "运行 node cli/status.mjs --log 查看每次重启前的日志" };
   }
   return null;
 }

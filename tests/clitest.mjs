@@ -443,6 +443,14 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   const after = cli("status.mjs");
   ok("⭐the usual start brings the board back, and status then names the last fault",
      back.code === 0 && /电脑在线 · 看板服务正常/.test(after.out) && /上次故障:\d\d-\d\d \d\d:\d\d 看板服务退出，退出码 1/.test(after.out), after.out.slice(-400));
+  // 上次故障是一次运行中断：与面板同一说法，一句发生了什么，原因另起一行。
+  const runFile = join(data, "probes", "board_run.json");
+  writeFileSync(runFile, JSON.stringify({ ...JSON.parse(readFileSync(runFile, "utf8")), last_fault: { kind: "interrupted", at: new Date().toISOString() } }));
+  const cutFault = cli("status.mjs"), faultRows = cutFault.out.split(/\r?\n/);
+  const faultAt = faultRows.findIndex((l) => l.includes("上次故障:"));
+  ok("⭐status names an interrupted run the panel's way: what happened on one line, the possible cause on the next",
+     /上次故障:\d\d-\d\d \d\d:\d\d 看板运行中断$/.test(faultRows[faultAt] || "") && /^\s+原因:可能是关机、断电或进程被结束$/.test(faultRows[faultAt + 1] || ""),
+     faultRows.slice(faultAt, faultAt + 2).join(" | "));
   // A wrapper that went away without a stop (power loss, a killed process): the record still says running.
   cli("stop.mjs", ["--force"]);
   const gone = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
@@ -527,6 +535,14 @@ console.log(NL + "[⑧b 正常停止与中断]");
   ok("⭐记录写着运行中、进程已不在、没有这次运行的标记：status 说中断，下次启动记中断",
      /运行中断/.test(down3.cause) && BR.readRunRecord(d3).last_fault?.kind === "interrupted",
      `${down3.cause} | ${JSON.stringify(BR.readRunRecord(d3).last_fault)}`);
+  // 上次故障的说法与面板（core/panel.html 的 homeLastFault）一致；原因单列，不写「守护停止重起」这类内部词。
+  const f = (kind, extra = {}) => ({ kind, at: "2026-11-10T01:02:00.000Z", ...extra });
+  const said = ["restart_loop", "interrupted", "exit"].map((k) => BR.faultText(f(k)) + " " + (BR.faultReason(f(k)) || "")).join(" | ") + " | " + BR.logHint(["不再重起"]).cause;
+  ok("⭐上次故障：连续重启、运行中断与面板同一说法，原因另给，不出现内部词",
+     / 看板连续重启，已停止自动重启$/.test(BR.faultText(f("restart_loop"))) && / 看板运行中断$/.test(BR.faultText(f("interrupted")))
+     && BR.faultReason(f("interrupted")) === "可能是关机、断电或进程被结束" && BR.faultReason(f("restart_loop")) === "短时间内重启次数超过上限"
+     && BR.faultReason(f("exit", { exit_code: 1 })) === "退出码 1" && BR.faultReason(f("exit")) === "进程被结束" && BR.faultReason(null) === null
+     && BR.logHint(["不再重起"]).cause === "看板连续重启，已停止自动重启" && !/守护|重起/.test(said), said);
 }
 
 // ⑨ doctor says where the model traffic goes: a third-party relay (中转站) receives every

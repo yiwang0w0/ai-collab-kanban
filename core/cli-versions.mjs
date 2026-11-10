@@ -174,13 +174,15 @@ export async function readCliVersions({ dataDir, env = process.env, now = Date.n
   return { format: "ai-collab-cli-versions/v1", checked_at: new Date(now).toISOString(), check_hours: checkHours, clis };
 }
 
-/** 给人看的一行：当前 / 最新 / 上次核对 / 是否实测过。没有配置的 CLI 返回 null（不显示）。 */
+/** 给人看的一行：当前 / 最新 / 上次核对 / 是否实测过。没有配置的 CLI 返回 null（不显示）。
+ *  说法与面板（core/panel.html 的 cliVersionCells）相同；找不到或读不出版本时带下一步。 */
 export function versionLine(c) {
   if (!c || c.state === "not_configured") return null;
-  if (c.state !== "found") return `${c.name} 没有找到原生可执行文件`;
-  if (!c.current) return `${c.name} 版本读不出`;
+  const doctor = "下一步:运行 node cli/doctor.mjs 查看原因";
+  if (c.state !== "found") return `${c.name} 没有找到可以直接启动的 CLI 程序。${doctor}`;
+  if (!c.current) return `${c.name} 版本读不出。${doctor}`;
   const latest = c.latest_state === "ok" ? c.latest + (c.update_available ? "，可升级" : "")
     : c.latest_state === "unavailable" ? "未能查询" + (c.latest ? `，上次查到 ${c.latest}` : "") : "未查询";
-  const tested = c.tested?.state === "boundary" ? "已实测" : c.tested?.state === "contract" ? "参数已核对，读写边界未实测" : "未实测";
+  const tested = c.tested?.state === "boundary" ? "已实测" : c.tested?.state === "contract" ? "参数已核对，读写权限范围未实测" : "未实测";
   return `${c.name} 当前 ${c.current} · 最新 ${latest} · 上次核对 ${c.latest_checked_at ? shortTime(c.latest_checked_at) : "无"} · ${tested}`;
 }

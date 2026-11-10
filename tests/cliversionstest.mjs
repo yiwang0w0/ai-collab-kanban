@@ -113,7 +113,7 @@ console.log("[⑤ 实测过的版本]");
   ok("清单为空时是未实测", claudeOf(await readCliVersions(opts)).tested.state === "none");
   recordTestedVersion(dataDir, { cli: "claude", version: "2.1.300", source: "doctor", at: "2026-11-09T00:00:00Z" });
   const contract = claudeOf(await readCliVersions(opts));
-  ok("⭐doctor 通过后记的是「参数已核对」，不算读写边界实测", contract.tested.state === "contract" && /参数已核对，读写边界未实测$/.test(versionLine(contract)), versionLine(contract));
+  ok("⭐doctor 通过后记的是「参数已核对」，不算读写边界实测", contract.tested.state === "contract" && /参数已核对，读写权限范围未实测$/.test(versionLine(contract)), versionLine(contract));
   recordTestedVersion(dataDir, { cli: "claude", version: "2.1.300", source: "boundary-probe", at: "2026-11-09T01:00:00Z" });
   const boundary = claudeOf(await readCliVersions(opts));
   ok("⭐边界探针通过后是「已实测」", boundary.tested.state === "boundary" && /已实测$/.test(versionLine(boundary)), versionLine(boundary));
@@ -146,7 +146,10 @@ console.log("[⑥ 找到看板实际调用的那个文件]");
   const real = await readCliVersions({ dataDir: fresh("realrun"), settings: { checkHours: 0, registry: SET.registry }, locate: both });
   ok("真的运行一次 --version（用 node 自己当替身）读出版本号", claudeOf(real).current === process.version.slice(1), JSON.stringify(claudeOf(real)));
   const lost = versionLine({ ...claudeOf(real), state: "wrapper", path: null });
-  ok("只有包装器时，一行里说没有找到原生可执行文件", lost === "Claude CLI 没有找到原生可执行文件");
+  ok("⭐只有包装器时，一行里说没有找到可以直接启动的程序，并给出下一步（与面板同一说法）",
+     lost === "Claude CLI 没有找到可以直接启动的 CLI 程序。下一步:运行 node cli/doctor.mjs 查看原因", lost);
+  const mute = versionLine({ ...claudeOf(real), current: null });
+  ok("版本读不出时同样给出下一步", mute === "Claude CLI 版本读不出。下一步:运行 node cli/doctor.mjs 查看原因", mute);
 }
 
 console.log("[⑦ 真的发 HTTP 请求：本机替身 registry]");
