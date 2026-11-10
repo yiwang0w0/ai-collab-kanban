@@ -131,6 +131,13 @@ test('证据脚本复用同一份四节合同;中文与表情往返后字符数�
  // 提示里给的格式示例自己要过得了同一份校验。
  const sample=[lines[2],'完成。',lines[4],'core/demo.py:12-18 一句话。',lines[6],lines[7],lines[9],'无'].join('\n');
  assert.deepEqual(evidenceCheck(['validate','--max-chars','4000'],sample).errors,[]);
+ // 提示让模型写的「未执行」形过得了校验;带计数的未执行、以「——」开头的行、超过单行上限的检查行都不合格,提示里也说了后两条。
+ const unrun=body.replace('fixture-check -> pass 2 / fail 0','fixture-check -> pass 0 / fail 0（未执行）');
+ assert.deepEqual(evidenceCheck(['validate','--max-chars','4000'],unrun).errors,[]);
+ assert.equal(evidenceCheck(['validate','--max-chars','4000'],unrun.replace('pass 0','pass 2')).ok,false);
+ assert.equal(evidenceCheck(['validate','--max-chars','4000'],body.replace('无\n','—— 验证通过\n')).ok,false);
+ assert.match(evidenceCheck(['validate','--max-chars','4000'],body.replace('fixture-check','x'.repeat(1001))).errors.join('|'),/1000/);
+ assert.ok(lines.some(line=>line.includes('——')&&line.includes('1000')));
  for(const args of [['validate'],['prompt','--max-chars','0'],['other','--max-chars','10']])assert.throws(()=>evidenceCheck(args));
 });
 test('调度器层:合成供应商经真实 MCP 桥读卡并回传,结算保留模型自己的交付',{skip},async()=>{
