@@ -223,6 +223,8 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 **开启。** 在 `fleet.config.json` 加 `"zcode_worker_config": "<zcode-worker.config.json 的绝对路径>"`,重启看板。看板只读库和这个文件:不监听 MCP 端口、不取调度锁、不跑证据脚本、不迁移库,读的那段时间本连接处于只读模式。`synthetic` 授权会和 `plan` 一样数一下认证目录里的条目(不读内容),协调凭据会按库核对一次。
 
+**面板上看到的。** 设置页有只读的「Zcode」块:进入设置页时读一次 `GET /api/zcode/status`,停留期间每 30 秒一次,显示循环状态与白话原因、开关、预算、最近一次分派和心跳;没配置只写一句「没有配置 Zcode」。Zcode 卡的侧栏显示卡上 `zcode` 字段里的分派请求状态、拒收原因和分派次数。面板对循环不做任何写操作。
+
 **`GET /api/zcode/status`**:面板会话或操作员令牌可读;执行线、审阅线、执行者令牌 403,批准令牌在本机不认(401),远程入口不开放。
 
 ```json
@@ -322,7 +324,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 ## 已知短处
 
 - 真实登录兼容性和真实模型任务都还没有验证过。
-- 面板没有 Zcode 的入口:交卡靠 `enqueue`。状态有只读接口(见「面板上看状态」),面板显示是下一批。
+- 面板上只能看、不能操作:交卡靠 `enqueue`,启动开关改配置文件,预算用 `node cli/dispatch.mjs quota`。设置页的「Zcode」块与 Zcode 卡侧栏只读(见「面板上看状态」)。
 - 用量拿不到,只能事后对供应商账单。
 - 被操作者声明为「结果不明」的运行不产生账本行,并且在本节点当前代次内一直占着并发位(见上)。
 - 已经在别的线上尝试过的卡,转到 Zcode 线后会以 `ATTEMPTS_EXHAUSTED` 被拒:尝试次数是累计的,从不清零。
