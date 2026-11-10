@@ -313,7 +313,9 @@ test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat w
       actor:"forged",maxAttempts:99,humanGate:false,released:0,evidencePath:"forged",lockKey:"forged",treeMode:"hierarchical",weight:"heavy",oneofKey:"forged",provesParent:true,
       parentRunId:randomUUID(),parentWorker:"forged",workerDerived:true,executionProfile:{credential:"forged"},unknown_field:"forged"});
     assert.equal(injected.status,201,JSON.stringify(injected));
-    const clean=injected.body.task;assert.equal(clean.max_attempts,3);assert.equal(clean.human_gate,true);assert.equal(clean.released,true);
+    // 收紧型取值(released:0)照收；放宽型取值(maxAttempts:99、humanGate:false)建卡时不生效，响应点名这两项。
+    const clean=injected.body.task;assert.equal(clean.max_attempts,3);assert.equal(clean.human_gate,true);assert.equal(clean.released,false);
+    assert.equal(injected.body.not_applied.length,2);assert.match(injected.body.not_applied.join("|"),/maxAttempts.*humanGate|humanGate.*maxAttempts/);
     assert.equal(clean.summary,"摘要");assert.equal(clean.description,"说明");assert.equal(clean.acceptance,"验收");
     for(const key of ["evidence_path","lock_key","oneof_key"])assert.equal(clean[key],null);
     assert.equal(clean.weight,"standard");assert.equal(clean.tree_mode,"legacy");assert.equal(clean.proves_parent,false);

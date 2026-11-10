@@ -651,6 +651,51 @@ try {
     ok("⭐J3-5 CLI 不再有自己的标签表(读 /api/meta)", !/^WF\s*=\s*\{/m.test(cli) && !/^LABEL\s*=\s*\{/m.test(cli) && /api\/meta/.test(cli));
   }
 
+  // ══ §J5 operator creation honours tightening fields ═══════════════════════
+  //   The creation whitelist used to drop released / humanGate / maxAttempts without
+  //   a word: "do not release yet" and "gate this" came back 201 as a released,
+  //   ungated card, and once a line claimed it no edit could add the gate back.
+  //   Tightening values are taken as written; loosening ones are not applied at
+  //   creation and the response says so (release / edit remain the way to loosen).
+  console.log(NL + "[§J5 操作员建卡:收紧型字段照收,返回的卡不比请求宽松]");
+  {
+    const B = await mk({});
+    const made = async (body) => { const r = await B.api("POST", "/api/tasks", body); return { status: r.status, task: r.body?.task, body: r.body }; };
+    const strict = await made({ subject: "清理生产旧表", line: LINE, released: 0, humanGate: true, maxAttempts: 1 });
+    ok("⭐J5-1 released:0 / humanGate:true / maxAttempts:1 照收",
+       strict.status === 201 && strict.task?.released === false && strict.task?.human_gate === true &&
+       strict.task?.max_attempts === 1 && strict.body?.not_applied === undefined,
+       `HTTP ${strict.status} released=${strict.task?.released} gate=${strict.task?.human_gate} max=${strict.task?.max_attempts} ${JSON.stringify(strict.body?.not_applied)}`);
+    const held = await made({ subject: "先放着的卡", line: LINE, released: false });
+    const gated = await made({ subject: "要人看过才跑的卡", line: LINE, humanGate: true });
+    ok("J5-2 布尔写法同样生效;只写一项时其余保持默认",
+       held.task?.released === false && held.task?.human_gate === false && held.task?.max_attempts === 3 &&
+       gated.task?.released === true && gated.task?.human_gate === true,
+       `held=${held.task?.released}/${held.task?.human_gate} gated=${gated.task?.released}/${gated.task?.human_gate}`);
+    const claim = await B.api("POST", "/api/claim",
+      { worker: "hand-runner", line: LINE, worker_protocol_version: 2, agent_instance_id: "2f3e4d5c-6b7a-4c88-8a76-b5c4d3e2f1a0" });
+    ok("⭐J5-3 三张卡一出生都领不到(未放行或带人工闸)", claim.status === 204, `HTTP ${claim.status} #${claim.body?.task?.id}`);
+    const loose = await made({ subject: "需要人裁定的卡", line: LINE, released: 1, humanGate: false, maxAttempts: 99 });
+    const notes = (loose.body?.not_applied || []).join(" | ");
+    ok("⭐J5-4 放宽方向建卡时不生效,返回的卡更严,响应点名没生效的两项",
+       loose.status === 201 && loose.task?.human_gate === true && loose.task?.max_attempts === 3 && loose.task?.released === true &&
+       loose.body?.not_applied?.length === 2 && /humanGate/.test(notes) && /maxAttempts/.test(notes), `HTTP ${loose.status} ${notes}`);
+    const plain = await made({ subject: "普通卡", line: LINE, humanGate: false, maxAttempts: 3, released: true });
+    ok("J5-5 (对照)与默认一致的取值照常建卡,没有多余提示",
+       plain.status === 201 && plain.task?.released === true && plain.task?.human_gate === false &&
+       plain.task?.max_attempts === 3 && plain.body?.not_applied === undefined, `HTTP ${plain.status} ${JSON.stringify(plain.body?.not_applied)}`);
+    const before = ((await B.api("GET", "/api/tasks")).body?.tasks || []).length;
+    const bad = [];
+    for (const body of [{ released: "0" }, { released: null }, { humanGate: "true" }, { humanGate: 2 },
+                        { maxAttempts: 0 }, { maxAttempts: 1.5 }, { maxAttempts: "1" }, { maxAttempts: null }]) {
+      const r = await B.api("POST", "/api/tasks", { subject: "取值不对的卡", line: LINE, ...body });
+      const field = Object.keys(body)[0];
+      if (r.status !== 400 || !String(r.body?.error || "").includes(field)) bad.push(`${JSON.stringify(body)}→${r.status} ${r.body?.error || ""}`);
+    }
+    const after = ((await B.api("GET", "/api/tasks")).body?.tasks || []).length;
+    ok("⭐J5-6 取值类型不对 → 400 并点名字段,不建卡(不把 \"0\" 当成放行)", bad.length === 0 && after === before, bad.join(" ; ") + ` 卡数 ${before}→${after}`);
+  }
+
   // ══ §J9 the runtime stamp is seat-authoritative, not self-reported ══════════
   //   last_runtime feeds family rules (machine-evidence prose admission, review
   //   anti-affinity). For slots the board spawned it must come from the seat the

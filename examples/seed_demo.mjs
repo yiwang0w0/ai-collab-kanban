@@ -59,23 +59,23 @@ const goal = (await api("POST", "/api/tasks", {
   subject: "演示目标:完整跑通一次流程",
   kind: "goal", line: LINE,
   description: "这是演示数据(examples/seed_demo.mjs)。三张卡走完:认领 → 交付 → 待验收 → 人工裁定。",
-  humanGate: false,
 })).task.id;
 
 const a = (await api("POST", "/api/tasks", {
   subject: "写一份 hello 证据",
-  line: LINE, parentId: goal, humanGate: false,
+  line: LINE, parentId: goal,
   description: "任何 worker 领到这张卡,把证据写进循环指定的文件即算交付。",
   acceptance: "证据文件存在且非空。",
 })).task.id;
 
 const b = (await api("POST", "/api/tasks", {
   subject: "再写一份,试试链",
-  line: LINE, parentId: goal, humanGate: false,
+  line: LINE, parentId: goal,
   description: "第二张卡。提示词中的同链一览会包含 #" + a + "。",
   acceptance: "证据文件存在且非空。",
 })).task.id;
 
+// humanGate:true 是显式加闸，建卡时照收(不靠标题里恰好有「裁定」二字)。
 const c = (await api("POST", "/api/tasks", {
   subject: "需要人裁定的卡(演示 human gate)",
   line: LINE, parentId: goal, humanGate: true,

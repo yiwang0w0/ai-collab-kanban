@@ -1326,10 +1326,13 @@ function matchesExecutionProfile(db, task, profile) {
     ["path", "device", "inode"].every(key => expected.workspace[key] === profile.workspace[key]);
 }
 
+// 建卡时每次派发的默认尝试次数。服务端建卡入口用它判断「请求的次数是不是在放宽」。
+const DEFAULT_MAX_ATTEMPTS = 3;
+
 function addInner(db, {
   subject, description = "", acceptance = "", summary = null, blockedBy = [],
   route = DEFAULT_ROUTE, line = null, lockKey = null, needsBash = 0,
-  released = 1, maxAttempts = 3, evidencePath = null,
+  released = 1, maxAttempts = DEFAULT_MAX_ATTEMPTS, evidencePath = null,
   kind = "task", parentId = null, treeMode, verifyCmd = null, weight = "standard",
   oneofKey = null, provesParent = false, humanGate = null,
 }) {
@@ -3439,7 +3442,7 @@ module.exports = {
   chainDepth, placeInChain, MAX_CHAIN_DEPTH, HIERARCHICAL_MAX_DEPTH:taskTree.HIERARCHICAL_MAX_DEPTH,
   // Budget calibers: the lifetime-ceiling constant and the one-shot catch-up (tests
   // fire it directly).
-  LIFETIME_DISPATCH_CAP, backfillAttemptsBase,
+  LIFETIME_DISPATCH_CAP, DEFAULT_MAX_ATTEMPTS, backfillAttemptsBase,
   WIP_PER_ROOT, rootOf, unreleasedAncestor, depsSatisfied, normalizeDeps, dependentsOf,
   // Verdict-caliber migration (one shot when the column is added; tests fire it
   // directly).
