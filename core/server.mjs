@@ -1,6 +1,7 @@
 import conflictGuide from './conflicts.js';
 import {readFleetHealth} from './fleet-health.mjs';
 import {inspectionError} from './inspection.mjs';
+import {zcodeStatus,zcodeTaskField} from './zcode-status.mjs';
 // Board HTTP layer — REST + SSE + static hosting. Zero dependencies
 // (node:http / node:sqlite only).
 //
@@ -329,6 +330,8 @@ const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),rep
   ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
   ...(profile ? {execution_profile:profile} : {}),
   progress_blockers: store.stuckWhy(db,t),
+  // Zcode 线的卡:最近一个分派请求的状态、拒收码与白话及其来源、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
+  ...zcodeTaskField(db, t, CFG.zcode_worker_config ?? null),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
   // ⭐ The panel's button captions come FROM the server-side criterion. If the panel
   //   computed its own, that would be a second copy of the formula — able to say
@@ -3719,6 +3722,12 @@ const server = http.createServer(async (req, res) => {
         const conflict=conflictGuide.describeConflict(e,{scope:"federation"});
         return json(res,e instanceof PeerError?e.status:409,{code,error:conflict?.message||reasons[code]||"操作未获准，请核对当前任务状态与权限",...(conflict?{conflict}:{})});
       }
+    }
+    // Zcode 独立执行循环的状态(core/zcode-status.mjs)。只读库与 zcode_worker_config 指向的配置;
+    // 不启动循环、不取调度锁、不开 MCP 端口。门与上面的管理读接口相同:只给操作员(面板会话或 board_token)。
+    if (m === "GET" && p === "/api/zcode/status") {
+      if (!guardWrite(req, res, p)) return;
+      return json(res, 200, zcodeStatus(db, { configFile: CFG.zcode_worker_config ?? null }));
     }
     // ── SSE
     if (m === "GET" && p === "/api/events") {

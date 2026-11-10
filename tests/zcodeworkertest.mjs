@@ -26,6 +26,7 @@ import {pinFile} from '../core/execution/supervisor.mjs';
 import {taskExecutionView} from '../core/task-execution-view.mjs';
 import {openLedger} from '../core/usage.mjs';
 import {openZcodeWorker,reconcileZcodeAssignment,validateZcodeWorkerConfig,zcodeWorkerPlan,enqueueZcodeTask,DEFAULT_MAX_LAUNCHES,HARD_MAX_LAUNCHES} from '../core/execution/zcode-worker.mjs';
+import {zcodeStatus,zcodeCard} from '../core/zcode-status.mjs';
 const require=createRequire(import.meta.url),store=require('../core/store.js'),vendor=require('./helpers/zcode-mcp-vendor.cjs');
 const HOST_ENV=harnessEnvironment(),WINDOWS=process.platform==='win32',skip=WINDOWS?false:'Zcode 执行循环仅支持 Windows';
 const ROOT=fileURLToPath(new URL('../',import.meta.url)),TMP=realpathSync.native(mkdtempSync(join(tmpdir(),'fleet-zcode-worker-')));
@@ -627,6 +628,8 @@ test('未结清排在预算之前:唯一一次预算用在没结清的启动上�
  const configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
  const once=cli(['once','--db',f.dbPath,'--config-file',configFile,'--accepted-rev',approval],{released:true});
  assert.equal(once.status,2,once.err+once.out);assert.ok(once.err.includes('UNSETTLED_DISPATCH'));assert.ok(once.rows.some(x=>x.status==='needs_attention'));assert.equal(launches(f),1);
+ // 面板状态:循环已经停了,这一条要 reconcile 补,报 unsettled。
+ const panel=zcodeStatus(f.db,{configFile}).loop;assert.equal(panel.state,'unsettled');assert.ok(panel.reason.includes('reconcile'),panel.reason);
  // 补回执结清之后,才是预算用尽。
  f.db.exec('DROP TRIGGER reject_settle');
  const again=await open(f),assignment=f.db.prepare('SELECT assignment_id FROM broker_dispatches').get().assignment_id;
@@ -679,5 +682,80 @@ test('人工恢复回执不清并发位:record-uncertain 之后循环报 needs_a
  const state=zcodeWorkerPlan(f.db,f.config,RELEASED);
  assert.equal(state.state,'needs_attention');assert.deepEqual(state.unsettled,hold);
  assert.equal(row(f,one.id).human_gate,1);
+ // 面板状态:reconcile 也补不了,要人处理,报 needs_attention(不是 unsettled)。
+ const configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));assert.equal(zcodeStatus(f.db,{configFile}).loop.state,'needs_attention');
  await w.close();
+});
+
+// ── 面板上看状态:看板服务的只读接口 GET /api/zcode/status 与卡上的 zcode 字段(core/zcode-status.mjs) ──
+test('面板状态:看板没指配置、库里没登记都报 not_configured 且不给其余字段;指错配置报 blocked;只读',{skip},async()=>{
+ const f=await fixture(),configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
+ const off=zcodeStatus(f.db,{configFile:null});
+ assert.deepEqual(Object.keys(off),['configured','loop']);assert.equal(off.configured,false);assert.equal(off.loop.state,'not_configured');assert.ok(off.loop.reason.includes('zcode_worker_config'));
+ const bare=new DatabaseSync(join(f.base,'bare.db'));dbs.push(bare);store.migrate(bare);
+ const fresh=zcodeStatus(bare,{configFile});
+ assert.deepEqual(Object.keys(fresh),['configured','loop']);assert.equal(fresh.loop.state,'not_configured');assert.ok(fresh.loop.reason.includes('setup'));
+ assert.equal(bare.prepare("SELECT count(*) n FROM sqlite_master WHERE name LIKE 'broker_%'").get().n,0);
+ const wrong=zcodeStatus(f.db,{configFile:'worker.json'});
+ assert.equal(wrong.configured,true);assert.equal(wrong.loop.state,'blocked');assert.deepEqual(wrong.switches,{budget_enabled:null,launch_enabled:null,released_env:null});assert.equal(wrong.budget,null);
+ // 配置读得到:服务端看不到循环终端里的环境钥匙,不按它判「关着」;本连接读完仍可写。
+ const ready=zcodeStatus(f.db,{configFile});
+ assert.equal(ready.loop.state,'idle',JSON.stringify(ready));assert.deepEqual(ready.switches,{budget_enabled:true,launch_enabled:true,released_env:null});assert.deepEqual(ready.budget,{used:0,limit:1,reserved:0});
+ assert.equal(ready.model,'GLM-5.3');assert.equal('last_dispatch' in ready,false);
+ const t=card(f);assert.equal(zcodeStatus(f.db,{configFile}).loop.state,'ready');assert.equal(zcodeCard(f.db,store.get(f.db,t.id)).dispatches,0);
+});
+test('卡级拒收码:没有 ZCODE_REFUSED 记录时按 plan 的同一判定给码并标来源;配置读不到就不给;只读',{skip},async()=>{
+ const f=await fixture(),configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
+ const good=card(f),verify=card(f);f.db.prepare("UPDATE tasks SET verify_cmd='fixture-check' WHERE id=?").run(verify.id);
+ const now=id=>store.get(f.db,id),plan=zcodeWorkerPlan(f.db,f.config,null);
+ assert.equal(plan.candidates.find(x=>x.task_id===verify.id).refused,'VERIFY_UNSUPPORTED');   // 与 plan 同一口径
+ assert.deepEqual(zcodeCard(f.db,now(verify.id),{configFile}),{request_state:null,refusal_code:'VERIFY_UNSUPPORTED',refusal_text:'带登记验证的卡不能交给 Zcode',refusal_source:'plan',dispatches:0});
+ assert.deepEqual(zcodeCard(f.db,now(good.id),{configFile}),{request_state:null,dispatches:0});
+ for(const missing of [undefined,join(f.base,'absent.json'),'worker.json'])assert.deepEqual(zcodeCard(f.db,now(verify.id),{configFile:missing}),{request_state:null,dispatches:0});
+ f.db.prepare("UPDATE tasks SET verify_cmd=NULL WHERE id=?").run(verify.id);assert.equal(zcodeCard(f.db,now(verify.id),{configFile}).refusal_code,undefined);
+});
+test('面板状态接口:合成供应商跑完一张卡后读得到预算、最近分派、卡级派发次数与拒收原因;不取锁不开端口;只认操作员',{skip,timeout:180000},async()=>{
+ const f=await fixture(),good=card(f),verify=card(f),plain=store.get(f.db,store.add(f.db,{subject:'plain card',description:'x',acceptance:'x'}));
+ f.db.prepare("UPDATE tasks SET verify_cmd='fixture-check' WHERE id=?").run(verify.id);
+ const asked=request(f,verify);assert.equal(asked.state,'waiting_executor');   // 别人替带登记验证的卡建的请求
+ const w=await open(f),r=await w.tick();assert.equal(r.status,'ran',JSON.stringify([r,f.events]));await w.close();
+ assert.deepEqual(assignmentRow(f,asked.assignment_id),{state:'cancelled',reason:'ZCODE_REFUSED:VERIFY_UNSUPPORTED'});
+ const configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
+ const data=dirname(f.config.ledger_file),fleet=join(f.base,'fleet-status.json'),port=await freePort();
+ writeFileSync(fleet,JSON.stringify({lines:[{id:'zcode',label:'Zcode',external:true}],roles:[],routes:['default','mcp'],repo:f.base,zcode_worker_config:configFile}));
+ const child=spawn(process.execPath,[join(ROOT,'core','server.mjs')],{cwd:f.base,windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...HOST_ENV,
+  BOARD_HOST:'127.0.0.1',BOARD_PORT:String(port),BOARD_CONFIG:fleet,BOARD_DATA_DIR:data,BOARD_DB:f.dbPath,BOARD_REPO:f.base,
+  BOARD_ALLOW_UNPINNED:'1',BOARD_NO_RESTORE:'1',BOARD_SPAWN_ECHO:'1',BOARD_RESTART_MODE:'exit',BOARD_TEST_SHUTDOWN_MS:'30000'}});
+ let logs='';const append=value=>{logs=(logs+String(value)).slice(-16384);};child.stdout.on('data',append);child.stderr.on('data',append);child.on('error',append);
+ const closed=new Promise(done=>child.once('close',done));
+ const api=async(path,token=null,body)=>{
+  const response=await fetch('http://127.0.0.1:'+port+path,{method:body===undefined?'GET':'POST',headers:{...(token?{'X-Board-Token':token}:{}),'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)}),signal:AbortSignal.timeout(10000)});
+  let json=null;try{json=await response.json();}catch{}return {status:response.status,body:json};
+ };
+ const counts=()=>JSON.stringify(f.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND (name LIKE 'broker_%' OR name LIKE 'scheduler_%') ORDER BY name").all().map(t=>[t.name,count(f,'"'+t.name+'"')]));
+ try{
+  let ready=false;for(let i=0;i<300&&!ready&&child.exitCode===null&&child.signalCode===null;i++){try{ready=(await api('/health')).status===200;}catch{}if(!ready)await delay(100);}
+  assert.ok(ready,logs);
+  const token=name=>readFileSync(join(data,name),'utf8').trim(),operator=token('board_token'),before=counts();
+  const s=await api('/api/zcode/status',operator);
+  assert.equal(s.status,200,JSON.stringify(s.body)+logs);
+  assert.equal(s.body.configured,true);assert.deepEqual(s.body.switches,{budget_enabled:true,launch_enabled:true,released_env:null});
+  assert.deepEqual(s.body.budget,{used:1,limit:1,reserved:0});assert.equal(s.body.loop.state,'budget_exhausted');assert.ok(s.body.loop.reason);assert.ok(Date.parse(s.body.loop.last_heartbeat_at));
+  assert.deepEqual({...s.body.last_dispatch,at:typeof s.body.last_dispatch.at},{task_id:good.id,phase:'settled',outcome:'success',at:'string'});assert.equal(s.body.model,'GLM-5.3');
+  // 只读:库里调度相关的表行数不变,没有调度锁,也没人监听循环的 MCP 端口。
+  assert.equal(counts(),before);assert.equal(existsSync(schedulerLock(f)),false);assert.equal(await listening(f.port),false);
+  // 卡级:跑过的卡派发 1 次;被撤回请求的卡带拒收码与白话;不是 Zcode 线的卡没有这个字段。
+  const one=async id=>(await api('/api/tasks/'+id,operator)).body.task;
+  const ran=await one(good.id),refused=await one(verify.id),other=await one(plain.id);
+  assert.equal(ran.zcode.dispatches,1);assert.equal(ran.zcode.request_state,'ended');assert.equal('refusal_code' in ran.zcode,false);
+  assert.deepEqual(refused.zcode,{request_state:'cancelled',refusal_code:'VERIFY_UNSUPPORTED',refusal_text:'带登记验证的卡不能交给 Zcode',refusal_source:'request',dispatches:0});
+  assert.equal('zcode' in other,false);
+  const listed=(await api('/api/tasks',operator)).body.tasks;assert.equal(listed.find(x=>x.id===verify.id).zcode.refusal_code,'VERIFY_UNSUPPORTED');assert.equal('zcode' in listed.find(x=>x.id===plain.id),false);
+  // 门:与其他只读管理接口同一道。没令牌 401;执行线、审阅线、执行者令牌 403;批准令牌只给远程入口,本机不认,401。
+  const executor=await api('/api/coord/executors',operator,{id:'zstatus-ext',name:'zstatus-ext',kind:'external'});assert.equal(executor.status,201,JSON.stringify(executor.body));
+  const approval=await api('/api/approval-tokens',operator,{label:'zstatus'});assert.equal(approval.status,201,JSON.stringify(approval.body));
+  assert.equal((await api('/api/zcode/status')).status,401);
+  for(const who of [token('worker_token'),token('review_token'),executor.body.token])assert.equal((await api('/api/zcode/status',who)).status,403);
+  assert.equal((await api('/api/zcode/status',approval.body.token)).status,401);
+ }finally{if(child.exitCode===null&&child.signalCode===null)child.kill();await closed;}
 });
