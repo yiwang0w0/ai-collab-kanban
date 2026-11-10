@@ -449,6 +449,31 @@ assert guard.bind_changes()==[]; guard.release()
 `);
 });
 
+test("宿主的 commit 不顺带做自动维护：松散引用与松散对象够多时也不打包引用，提交照常成功", () => {
+  python(`import hashlib
+repo=setup(); head=g(repo,'rev-parse','HEAD'); packed=repo/'.git'/'packed-refs'
+def fill():
+ # 两种触发条件都布置：较新的 Git 按松散引用数打包引用，较早的按 gc.auto 与 objects/17 里的松散对象数。
+ lines=''.join('create refs/heads/loose-'+uuid.uuid4().hex+' '+head+chr(10) for number in range(40))
+ subprocess.run([git,'update-ref','--stdin'],cwd=repo,input=lines.encode(),check=True)
+ found=0; number=0
+ while found<3:
+  number+=1; content=(uuid.uuid4().hex+str(number)).encode()
+  if hashlib.sha1(b'blob '+str(len(content)).encode()+bytes(1)+content).hexdigest().startswith('17'):
+   subprocess.run([git,'hash-object','-w','--stdin'],cwd=repo,input=content,check=True,capture_output=True); found+=1
+for key,value in (('gc.auto','1'),('gc.autoDetach','false'),('maintenance.autoDetach','false')): g(repo,'config',key,value)
+fill(); assert not packed.exists(),'前提：领卡前引用是松散的'
+guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+(repo/'one.txt').write_text('本轮',encoding='utf-8'); guard.bind_changes()
+result=guard.finish(17,'松散引用很多',evidence())
+assert result['sha']==g(repo,'rev-parse','HEAD') and result['sha']!=head
+assert not packed.exists(),'宿主的 commit 顺带打包了引用'
+guard.release()
+g(repo,'commit','--allow-empty','-m','对照：同一个仓里的普通提交')
+assert packed.exists(),'对照失效：本机 Git 在这个夹具上不触发自动维护，夹具需要更新'
+`);
+});
+
 test("fleet 开关默认关闭且只接受显式布尔配置", () => {
   const output = python(`sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'core'))
 import board_env

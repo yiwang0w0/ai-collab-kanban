@@ -497,7 +497,10 @@ class HostCommitGuard:
         self.assert_intact()
         message = "#" + str(task_id) + " " + title.strip()
         # 提交信息从标准输入给：卡标题是任何能写卡的人的自由文本，不进任何命令行。
-        self._run(["commit", "--cleanup=verbatim", "-F", "-"], (message + "\n").encode("utf-8"))
+        # 自动维护(gc / maintenance --auto)会在提交收尾时打包引用、重打包对象，改写的是与本卡无关的
+        # 控制文件；宿主这一次提交不顺带做它。钩子、身份、签名等其余配置照旧。
+        self._run(["-c", "gc.auto=0", "-c", "maintenance.auto=false", "commit", "--cleanup=verbatim", "-F", "-"],
+                  (message + "\n").encode("utf-8"))
         # 这是普通提交：保留当前配置与钩子，任何失败均不 reset 或重试。
         # commit 正常改变 HEAD/index/ref。其他控制字节仍须先直接检查，不能先跑新 Git。
         self._assert_after_commit()
