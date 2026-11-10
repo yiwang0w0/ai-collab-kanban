@@ -4,7 +4,6 @@ import hashlib
 import json
 import os
 import re
-import shutil
 import stat
 import subprocess
 import unicodedata
@@ -73,6 +72,73 @@ def _tree(path):
     return result
 
 
+def is_batch(path):
+    """.bat/.cmd 经 cmd.exe 启动，参数会被当作命令行解释；判据与 worker 的 cli_is_batch 相同。"""
+    return os.path.splitext(str(path or ""))[1].lower() in (".bat", ".cmd")
+
+
+def _within(path, root):
+    """path 是否落在 root 之内；字面路径与解析后的实际路径各比一次。"""
+    for inner in {os.path.abspath(path), os.path.realpath(path)}:
+        for outer in {os.path.abspath(root), os.path.realpath(root)}:
+            try:
+                if os.path.commonpath([os.path.normcase(outer), os.path.normcase(inner)]) == os.path.normcase(outer):
+                    return True
+            except ValueError:
+                pass
+    return False
+
+
+def _search_path(name, environ):
+    """只在 PATH 的绝对目录里找。空条目与相对条目都指当前目录，一律不搜。
+    不用 shutil.which：Windows 上它把进程当前目录排在 PATH 之前，
+    循环的当前目录可能在模型的写放行范围内。"""
+    names = [name]
+    if os.name == "nt":
+        names = [name + ext for ext in (environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if ext]
+    for folder in (environ.get("PATH") or "").split(os.pathsep):
+        folder = folder.strip().strip('"')
+        if not os.path.isabs(folder) or (os.name == "nt" and not os.path.splitdrive(folder)[0]):
+            continue
+        for candidate in names:
+            target = os.path.join(folder, candidate)
+            if os.path.isfile(target) and (os.name == "nt" or os.access(target, os.X_OK)):
+                return target
+    return None
+
+
+def _check_program(program, roots, batch):
+    """批处理包装器、落在工作仓或数据目录内的程序都不执行。"""
+    if batch(program):
+        _fail("Git 程序是 .bat/.cmd 包装器，参数会经 cmd.exe 解释；请把 WORKER_HOST_GIT 设为 git 可执行文件的绝对路径：" + program)
+    for root in roots:
+        if root and _within(program, root):
+            _fail("Git 程序位于工作仓或数据目录内，模型可以改写它；请改用其外的 Git：" + program)
+
+
+def resolve_git(roots=(), configured=None, environ=None, batch=is_batch):
+    """解析并固定宿主用的 Git 程序，返回 (绝对路径, 字节钉)。循环启动时调用一次，之后不再搜索。
+    configured 是宿主配置的绝对路径；未配置时只搜 PATH 的绝对目录。"""
+    environ = os.environ if environ is None else environ
+    if configured:
+        if not os.path.isabs(configured):
+            _fail("配置的 Git 程序必须是绝对路径：" + str(configured))
+        found = configured
+    else:
+        found = _search_path("git", environ)
+        if not found:
+            _fail("PATH 的绝对目录里找不到 Git 程序；请安装 Git 或把 WORKER_HOST_GIT 设为 git 可执行文件的绝对路径")
+    _check_program(found, roots, batch)
+    program = os.path.realpath(found)
+    if os.name == "nt" and os.path.basename(os.path.dirname(program)).lower() == "cmd":
+        program = os.path.realpath(os.path.join(os.path.dirname(os.path.dirname(program)), "bin", "git.exe"))
+    _check_program(program, roots, batch)
+    pin = _file(program)
+    if pin is None:
+        _fail("Git 实际程序不可用：" + program)
+    return program, pin
+
+
 def _path(value):
     """与产物路径规则同样使用可移植、无 .git 的规范相对路径。"""
     if (not isinstance(value, str) or not value or len(value.encode("utf-8")) > 1024
@@ -92,7 +158,9 @@ def _path(value):
 
 class HostCommitGuard:
     """一仓一占用；失败不清理索引、不撤销文件、不自动抢残留锁。"""
-    def __init__(self, repo, owner):
+    def __init__(self, repo, owner, program=None, protected=(), batch=is_batch):
+        """program 是循环启动时 resolve_git 固定下来的 (路径, 字节钉)；protected 是数据目录等
+        模型可写、因而不得存放 Git 程序的目录。"""
         if not os.path.isabs(repo):
             _fail("工作仓必须是绝对路径")
         self.requested_root = os.path.abspath(repo)
@@ -110,16 +178,18 @@ class HostCommitGuard:
             _fail("宿主环境含 Git 仓库路由覆盖")
         self.env["GIT_TERMINAL_PROMPT"] = "0"
         self.env["GCM_INTERACTIVE"] = "Never"
-        executable = shutil.which("git")
-        if not executable:
-            _fail("找不到 Git 程序")
-        executable = os.path.realpath(executable)
-        if os.name == "nt" and os.path.basename(os.path.dirname(executable)).lower() == "cmd":
-            executable = os.path.join(os.path.dirname(os.path.dirname(executable)), "bin", "git.exe")
-        self.git = os.path.realpath(executable)
-        self.git_pin = _file(self.git)
-        if self.git_pin is None:
-            _fail("Git 实际程序不可用")
+        # Git 自己再起子进程(钩子、别名、凭据助手)时，Windows 也不先搜当前目录。
+        for key in [k for k in self.env if k.upper() == "NODEFAULTCURRENTDIRECTORYINEXEPATH"]:
+            del self.env[key]
+        self.env["NODEFAULTCURRENTDIRECTORYINEXEPATH" if os.name == "nt" else "NoDefaultCurrentDirectoryInExePath"] = "1"
+        roots = [self.root, self.requested_root] + [p for p in protected if p]
+        if program is None:
+            program = resolve_git(roots, os.environ.get("WORKER_HOST_GIT"), self.env, batch)
+        self.git, self.git_pin = program
+        # 固定值可以来自更早的启动时刻；位置与扩展名按本卡的工作仓再核一次。
+        _check_program(self.git, roots, batch)
+        if not os.path.isabs(self.git) or _file(self.git) != self.git_pin:
+            _fail("固定 Git 程序已改变")
         self.lock = None
         self.bound = None
 
@@ -424,7 +494,8 @@ class HostCommitGuard:
             _fail("模型证据在提交前改变，保留现场")
         self.assert_intact()
         message = "#" + str(task_id) + " " + title.strip()
-        self._run(["commit", "--cleanup=verbatim", "-m", message])
+        # 提交信息从标准输入给：卡标题是任何能写卡的人的自由文本，不进任何命令行。
+        self._run(["commit", "--cleanup=verbatim", "-F", "-"], (message + "\n").encode("utf-8"))
         # 这是普通提交：保留当前配置与钩子，任何失败均不 reset 或重试。
         # commit 正常改变 HEAD/index/ref。其他控制字节仍须先直接检查，不能先跑新 Git。
         self._assert_after_commit()

@@ -117,7 +117,12 @@ from a named incident (see `docs/INCIDENTS.md`):
   (CVE-2024-24576, "BatBadBut": cmd.exe re-parses arguments, so a card body
   could become an executable command line). The gate judges by extension on
   every platform, and the test escape hatch (`WORKER_ALLOW_BATCH_CLI`) logs
-  loudly when used.
+  loudly when used. The host's per-card commit (`host_auto_commit`) follows the
+  same rule for Git: the program is resolved once at loop start — an absolute
+  `WORKER_HOST_GIT`, else the absolute directories of `PATH` only, never the
+  current directory — and a `.bat/.cmd` result, or a program inside the work
+  repo or the data directory, refuses to start. The commit message is passed on
+  stdin (`git commit -F -`), so a card title never reaches a command line.
 - **Legacy loop tool profile.** The intended profile exposes no Bash or push tool; card-named
   verification runs through a key registry (`verify_registry.json`) — cards
   carry **keys**, never command strings, so a worker that can write files still

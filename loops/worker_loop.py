@@ -50,7 +50,7 @@ import context_lib
 import verification_repair
 import evidence_contract
 import lessons_lib        # 经验库(docs/经验库.md):开场 / 出错 / 收尾 / 命中即验证,全由宿主脚本完成
-from host_git_commit import HostCommitGuard, HostCommitError
+from host_git_commit import HostCommitGuard, HostCommitError, resolve_git
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
@@ -621,9 +621,33 @@ def host_commit_enabled():
             and ROLE_KIND == "implement" and TOOL_PROFILE == "write")
 
 
+HOST_GIT = None      # 宿主提交用的固定 Git 程序 (绝对路径, 字节钉)；解析一次，之后不再搜索
+
+
+def host_git():
+    """Git 程序只解析一次：宿主配置 WORKER_HOST_GIT 的绝对路径优先，否则只搜 PATH 的绝对目录。
+    .bat/.cmd 与落在工作仓、数据目录内的程序在这里就被拒，之后每张卡都用同一份路径与字节钉。"""
+    global HOST_GIT
+    if HOST_GIT is None:
+        HOST_GIT = resolve_git([REPO, DATA], os.environ.get("WORKER_HOST_GIT"), batch=cli_is_batch)
+    return HOST_GIT
+
+
+def host_commit_gate():
+    """宿主提交的启动门，领卡之前落下。通过返 None，拒绝返人能照着修的理由。"""
+    if not host_commit_enabled():
+        return None
+    try:
+        host_git()
+    except HostCommitError as error:
+        return "[worker] ⛔ " + str(error) + " —— 拒绝启动"
+    return None
+
+
 def claim_task(worker, line, route):
     """占用和严格干净检查先于领取；未知领取结果保留占用，禁止自动再领。"""
-    guard = HostCommitGuard(REPO, worker).acquire() if host_commit_enabled() else None
+    guard = (HostCommitGuard(REPO, worker, program=host_git(), protected=[DATA], batch=cli_is_batch).acquire()
+             if host_commit_enabled() else None)
     try:
         status, body = call("POST", "/api/claim",
                             {"worker": worker, "line": line, "route": route, "lease_minutes": LEASE,
@@ -2895,6 +2919,11 @@ def main():
         # 打开过这件事**一定要留记录**。默默允许的话,"试验用的逃生口"会变成常规运用。
         log(f"⚠ WORKER_ALLOW_BATCH_CLI=1 —— 明示允许了经 cmd.exe(.bat/.cmd): {CLAUDE[0]}")
         log("  提示词(=卡片正文)可能被当作 cmd.exe 的命令行解释。除测试桩外不要使用。")
+    # 宿主逐卡提交的门与 cli_gate 同位：Git 程序在这里解析一次并固定，解析不出安全的程序就不领卡。
+    hgate = host_commit_gate()
+    if hgate:
+        print(hgate, flush=True)
+        sys.exit(gates_lib.EXIT_REFUSED)
     # ⭐revision 绑定门: 受闸子树的**树哈希**必须 = 已验收值(.data/accepted_rev)
     #   且子树零未提交改动 —— 脏工作区跑的代码「验收过什么」没人答得上来。
     #   与 cli_gate 同位: 领卡之前落下。逃生口=试验 harness 专用 env。

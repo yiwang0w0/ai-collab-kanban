@@ -339,6 +339,59 @@ guard.release()
 `);
 });
 
+test("工作仓里的 git.cmd 不被执行；PATH 上的 .cmd 垫片、落在工作仓或数据目录内的 Git 程序一律拒绝", { skip: process.platform !== "win32" }, () => {
+  python(`repo=setup()
+(repo/'.gitignore').write_text('git.cmd\\nplanted-ran.txt\\n',encoding='utf-8')
+g(repo,'add','--','.gitignore'); g(repo,'commit','-m','忽略夹具')
+(repo/'git.cmd').write_text('@echo off\\r\\necho ran> "%~dp0planted-ran.txt"\\r\\nexit /b 1\\r\\n',encoding='ascii',newline='')
+os.environ.pop('NoDefaultCurrentDirectoryInExePath',None); os.chdir(repo)
+` + WORKER + `
+try: _,body=w.claim_task('第一线','alpha','default')
+finally: assert not (repo/'planted-ran.txt').exists(),'工作仓里的 git.cmd 被宿主执行'
+guard=body['task']['_host_commit_guard']; program=pathlib.Path(guard.git)
+assert len(claims)==1 and program.suffix.lower()=='.exe' and repo.resolve() not in program.resolve().parents,program
+assert guard.env.get('NODEFAULTCURRENTDIRECTORYINEXEPATH')=='1'
+guard.release()
+shim=folder/'shim'; shim.mkdir()
+(shim/'git.cmd').write_text('@echo off\\r\\necho ran> "%~dp0shim-ran.txt"\\r\\nexit /b 1\\r\\n',encoding='ascii',newline='')
+saved=os.environ['PATH']; os.environ['PATH']=str(shim)+os.pathsep+saved
+try:
+ refused(lambda:h.HostCommitGuard(str(repo),'第二线').acquire())
+ assert not (shim/'shim-ran.txt').exists(),'PATH 上的 .cmd 垫片被宿主执行'
+ w.HOST_GIT=None; assert w.host_commit_gate()
+ refused(lambda:w.claim_task('第二线','beta','default'))
+finally: os.environ['PATH']=saved
+inside=[repo/'tools'/'git.exe',folder/'data'/'bin'/'git.exe']
+for target in inside: target.parent.mkdir(parents=True); target.write_bytes(b'MZ')
+for bad in [str(shim/'git.cmd'),'git']+[str(target) for target in inside]:
+ os.environ['WORKER_HOST_GIT']=bad; w.HOST_GIT=None
+ assert w.host_commit_gate(),bad
+ refused(lambda:w.claim_task('第二线','beta','default'))
+ refused(lambda:h.HostCommitGuard(str(repo),'第二线',protected=[w.DATA]))
+assert len(claims)==1 and not (shim/'shim-ran.txt').exists() and not (repo/'planted-ran.txt').exists()
+os.environ['WORKER_HOST_GIT']=git; w.HOST_GIT=None
+assert w.host_commit_gate() is None and os.path.samefile(w.host_git()[0],git)
+`);
+});
+
+test("卡标题里的引号与 & | 不进入任何命令行，提交信息经标准输入逐字保留", () => {
+  python(`repo=setup(); guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+title='注入" & echo INJECTED>injected.txt & rem "|x'
+seen=[]; real=subprocess.Popen
+class Spy(real):
+ def __init__(self,args,*rest,**options): seen.append([str(part) for part in args]); super().__init__(args,*rest,**options)
+subprocess.Popen=Spy
+try:
+ (repo/'one.txt').write_text('本轮',encoding='utf-8'); guard.bind_changes()
+ result=guard.finish(17,title,evidence())
+finally: subprocess.Popen=real
+assert any('commit' in argv for argv in seen),'前提：本轮确实执行了 commit'
+assert not any('INJECTED' in part or '注入' in part for argv in seen for part in argv),seen
+assert g(repo,'log','-1','--format=%B')=='#17 '+title and result['sha']==g(repo,'rev-parse','HEAD')
+assert not (repo/'injected.txt').exists(); guard.release()
+`);
+});
+
 test("fleet 开关默认关闭且只接受显式布尔配置", () => {
   const output = python(`sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'core'))
 import board_env
