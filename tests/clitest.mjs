@@ -486,6 +486,18 @@ console.log(NL + "[⑧b 正常停止与中断]");
   ok("⭐守护没写结束但看板留下了这次运行的干净退出标记：status 说正常停止，下次启动不记中断",
      /正常停止/.test(down1.cause) && !/中断/.test(down1.cause) && BR.readRunRecord(d1).last_fault === null,
      `${down1.cause} | ${JSON.stringify(BR.readRunRecord(d1).last_fault)}`);
+  // 组 3：重启收尾后退出码被弄脏(134) → 守护照常拉起，记正常重启
+  const d5 = join(TMP, "restart-dirty-code");
+  const rs = join(TMP, "stub-restart-134.mjs");
+  writeFileSync(rs, [`import { noteCleanExit } from ${JSON.stringify(brUrl)};`,
+    'const D = process.env.BOARD_DATA_DIR;',
+    'if (!process.env.BOARD_RESTARTED_FROM) { console.log("first boot"); noteCleanExit(D, { kind: "restart" }); process.exit(134); }',
+    'console.log("second boot"); noteCleanExit(D, { kind: "stop" }); process.exit(0);'].join(NL));
+  const r5 = wrap(d5, rs), rec5 = BR.readRunRecord(d5);
+  ok("⭐重启标记 + 退出码 134：守护照常拉起，记正常重启，不进故障",
+     /first boot/.test(r5.stdout) && /看板请求重启/.test(r5.stdout) && /second boot/.test(r5.stdout)
+     && r5.status === 0 && rec5.current?.state === "stopped" && rec5.last_fault === null,
+     `status=${r5.status} out=${(r5.stdout || "").replace(/\s+/g, " ").slice(0, 160)} rec=${JSON.stringify(rec5)}`);
   // 组 2：异常退出(没有这次运行的标记) → 记中断 / 故障
   const d2 = join(TMP, "dirty-exit");
   const crash = join(TMP, "stub-crash.mjs");

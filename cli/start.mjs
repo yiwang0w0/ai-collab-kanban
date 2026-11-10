@@ -89,7 +89,12 @@ function launch(from) {
   });
   child.on("exit", (code, signal) => {
     if (stopping) { noteEnd("stopped", code); process.exit(code ?? 0); }
-    if (code === RESTART_CODE) {
+    // The board finished its own stop or restart (core/server.mjs left the clean-exit marker): that
+    // decides, not the exit code — on Windows libuv may abort after process.exit(). A restart
+    // marker relaunches like exit 75; a stop marker is an orderly stop.
+    let clean = null;
+    if (recorded) try { clean = cleanExitOf(DATA, child.pid); } catch {}
+    if (code === RESTART_CODE || clean?.kind === "restart") {
       restarts += 1;
       recent.push(Date.now());
       while (recent.length && Date.now() - recent[0] > RESTART_WINDOW_MS) recent.shift();
@@ -104,10 +109,6 @@ function launch(from) {
       setTimeout(() => launch("supervised"), 300);
       return;
     }
-    // The board finished its own stop or restart (core/server.mjs left the clean-exit marker): an
-    // orderly stop whatever the exit code says — on Windows libuv may abort after process.exit().
-    let clean = null;
-    if (recorded) try { clean = cleanExitOf(DATA, child.pid); } catch {}
     if (clean) {
       console.log(`[start] 看板已正常停止${code ? `，退出码 ${code}` : ""}。再启动:node cli/start.mjs --background`);
       noteEnd("stopped", code);
