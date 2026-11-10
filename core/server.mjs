@@ -33,6 +33,7 @@ import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf} from "./board-claude-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
+import {openLedger,usageHttp,externalRows} from "./usage.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -992,46 +993,17 @@ const PY = process.env.BOARD_PYTHON || (() => {
 const CRASH_BACKOFF_MS = Math.max(1, Number(process.env.BOARD_CRASH_BACKOFF_MS) || 30_000);
 const SETTINGS_FILE = join(store.DATA_DIR, "worker_settings.json");
 
-// ── Per-card token usage, aggregated from the loop's ledger ──────────────────
-// usage_ledger.jsonl 每次调用轮追加一行；同一尝试的续修不能算作新尝试。
-// 账本仅追加：记住末个完整行的字节位置，只归并新行，避免每次刷新重读全文件。
+// ── 用量账本:归并、分组与结算都在 core/usage.mjs ───────────────────────────
+// usage_ledger.jsonl 只追加;模块记住末个完整行的字节位置,只归并新行。
 const USAGE_FILE = join(store.DATA_DIR, "usage_ledger.jsonl");
-let usageByCard = new Map();
-let usageAttemptKeys = new Map();
-let usageOffset = 0;
-function refreshUsage() {
-  let size;
-  try { size = statSync(USAGE_FILE).size; } catch { return; }   // no ledger yet = no usage
-  if (size < usageOffset) { usageByCard = new Map(); usageAttemptKeys = new Map(); usageOffset = 0; }  // replaced/truncated → refold
-  if (size === usageOffset) return;
-  let buf;
+const usageLedger = openLedger(USAGE_FILE, { makeDefault: true });
+const refreshUsage = () => usageLedger.refresh();
+// 结算钩子:给「已完成但还没结算」的卡各写一条结算事件(同一次完成只写一条)。
+function settleUsage() {
   try {
-    const fd = openSync(USAGE_FILE, "r");
-    buf = Buffer.alloc(size - usageOffset);
-    readSync(fd, buf, 0, buf.length, usageOffset);
-    closeSync(fd);
-  } catch { return; }
-  const text = buf.toString("utf8");
-  // ⚠ The writer may be mid-line right now. Fold only up to the last newline; the
-  //   partial tail stays unconsumed and is re-read complete on the next pass.
-  const NL10 = String.fromCharCode(10);
-  const cut = text.lastIndexOf(NL10);
-  if (cut < 0) return;
-  usageOffset += Buffer.byteLength(text.slice(0, cut + 1), "utf8");
-  for (const line of text.slice(0, cut).split(NL10)) {
-    if (!line.trim()) continue;
-    let j; try { j = JSON.parse(line); } catch { continue; }    // a broken row is skipped, not fatal
-    if (j.card == null) continue;                               // compact events carry no card
-    const id = Number(j.card);
-    const c = usageByCard.get(id) || { rows: 0, calls: 0, in: 0, cc: 0, cr: 0, out: 0 };
-    c.rows++; c.rounds = c.rows;
-    const attempts=usageAttemptKeys.get(id)||new Set();
-    attempts.add(Number.isSafeInteger(j.attempt) ? `${j.run_id||"legacy"}:${j.attempt}` : `unknown:${c.rows}`);
-    usageAttemptKeys.set(id,attempts);c.attempts=attempts.size;
-    for(const key of ["calls","in","cc","cr","out"])
-      c[key] = c[key]===null || j[key]===null || j[key]===undefined ? null : c[key]+(Number(j[key])||0);
-    usageByCard.set(id, c);
-  }
+    usageLedger.settle(db.prepare("SELECT id, line, resolved_at, resolved_by FROM tasks " +
+      "WHERE status='done' AND resolved_at IS NOT NULL AND resolved_at>=? ORDER BY resolved_at, id").all(usageLedger.watermark()));
+  } catch (e) { console.error("用量结算失败:", e.message); }
 }
 const MAX_PARALLEL = Math.max(1, Number(CFG.max_parallel) || 3);
 const DEFAULT_AGENT = { ...CFG.default_agent };
@@ -2222,6 +2194,7 @@ const sentries = new Map();   // res -> { rev, at }
 //   receiver-side throttling.
 function emit(type, data = {}) {
   const wire = String(type).endsWith(".log") ? "log" : "change";
+  if (wire === "change") settleUsage();          // 卡变成 done 的每条路都经过这里
   const payload = `event: ${wire}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
   for (const res of clients) { try { res.write(payload); } catch {} }
 }
@@ -3322,9 +3295,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // ── Per-card token usage (panel card faces). Read-only aggregation.
-    if (m === "GET" && p === "/api/usage") {
-      refreshUsage();
-      return json(res, 200, { cards: Object.fromEntries(usageByCard) });
+    if (m === "GET" && (p === "/api/usage" || p.startsWith("/api/usage/"))) {
+      const r = usageHttp(usageLedger, p, url.searchParams);
+      res.writeHead(r.status, { "Content-Type": r.type, "Cache-Control": "no-store" });
+      return res.end(r.body);
     }
 
     // ── meta (the panel's bottom status line)
@@ -3833,7 +3807,9 @@ const server = http.createServer(async (req, res) => {
         emit("task.execution_observed",{id});return json(res,200,result);
       }
       if (action === "report") {
+        const selfUsage = b.usage == null ? null : externalRows(b.usage);   // 先校验:格式不对就不收这次交付
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });
+        if (selfUsage) usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome });
         emit("task.reported", r);
         // ⭐ v0.21 (user ruling 2026-09-09): on a line configured accept:"auto" a delivery completes
         //   without a human click — the operator decided that ONCE, in the config, for the whole
