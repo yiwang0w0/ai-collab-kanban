@@ -3282,10 +3282,12 @@ function startCoordinatorTurn(convId, userMessage, cli) {
   coordinatorRuns.set(convId, { stop: run.stop, finished });
 }
 /** 用量结算:协调线每轮记一行(phase=coord)。对话已按计划建过卡就记到那张目标卡上,否则不挂卡。
- *  被停止、超时、输出过大的一轮进程也跑过,只是用量读不到:各项记 null(未知),耗时取墙钟。从不抛错。 */
-function accountCoordinatorTurn(convId, usage, wallMs, note = null) {
+ *  被停止、超时、输出过大的一轮进程也跑过,只是用量读不到:各项记 null(未知),耗时取墙钟。从不抛错。
+ *  费用记这一轮的差额(conversations.roundUsage,与记到对话上的是同一个值),不是 CLI 的会话累计 total_cost_usd;
+ *  所以要在这一轮的 completeTurn / failTurn 之前调用。 */
+function accountCoordinatorTurn(convId, usage, wallMs, note = null, cliCost = null) {
   try {
-    const s = conversations.session(db, convId), u = usage || {};
+    const s = conversations.session(db, convId), u = conversations.roundUsage(db, convId, usage, cliCost) || {};
     usageLedger.append({ phase: "coord", worker: "coordinator", card: s.goal_id, model: s.model, effort: s.effort,
       session_id: s.session_id, calls: u.num_turns, in: u.in, cc: u.cc, cr: u.cr, out: u.out,
       duration_ms: u.duration_ms ?? wallMs, cost_usd: u.cost_usd, cost_source: u.cost_usd == null ? "unknown" : "reported", note });
@@ -3309,7 +3311,7 @@ function finishCoordinatorTurn(convId, r, wallMs) {
   }
   const parsed = coordinatorTurnOf(r.stdout);
   const usage = parsed.usage ? { ...parsed.usage, wall_ms: wallMs } : null;
-  accountCoordinatorTurn(convId, parsed.usage, wallMs, parsed.usage ? null : "结果消息里没有用量");
+  accountCoordinatorTurn(convId, parsed.usage, wallMs, parsed.usage ? null : "结果消息里没有用量", parsed.cliCost);
   if (!parsed.ok) {
     const tail = redact(String(r.stderr || "").replace(/\s+/g, " ").trim()).slice(-200);
     // 续接失败(会话文件不在了):不悄悄另开新会话,那样会丢掉上文而人不知道。

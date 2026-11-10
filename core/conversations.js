@@ -230,13 +230,22 @@ const numberOrNull = (v) => typeof v === "number" && Number.isFinite(v) ? v : nu
  *  减去上一轮记下的 total 得这一轮;上一轮的 total 不知道就记为未知(null),不把累计当成这一轮。
  *  累计不会变小:比上一轮还小说明没有接着记,按这一轮算。total 记下来给下一轮用;
  *  没有 modelUsage(restored 为 null,如登录失效时 total 为 0)看不出会话状态,不记、按报的算。 */
-function roundCost(db, r, usage, cliCost) {
-  if (!usage || !cliCost) return usage;
+function roundCostOf(r, usage, cliCost) {
+  if (!usage || !cliCost) return { usage };
   const total = numberOrNull(cliCost.total_usd), prev = numberOrNull(r.cli_cost_seen);
-  if (total == null || cliCost.restored == null) return usage;
-  db.prepare("UPDATE conversations SET cli_cost_seen=? WHERE id=?").run(total, Number(r.id));
-  if (!r.session_started || cliCost.restored !== true) return usage;
-  return { ...usage, cost_usd: prev == null ? null : total >= prev ? total - prev : total };
+  if (total == null || cliCost.restored == null) return { usage };
+  if (!r.session_started || cliCost.restored !== true) return { usage, seen: total };
+  return { usage: { ...usage, cost_usd: prev == null ? null : total >= prev ? total - prev : total }, seen: total };
+}
+function roundCost(db, r, usage, cliCost) {
+  const c = roundCostOf(r, usage, cliCost);
+  if (c.seen !== undefined) db.prepare("UPDATE conversations SET cli_cost_seen=? WHERE id=?").run(c.seen, Number(r.id));
+  return c.usage;
+}
+/** 这一轮会记到对话上的用量(费用是这一轮的差额),只算不写库。用量账本(phase=coord)那一行取它,
+ *  与对话上累计的是同一个值。要在这一轮的 completeTurn / failTurn 之前调用:它们会把这一轮的 total 记下来。 */
+function roundUsage(db, id, usage, cliCost) {
+  return roundCostOf(row(db, id), usage, cliCost).usage;
 }
 
 /** 把一轮的用量累计到对话上。未知的项不计入(保持 null),不当成 0。 */
@@ -452,6 +461,6 @@ function boardFacts(db, { goalLimit = 8 } = {}) {
 module.exports = {
   migrate, recoverInterrupted, list, get, detail, create, beginTurn, session, setSessionFacts, unanswered,
   completeTurn, failTurn, stopTurn, patch, latestPlan, editPlan, planForApply, markApplied, addSystemMessage,
-  normalizeCoordinatorPlan, boardFacts, addUsage,
+  normalizeCoordinatorPlan, boardFacts, addUsage, roundUsage,
   MESSAGE_MAX, TITLE_MAX, PLAN_MAX_TASKS, FIELD_MAX, STATUSES, EDITABLE,
 };

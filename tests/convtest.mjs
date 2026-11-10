@@ -307,6 +307,9 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     assert.equal(d.plans.length, 2, "plan 为 null 的一轮不出版本");
     // 续接时 CLI 报的 total_cost_usd 是会话累计(假 CLI 第二轮报 0.025),对话上只加这一轮的差额;词元本来就是这一轮的。
     assert.deepEqual(d.conversation.usage, { turns: 2, cost_usd: 0.025, in: 22, out: 44, cr: 666, cc: 88 }, "两轮累计与真实 CLI 同形");
+    // 用量账本每轮一行,记的也是这一轮的差额:两行费用之和 = 对话上的累计(记成 CLI 的会话累计就会是 0.0375)。
+    const twoRounds = (await b.api("GET", "/api/usage?by=phase", b.operator)).body.groups.find((g) => g.key === "coord");
+    assert.deepEqual([twoRounds.rows, twoRounds.cost_usd], [2, d.conversation.usage.cost_usd], "账本两行费用之和 = 对话 usage.cost_usd");
     assert.equal(d.conversation.title, "导出功能改造");
 
     // 过不了检查的计划:不出版本,原因记在这一轮的 system 消息上。
