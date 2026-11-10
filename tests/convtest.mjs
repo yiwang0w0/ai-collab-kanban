@@ -442,6 +442,52 @@ test("计划没过检查:同一轮里 --resume 把检查结果交回去就地修
   } finally { await b.stop(); }
 });
 
+test("重试不重复存消息:失败的一轮带 retry_of 用原文再跑,消息数不变、出协调线回复;条件不符 409 RETRY_NOT_APPLICABLE", { timeout: 120000 }, async () => {
+  const b = await board();
+  try {
+    const made = await b.api("POST", "/api/conversations", b.operator, { message: "【先失败】拆一下导出" });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const id = made.body.conversation.id, asked = made.body.turn.id;
+    let d = await b.settle(id);
+    assert.equal(d.conversation.status, "failed", JSON.stringify(d.conversation));
+    assert.deepEqual(d.messages.map((m) => [m.id, m.role]), [[asked, "user"]]);
+    // 另一个一直失败的对话(两条用户消息)用来测条件:不是最后一条用户消息、不是这个对话的消息、不是正整数。
+    const other = await b.api("POST", "/api/conversations", b.operator, { message: "【无结构】甲" });
+    const oid = other.body.conversation.id; await b.settle(oid);
+    assert.equal((await b.api("POST", `/api/conversations/${oid}/messages`, b.operator, { message: "【无结构】乙" })).status, 202);
+    const od = await b.settle(oid), lastOther = od.messages.at(-1).id;
+    assert.equal(od.conversation.status, "failed");
+    const callsBefore = b.calls().length;
+    for (const [cid, retryOf, why] of [[oid, other.body.turn.id, "不是最后一条用户消息"], [id, lastOther, "别的对话的消息"], [oid, asked, "别的对话的消息"]]) {
+      const r = await b.api("POST", `/api/conversations/${cid}/messages`, b.operator, { retry_of: retryOf });
+      assert.deepEqual([r.status, r.body?.code], [409, "RETRY_NOT_APPLICABLE"], `${why}:${JSON.stringify(r.body)}`);
+    }
+    assert.equal((await b.api("POST", `/api/conversations/${id}/messages`, b.operator, { retry_of: String(asked) })).status, 400, "retry_of 不是整数");
+    assert.equal(b.calls().length, callsBefore, "被拒的重试没有起协调线");
+    assert.equal((await b.detail(oid)).messages.length, 2, "被拒的重试不追加消息");
+
+    // 重试:不追加用户消息,turn.id 就是那条消息;用原文再跑一轮,那条消息不再当成「没得到回复」另带一遍。
+    const again = await b.api("POST", `/api/conversations/${id}/messages`, b.operator, { retry_of: asked });
+    assert.equal(again.status, 202, JSON.stringify(again.body));
+    assert.deepEqual(again.body.turn, { id: asked, status: "running" });
+    d = await b.settle(id);
+    assert.equal(d.conversation.status, "idle", JSON.stringify(d.conversation)); assert.ok(!("error" in d.conversation));
+    assert.deepEqual(d.messages.map((m) => [m.id === asked, m.role]), [[true, "user"], [false, "coordinator"]], "消息数不变,只多了协调线的回复");
+    assert.equal(d.messages[1].text, "收到:【先失败】拆一下导出");
+    const content = flagValue(b.calls().at(-1).argv, "-p");
+    assert.ok(content.endsWith("[用户消息]\n【先失败】拆一下导出") && !content.includes("[此前没有得到回复的用户消息]"), content);
+    // 已经得到回复、对话也不是失败:同一条再 retry_of 是 409,不起协调线、不追加消息。
+    const late = await b.api("POST", `/api/conversations/${id}/messages`, b.operator, { retry_of: asked });
+    assert.deepEqual([late.status, late.body?.code], [409, "RETRY_NOT_APPLICABLE"]);
+    assert.equal((await b.detail(id)).messages.length, 2);
+    // 重试最后一条:之前没得到回复的照旧带上,重试的这条只作[用户消息]出现一次。
+    assert.equal((await b.api("POST", `/api/conversations/${oid}/messages`, b.operator, { retry_of: lastOther })).status, 202);
+    assert.equal((await b.settle(oid)).messages.length, 2);
+    const retried = flagValue(b.calls().at(-1).argv, "-p");
+    assert.ok(retried.includes("[此前没有得到回复的用户消息]\n- 【无结构】甲\n") && !retried.includes("- 【无结构】乙") && retried.endsWith("[用户消息]\n【无结构】乙"), retried);
+  } finally { await b.stop(); }
+});
+
 test("鉴权边界、同一对话只跑一轮、停止与超时收掉进程树、协调线不可用", { timeout: 180000 }, async () => {
   const b = await board();
   try {

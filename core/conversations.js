@@ -207,6 +207,25 @@ function beginTurn(db, id, { message } = {}, now = Date.now()) {
   });
 }
 
+/** 重试失败的一轮(retry_of):不追加消息,用那条用户消息的原文再跑一轮,返回那条消息。
+ *  三条都满足才放行:它是这个对话最后一条 user 消息、它之后没有 coordinator 消息、对话 status=failed;
+ *  否则 RETRY_NOT_APPLICABLE。置为运行中带前态条件(status='failed'),并发的两次重试只进得去一次。 */
+function retryTurn(db, id, { retryOf } = {}, now = Date.now()) {
+  if (!Number.isSafeInteger(retryOf) || retryOf < 1) throw err(ERR.BAD_INPUT, "retry_of 必须是要重试的那条用户消息的 id(正整数)");
+  return tx(db, () => {
+    const r = row(db, id);
+    const no = (why) => refuse(ERR.CONFLICT, "RETRY_NOT_APPLICABLE", `这条消息不能重试:${why}`);
+    const m = db.prepare("SELECT * FROM conversation_messages WHERE id=? AND conversation_id=? AND role='user'").get(retryOf, r.id);
+    const last = db.prepare("SELECT MAX(id) AS id FROM conversation_messages WHERE conversation_id=? AND role='user'").get(r.id);
+    if (!m || Number(last?.id) !== retryOf) throw no("它不是这个对话最后一条用户消息");
+    if (db.prepare("SELECT 1 FROM conversation_messages WHERE conversation_id=? AND role='coordinator' AND id>?").get(r.id, retryOf))
+      throw no("它已经得到协调线的回复");
+    const u = db.prepare("UPDATE conversations SET status='running', error=NULL, updated_at=? WHERE id=? AND status='failed'").run(iso(now), r.id);
+    if (!u.changes) throw no(r.status === "running" ? "协调线还在回复" : "上一轮没有失败");
+    return messageOut(m);
+  });
+}
+
 /** 起这一轮要用的会话参数(只在服务端用,不进接口)。 */
 function session(db, id) {
   const r = row(db, id);
@@ -491,7 +510,7 @@ function boardFacts(db, { goalLimit = 8 } = {}) {
 }
 
 module.exports = {
-  migrate, recoverInterrupted, list, get, detail, create, beginTurn, session, setSessionFacts, unanswered,
+  migrate, recoverInterrupted, list, get, detail, create, beginTurn, retryTurn, session, setSessionFacts, unanswered,
   completeTurn, failTurn, stopTurn, patch, latestPlan, editPlan, planForApply, markApplied, addSystemMessage,
   normalizeCoordinatorPlan, coordinatorPlanIssues, boardFacts, addUsage, roundUsage, mergeRoundUsage,
   MESSAGE_MAX, TITLE_MAX, PLAN_MAX_TASKS, FIELD_MAX, STATUSES, EDITABLE,

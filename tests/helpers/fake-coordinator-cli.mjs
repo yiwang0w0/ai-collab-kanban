@@ -4,10 +4,11 @@
 //   【无结构】result 里没有 structured_output          【慢】起一个子进程后一直不结束(测停止与超时)
 //   【登录失效】真实 CLI 登录失效时的输出形状
 //   【先坏后好】首次交坏计划(依赖指向自己、线名不在菜单),看板就地修正那一次交好计划
+//   【先失败】这块看板第一次见到时同【无结构】(这一轮失败),之后同「其余」(测 retry_of 重跑)
 //   其余:只回一句话,plan 为 null
 // 看板的就地修正(内容以 [看板检查] 开头)没有[用户消息]:按会话号取这个会话上一条用户消息,按同一标记作答;
 // 【计划】【坏计划】修正时照旧交回原样(线名 ghost、依赖越界都不改)。
-import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
 const argv = process.argv.slice(2);
@@ -20,6 +21,9 @@ const earlier = (() => { try { return JSON.parse(readFileSync(messageFile, "utf8
 const message = repair ? String(earlier[sessionId] || "") : content.slice(content.lastIndexOf("[用户消息]"));
 if (!repair) writeFileSync(messageFile, JSON.stringify({ ...earlier, [sessionId]: message }));
 const slow = message.includes("【慢】");
+const failedOnce = process.env.CONVTEST_LOG + ".failed-once";
+const failFirst = message.includes("【先失败】") && !existsSync(failedOnce);
+if (failFirst) writeFileSync(failedOnce, "");
 const child = slow ? spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore" }) : null;
 
 appendFileSync(process.env.CONVTEST_LOG, JSON.stringify({
@@ -60,7 +64,7 @@ const result = {
   modelUsage: { "claude-opus-5": { inputTokens: total.in, outputTokens: total.out, cacheReadInputTokens: total.cr,
                                    cacheCreationInputTokens: total.cc, costUSD: total.cost } },
   permission_denials: [], result: JSON.stringify(turn),
-  ...(message.includes("【无结构】") ? {} : { structured_output: turn }),
+  ...(message.includes("【无结构】") || failFirst ? {} : { structured_output: turn }),
 };
 const use = (name) => ({ type: "assistant", message: { content: [{ type: "tool_use", name, input: {} }] } });
 if (message.includes("【登录失效】")) {
