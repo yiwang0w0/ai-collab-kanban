@@ -50,7 +50,7 @@ import context_lib
 import verification_repair
 import evidence_contract
 import lessons_lib        # 经验库(docs/经验库.md):开场 / 出错 / 收尾 / 命中即验证,全由宿主脚本完成
-from host_git_commit import HostCommitGuard, HostCommitError, resolve_git
+from host_git_commit import HostCommitGuard, HostCommitError, resolve_git, within
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
@@ -634,20 +634,31 @@ def host_git():
 
 
 def host_commit_gate():
-    """宿主提交的启动门，领卡之前落下。通过返 None，拒绝返人能照着修的理由。"""
+    """宿主提交的门：循环启动时落一次，每次领卡前同一判据再落一次。通过返 None，拒绝返人能照着修的理由。
+    这里拒的都是「模型跑完也一定提交不了」的布局，所以必须在领卡之前。"""
     if not host_commit_enabled():
         return None
     try:
         host_git()
     except HostCommitError as error:
-        return "[worker] ⛔ " + str(error) + " —— 拒绝启动"
+        return str(error)
+    # 提交时要求证据在工作仓之外(HostCommitGuard.finish)。数据目录被 .gitignore 忽略，
+    # 领卡前的干净检查看不见它，不在这里拒就要等模型跑完、验证通过之后才拒。
+    if within(EVID, REPO):
+        return ("宿主逐卡提交要求模型证据在工作仓之外，而证据目录 " + EVID + " 在工作仓 " + REPO + " 之内"
+                "(看板仓兼作工作仓、又没有另设数据目录时就是这样)。"
+                "把数据目录移出工作仓(设 BOARD_DATA_DIR)，或把 BOARD_REPO 指向另一个工作仓，或关闭 host_auto_commit")
     return None
 
 
 def claim_task(worker, line, route):
     """占用和严格干净检查先于领取；未知领取结果保留占用，禁止自动再领。"""
-    guard = (HostCommitGuard(REPO, worker, program=host_git(), protected=[DATA], batch=cli_is_batch).acquire()
-             if host_commit_enabled() else None)
+    guard = None
+    if host_commit_enabled():
+        refusal = host_commit_gate()
+        if refusal:
+            raise HostCommitError(refusal)
+        guard = HostCommitGuard(REPO, worker, program=host_git(), protected=[DATA], batch=cli_is_batch).acquire()
     try:
         status, body = call("POST", "/api/claim",
                             {"worker": worker, "line": line, "route": route, "lease_minutes": LEASE,
@@ -658,10 +669,23 @@ def claim_task(worker, line, route):
             raise HostCommitError("领取结果未知，已保留仓库占用；人工核实原卡后恢复：" + str(error)) from error
         raise
     if guard:
-        if status == 200 and (body or {}).get("task"):
-            body["task"]["_host_commit_guard"] = guard
-        else:
+        task = (body or {}).get("task") if status == 200 else None
+        if not task:
             guard.release()
+        elif not str(task.get("verify_cmd") or "").strip():
+            # 验证通过才提交，所以没有登记验证的卡在本开关下提交不了；这一点领取回执里就知道。
+            # 不调用模型：原卡转等待，工作仓仍是领卡前核过的干净状态，占用照常释放。
+            try:
+                deliver(task["id"], worker, "wait",
+                        "宿主自动提交停止：本卡没有登记验证(verify_cmd)。本线已开启宿主逐卡提交，验证通过才会提交，"
+                        "所以没有调用模型。请给本卡指定登记簿里的验证键后重新放行，或交给未开启宿主提交的线。",
+                        run_id=task.get("run_id"), what="未登记验证转等待")
+            finally:
+                guard.release()
+            log(f"⏸ #{task['id']} 没有登记验证 —— 未调用模型，已转等待并释放仓库占用")
+            return status, {"host_commit_parked": task["id"]}
+        else:
+            task["_host_commit_guard"] = guard
     return status, body
 
 
@@ -2922,7 +2946,7 @@ def main():
     # 宿主逐卡提交的门与 cli_gate 同位：Git 程序在这里解析一次并固定，解析不出安全的程序就不领卡。
     hgate = host_commit_gate()
     if hgate:
-        print(hgate, flush=True)
+        print("[worker] ⛔ " + hgate + " —— 拒绝启动", flush=True)
         sys.exit(gates_lib.EXIT_REFUSED)
     # ⭐revision 绑定门: 受闸子树的**树哈希**必须 = 已验收值(.data/accepted_rev)
     #   且子树零未提交改动 —— 脏工作区跑的代码「验收过什么」没人答得上来。
@@ -3013,6 +3037,10 @@ def main():
         except RuntimeError as e:
             log(str(e)); time.sleep(min(interval, 30)); continue
 
+        if (r or {}).get("host_commit_parked"):
+            # 没有登记验证的卡已原样转等待(未调用模型、占用已释放)；它不占本线，继续领下一张。
+            if once: return
+            continue
         # 503(池满/全局停)不要和 204(队列空)长同一张脸 —— 池塌了时各 worker 的日志
         #   如果显示"无可领的卡",就没人会去怀疑池(说不出理由的饥饿)。
         if s == 503:

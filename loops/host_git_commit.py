@@ -77,7 +77,7 @@ def is_batch(path):
     return os.path.splitext(str(path or ""))[1].lower() in (".bat", ".cmd")
 
 
-def _within(path, root):
+def within(path, root):
     """path 是否落在 root 之内；字面路径与解析后的实际路径各比一次。"""
     for inner in {os.path.abspath(path), os.path.realpath(path)}:
         for outer in {os.path.abspath(root), os.path.realpath(root)}:
@@ -112,7 +112,7 @@ def _check_program(program, roots, batch):
     if batch(program):
         _fail("Git 程序是 .bat/.cmd 包装器，参数会经 cmd.exe 解释；请把 WORKER_HOST_GIT 设为 git 可执行文件的绝对路径：" + program)
     for root in roots:
-        if root and _within(program, root):
+        if root and within(program, root):
             _fail("Git 程序位于工作仓或数据目录内，模型可以改写它；请改用其外的 Git：" + program)
 
 
@@ -461,11 +461,8 @@ class HostCommitGuard:
         if not re.fullmatch(r"[0-9]+", str(task_id)) or not isinstance(title, str) or not title.strip() or re.search(r"[\x00-\x1f\x7f]", title):
             _fail("卡号或提交标题无效")
         evidence = os.path.realpath(evidence_file)
-        try:
-            inside = os.path.commonpath([self.root, evidence]) == self.root
-        except ValueError:
-            inside = False
-        if inside:
+        # 目录一级在循环启动门就拒了(worker_loop.host_commit_gate)；这里按文件再核一次。
+        if within(evidence_file, self.root):
             _fail("自动提交要求模型证据位于工作仓外")
         proof = _file(evidence)
         if proof is None or proof[3] == 0:

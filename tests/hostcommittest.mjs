@@ -392,6 +392,35 @@ assert not (repo/'injected.txt').exists(); guard.release()
 `);
 });
 
+test("证据目录在工作仓内的默认布局在领卡前拒绝；没有登记验证的卡不调用模型，转等待并释放占用", () => {
+  python(`repo=setup()
+(repo/'.gitignore').write_text('core/.data/\\n',encoding='utf-8')
+g(repo,'add','--','.gitignore'); g(repo,'commit','-m','默认布局夹具')
+` + WORKER + `
+outside=(w.DATA,w.EVID); assert w.host_commit_gate() is None
+w.DATA=str(repo/'core'/'.data'); w.EVID=str(repo/'core'/'.data'/'evidence'); os.makedirs(w.EVID)
+assert g(repo,'status','--porcelain')=='','前提：数据目录被忽略，干净检查看不见它'
+reason=w.host_commit_gate(); assert reason and 'BOARD_DATA_DIR' in reason,reason
+refused(lambda:w.claim_task('第一线','alpha','default'))
+assert claims==[] and models==[] and deliveries==[]
+h.HostCommitGuard(str(repo),'核对无残留锁').acquire().release()
+started=subprocess.run([sys.executable,'-X','utf8',str(pathlib.Path(sys.argv[1])/'loops'/'worker_loop.py'),'--as','alpha','--once'],
+ env=dict(os.environ,BOARD_REPO=str(repo),BOARD_DATA_DIR=w.DATA,BOARD_URL='http://127.0.0.1:9',
+  WORKER_CLI_ARGV=json.dumps([sys.executable,'-c','pass'])),capture_output=True,timeout=25)
+printed=started.stdout.decode('utf-8','replace')
+assert started.returncode==3 and '宿主逐卡提交' in printed and 'BOARD_DATA_DIR' in printed and '拒绝启动' in printed,(started.returncode,printed)
+w.DATA,w.EVID=outside
+def bare(method,path,body=None,**kwargs):
+ claims.append(body); return 200,{'task':{'id':7,'subject':'没有登记验证','run_id':str(uuid.uuid4()),'attempts':1}}
+w.call=bare
+status,body=w.claim_task('第一线','alpha','default')
+assert len(claims)==1 and not body.get('task') and body.get('host_commit_parked')==7,body
+assert models==[] and len(deliveries)==1 and deliveries[0][0][:3]==(7,'第一线','wait') and '登记验证' in deliveries[0][0][3]
+assert g(repo,'status','--porcelain')==''
+h.HostCommitGuard(str(repo),'核对占用已释放').acquire().release()
+`);
+});
+
 test("fleet 开关默认关闭且只接受显式布尔配置", () => {
   const output = python(`sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'core'))
 import board_env
