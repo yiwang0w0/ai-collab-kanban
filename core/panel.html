@@ -990,8 +990,9 @@
     .chat-shell{grid-template-columns:minmax(0,1fr) minmax(248px,34%)}
     #chat-list-open,#chat-list-close{display:inline-flex}
     .chat-list{position:fixed;top:0;bottom:0;left:0;z-index:31;width:min(300px,86vw);box-shadow:12px 0 32px rgba(0,0,0,.18);
-               transform:translateX(-100%);visibility:hidden;transition:transform .18s ease,visibility .18s}
-    .chat-shell.list-open .chat-list{transform:none;visibility:visible}
+               transform:translateX(-100%);visibility:hidden;transition:transform .18s ease,visibility 0s linear .18s}
+    /* 打开时立刻可见(焦点要能马上进抽屉),收起时等滑出去再藏。 */
+    .chat-shell.list-open .chat-list{transform:none;visibility:visible;transition:transform .18s ease,visibility 0s}
     .chat-shell.list-open .chat-scrim{display:block;position:fixed;inset:0;z-index:30;background:rgba(0,0,0,.35)}
   }
   @media (max-width:620px){
@@ -5659,8 +5660,10 @@ function chatOpen(id){
 }
 function chatGrow(){ chatInput.style.height = "auto"; chatInput.style.height = Math.min(200, chatInput.scrollHeight + 2) + "px"; }
 function chatDrawer(open){
+  const opener = document.getElementById("chat-list-open"), inside = document.getElementById("chat-list").contains(document.activeElement);
   chatShell.classList.toggle("list-open", open);
-  document.getElementById("chat-list-open").setAttribute("aria-expanded", String(open));
+  opener.setAttribute("aria-expanded", String(open));
+  if (!open && inside && opener.offsetParent) opener.focus({ preventScroll: true });   // 抽屉收起后焦点回到打开它的按钮
 }
 function chatWork(open){
   chatShell.classList.toggle("work-open", open);
@@ -5900,13 +5903,13 @@ function renderChat(){
   if (homeView !== "home") return;
   const conversation = chatData?.conversation || null, row = (chatRows || []).find((c) => chatSame(c.id, chatId));
   // 左栏:对话列表
-  homeFill(document.getElementById("chat-items"), JSON.stringify([chatRows, chatRowsError, chatId]), () => {
+  chatFill(document.getElementById("chat-items"), JSON.stringify([chatRows, chatRowsError, chatId]), () => {
     if (chatRows === null) return [homeEl("p", "正在读取…", "cl-empty")];
     const out = [];
     if (chatRowsError) out.push(homeEl("p", "对话列表暂时读不到：" + chatRowsError, "cl-empty"));
     if (!chatRows.length && !chatRowsError) out.push(homeEl("p", "还没有对话。", "cl-empty"));
     for (const c of chatRows) {
-      const b = homeEl("button", undefined, "cl-item"); b.type = "button"; b.dataset.st = String(c.status || "idle");
+      const b = homeEl("button", undefined, "cl-item"); b.type = "button"; b.dataset.st = String(c.status || "idle"); b.dataset.fk = "conv:" + c.id;
       if (chatSame(c.id, chatId)) b.setAttribute("aria-current", "true");
       b.append(homeEl("span", String(c.title || "").trim() || "未命名对话", "cl-t"), homeEl("span", chatListLine(c), "cl-s"));
       b.addEventListener("click", () => chatOpen(c.id));
@@ -5956,7 +5959,7 @@ chatInput.addEventListener("keydown", (e) => {
 document.getElementById("chat-send").addEventListener("click", () => chatSend());
 document.getElementById("chat-new").addEventListener("click", () => { chatOpen(null); chatInput.focus({ preventScroll: true }); });
 document.getElementById("chat-list-open").addEventListener("click", () => { chatDrawer(true); document.getElementById("chat-new").focus({ preventScroll: true }); });
-document.getElementById("chat-list-close").addEventListener("click", () => { chatDrawer(false); document.getElementById("chat-list-open").focus({ preventScroll: true }); });
+document.getElementById("chat-list-close").addEventListener("click", () => chatDrawer(false));
 document.getElementById("chat-scrim").addEventListener("click", () => chatDrawer(false));
 document.getElementById("home-work-toggle").addEventListener("click", () => chatWork(!chatShell.classList.contains("work-open")));
 document.addEventListener("keydown", (e) => {
