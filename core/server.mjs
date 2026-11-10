@@ -592,6 +592,8 @@ function addLine(idRaw, hintRaw, labelRaw, acceptRaw, roleRaw = null, externalRa
     ? onDisk.lines : BUILTIN_CONFIG.lines.map((l) => ({ ...l }));
   if (externalRaw != null && typeof externalRaw !== "boolean") throw store.err(store.ERR.BAD_INPUT, "external 只接受 true / false");
   const external = externalRaw === true;
+  if (!external && coord.isExecutor(db, id))
+    throw store.err(store.ERR.CONFLICT, `线 ${id} 与已登记的执行者同名;受管执行线的座位名就是线 id,换一个线名或配成外部执行线`);
   lines.push({ id, ...(hint ? { hint } : {}), ...(label ? { label } : {}), ...(accept === "auto" ? { accept } : {}),
                ...(roleDisk ? { role: roleDisk } : {}), ...(external ? { external } : {}) });
   const next = { ...onDisk, lines };
@@ -2253,6 +2255,9 @@ const readBody = (req) => new Promise((resolve, reject) => {
     if (req.boardRole === "executor" && body && typeof body === "object" && !Array.isArray(body)) {
       if (body.worker !== undefined && body.worker !== req.executor.id)
         return reject(store.err(store.ERR.CONFLICT, "执行者身份与令牌不一致"));
+      // 与 worker 分支对称:id 与受管座位同名的(修复前登记的)执行者不能以座位名义领卡、续租、交付。
+      if (isManagedSeatName(req.executor.id))
+        return reject(store.err(store.ERR.CONFLICT, "执行者 id 与受管执行线的座位同名,不能以它领卡、续租或交付;请操作员用别的 id 重新登记"));
       body.worker = req.executor.id;
       if (body.lease_minutes !== undefined) body.lease_minutes = coord.executorLease(body.lease_minutes);
     }
@@ -2565,6 +2570,10 @@ const asExecutor = (req, res) => {
   json(res, 403, { error: "此操作需要执行者令牌", role: req.boardRole });
   return null;
 };
+// 受管(非外部)执行线第 1 个座位的 worker 名就是线 id,角色座席同理:执行者 id 与它们同名,执行者令牌就等同那个座位的凭据。
+function isManagedSeatName(id) {
+  return (LINES.includes(id) && !LINE_EXTERNAL?.[id]) || ROLES.includes(id) || workers.has(id);
+}
 const asOperator = (req, res) => {
   if (req.boardRole === "operator") return true;
   json(res, 403, { error: "此操作只属于操作员令牌", role: req.boardRole });
@@ -2587,6 +2596,8 @@ async function coordRoute(req, res, url, p, m, boardRole) {
   if (m === "POST" && p === "/api/coord/executors") {
     if (!asOperator(req, res)) return;
     const b = await readBody(req);
+    if (isManagedSeatName(String(b.id ?? "").trim()))
+      throw store.err(store.ERR.CONFLICT, `执行者 id ${String(b.id).trim()} 与受管执行线(或角色座席)同名;换一个 id,或把那条线配成外部执行线`);
     const r = coord.register(db, { id: b.id, name: b.name, kind: b.kind ?? "external", rotate: b.rotate === true });
     emit("coord.executor", { id: r.executor.id });
     return json(res, r.rotated ? 200 : 201, r);

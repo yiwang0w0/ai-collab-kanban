@@ -43,6 +43,7 @@ from a named incident (see `docs/INCIDENTS.md`):
   不能裁定、bless、起停线、改设置或决定批准事项。
   它不证明运行时种类，领卡时不盖运行时徽标。
   执行者 id 只属于它自己的令牌：共享 `worker_token` 把 `worker` 写成已登记的执行者 id 时，领卡、续租、交付一律 409。
+  执行者 id 不能与受管执行线或角色座席同名（登记与加线两个方向都拒绝）；修复前已同名的登记，其令牌不能领卡、续租、交付。
   **Measured 2026-09-07 with the real CLI on Windows (nine experiments, positive
   controls included):** a Claude worker in `-p` mode can `Read` any absolute path
   on the machine, inside or outside its working directory — so moving the data

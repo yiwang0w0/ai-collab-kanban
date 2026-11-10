@@ -387,3 +387,35 @@ test("协作安全:共享 worker 令牌不能冒用已登记执行者的 id 领�
     assert.equal(own.status, 200, JSON.stringify(own.body));
   } finally { await B.stop(); }
 });
+
+test("协作安全:执行者 id 不能与受管执行线的座位同名,同名的旧登记不能领卡续租交付", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const clash = await B.api("POST", "/api/coord/executors", B.operator, { id: "alpha", kind: "line" });
+    assert.equal(clash.status, 409, `与受管线同名的登记应拒绝:${JSON.stringify(clash.body)}`);
+    assert.equal((await B.api("POST", "/api/coord/executors", B.operator, { id: "ext", kind: "line" })).status, 201, "外部执行线没有受管座位,同名可以登记");
+    await B.register("zeta");
+    assert.equal((await B.api("POST", "/api/config/lines", B.operator, { id: "zeta" })).status, 409, "反方向:受管线不能与已登记执行者同名");
+    assert.equal((await B.api("POST", "/api/config/lines", B.operator, { id: "zeta", external: true })).status, 201, "外部执行线可以与执行者同名");
+    // 修复前已经同名的旧登记:直接写库造一行,它的令牌不能再以座位名义动卡。
+    const legacy = "exe_" + "0".repeat(48);
+    const db = new DatabaseSync(join(B.dir, "board.db"));
+    db.exec("PRAGMA busy_timeout=5000");
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
+      .run("alpha", "alpha", "line", createHash("sha256").update(legacy).digest("hex"), at, at);
+    db.close();
+    const t = await B.card("受管线上的卡");
+    const held = await B.take(B.operator, t.id, { worker: "alpha" });
+    assert.equal(held.status, 200, JSON.stringify(held.body));
+    const run = held.body.task.run_id;
+    assert.equal((await B.api("GET", "/api/coord", legacy)).status, 200, "旧令牌仍能读");
+    const rep = await B.api("POST", `/api/tasks/${t.id}/report`, legacy, { run_id: run, outcome: "done", evidence: "伪造" });
+    assert.equal(rep.status, 409, `同名执行者替座位交付:${JSON.stringify(rep.body).slice(0, 200)}`);
+    assert.equal((await B.api("POST", "/api/coord/heartbeat", legacy, {})).status, 409, "同名执行者不能替座位批量续租");
+    const t2 = await B.card("受管线上的另一张");
+    assert.equal((await B.take(legacy, t2.id)).status, 409, "同名执行者不能以座位名领卡");
+    const still = (await B.api("GET", `/api/tasks/${t.id}`, B.operator)).body.task;
+    assert.equal(still.status, "in_progress");
+  } finally { await B.stop(); }
+});
