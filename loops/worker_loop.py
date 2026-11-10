@@ -1410,7 +1410,7 @@ LAST_ACCT = {"sid": None, "t0": None}
 def usage_of(sid, since=None):
     """从转录合算本次尝试的用量。转录不存在(桩/失败)则零值+note。
     since=ISO 字符串:持续会话(槽 1)只数开始时刻之后的(要的是本次,不是累计)。"""
-    out = {"calls": 0, "in": 0, "cc": 0, "cr": 0, "out": 0, "note": None}
+    out = {"calls": 0, "in": 0, "cc": 0, "cr": 0, "out": 0, "note": None, "cli_version": None}
     path = transcript_of(sid)
     if not path:
         out.update({key: None for key in ("calls", "in", "cc", "cr", "out")})
@@ -1420,6 +1420,8 @@ def usage_of(sid, since=None):
         for line in io.open(path, encoding="utf-8", errors="replace"):
             try: j = json.loads(line)
             except Exception: continue
+            if isinstance(j.get("version"), str) and j["version"].strip():
+                out["cli_version"] = j["version"].strip()      # 转录每行带 CLI 版本;不另起进程去问
             u = (j.get("message") or {}).get("usage") or {}
             if not u: continue
             ts = j.get("timestamp") or ""
@@ -1436,8 +1438,27 @@ def usage_of(sid, since=None):
     return out
 
 
-def acct_attempt(t, worker, attempt, model, effort, *, round_number=1, phase="initial", reason=None):
+def acct_cost(u, model):
+    """本轮费用与来源。未知就是 (None, "unknown"),不记 0。
+    reported  = SDK 随结果回报的金额(执行配置通道)。
+    estimated = 订阅通道按 gates_lib.PRICE 单价表折算,只是参考,不是账单;
+                单价表里没有的模型、词元不全的轮次、另一个池的座席都不估。"""
+    if API_MODE:
+        cost = LAST_ACCT.get("cost_usd")
+        ok = isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost)
+        return (cost, "reported") if ok else (None, "unknown")
+    if (RUNTIME == "claude" and str(model) in gates_lib.PRICE
+            and all(isinstance(u.get(k), (int, float)) and not isinstance(u.get(k), bool) for k in ("in", "cc", "cr", "out"))):
+        return round(gates_lib.usd_of(u, model), 6), "estimated"
+    return None, "unknown"
+
+
+def acct_attempt(t, worker, attempt, model, effort, *, round_number=1, phase="initial", reason=None, duration_ms=None):
     """一次尝试记一行账。
+
+    phase 沿用 #13 的写法:首轮 initial、续修轮 repair;汇总时(core/usage.mjs)分别读成
+    implement 与 fix。duration_ms 是模型进程的墙钟耗时:调用处量好放进 LAST_ACCT,
+    也可以显式传入。量不到就是 None。
 
     ⭐**行里必须带 model / effort**。没有它,「有没有提权」谁都观测不到
       —— 日志会轮转掉,卡面的总计也切不出「哪一档烧了多少」。
@@ -1452,15 +1473,18 @@ def acct_attempt(t, worker, attempt, model, effort, *, round_number=1, phase="in
            "card": t["id"], "attempt": attempt, "worker": worker,
            "run_id": t["run_id"], "agent_instance_id": AGENT_INSTANCE_ID,
            "model": model, "effort": effort,
-           "sid": (LAST_ACCT["sid"] or "")[:8], "session_id": LAST_ACCT["sid"], **u,
+           "sid": (LAST_ACCT["sid"] or "")[:8], "session_id": LAST_ACCT["sid"], "cli_version": None, **u,
            "round": round_number, "phase": phase, "reason": reason,
+           "duration_ms": None,
            "prompt_chars": LAST_ACCT.get("prompt_chars"), "prompt_bytes": LAST_ACCT.get("prompt_bytes"),
            "evidence_chars": (t.get("_evidence_measurement") or {}).get("chars"),
            "evidence_bytes": (t.get("_evidence_measurement") or {}).get("bytes")}
     if PROFILE_MODE:
         row.update({"execution_profile_id": EXECUTION_PROFILE["execution_profile_id"], "channel": EXECUTION_PROFILE["channel"]})
-    if API_MODE:
-        row["cost_usd"] = LAST_ACCT.get("cost_usd")
+    spent = duration_ms if duration_ms is not None else LAST_ACCT.get("duration_ms")
+    if isinstance(spent, int) and not isinstance(spent, bool) and spent >= 0:
+        row["duration_ms"] = spent
+    row["cost_usd"], row["cost_source"] = acct_cost(u, model)
     try:
         io.open(LEDGER, "a", encoding="utf-8").write(json.dumps(row, ensure_ascii=False) + chr(10))
     except Exception as e:
@@ -2299,8 +2323,10 @@ def handle_legacy(t, worker):
                 + (f"(生涯累计第 {attempt} 次 —— 本卡被打回过,预算已回满)" if used != attempt else ""))
             if host_guard:
                 host_guard.assert_intact()
+            run_started = time.monotonic()
             rc, tail = run_worker(t, worker, ev_path, tails[-1] if tails else None, attempt,
                                   a_model, a_effort)
+            LAST_ACCT["duration_ms"] = int((time.monotonic() - run_started) * 1000)   # 记账用:模型进程的墙钟耗时
             if host_guard:
                 host_guard.bind_changes()
             log(f"  {RUNTIME} 退出 rc={rc}")
@@ -2536,12 +2562,14 @@ def handle(t, worker):
             # 每轮先清空，启动门失败时不能沿用上一轮的用量或会话。
             LAST_ACCT = {"sid": None, "t0": None, "usage": {k: None for k in ("calls", "in", "cc", "cr", "out")}}
             log(f"  尝试 {attempt} 第 {number}/{maximum} 轮 [{tier_label(model, effort)}]")
+            run_started = time.monotonic()
             try:
                 if host_guard:
                     host_guard.assert_intact()
                 rc, tail = run_worker(task, worker, ev_path, None, attempt, model, effort)
             except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as error:
                 rc, tail = -2, f"执行环境异常：{type(error).__name__}: {error}"
+            LAST_ACCT["duration_ms"] = int((time.monotonic() - run_started) * 1000)   # 记账用:模型进程的墙钟耗时
             LAST_CARD_ID = tid
             if FORKED_SID:
                 confirm_forked(FORKED_SID)
