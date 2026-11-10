@@ -36,8 +36,8 @@ import {readCliVersions} from "./cli-versions.mjs";
 import { noteCleanExit } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliResult} from "./board-claude-cli.mjs";
-import {coordinatorSystemPrompt,buildTurnContent,coordinatorCliArgs,coordinatorCliEnvironment,argsFingerprint,
-  coordinatorTurnOf,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
+import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorCliArgs,coordinatorCliEnvironment,argsFingerprint,
+  coordinatorTurnOf,mergeTools,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 
@@ -3445,31 +3445,39 @@ function coordinatorBoardFacts() {
            unassigned: facts.unassigned, goals: facts.goals };
 }
 const coordinatorRuns = new Map();   // 对话号 -> { stop, finished }:同一对话同一时刻只有一轮
-/** 起一轮(调用方已把对话置为运行中并写入用户消息)。结束时只有 finishCoordinatorTurn 一处写库。 */
+/** 起一轮(调用方已把对话置为运行中并写入用户消息)。结束时只有 finishCoordinatorTurn / finishRepairTurn 一处写库。
+ *  交回的计划没过检查时,同一轮里再起一次(--resume 同一会话,内容是检查结果)请它就地修正,只一次;
+ *  stop 停正在跑的那一次,停过就不再起修正。修正那一次参数除内容与会话参数外与首次相同(前缀缓存照旧命中)。 */
 function startCoordinatorTurn(convId, userMessage, cli) {
   const started = Date.now();
-  let run;
-  try {
-    const s = conversations.session(db, convId), cwd = coordinatorCwd();
-    const args = coordinatorCliArgs({
-      content: buildTurnContent({ board: coordinatorBoardFacts(), plan: conversations.latestPlan(db, convId),
-                                  pending: conversations.unanswered(db, convId, userMessage.id), message: userMessage.text }),
-      model: s.model, effort: s.effort, repoRoot: resolve(REPO_ROOT),
-      systemPrompt: coordinatorSystemPrompt({ lines: IMPL_LINES, hints: LINE_HINT, labels: LINE_LABEL, language: LANGUAGE }),
-      sessionId: s.session_id, resume: s.resume, ...boardCliScope() });
-    conversations.setSessionFacts(db, convId, { cwd, argsFp: argsFingerprint(args) });
-    run = runCoordinatorCli({ argv: [cli.exe, ...cli.prefix, ...args], cwd, timeoutMs: COORDINATOR.timeout_sec * 1000,
-                              env: coordinatorCliEnvironment({ env: process.env, profiles: EXECUTION_PROFILES }) });
-  } catch (e) {
-    run = { stop: async () => false, done: Promise.resolve({ refused: `协调线这一轮没有启动:${String(e?.message || e)}` }) };
-  }
-  const finished = run.done.then((r) => finishCoordinatorTurn(convId, r, Date.now() - started))
+  let current, stopAsked = false;
+  const launch = (content, resume) => {
+    try {
+      const s = conversations.session(db, convId), cwd = coordinatorCwd();
+      const args = coordinatorCliArgs({
+        content: content(), model: s.model, effort: s.effort, repoRoot: resolve(REPO_ROOT),
+        systemPrompt: coordinatorSystemPrompt({ lines: IMPL_LINES, hints: LINE_HINT, labels: LINE_LABEL, language: LANGUAGE }),
+        sessionId: s.session_id, resume: resume ?? s.resume, ...boardCliScope() });
+      conversations.setSessionFacts(db, convId, { cwd, argsFp: argsFingerprint(args) });
+      current = runCoordinatorCli({ argv: [cli.exe, ...cli.prefix, ...args], cwd, timeoutMs: COORDINATOR.timeout_sec * 1000,
+                                    env: coordinatorCliEnvironment({ env: process.env, profiles: EXECUTION_PROFILES }) });
+    } catch (e) {
+      current = { stop: async () => false, done: Promise.resolve({ refused: `协调线这一轮没有启动:${String(e?.message || e)}` }) };
+    }
+    return current.done;
+  };
+  // 首次成功后会话已经存在,修正那一次一律续接(首轮也是)。
+  const repair = (issues) => (stopAsked || shuttingDown ? Promise.resolve({ stopped: true, skipped: true })
+    : launch(() => buildRepairContent({ issues, lines: IMPL_LINES }), true)).then((r) => ({ r, wallMs: Date.now() - started }));
+  const finished = launch(() => buildTurnContent({ board: coordinatorBoardFacts(), plan: conversations.latestPlan(db, convId),
+                                                   pending: conversations.unanswered(db, convId, userMessage.id), message: userMessage.text }))
+    .then((r) => finishCoordinatorTurn(convId, r, Date.now() - started, repair))
     .catch((e) => {
       console.error(`[内部失败] 对话 #${convId} 的一轮收尾出错:${String(e?.message || e).slice(0, 300)}`);
       try { conversations.failTurn(db, convId, "看板内部出错,这一轮没有记录下来。重新发送即可"); } catch {}
     })
     .finally(() => { coordinatorRuns.delete(convId); emit("conversation.changed", { id: convId }); });
-  coordinatorRuns.set(convId, { stop: run.stop, finished });
+  coordinatorRuns.set(convId, { stop: () => { stopAsked = true; return current.stop(); }, finished });
 }
 /** 用量结算:协调线每轮记一行(phase=coord)。对话已按计划建过卡就记到那张目标卡上,否则不挂卡。
  *  被停止、超时、输出过大的一轮进程也跑过,只是用量读不到:各项记 null(未知),耗时取墙钟。从不抛错。
@@ -3483,7 +3491,7 @@ function accountCoordinatorTurn(convId, usage, wallMs, note = null, cliCost = nu
       duration_ms: u.duration_ms ?? wallMs, cost_usd: u.cost_usd, cost_source: u.cost_usd == null ? "unknown" : "reported", note });
   } catch (e) { console.warn(`对话 #${convId} 的用量记账失败(${String(e?.message || e).slice(0, 200)})—— 不影响这一轮`); }
 }
-function finishCoordinatorTurn(convId, r, wallMs) {
+function finishCoordinatorTurn(convId, r, wallMs, repair = null) {
   // 进程起跑过的一轮(没被拒发、不是起不来),下面每条出路各记一行账本;消息上的用量照旧。
   if (r.stopped) {
     if (!r.refused && !r.spawnError) accountCoordinatorTurn(convId, null, wallMs, "这一轮被停止,用量未知");
@@ -3500,6 +3508,13 @@ function finishCoordinatorTurn(convId, r, wallMs) {
     return conversations.failTurn(db, convId, "协调线这一轮的输出太大,已停止。把问题拆小一些再发");
   }
   const parsed = coordinatorTurnOf(r.stdout);
+  // 计划没过检查(依赖越界或指向自己、张数、字数、线名不在实现线里):同一轮里交回去就地修正一次,用量等两次都结束再记。
+  const issues = parsed.ok && repair && !conversations.session(db, convId).applied
+    ? conversations.coordinatorPlanIssues(parsed.turn.plan, { implLines: IMPL_LINES }) : [];
+  if (issues.length) {
+    console.log(`对话 #${convId}:协调线交回的计划没过检查(${issues.length} 项),同一轮里交回去就地修正一次`);
+    return repair(issues).then(({ r: again, wallMs: total }) => finishRepairTurn(convId, parsed, again, total));
+  }
   const usage = parsed.usage ? { ...parsed.usage, wall_ms: wallMs } : null;
   accountCoordinatorTurn(convId, parsed.usage, wallMs, parsed.usage ? null : "结果消息里没有用量", parsed.cliCost);
   if (!parsed.ok) {
@@ -3512,6 +3527,23 @@ function finishCoordinatorTurn(convId, r, wallMs) {
   if (parsed.usage?.denials) console.log(`对话 #${convId}:协调线这一轮有 ${parsed.usage.denials} 次工具调用被拒`);
   conversations.completeTurn(db, convId, { reply: parsed.turn.reply, title: parsed.turn.title ?? null, plan: parsed.turn.plan,
                                            tools: parsed.tools, usage, cliCost: parsed.cliCost });
+}
+/** 就地修正那一次结束。用量、工具数按两次合计,账本记一行(注明含一次修正);没起来的那一次不计。
+ *  修正那一次按结构交回了计划:以它的回复与计划为准,completeTurn 再查一遍,仍不过记 plan_rejected。
+ *  被停止(或看板停止时没再起):按停止收尾。其余出路(没起来、超时、输出过大、没按结构交回、plan 给了 null):
+ *  退回首次的回复与计划照常收尾(没过检查的照旧记 plan_rejected,只有线名问题的照旧记下、建卡时降级)。 */
+function finishRepairTurn(convId, first, r, wallMs) {
+  const ran = !r.refused && !r.spawnError && !r.skipped;
+  const second = ran && !r.stopped && !r.timedOut && !r.overflow ? coordinatorTurnOf(r.stdout) : null;
+  const { usage, cliCost } = conversations.mergeRoundUsage(db, convId, ran ? [first, second ?? { usage: null, cliCost: null }] : [first]);
+  const why = r.stopped ? "修正时被停止" : r.timedOut ? "修正超时" : r.overflow ? "修正输出过大" : !ran ? "修正没有起来"
+    : !second?.ok ? "修正没有按结构交回" : second.turn.plan == null ? "修正没有给计划" : null;
+  accountCoordinatorTurn(convId, usage, wallMs, `这一轮含一次计划就地修正${why ? `(${why})` : ""}`, cliCost);
+  if (r.stopped) return conversations.stopTurn(db, convId);
+  if (why) console.log(`对话 #${convId}:就地修正没有用上(${why}${r.code ? `,退出码 ${r.code}` : ""}),退回首次的结果`);
+  const use = why ? first : second;
+  conversations.completeTurn(db, convId, { reply: use.turn.reply, title: use.turn.title ?? first.turn.title ?? null, plan: use.turn.plan,
+                                           tools: mergeTools(first, second), usage: { ...usage, wall_ms: wallMs }, cliCost, retried: !why });
 }
 /** 看板停止或重启前收掉在跑的协调线进程(留着就是没人看的模型进程)。 */
 const stopCoordinatorRuns = () => Promise.all([...coordinatorRuns.values()].map(async (run) => { try { await run.stop(); await run.finished; } catch {} }));

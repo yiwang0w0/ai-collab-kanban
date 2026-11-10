@@ -3,15 +3,22 @@
 //   【计划】四张卡的计划(含一个不在实现线里的线名)   【坏计划】依赖指向后面的卡(过不了服务端检查)
 //   【无结构】result 里没有 structured_output          【慢】起一个子进程后一直不结束(测停止与超时)
 //   【登录失效】真实 CLI 登录失效时的输出形状
+//   【先坏后好】首次交坏计划(依赖指向自己、线名不在菜单),看板就地修正那一次交好计划
 //   其余:只回一句话,plan 为 null
+// 看板的就地修正(内容以 [看板检查] 开头)没有[用户消息]:按会话号取这个会话上一条用户消息,按同一标记作答;
+// 【计划】【坏计划】修正时照旧交回原样(线名 ghost、依赖越界都不改)。
 import { appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
 
 const argv = process.argv.slice(2);
 const valueOf = (flag) => { const i = argv.indexOf(flag); return i >= 0 ? argv[i + 1] : null; };
 const content = valueOf("-p") || "";
-const message = content.slice(content.lastIndexOf("[用户消息]"));
 const sessionId = valueOf("--session-id") || valueOf("--resume");
+const repair = content.startsWith("[看板检查]");
+const messageFile = process.env.CONVTEST_LOG + ".messages.json";
+const earlier = (() => { try { return JSON.parse(readFileSync(messageFile, "utf8")); } catch { return {}; } })();
+const message = repair ? String(earlier[sessionId] || "") : content.slice(content.lastIndexOf("[用户消息]"));
+if (!repair) writeFileSync(messageFile, JSON.stringify({ ...earlier, [sessionId]: message }));
 const slow = message.includes("【慢】");
 const child = slow ? spawn(process.execPath, ["-e", "setTimeout(() => {}, 600000)"], { stdio: "ignore" }) : null;
 
@@ -33,6 +40,9 @@ if (message.includes("【计划】")) turn = { reply: "计划出好了,请过目
   task("写使用说明", "alpha", [3]),
 ]) };
 else if (message.includes("【坏计划】")) turn = { reply: "改好了。", plan: plan([task("甲", "alpha", [2]), task("乙", "alpha", [])]) };
+else if (message.includes("【先坏后好】")) turn = repair
+  ? { reply: "修正好了,请过目。", plan: plan([task("甲", "alpha", []), task("乙", "beta", [1])]) }
+  : { reply: "计划出好了。", title: "先坏后好", plan: plan([task("甲", "alpha", []), task("乙", "ghost", [2])]) };
 else turn = { reply: `收到:${message.slice("[用户消息]".length).trim().slice(0, 40)}`, plan: null };
 
 // 用量与真实 CLI 同形(2026-11-10 CLI 2.1.322 实测):usage 是这一轮各次调用之和;

@@ -197,6 +197,10 @@ test("协调线一轮的参数与环境:只读工具白名单、dontAsk、schema
   assert.ok(!forward.ok && forward.issues[0].n === 1 && forward.issues[0].field === "after");
   assert.ok(!conversations.normalizeCoordinatorPlan({ goal: { subject: "g", description: "" }, tasks: Array.from({ length: 9 }, () => t()) }).ok);
   assert.ok(!conversations.normalizeCoordinatorPlan({ goal: { subject: "g", description: "" }, tasks: [] }).ok);
+  // 交给协调线就地修正的问题:语义检查 + 线名不在实现线里("null" 与 null 都是不指定线,不算问题);按卡号排。
+  assert.deepEqual(conversations.coordinatorPlanIssues({ goal: { subject: "g", description: "" }, tasks: [t(), { ...t([1]), line: "ghost" }, { ...t([3]), line: "alpha" }, { ...t(), line: null }] },
+                                                       { implLines: ["alpha"] }).map((x) => [x.n, x.field]), [[2, "line"], [3, "after"]]);
+  assert.deepEqual(conversations.coordinatorPlanIssues(null, { implLines: [] }), []);
 
   // 启动命令:找不到就不可用并写明原因;超过命令行预算的一轮在起进程前拒发。
   const missing = C.coordinatorCommand({ env: { PATH: "" }, argv: ["no-such-coordinator-cli"] });
@@ -252,10 +256,12 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     let d = await b.settle(id);
     assert.equal(d.conversation.status, "idle", JSON.stringify(d.conversation));
     assert.equal(d.conversation.title, "导出功能改造", "第一轮的 title 用作对话标题");
-    assert.deepEqual(d.conversation.usage, { turns: 1, cost_usd: 0.0125, in: 11, out: 22, cr: 333, cc: 44 });
+    // 第 2 张的线名 ghost 不在实现线里:同一轮里就地修正一次(假 CLI 修正时照旧给 ghost,计划照常记下、建卡时降级);
+    // 用量与工具数按两次合计,仍算一轮。
+    assert.deepEqual(d.conversation.usage, { turns: 1, cost_usd: 0.025, in: 22, out: 44, cr: 666, cc: 88 });
     assert.deepEqual(d.messages.map((m) => [m.role, m.plan_rev, m.kind]), [["user", null, null], ["coordinator", 1, null]]);
     assert.equal(d.messages[0].id, made.body.turn.id);
-    assert.deepEqual(d.messages[1].tools, { count: 3, summary: "Read ×2、Grep ×1" }); assert.equal(d.messages[0].tools, null);
+    assert.deepEqual(d.messages[1].tools, { count: 6, summary: "Read ×4、Grep ×2" }); assert.equal(d.messages[0].tools, null);
     assert.equal(d.plans.length, 1);
     const p1 = d.plans[0];
     assert.deepEqual([p1.rev, p1.author, p1.base_rev, p1.applied], [1, "coordinator", null, null]);
@@ -278,6 +284,10 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     assert.deepEqual(flagValues(c1.argv, "--add-dir"), [resolve(b.repo)]);
     assert.ok(flagValue(c1.argv, "--append-system-prompt").includes("alpha「开发」, beta") && !flagValue(c1.argv, "--append-system-prompt").includes("rev"), "线菜单只有实现线");
     assert.ok(!c1.env_keys.some((k) => /^(?:BOARD|WORKER|REVIEW|REVIEWER)_(?:.*_)?TOKEN$/i.test(k)));
+    assert.equal(b.calls().length, 2, "就地修正只一次");
+    const fix1 = b.calls()[1];
+    assert.deepEqual(fix1.argv.slice(-2), ["--resume", sid], "就地修正续接同一个会话"); assert.deepEqual(fix1.argv.slice(2, -2), c1.argv.slice(2, -2));
+    assert.match(flagValue(fix1.argv, "-p"), /^\[看板检查\][^]*第 2 张 线名「ghost」不在可选的线里/);
 
     // 人改:出新版本,改过的字段记在 edited。
     const put = await b.api("PUT", `/api/conversations/${id}/plans/1`, b.operator,
@@ -300,7 +310,7 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     const more = await b.api("POST", `/api/conversations/${id}/messages`, b.operator, { message: "这样排可以吗" });
     assert.equal(more.status, 202, JSON.stringify(more.body)); assert.equal(more.body.turn.status, "running");
     d = await b.settle(id);
-    const c2 = b.calls()[1];
+    const c2 = b.calls()[2];
     assert.deepEqual(c2.argv.slice(-2), ["--resume", sid]); assert.ok(!c2.argv.includes("--session-id"));
     assert.deepEqual(c2.argv.slice(2, -2), c1.argv.slice(2, -2), "逐轮参数一致");
     const content = flagValue(c2.argv, "-p");
@@ -308,19 +318,24 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     assert.ok(content.includes("3. 迁移旧导出记录 | 线:alpha | 排在 1、2 之后 | 要人确认 | 要跑命令 | 人改过:line") && content.includes("| 已停用"), content);
     assert.ok(content.endsWith("[用户消息]\n这样排可以吗"));
     assert.equal(d.plans.length, 2, "plan 为 null 的一轮不出版本");
-    // 续接时 CLI 报的 total_cost_usd 是会话累计(假 CLI 第二轮报 0.025),对话上只加这一轮的差额;词元本来就是这一轮的。
-    assert.deepEqual(d.conversation.usage, { turns: 2, cost_usd: 0.025, in: 22, out: 44, cr: 666, cc: 88 }, "两轮累计与真实 CLI 同形");
-    // 用量账本每轮一行,记的也是这一轮的差额:两行费用之和 = 对话上的累计(记成 CLI 的会话累计就会是 0.0375)。
+    // 续接时 CLI 报的 total_cost_usd 是会话累计(假 CLI 第三次调用报 0.0375),对话上只加这一轮的差额;词元本来就是这一轮的。
+    const micro = (v) => Math.round(v * 1e6) / 1e6;
+    assert.deepEqual({ ...d.conversation.usage, cost_usd: micro(d.conversation.usage.cost_usd) }, { turns: 2, cost_usd: 0.0375, in: 33, out: 66, cr: 999, cc: 132 }, "两轮累计与真实 CLI 同形");
+    // 用量账本每轮一行,记的也是这一轮的差额:两行费用之和 = 对话上的累计(记成 CLI 的会话累计就会是 0.0625)。
     const twoRounds = (await b.api("GET", "/api/usage?by=phase", b.operator)).body.groups.find((g) => g.key === "coord");
-    assert.deepEqual([twoRounds.rows, twoRounds.cost_usd], [2, d.conversation.usage.cost_usd], "账本两行费用之和 = 对话 usage.cost_usd");
+    assert.deepEqual([twoRounds.rows, twoRounds.cost_usd], [2, micro(d.conversation.usage.cost_usd)], "账本两行费用之和 = 对话 usage.cost_usd");
     assert.equal(d.conversation.title, "导出功能改造");
 
-    // 过不了检查的计划:不出版本,原因记在这一轮的 system 消息上。
+    // 过不了检查的计划:就地修正一次仍不过,不出版本,原因记在这一轮的 system 消息上。
+    const callsBefore = b.calls().length;
     assert.equal((await b.api("POST", `/api/conversations/${id}/messages`, b.operator, { message: "【坏计划】再改" })).status, 202);
     d = await b.settle(id);
     assert.equal(d.conversation.status, "idle"); assert.equal(d.plans.length, 2);
+    assert.equal(b.calls().length, callsBefore + 2, "就地修正一次,不再多试");
+    assert.match(flagValue(b.calls().at(-1).argv, "-p"), /^\[看板检查\][^]*第 1 张 after 只能填排在第 1 张前面的卡的序号/);
     assert.deepEqual(d.messages.slice(-2).map((m) => [m.role, m.kind, m.plan_rev]), [["coordinator", null, null], ["system", "plan_rejected", null]]);
     assert.match(d.messages.at(-1).text, /第 1 张 after 只能填排在第 1 张前面的卡的序号/);
+    assert.match(d.messages.at(-1).text, /就地修正过一次/);
 
     // 建卡:版本不对 409;成功一次;线名越界降级;依赖换成卡号;已停用的不建。
     for (const [rev, expected] of [[1, 1], [2, 1]]) {
@@ -376,10 +391,12 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     d = await b.settle(id);
     assert.equal(d.plans.length, 2); assert.equal(d.messages.at(-1).kind, "plan_ignored");
     assert.ok(flagValue(b.calls().at(-1).argv, "-p").includes(`第 2 版已经建卡(目标 #${goalId})`));
-    // 用量结算:协调线每轮记一行账本(phase=coord)。建卡之前的三轮不挂卡,建卡之后的这一轮记到目标卡上。
+    // 用量结算:协调线每轮记一行账本(phase=coord),就地修正那一次并进同一行。建卡之前的三轮不挂卡,建卡之后的这一轮记到目标卡上。
+    // 6 次调用:第 1、3 轮各两次(就地修正),第 2、4 轮各一次;建卡后再给的计划不检查、不修正。
+    assert.equal(b.calls().length, 6);
     const coord = (await b.api("GET", "/api/usage?by=phase", b.operator)).body.groups.find((g) => g.key === "coord");
     assert.deepEqual([coord.rows, coord.calls, coord.in, coord.out, coord.cr, coord.cc, coord.duration_ms, coord.cost_usd, coord.cost_source],
-                     [4, 12, 44, 88, 1332, 176, 4800, 0.05, "reported"]);
+                     [4, 18, 66, 132, 1998, 264, 7200, 0.075, "reported"]);
     assert.deepEqual((await b.api("GET", "/api/usage?by=card", b.operator)).body.groups.map((g) => [g.key, g.rows]), [[String(goalId), 1], ["?", 3]]);
     assert.deepEqual((await b.api("GET", "/api/usage?by=model", b.operator)).body.groups.map((g) => g.key), ["claude-opus-5"]);
     const renamed = await b.api("PATCH", `/api/conversations/${id}`, b.operator, { title: "导出一期", archived: true });
@@ -389,6 +406,39 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     assert.equal((await b.api("GET", "/api/conversations/999", b.operator)).status, 404);
     assert.equal((await b.api("POST", "/api/conversations", b.operator, { message: "  " })).status, 400);
     sse.close();
+  } finally { await b.stop(); }
+});
+
+test("计划没过检查:同一轮里 --resume 把检查结果交回去就地修正一次,改好了就出版本,用量按两次合计", { timeout: 120000 }, async () => {
+  const b = await board();
+  try {
+    const made = await b.api("POST", "/api/conversations", b.operator, { message: "【先坏后好】拆一下导出" });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    const id = made.body.conversation.id;
+    const d = await b.settle(id);
+    // 两次调用:首次交坏计划(第 2 张依赖指向自己、线名不在菜单),第二次续接同一个会话交好计划。
+    const [first, fix, ...rest] = b.calls();
+    assert.equal(rest.length, 0, "只修正一次"); assert.ok(fix, "交回检查结果再跑了一次");
+    const sid = flagValue(first.argv, "--session-id");
+    assert.deepEqual(fix.argv.slice(-2), ["--resume", sid]);
+    assert.deepEqual(fix.argv.slice(2, -2), first.argv.slice(2, -2), "除内容与会话参数外与首次逐字相同");
+    const content = flagValue(fix.argv, "-p");
+    assert.match(content, /^\[看板检查\]/);
+    assert.ok(content.includes("第 2 张 after 只能填排在第 2 张前面的卡的序号,收到 2") && content.includes("第 2 张 线名「ghost」不在可选的线里"), content);
+    assert.ok(content.includes("alpha、beta") && !content.includes("[用户消息]"), "列出可选的线;不冒充操作者的话");
+    // 出版本,只记修正后的回复;没有 plan_rejected。
+    assert.equal(d.conversation.status, "idle", JSON.stringify(d.conversation));
+    assert.deepEqual(d.messages.map((m) => [m.role, m.kind, m.plan_rev]), [["user", null, null], ["coordinator", null, 1]]);
+    assert.equal(d.messages[1].text, "修正好了,请过目。");
+    assert.equal(d.conversation.title, "先坏后好", "标题取首次给的");
+    assert.equal(d.plans.length, 1);
+    assert.deepEqual(d.plans[0].tasks.map((t) => [t.n, t.line, t.after]), [[1, "alpha", []], [2, "beta", [1]]]);
+    // 用量:两次合计记在这一轮上,账本一行。
+    assert.deepEqual(d.conversation.usage, { turns: 1, cost_usd: 0.025, in: 22, out: 44, cr: 666, cc: 88 });
+    assert.deepEqual(d.messages[1].tools, { count: 6, summary: "Read ×4、Grep ×2" });
+    const coord = (await b.api("GET", "/api/usage?by=phase", b.operator)).body.groups.find((g) => g.key === "coord");
+    assert.deepEqual([coord.rows, coord.calls, coord.in, coord.out, coord.cr, coord.cc, coord.duration_ms, coord.cost_usd],
+                     [1, 6, 22, 44, 666, 88, 2400, 0.025]);
   } finally { await b.stop(); }
 });
 
