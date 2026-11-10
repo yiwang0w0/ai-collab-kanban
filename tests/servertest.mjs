@@ -102,7 +102,12 @@ const stubServerFor = (py) => {
 //   some unrelated service held one port in the range and the board died of
 //   EADDRINUSE while the harness kept phoning a corpse (measured, ubuntu lane).
 //   Binding first is the only honest availability check.
-let portSeq = 48400;
+// The start differs per process: two runs (several worktrees on one machine) walking the same
+//   sequence both saw a port free before either board had bound it, and one harness ended up
+//   talking to the other run's board (401 on every call). 48500–48999 by pid, plus the ~50 ports
+//   one run walks: clear of clitest (48300–48399, 48450–48489), looptest (48200–48259), the
+//   479xx fixtures and the default Windows dynamic range (49152+).
+let portSeq = 48500 + process.pid % 500;
 async function freePort() {
   for (;;) {
     const p = portSeq++;

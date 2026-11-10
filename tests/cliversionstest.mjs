@@ -176,4 +176,7 @@ console.log("[⑦ 真的发 HTTP 请求：本机替身 registry]");
 
 try { rmSync(TMP, { recursive: true, force: true }); } catch {}
 console.log(`\n${"─".repeat(56)}\nresult: ${pass} PASS / ${fail} FAIL`);
-process.exit(fail ? 1 : 0);
+// 不在这里直接 process.exit:上面刚向一个已关的端口发过请求,Windows 上此刻退出 libuv 会中止
+// (src\win\async.c 的断言,退出码 127;Node 24.16 实测,断言全过也一样)。记下退出码让事件循环自己收完,5 秒还没收完再强制退出。
+process.exitCode = fail ? 1 : 0;
+setTimeout(() => process.exit(), 5000).unref();
