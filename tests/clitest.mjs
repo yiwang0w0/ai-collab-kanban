@@ -459,6 +459,64 @@ console.log(NL + "[⑧ start:bg / open / stop]");
      older.code === 1 && /原因:运行记录之后看板还运行过/.test(older.out) && !/正常停止/.test(older.out), older.out.slice(-300));
 }
 
+// ⑧b 正常停止 / 重启与中断分开记：看板走完自己的停止或重启收尾时留下干净退出标记，
+//    退出码之后被弄脏（Windows 上 process.exit 后 libuv 中止）或守护没来得及写结束，都按正常停止记；
+//    没有这次运行的标记才记故障或中断。
+console.log(NL + "[⑧b 正常停止与中断]");
+{
+  const BR = await import(new URL("../core/board-run.mjs", import.meta.url));
+  const brUrl = new URL("../core/board-run.mjs", import.meta.url).href;
+  const wrap = (data, script) => spawnSync(process.execPath, [join(ROOT, "cli", "start.mjs")],
+    { encoding: "utf8", env: { ...HOST_ENV, BOARD_DATA_DIR: data, BOARD_SERVER_SCRIPT: script }, windowsHide: true, timeout: 30000 });
+  const gone = spawnSync(process.execPath, ["-e", ""], { windowsHide: true }).pid;
+  const running = (data, startedAt) => { mkdirSync(join(data, "probes"), { recursive: true });
+    writeFileSync(join(data, "probes", "board_run.json"), JSON.stringify({ current: { pid: gone, started_at: startedAt, state: "running" } })); };
+  // 组 1：有序退出 → 不记故障
+  const d1 = join(TMP, "clean-exit");
+  const orderly = join(TMP, "stub-orderly.mjs");
+  writeFileSync(orderly, `import { noteCleanExit } from ${JSON.stringify(brUrl)}; noteCleanExit(process.env.BOARD_DATA_DIR, { kind: "stop" }); process.exit(134);`);
+  const r1 = wrap(d1, orderly), rec1 = BR.readRunRecord(d1);
+  ok("⭐看板走完停止收尾后退出码被弄脏(134)：记为正常停止，不进故障",
+     rec1.current?.state === "stopped" && rec1.last_fault === null, `status=${r1.status} rec=${JSON.stringify(rec1)}`);
+  const t0 = Date.now() - 60e3;
+  running(d1, new Date(t0).toISOString());
+  BR.noteCleanExit(d1, { pid: gone, kind: "restart", now: t0 + 30e3 });
+  const down1 = BR.downCause({ record: BR.readRunRecord(d1), probe: { state: "refused" }, alive: () => false, booted: 0 });
+  BR.noteRunStart(d1, { pid: process.pid, alive: () => false, booted: 0 });
+  ok("⭐守护没写结束但看板留下了这次运行的干净退出标记：status 说正常停止，下次启动不记中断",
+     /正常停止/.test(down1.cause) && !/中断/.test(down1.cause) && BR.readRunRecord(d1).last_fault === null,
+     `${down1.cause} | ${JSON.stringify(BR.readRunRecord(d1).last_fault)}`);
+  // 组 2：异常退出(没有这次运行的标记) → 记中断 / 故障
+  const d2 = join(TMP, "dirty-exit");
+  const crash = join(TMP, "stub-crash.mjs");
+  writeFileSync(crash, "process.exit(134);");
+  const r2 = wrap(d2, crash), rec2 = BR.readRunRecord(d2);
+  ok("⭐没有标记的退出码 134 记为故障", rec2.last_fault?.kind === "exit" && rec2.last_fault?.exit_code === 134,
+     `status=${r2.status} rec=${JSON.stringify(rec2)}`);
+  // 第一次启动按重启收尾（留标记、exit 75），原地重起的第二个进程把守护连同自己一起结束：
+  // 上一个进程的标记不能替这一次担保。
+  const d4 = join(TMP, "restart-then-killed");
+  const killed = join(TMP, "stub-restart-killed.mjs");
+  writeFileSync(killed, [`import { noteCleanExit } from ${JSON.stringify(brUrl)};`,
+    'if (!process.env.BOARD_RESTARTED_FROM) { noteCleanExit(process.env.BOARD_DATA_DIR, { kind: "restart" }); process.exit(75); }',
+    'try { process.kill(process.ppid, "SIGKILL"); } catch {}', "setTimeout(() => process.exit(134), 200);"].join(NL));
+  wrap(d4, killed);
+  const rec4 = BR.readRunRecord(d4), down4 = BR.downCause({ record: rec4, probe: { state: "refused" }, alive: () => false, booted: 0 });
+  BR.noteRunStart(d4, { pid: process.pid, alive: () => false, booted: 0 });
+  ok("⭐重启后的进程连同守护被结束：status 说中断，下次启动记中断",
+     rec4.current?.state === "running" && /运行中断/.test(down4.cause) && BR.readRunRecord(d4).last_fault?.kind === "interrupted",
+     `${down4.cause} | ${JSON.stringify(BR.readRunRecord(d4).last_fault)}`);
+  const d3 = join(TMP, "interrupted");
+  const t1 = Date.now() - 60e3;
+  running(d3, new Date(t1).toISOString());
+  BR.noteCleanExit(d3, { pid: gone, kind: "stop", now: t1 - 1000 });   // 早于这次运行的标记
+  const down3 = BR.downCause({ record: BR.readRunRecord(d3), probe: { state: "refused" }, alive: () => false, booted: 0 });
+  BR.noteRunStart(d3, { pid: process.pid, alive: () => false, booted: 0 });
+  ok("⭐记录写着运行中、进程已不在、没有这次运行的标记：status 说中断，下次启动记中断",
+     /运行中断/.test(down3.cause) && BR.readRunRecord(d3).last_fault?.kind === "interrupted",
+     `${down3.cause} | ${JSON.stringify(BR.readRunRecord(d3).last_fault)}`);
+}
+
 // ⑨ doctor says where the model traffic goes: a third-party relay (中转站) receives every
 //    prompt, every file a worker reads and every answer. Hosts only — never a key or a full URL.
 console.log(NL + "[⑨ doctor: 模型请求发往哪里]");

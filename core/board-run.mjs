@@ -1,10 +1,10 @@
 // 本机看板的运行记录、停机原因与日志摘要。守护（cli/start.mjs）起停各写一笔，cli/status.mjs 只读。
 //
-// 记录放在 <data>/probes/board_run.json：执行线的拒绝规则已覆盖 probes 子目录
+// 记录放在 <data>/probes/board_run.json，干净退出标记放在同目录 board_clean_exit.json：执行线的拒绝规则已覆盖 probes 子目录
 // （loops/verify_lib.py 的 PROTECTED 含 probes/**），模型读不到也改不了。记录只含枚举值、时间和数字，
 // 读取时逐项校验，不合格的部分按「没有记录」处理，不把文件里的文字直接显示给人。
 // 写不出来不影响看板启动：调用方一律吞掉写入错误。
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { uptime } from "node:os";
 import { dirname, join } from "node:path";
 import { CODE_ROOT } from "./env.mjs";
@@ -26,7 +26,30 @@ export function pidAlive(pid) {
 }
 const bootedAt = () => Date.now() - uptime() * 1000;
 
-/** { current, last_fault }，两项各自校验，缺失或不合格为 null。 */
+// 干净退出标记：看板服务（core/server.mjs）走完自己的停止或重启收尾、调用 process.exit 之前写一笔。
+// 是不是正常停止以它为准，不以退出码为准：Windows 上 process.exit 之后 libuv 可能中止，退出码会变；
+// 守护也可能在看板收尾之后、写结束之前被结束。守护每次拉起看板前清掉它，所以标记只说明最近一次看板进程。
+const CLEAN_KINDS = ["stop", "restart"];
+export const cleanExitFile = (dataDir) => join(dataDir, "probes", "board_clean_exit.json");
+
+function readCleanExit(dataDir) {
+  let m = null;
+  try { m = JSON.parse(readFileSync(cleanExitFile(dataDir), "utf8")); } catch {}
+  return m && whole(m.pid) > 0 && iso(m.at) && CLEAN_KINDS.includes(m.kind) ? { pid: m.pid, at: iso(m.at), kind: m.kind } : null;
+}
+
+/** 看板服务有序退出前调用。kind: stop 停止 · restart 重启。 */
+export function noteCleanExit(dataDir, { pid = process.pid, now = Date.now(), kind } = {}) {
+  if (!CLEAN_KINDS.includes(kind)) return false;
+  writeJson(cleanExitFile(dataDir), { pid, at: new Date(now).toISOString(), kind });
+  return true;
+}
+export function clearCleanExit(dataDir) { rmSync(cleanExitFile(dataDir), { force: true }); }
+
+/** 记录里这次运行（started_at 之后）有没有干净退出标记。 */
+const endedCleanly = (cur, clean) => !!(cur && clean && Date.parse(clean.at) >= Date.parse(cur.started_at));
+
+/** { current, last_fault, clean_exit }，各项各自校验，缺失或不合格为 null。 */
 export function readRunRecord(dataDir) {
   let raw = null;
   try { raw = JSON.parse(readFileSync(runRecordFile(dataDir), "utf8")); } catch {}
@@ -36,24 +59,33 @@ export function readRunRecord(dataDir) {
         log_from: whole(c.log_from) >= 0 ? whole(c.log_from) : null } : null;
   const last_fault = f && FAULT_KINDS.includes(f.kind) && iso(f.at)
     ? { kind: f.kind, at: iso(f.at), exit_code: whole(f.exit_code), started_at: iso(f.started_at) } : null;
-  return { current, last_fault };
+  return { current, last_fault, clean_exit: readCleanExit(dataDir) };
 }
 
-function writeRunRecord(dataDir, record) {
-  const file = runRecordFile(dataDir), tmp = file + ".tmp";
+function writeJson(file, value) {
+  const tmp = file + ".tmp";
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(tmp, JSON.stringify(record, null, 1) + "\n", { encoding: "utf8", mode: 0o600 });
+  writeFileSync(tmp, JSON.stringify(value, null, 1) + "\n", { encoding: "utf8", mode: 0o600 });
   renameSync(tmp, file);
 }
+const writeRunRecord = (dataDir, record) => writeJson(runRecordFile(dataDir), record);
 
-/** 守护启动时记一笔。上一笔还写着「运行中」而进程已不在，说明那次运行没有走到停止，记成一次中断。
+/** 守护结束时用：这个看板进程有没有走完有序退出。 */
+export function cleanExitOf(dataDir, pid) {
+  const m = readCleanExit(dataDir);
+  return m && m.pid === pid ? m : null;
+}
+
+/** 守护启动时记一笔。上一笔还写着「运行中」而进程已不在：那次运行留下了干净退出标记，按正常停止处理；
+ *  没有标记，说明没有走到停止，记成一次中断。
  *  另一个守护还活着时不接管它的记录（owned:false），本守护之后也不写结束。 */
 export function noteRunStart(dataDir, { pid = process.pid, now = Date.now(), alive = pidAlive, booted = bootedAt(), logFrom = null } = {}) {
   const prev = readRunRecord(dataDir), cur = prev.current;
   let last_fault = prev.last_fault;
   if (cur && cur.state === "running" && cur.pid !== pid) {
     if (Date.parse(cur.started_at) >= booted && alive(cur.pid)) return { owned: false };
-    last_fault = { kind: "interrupted", at: new Date(now).toISOString(), exit_code: null, started_at: cur.started_at };
+    if (!endedCleanly(cur, prev.clean_exit))
+      last_fault = { kind: "interrupted", at: new Date(now).toISOString(), exit_code: null, started_at: cur.started_at };
   }
   writeRunRecord(dataDir, { current: { pid, started_at: new Date(now).toISOString(), state: "running", ended_at: null, exit_code: null,
                                        log_from: whole(logFrom) >= 0 ? whole(logFrom) : null }, last_fault });
@@ -184,6 +216,8 @@ export function downCause({ record, probe, lines = [], logMtime = null, alive = 
     return probe.state === "timeout"
       ? { cause: `看板进程还在，进程号 ${cur.pid}，但没有应答`, next: `${seeLog}；确认卡住后结束这个进程，再运行 ${START}` }
       : { cause: `守护进程还在，进程号 ${cur.pid}，看板服务暂时没有监听端口`, next: `稍后再运行 node cli/status.mjs；仍然没有应答就${seeLog}` };
+  if (cur?.state === "running" && endedCleanly(cur, record?.clean_exit))
+    return { cause: `看板已在 ${shortTime(record.clean_exit.at)} 正常停止`, next: null };
   if (cur?.state === "running")
     return { cause: `${shortTime(cur.started_at)} 启动的看板运行中断，可能是关机、断电或进程被结束`, next: null };
   if (cur?.state === "stopped")

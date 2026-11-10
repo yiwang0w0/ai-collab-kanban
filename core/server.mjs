@@ -31,6 +31,7 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
+import { noteCleanExit } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf} from "./board-claude-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
@@ -4117,6 +4118,8 @@ async function stopWithBoard(trigger) {
       try { await workerStop(l, { keepIntent: true, reason: STOP_REASON.WITH_BOARD }); } catch {}
     }
   }
+  // Orderly from here on: the wrapper reads this marker, not the exit code (core/board-run.mjs).
+  try { noteCleanExit(store.DATA_DIR, { kind: "stop" }); } catch {}
   process.exit(0);
 }
 /** The panel's 「更新」/「重启看板」 (v0.18). Same shutdown as stopWithBoard — lines stopped with
@@ -4139,6 +4142,7 @@ async function restartBoard(trigger) {
   for (const c of clients) { try { c.end(); } catch {} }   // open SSE streams would hold close() forever
   await closeRemote();
   await new Promise((r) => { server.close(() => r()); server.closeAllConnections?.(); });
+  try { noteCleanExit(store.DATA_DIR, { kind: "restart" }); } catch {}
   if (RESTART_MODE === "exit") {
     // The supervisor cannot know which revision this process ran (it only sees exit 75); leave
     // it in the data dir on the way out so the successor's boot line reads "old → new" (v0.20).
