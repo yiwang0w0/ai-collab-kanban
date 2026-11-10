@@ -445,3 +445,17 @@ test("协作安全:待批准事项的一行文字不带控制字符与双向覆�
   assert.equal(approvals.openRequests(db).length, 0, "被拒的请求没有入库");
   assert.equal(approvals.addRequest(db, "agent-a", { action: "重启" + cp(9) + "共享设备" + cp(10) + "上的" + cp(0x2028) + "应用", risk: "low" }).action, "重启 共享设备 上的 应用", "换行、制表符、行分隔符照旧折成空格");
 });
+
+test("协作安全:通配监听与 allow_ips 全开按解析后的地址判断,等价写法不能绕过", () => {
+  const cfg = (extra) => approvals.parseRemoteConfig({ enabled: true, listen: ["127.0.0.2:47830"], allow_ips: ["127.0.0.2"], ...extra });
+  for (const l of ["0.0.0.0:47830", "[::]:47830", "[::0]:47830", "[0:0:0:0:0:0:0:0]:47830", "[::0.0.0.0]:47830",
+                   "[0:0:0:0:0:0:0.0.0.0]:47830", "[::ffff:0.0.0.0]:47830", "[::ffff:0:0]:47830", "[0:0:0:0:0:ffff:0:0]:47830"])
+    assert.throws(() => cfg({ listen: [l] }), /通配地址/, `listen ${l} 应按通配地址拒绝`);
+  assert.equal(cfg({ listen: ["[::0.0.0.0]:47830"], allow_wildcard_listen: true }).allow_wildcard_listen, true, "显式开关照旧放行");
+  for (const l of ["127.0.0.2:47830", "[::1]:47830", "[::ffff:127.0.0.2]:47830", "100.64.0.10:47830"]) assert.equal(cfg({ listen: [l] }).enabled, true, l);
+  for (const a of ["0.0.0.0/0", "::/0", "::ffff:0.0.0.0/96", "::ffff:0:0/96", "::/1", "::/80", "::ffff:0:0/95"])
+    assert.throws(() => cfg({ allow_ips: [a] }), /不接受/, `allow_ips ${a} 放行全部 IPv4,应拒绝`);
+  for (const a of ["192.0.2.0/28", "0.0.0.0/1", "::1", "2001:db8::/32", "::/96", "::ffff:192.0.2.0/124"]) assert.equal(cfg({ allow_ips: [a] }).enabled, true, a);
+  const mapped = cfg({ allow_ips: ["::ffff:192.0.2.0/124"] });
+  assert.deepEqual([mapped.allows("192.0.2.5"), mapped.allows("::ffff:192.0.2.5"), mapped.allows("192.0.2.77"), mapped.allows("8.8.8.8")], [true, true, false, false]);
+});

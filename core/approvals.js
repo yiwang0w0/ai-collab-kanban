@@ -219,7 +219,10 @@ function listAudit(db, { limit = 50 } = {}) {
 
 // ── 远程入口配置:remote_access: {enabled, listen: [], allow_ips: [], allow_wildcard_listen?}
 const normalizeIp = (addr) => { const s = String(addr || ""); const m = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(s); return m ? m[1] : s; };
-const isWildcard = (host) => host === "0.0.0.0" || (net.isIP(host) === 6 && /^[0:]+$/.test(host));
+// 通配地址按解析后的地址判断,不按字面:::0.0.0.0、0:0:0:0:0:0:0.0.0.0、::ffff:0.0.0.0(IPv4 映射的通配)同样是监听全部网卡。
+const WILDCARDS = new net.BlockList();
+WILDCARDS.addAddress("0.0.0.0", "ipv4"); WILDCARDS.addAddress("::", "ipv6"); WILDCARDS.addAddress("::ffff:0.0.0.0", "ipv6");
+const isWildcard = (host) => { const fam = net.isIP(host); return !!fam && WILDCARDS.check(host, fam === 4 ? "ipv4" : "ipv6"); };
 function parseListen(entry) {
   let host, port;
   if (typeof entry === "string") {
@@ -253,6 +256,12 @@ function parseRemoteConfig(raw) {
     if (m) {
       const bits = Number(m[2]);
       if (bits < 1 || bits > (fam === 4 ? 32 : 128)) throw new Error(`allow_ips 前缀长度不合格(不接受 /0):${s}`);
+      // IPv4 来源是按 ::ffff:a.b.c.d 与 IPv6 前缀比较的:盖住整个 ::ffff:0:0/96 的 IPv6 前缀等于放行全部 IPv4,也就是 /0。
+      if (fam === 6) {
+        const one = new net.BlockList(); one.addSubnet(addr, bits, type);
+        if (one.check("::ffff:0.0.0.0", "ipv6") && one.check("::ffff:255.255.255.255", "ipv6"))
+          throw new Error(`allow_ips 这一项放行了全部 IPv4 来源(等于 /0),不接受:${s}`);
+      }
       list.addSubnet(addr, bits, type);
     } else list.addAddress(addr, type);
     allow.push(s);

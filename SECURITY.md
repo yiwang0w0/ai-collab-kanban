@@ -182,8 +182,8 @@ before treating this development branch as a production deployment.
 
 `remote_access` 打开时，看板按 `listen` 另起一个监听，给另一台设备上的批准客户端用；关闭时只监听回环地址，行为不变。
 
-- 监听地址必须显式写 IP；`0.0.0.0`、`::` 默认拒绝启动，另加 `allow_wildcard_listen: true` 才接受。
-  来源地址不在 `allow_ips`（IP 或 CIDR，不接受 `/0`）里的请求一律 403。
+- 监听地址必须显式写 IP；`0.0.0.0`、`::`（含 `::0.0.0.0`、`::ffff:0.0.0.0` 等等价写法）默认拒绝启动，另加 `allow_wildcard_listen: true` 才接受。
+  来源地址不在 `allow_ips`（IP 或 CIDR，不接受 `/0` 及盖住全部 IPv4 的 IPv6 前缀）里的请求一律 403。
 - 只认批准令牌（`Authorization: Bearer apr_…`）。令牌由操作员生成，库里只存 sha256，明文只显示一次，吊销立即失效；
   操作员令牌、面板配对凭据、执行者与 worker 令牌在远程入口上一律 401，本机接口也不认批准令牌。
 - 只开放 `GET /api/approvals`、`GET /api/approvals/:id`、`POST /api/approvals/:id/decide` 与只读摘要 `GET /api/summary`，
