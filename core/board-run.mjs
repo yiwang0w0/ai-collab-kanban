@@ -172,11 +172,14 @@ export function mergeLineFaults(workers, { label = (line) => line } = {}) {
 }
 
 /** 本机看板没有应答时的一句原因和一句下一步。next 为 null 表示沿用首页的通用下一步。 */
-export function downCause({ record, probe, lines = [], alive = pidAlive, booted = bootedAt() }) {
+export function downCause({ record, probe, lines = [], logMtime = null, alive = pidAlive, booted = bootedAt() }) {
   const cur = record?.current, hint = logHint(lines);
   const seeLog = "运行 node cli/status.mjs --log 查看日志";
   if (probe.state === "http")
     return { cause: `这个地址返回 HTTP ${probe.status}，不是看板的正常应答`, next: null };
+  // 记录写着已结束，日志却在那之后还有新内容：之后看板用别的方式运行过（没有经过守护），这份记录说的不是最近一次。
+  if (cur && cur.state !== "running" && cur.ended_at && logMtime != null && logMtime > Date.parse(cur.ended_at) + 5000)
+    return { cause: "运行记录之后看板还运行过，最近一次停止的原因没有记录", next: `${seeLog}，再运行 ${START}` };
   if (cur?.state === "running" && Date.parse(cur.started_at) >= booted && alive(cur.pid))
     return probe.state === "timeout"
       ? { cause: `看板进程还在，进程号 ${cur.pid}，但没有应答`, next: `${seeLog}；确认卡住后结束这个进程，再运行 ${START}` }

@@ -460,11 +460,11 @@ console.log(`\n${"─".repeat(56)}`);
 const envPrefix = process.env.BOARD_URL ? `BOARD_URL=${process.env.BOARD_URL} ` :
   HAD_PORT_ENV ? `BOARD_PORT=${process.env.BOARD_PORT} ` : "";
 console.log(`result: ${pass} PASS / ${warn} WARN / ${fail} FAIL` +
-            (fail ? "\n⛔ 有 FAIL —— 修完再起板(每条 FAIL 下面都写了修法)"
-                  : (warn ? "\n可以起板(WARN 不拦路,但建议看一眼): "
-                          : "\n一切就绪: ") +
-                    `${envPrefix}node cli/start.mjs --background(后台;停止用 node cli/stop.mjs),或 ${envPrefix}node cli/start.mjs(在这个窗口里跑,面板按「更新」时原地重起)` +
-                    (envPrefix ? "(PowerShell 用 $env: 形式设同名变量)" : "")));
+            (fail ? "\n有 FAIL，修好后再启动看板。每条 FAIL 下面写了修法"
+                  : (warn ? "\n可以启动看板，WARN 不拦路。" : "\n可以启动看板。") +
+                    `后台启动:${envPrefix}node cli/start.mjs --background；在这个窗口里运行:${envPrefix}node cli/start.mjs；` +
+                    "看状态:node cli/status.mjs；停止:node cli/stop.mjs" +
+                    (envPrefix ? "。PowerShell 用 $env: 形式设同名变量" : "")));
 // --record-tested:体检全部通过时,把当前 Claude CLI 版本记进「实测过的版本」清单,来源 doctor(只核对了参数)。
 // 这是 doctor 唯一会写文件的地方,不带这个参数时什么都不写。
 if (process.argv.includes("--record-tested")) {

@@ -132,7 +132,7 @@ node cli/open.mjs
 - 看板停了：它给出一句原因和恢复命令。恢复命令重复运行不会产生重复任务；要看日志加 `--log`。
 - 面板首页显示「看板服务没有应答」：在这台电脑上运行 `node cli/start.mjs --background`。已有任务和结果都保留，面板会自己恢复。
 - 后台启动说没起来：它会打印这次的日志；完整日志在 `core\.data\board.log`。
-- 后台启动说已在运行，紧接着 `node cli/open.mjs` 却说看板没有在运行：你所在的工具在每条命令结束时会结束它
+- 后台启动说已在运行，紧接着 `node cli/open.mjs` 却说看板服务没有应答：你所在的工具在每条命令结束时会结束它
   启动的所有进程。请用户自己开一个 PowerShell 窗口，进入看板目录运行 `node cli/start.mjs`，并让这个窗口一直开着。
 - 端口被别的程序占用：换端口（见上），再 `node cli/start.mjs --background`。
 - 升级了 Claude CLI 或 Codex CLI 之后执行线起不来：运行 `node cli/doctor.mjs`，它核对参数和权限规则的写法。

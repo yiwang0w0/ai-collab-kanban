@@ -451,6 +451,12 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   ok("a run that ended without a stop is named as interrupted, with the usual start as the next step",
      cut.code === 1 && /原因:\d\d-\d\d \d\d:\d\d 启动的看板运行中断，可能是关机、断电或进程被结束/.test(cut.out)
      && /下一步:.*node cli\/start\.mjs --background/.test(cut.out), cut.out.slice(-300));
+  // A record that ended an hour ago while the log has newer lines: the board ran since, outside the wrapper.
+  writeFileSync(join(data, "probes", "board_run.json"), JSON.stringify({ current: { pid: gone.pid, state: "stopped",
+    started_at: new Date(Date.now() - 7200e3).toISOString(), ended_at: new Date(Date.now() - 3600e3).toISOString() } }));
+  const older = cli("status.mjs");
+  ok("a record older than the log's last lines is not taken for the latest stop",
+     older.code === 1 && /原因:运行记录之后看板还运行过/.test(older.out) && !/正常停止/.test(older.out), older.out.slice(-300));
 }
 
 // ⑨ doctor says where the model traffic goes: a third-party relay (中转站) receives every

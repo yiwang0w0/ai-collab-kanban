@@ -5,6 +5,7 @@
 // stops and repairs nothing — when the board is down it gives one cause and one next step, and
 // `--log` expands the end of its log.
 //   exit code: 0 running, nothing marked red · 2 running, something red · 1 not running
+import { statSync } from "node:fs";
 import { localBoard } from "../core/local-board.mjs";
 import { loadHomeModel } from "../core/home-model.mjs";
 import { collapseRepeats, downCause, faultText, isLoopback, logLines, mergeLineFaults, probeBoard, readRunRecord } from "../core/board-run.mjs";
@@ -113,7 +114,9 @@ function notRunning({ url, dataDir, logFile, probe, showLog }) {
     return 1;
   }
   const record = readRunRecord(dataDir), from = record.current?.log_from ?? null;
-  const cause = downCause({ record, probe, lines: logLines(logFile, { from, n: 200 }) });
+  let logMtime = null;
+  try { logMtime = statSync(logFile).mtimeMs; } catch {}
+  const cause = downCause({ record, probe, lines: logLines(logFile, { from, n: 200 }), logMtime });
   console.log(`本机:${probe.state === "http" ? "电脑在线，" : ""}${o.what}`);
   console.log(`  地址:${url}`);
   console.log(`  原因:${cause.cause}`);
