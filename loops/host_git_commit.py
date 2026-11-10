@@ -17,6 +17,15 @@ class HostCommitError(RuntimeError):
 OPERATION_FILES = ("MERGE_HEAD", "MERGE_MSG", "MERGE_MODE", "CHERRY_PICK_HEAD", "REVERT_HEAD",
                    "REBASE_HEAD", "SQUASH_MSG", "AUTO_MERGE", "BISECT_LOG", "BISECT_START")
 OPERATION_DIRS = ("rebase-merge", "rebase-apply", "sequencer")
+# 一个仓可以有多个检出(主检出 + linked worktree)。各检出自己的状态在自己的 gitdir 里，
+# 配置、钩子、对象库和引用则全仓共用。只绑定「本检出的」与「共用且会影响本次提交的」：
+# 别的检出里提交、fetch、合并到一半，都不是本卡的控制面。
+WORKTREE_FILES = OPERATION_FILES + ("HEAD", "index", "ORIG_HEAD", "FETCH_HEAD", "index.lock", "HEAD.lock",
+                                    "config.worktree", "commondir", "gitdir", "info/sparse-checkout")
+COMMON_FILES = ("config", "config.lock", "shallow", "shallow.lock", "info/grafts", "info/exclude",
+                "objects/info/alternates", "objects/info/http-alternates")
+WORKTREE_REFS = ("refs/bisect", "refs/worktree", "refs/rewritten")   # 引用里只有这几棵是各检出私有的
+OBJECT_ID = r"[0-9a-f]{40}(?:[0-9a-f]{24})?"
 
 
 def _fail(message):
@@ -34,8 +43,8 @@ def _identity(path):
         _fail("目录不可用：" + path + "；" + str(e))
 
 
-def _file(path):
-    """缺文件也绑定，随后新增控制文件同样算篡改。"""
+def _read(path):
+    """普通文件的 (stat, 内容)；缺文件返回 None。链接、重解析点、超大文件一律拒绝。"""
     try:
         s = os.lstat(path)
     except FileNotFoundError:
@@ -49,9 +58,19 @@ def _file(path):
         _fail("控制文件超过 64 MiB：" + path)
     try:
         with open(path, "rb") as f:
-            content = f.read()
+            return s, f.read()
+    except FileNotFoundError:
+        return None
     except OSError as e:
         _fail("无法读取控制文件：" + path + "；" + str(e))
+
+
+def _file(path):
+    """缺文件也绑定，随后新增控制文件同样算篡改。"""
+    found = _read(path)
+    if found is None:
+        return None
+    s, content = found
     return (s.st_dev, s.st_ino, s.st_mode, len(content), hashlib.sha256(content).hexdigest())
 
 
@@ -259,14 +278,37 @@ class HostCommitGuard:
             result["file:" + target] = _file(target)
         for target in self.control_trees:
             result["tree:" + target] = _tree(target)
+        result["branch"] = self._branch_value()
         result["shared_indexes"] = self._shared_indexes()
         result["attributes"] = self._attribute_snapshot()
         return result
 
     def _shared_indexes(self):
-        return {os.path.join(base, name): _file(os.path.join(base, name))
-                for base in {self.git_dir, self.common_dir} for name in os.listdir(base)
-                if name.startswith("sharedindex.")}
+        return {os.path.join(self.git_dir, name): _file(os.path.join(self.git_dir, name))
+                for name in os.listdir(self.git_dir) if name.startswith("sharedindex.")}
+
+    def _branch_value(self):
+        """本分支引用现在指向哪个提交：先看松散文件，没有再查 packed-refs。只读磁盘，不启动 Git。
+        引用存储全仓共用，别的检出提交、fetch、打包引用都会改写它，所以不按字节钉整棵 refs
+        和 packed-refs，只要求本分支解析出来的值不变(提交之后变成新提交)。"""
+        if self.branch is None:
+            return None
+        target = self.common_dir
+        for part in self.branch.split("/"):
+            if os.path.lexists(target):
+                _identity(target)
+            target = os.path.join(target, part)
+        loose = _read(target)
+        if loose is not None:
+            if not re.fullmatch(OBJECT_ID.encode() + rb"\n?", loose[1]):
+                _fail("本分支引用不是普通的提交引用：" + self.branch)
+            return loose[1].strip().decode("ascii")
+        packed = _read(os.path.join(self.common_dir, "packed-refs"))
+        suffix = b" " + self.branch.encode("utf-8")
+        for line in (packed[1].split(b"\n") if packed else ()):
+            if line.endswith(suffix) and re.fullmatch(OBJECT_ID.encode(), line[:-len(suffix)]):
+                return line[:-len(suffix)].decode("ascii")
+        _fail("找不到本分支引用：" + self.branch)
 
     def acquire(self):
         _identity(self.requested_root)
@@ -279,125 +321,140 @@ class HostCommitGuard:
         self.common_dir = self._absolute(self._text(["rev-parse", "--path-format=absolute", "--git-common-dir"]))
         _identity(self.git_dir)
         _identity(self.common_dir)
-        self.lock = os.path.join(self.common_dir, "kanban-host-commit.lock")
-        self.lock_path = self.lock
+        # 占用锁放在公共目录：同一个仓的所有检出共用一把，不能换一个 worktree 绕过。
+        self.lock_path = os.path.join(self.common_dir, "kanban-host-commit.lock")
         token = {"owner": self.owner, "pid": os.getpid(), "root": self.root,
                  "token": str(uuid.uuid4()), "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat()}
         try:
-            with open(self.lock, "x", encoding="utf-8") as f:
+            with open(self.lock_path, "x", encoding="utf-8") as f:
                 json.dump(token, f, ensure_ascii=False)
         except FileExistsError:
-            _fail("工作仓已有宿主占用；不领卡，请人工核实残留锁：" + self.lock)
+            _fail("工作仓已有宿主占用；不领卡，请人工核实残留锁：" + self.lock_path)
         except OSError as e:
             _fail("无法独占工作仓：" + str(e))
+        self.lock = self.lock_path
         self.lock_pin = _file(self.lock)
         try:
-            for base in {self.git_dir, self.common_dir}:
-                if any(os.path.lexists(os.path.join(base, p)) for p in OPERATION_FILES + OPERATION_DIRS + ("index.lock", "HEAD.lock")):
-                    _fail("工作仓有进行中 Git 操作或锁，不领卡；请人工处理")
-            # NUL 格式防止换行、引号与路径转义把脏仓当空仓。
-            dirty = self._run(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-            if dirty:
+            self._bind()
+        except BaseException:
+            # 走到这里还没有领任何卡，工作仓也没有被本线动过：不管因为什么被拒，都先收回自己
+            # 刚建的锁，免得原因消除之后本线还被自己的残留挡住。锁若已被别人改动就不碰它。
+            try:
                 self.release()
-                _fail("工作仓不干净，不领卡；请人工处理现有改动和暂存区")
-            # 仓已核实干净、控制面尚未绑定：让索引的 stat 缓存在这里落定一次(唯一允许 Git 顺手写索引的地方)。
-            # checkout / reset 之后索引里是过期的 stat；不先落定，卡在途时 IDE、提示符插件跑一次普通
-            # git status 就会重写索引，被判成控制面篡改。同一秒内的改动落不定，所以只是尽力而为。
-            self._run(["status", "--porcelain=v1", "-z", "--untracked-files=no"], refresh=True)
-            hidden = self._run(["ls-files", "-v", "-z"]).split(b"\0")
-            if any(row and (row[:1].islower() or row[:1] == b"S") for row in hidden):
-                _fail("索引含忽略工作区变化的标记，无法证明干净；需人工处理")
-            if any(row.startswith(b"160000 ") for row in self._run(["ls-files", "--stage", "-z"]).split(b"\0")):
-                _fail("工作仓含子模块，本开关不自动提交子模块")
-            self.head = self._text(["rev-parse", "--verify", "HEAD"])
-            if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", self.head):
-                _fail("无法绑定工作仓 HEAD")
-            origins = self._run(["config", "--null", "--show-origin", "--list"]).split(b"\0")
-            self.control_files = set()
-            includes = []
-            for i in range(0, len(origins) - 1, 2):
-                origin = origins[i].decode("utf-8", "strict")
-                if origin.startswith("file:"):
-                    source = self._absolute(origin[5:])
-                    self.control_files.add(source)
-                elif origin != "command line:":
-                    _fail("无法绑定 Git 配置来源")
-                else:
-                    source = None
-                entry = origins[i + 1].decode("utf-8", "strict")
-                key, _, value = entry.partition("\n")
-                if key.lower() == "include.path" or (key.lower().startswith("includeif.") and key.lower().endswith(".path")):
-                    includes.append((source, value))
-            home = self.env.get("HOME") or self.env.get("USERPROFILE") or os.path.expanduser("~")
-            xdg = self.env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
-            self.control_files.update([os.path.join(home, ".gitconfig"), os.path.join(xdg, "git", "config"),
-                                       os.path.join(xdg, "git", "ignore")])
-            for source, value in includes:
-                # Git 会忽略尚不存在的 include；仍需绑定其缺失状态，防止模型新增后加载。
-                if value.startswith("~/") or value.startswith("~\\"):
-                    target = os.path.join(home, value[2:])
-                elif value.startswith("~") or value.startswith("%("):
-                    _fail("无法确定配置 include 路径的本机展开")
-                elif os.path.isabs(value):
-                    target = value
-                elif source:
-                    target = os.path.join(os.path.dirname(source), value)
-                else:
-                    _fail("命令行 include 必须是可确定的绝对路径")
-                self.control_files.add(os.path.abspath(target))
-            excludes = self._config_path("core.excludesFile")
-            if excludes:
-                self.control_files.add(self._absolute(excludes))
-            for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
-                if self.env.get(key):
-                    self.control_files.add(self._absolute(self.env[key]))
-            if os.name == "nt":
-                self.control_files.add(os.path.join(os.path.dirname(os.path.dirname(self.git)), "etc", "gitconfig"))
-                if self.env.get("PROGRAMDATA"):
-                    self.control_files.add(os.path.join(self.env["PROGRAMDATA"], "Git", "config"))
-            else:
-                self.control_files.add("/etc/gitconfig")
-            for base in {self.git_dir, self.common_dir}:
-                self.control_files.update(os.path.join(base, p) for p in
-                                          ("HEAD", "index", "config", "config.worktree", "commondir", "gitdir",
-                                           "packed-refs", "shallow", "info/grafts", "info/exclude", "info/sparse-checkout",
-                                           "objects/info/alternates", "objects/info/http-alternates"))
-                self.control_files.update(os.path.join(base, p) for p in OPERATION_FILES +
-                                          ("ORIG_HEAD", "FETCH_HEAD", "index.lock", "HEAD.lock", "config.lock", "packed-refs.lock", "shallow.lock"))
-            dotgit = os.path.join(self.root, ".git")
-            if not os.path.isdir(dotgit):
-                self.control_files.add(dotgit)
-            self.control_trees = {os.path.join(self.common_dir, "refs"), os.path.join(self.git_dir, "refs")}
-            self.control_trees.update(os.path.join(base, p) for base in {self.git_dir, self.common_dir} for p in OPERATION_DIRS)
-            if os.path.isdir(dotgit):
-                # 根 .git 目录本身也绑定，不能切换为另一个 gitfile。
-                self.dotgit_identity = _identity(dotgit)
-            else:
-                self.dotgit_identity = None
-            hookpath = self._config_path("core.hooksPath")
-            self.control_trees.add(self._absolute(hookpath) if hookpath else os.path.join(self.common_dir, "hooks"))
-            self.attribute_files = {os.path.join(self.common_dir, "info", "attributes"),
-                                    os.path.join(self.git_dir, "info", "attributes"),
-                                    os.path.join(xdg, "git", "attributes")}
-            attrpath = self._config_path("core.attributesFile")
-            if attrpath:
-                self.attribute_files.add(self._absolute(attrpath))
-            if os.name == "nt":
-                self.attribute_files.add(os.path.join(os.path.dirname(os.path.dirname(self.git)), "etc", "gitattributes"))
-            else:
-                self.attribute_files.add("/etc/gitattributes")
-            monitor = self._config_path("core.fsmonitor")
-            if monitor and monitor.lower() not in ("true", "false"):
-                # 自定义 fsmonitor 的命令字符串无法由这项小门完整绑定其依赖。
-                _fail("自定义 core.fsmonitor 无法绑定，需管理者先提供可确定的控制面")
-            if self._config_path("diff.external") or self.env.get("GIT_EXTERNAL_DIFF"):
-                _fail("自定义外部 diff 无法绑定，需管理者先提供可确定的控制面")
-            self.initial = self._controls()
-            self.assert_intact()
-            return self
-        except Exception:
-            # 已确认的脏仓在上面释放；其余异常保留锁供人工检查。
+            except Exception:
+                pass
             raise
+        return self
+
+    def _bind(self):
+        """占用之后、领卡之前：核实干净，再把本检出与共用的控制面绑定下来。"""
+        if any(os.path.lexists(os.path.join(self.git_dir, p)) for p in OPERATION_FILES + OPERATION_DIRS + ("index.lock", "HEAD.lock")):
+            _fail("工作仓有进行中 Git 操作或锁，不领卡；请人工处理")
+        # NUL 格式防止换行、引号与路径转义把脏仓当空仓。
+        dirty = self._run(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        if dirty:
+            _fail("工作仓不干净，不领卡；请人工处理现有改动和暂存区")
+        # 仓已核实干净、控制面尚未绑定：让索引的 stat 缓存在这里落定一次(唯一允许 Git 顺手写索引的地方)。
+        # checkout / reset 之后索引里是过期的 stat；不先落定，卡在途时 IDE、提示符插件跑一次普通
+        # git status 就会重写索引，被判成控制面篡改。同一秒内的改动落不定，所以只是尽力而为。
+        self._run(["status", "--porcelain=v1", "-z", "--untracked-files=no"], refresh=True)
+        hidden = self._run(["ls-files", "-v", "-z"]).split(b"\0")
+        if any(row and (row[:1].islower() or row[:1] == b"S") for row in hidden):
+            _fail("索引含忽略工作区变化的标记，无法证明干净；需人工处理")
+        if any(row.startswith(b"160000 ") for row in self._run(["ls-files", "--stage", "-z"]).split(b"\0")):
+            _fail("工作仓含子模块，本开关不自动提交子模块")
+        self.head = self._text(["rev-parse", "--verify", "HEAD"])
+        if not re.fullmatch(OBJECT_ID, self.head):
+            _fail("无法绑定工作仓 HEAD")
+        # 本检出所在的分支(游离 HEAD 时为空)。引用以文件存储时由 _branch_value 直接读盘核对；
+        # reftable 读不了单条引用，退回按字节绑定整个引用库。
+        self.branch = self._text(["symbolic-ref", "-q", "HEAD"], optional=True) or None
+        self.reftable = self._text(["config", "--get", "extensions.refStorage"], optional=True).lower() == "reftable"
+        if self.branch is not None and not self.branch.startswith("refs/heads/"):
+            _fail("HEAD 指向的不是本地分支，无法绑定：" + self.branch)
+        if self.reftable:
+            self.branch = None
+        elif self._branch_value() not in (None, self.head):
+            _fail("本分支引用与 HEAD 不一致，无法绑定")
+        origins = self._run(["config", "--null", "--show-origin", "--list"]).split(b"\0")
+        self.control_files = set()
+        includes = []
+        for i in range(0, len(origins) - 1, 2):
+            origin = origins[i].decode("utf-8", "strict")
+            if origin.startswith("file:"):
+                source = self._absolute(origin[5:])
+                self.control_files.add(source)
+            elif origin != "command line:":
+                _fail("无法绑定 Git 配置来源")
+            else:
+                source = None
+            entry = origins[i + 1].decode("utf-8", "strict")
+            key, _, value = entry.partition("\n")
+            if key.lower() == "include.path" or (key.lower().startswith("includeif.") and key.lower().endswith(".path")):
+                includes.append((source, value))
+        home = self.env.get("HOME") or self.env.get("USERPROFILE") or os.path.expanduser("~")
+        xdg = self.env.get("XDG_CONFIG_HOME") or os.path.join(home, ".config")
+        self.control_files.update([os.path.join(home, ".gitconfig"), os.path.join(xdg, "git", "config"),
+                                   os.path.join(xdg, "git", "ignore")])
+        for source, value in includes:
+            # Git 会忽略尚不存在的 include；仍需绑定其缺失状态，防止模型新增后加载。
+            if value.startswith("~/") or value.startswith("~\\"):
+                target = os.path.join(home, value[2:])
+            elif value.startswith("~") or value.startswith("%("):
+                _fail("无法确定配置 include 路径的本机展开")
+            elif os.path.isabs(value):
+                target = value
+            elif source:
+                target = os.path.join(os.path.dirname(source), value)
+            else:
+                _fail("命令行 include 必须是可确定的绝对路径")
+            self.control_files.add(os.path.abspath(target))
+        excludes = self._config_path("core.excludesFile")
+        if excludes:
+            self.control_files.add(self._absolute(excludes))
+        for key in ("GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM"):
+            if self.env.get(key):
+                self.control_files.add(self._absolute(self.env[key]))
+        if os.name == "nt":
+            self.control_files.add(os.path.join(os.path.dirname(os.path.dirname(self.git)), "etc", "gitconfig"))
+            if self.env.get("PROGRAMDATA"):
+                self.control_files.add(os.path.join(self.env["PROGRAMDATA"], "Git", "config"))
+        else:
+            self.control_files.add("/etc/gitconfig")
+        self.control_files.update(os.path.join(self.git_dir, p) for p in WORKTREE_FILES)
+        self.control_files.update(os.path.join(self.common_dir, p) for p in COMMON_FILES)
+        dotgit = os.path.join(self.root, ".git")
+        if not os.path.isdir(dotgit):
+            self.control_files.add(dotgit)
+        self.control_trees = {os.path.join(self.git_dir, p) for p in OPERATION_DIRS + WORKTREE_REFS}
+        # 提交会正常改写的引用库目录；文件存储时为空(本分支由 _branch_value 按值核对)。
+        self.ref_stores = {os.path.join(base, "reftable") for base in (self.git_dir, self.common_dir)} if self.reftable else set()
+        self.control_trees.update(self.ref_stores)
+        if os.path.isdir(dotgit):
+            # 根 .git 目录本身也绑定，不能切换为另一个 gitfile。
+            self.dotgit_identity = _identity(dotgit)
+        else:
+            self.dotgit_identity = None
+        hookpath = self._config_path("core.hooksPath")
+        self.control_trees.add(self._absolute(hookpath) if hookpath else os.path.join(self.common_dir, "hooks"))
+        self.attribute_files = {os.path.join(self.common_dir, "info", "attributes"),
+                                os.path.join(self.git_dir, "info", "attributes"),
+                                os.path.join(xdg, "git", "attributes")}
+        attrpath = self._config_path("core.attributesFile")
+        if attrpath:
+            self.attribute_files.add(self._absolute(attrpath))
+        if os.name == "nt":
+            self.attribute_files.add(os.path.join(os.path.dirname(os.path.dirname(self.git)), "etc", "gitattributes"))
+        else:
+            self.attribute_files.add("/etc/gitattributes")
+        monitor = self._config_path("core.fsmonitor")
+        if monitor and monitor.lower() not in ("true", "false"):
+            # 自定义 fsmonitor 的命令字符串无法由这项小门完整绑定其依赖。
+            _fail("自定义 core.fsmonitor 无法绑定，需管理者先提供可确定的控制面")
+        if self._config_path("diff.external") or self.env.get("GIT_EXTERNAL_DIFF"):
+            _fail("自定义外部 diff 无法绑定，需管理者先提供可确定的控制面")
+        self.initial = self._controls()
+        self.assert_intact()
 
     def assert_intact(self):
         if not hasattr(self, "initial"):
@@ -482,9 +539,8 @@ class HostCommitGuard:
         # NUL 输入 + 字面 pathspec；卡片内容、文件名均不经过 shell。
         self._run(["--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"], pathspec)
         # 索引现在由宿主正常 add 改变；其余控制面仍按原绑定逐项检查。
-        for target in (os.path.join(self.git_dir, "index"), os.path.join(self.common_dir, "index")):
-            if "file:" + target in self.initial:
-                self.initial["file:" + target] = _file(target)
+        index = os.path.join(self.git_dir, "index")
+        self.initial["file:" + index] = _file(index)
         self.initial["shared_indexes"] = self._shared_indexes()
         self.assert_intact()
         staged = self._run(["diff", "--no-ext-diff", "--no-textconv", "--cached", "--name-only", "-z", "--no-renames"]).split(b"\0")
@@ -510,6 +566,8 @@ class HostCommitGuard:
             _fail("普通钩子改写了已验证文件，保留已生成提交及占用，需重新核实验证")
         sha = self._text(["rev-parse", "--verify", "HEAD"])
         self._assert_after_commit()
+        if self._branch_value() not in (None, sha):
+            _fail("提交后本分支引用与 HEAD 不一致，请人工核实并保留现场")
         parent = self._text(["rev-parse", "--verify", "HEAD^"])
         self._assert_after_commit()
         actual = self._run(["diff-tree", "--no-ext-diff", "--no-textconv", "--no-commit-id", "--name-only", "-r", "-z", "--no-renames", sha]).split(b"\0")
@@ -526,12 +584,9 @@ class HostCommitGuard:
     def _assert_after_commit(self):
         if self.dotgit_identity is not None and _identity(os.path.join(self.root, ".git")) != self.dotgit_identity:
             _fail("普通提交后 .git 目录身份改变，保留现场")
-        expected = set()
-        for base in {self.git_dir, self.common_dir}:
-            expected.update(("file:" + os.path.join(base, "HEAD"),
-                             "file:" + os.path.join(base, "index"),
-                             "tree:" + os.path.join(base, "refs")))
-        expected.add("shared_indexes")
+        # 提交正常改写的只有：本检出的 HEAD(游离时)与索引、本分支引用(或整个 reftable 引用库)。
+        expected = {"file:" + os.path.join(self.git_dir, "HEAD"), "file:" + os.path.join(self.git_dir, "index"),
+                    "branch", "shared_indexes"} | {"tree:" + target for target in self.ref_stores}
         now = self._controls()
         if any(now.get(key) != value for key, value in self.initial.items() if key not in expected):
             _fail("普通提交期间控制面改变；不再调用 Git，需人工核实已生成提交")

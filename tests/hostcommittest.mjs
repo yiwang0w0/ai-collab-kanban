@@ -474,6 +474,85 @@ assert packed.exists(),'对照失效：本机 Git 在这个夹具上不触发自
 `);
 });
 
+test("工作仓是 linked worktree：主检出里的提交、fetch、status、建分支、打包引用不影响在途卡；领卡前的拒绝不留锁", () => {
+  python(`main=setup(); work=folder/str(uuid.uuid4()); g(main,'worktree','add','-b','card-line',str(work))
+head=g(work,'rev-parse','HEAD'); lock=main/'.git'/'kanban-host-commit.lock'
+guard=h.HostCommitGuard(str(work),'第一线').acquire()
+(work/'one.txt').write_text('本卡',encoding='utf-8')
+(main/'two.txt').write_text('主检出的活',encoding='utf-8'); g(main,'add','--','two.txt'); g(main,'commit','-m','主检出提交')
+g(main,'status'); g(main,'branch','other-line')
+(main/'.git'/'FETCH_HEAD').write_text(head+chr(9)+chr(9)+'branch fixture of example.invalid'+chr(10),encoding='utf-8')
+(main/'.git'/'ORIG_HEAD').write_text(head+chr(10),encoding='utf-8')
+g(main,'pack-refs','--all'); assert not (main/'.git'/'refs'/'heads'/'card-line').exists(),'前提：本分支已从松散引用变成打包引用'
+assert guard.bind_changes()==['one.txt']
+result=guard.finish(17,'别的检出在干活',evidence())
+assert result['sha']==g(work,'rev-parse','HEAD') and g(work,'rev-parse','HEAD^')==head
+assert g(main,'log','-1','--format=%s')=='主检出提交'; guard.release(); assert not lock.exists()
+(main/'.git'/'MERGE_MSG').write_text('主检出合并到一半',encoding='utf-8')
+h.HostCommitGuard(str(work),'第一线').acquire().release()
+(main/'.git'/'MERGE_MSG').unlink()
+state=pathlib.Path(g(work,'rev-parse','--path-format=absolute','--git-dir'))/'MERGE_HEAD'
+state.write_text(head+chr(10),encoding='utf-8')
+refused(lambda:h.HostCommitGuard(str(work),'第一线').acquire())
+assert state.exists() and not lock.exists(),'领卡前的拒绝留下了锁'
+state.unlink(); h.HostCommitGuard(str(work),'第一线').acquire().release()
+`);
+});
+
+const CHECKOUTS = `def pair():
+ main=setup(); work=folder/str(uuid.uuid4()); g(main,'worktree','add','-b','card-line',str(work)); return main,work
+def other_commit(work,text):
+ (work/'two.txt').write_text(text,encoding='utf-8'); g(work,'add','--','two.txt'); g(work,'commit','-m',text); g(work,'status')
+ return g(work,'rev-parse','HEAD')
+`;
+
+test("工作仓是主检出：别的检出提交不影响在途卡；游离 HEAD 与 reftable 引用库照常提交", () => {
+  python(CHECKOUTS + `main,work=pair(); head=g(main,'rev-parse','HEAD')
+guard=h.HostCommitGuard(str(main),'第一线').acquire()
+(main/'one.txt').write_text('主检出的卡',encoding='utf-8'); other_commit(work,'另一检出提交')
+assert guard.bind_changes()==['one.txt']
+result=guard.finish(17,'主检出的卡',evidence()); assert g(main,'rev-parse','HEAD^')==head and result['sha']==g(main,'rev-parse','HEAD')
+guard.release()
+g(work,'checkout','--detach'); head=g(work,'rev-parse','HEAD')
+guard=h.HostCommitGuard(str(work),'第一线').acquire(); assert guard.branch is None
+(work/'one.txt').write_text('游离 HEAD 上的卡',encoding='utf-8'); guard.bind_changes()
+result=guard.finish(17,'游离 HEAD',evidence()); assert g(work,'rev-parse','HEAD^')==head and result['sha']==g(work,'rev-parse','HEAD')
+assert g(work,'rev-parse','card-line')==head; guard.release()
+repo=folder/str(uuid.uuid4()); repo.mkdir()
+try: g(repo,'-c','init.defaultBranch=main','init','--ref-format=reftable')
+except subprocess.CalledProcessError: repo=None
+if repo:
+ g(repo,'config','user.name','本地夹具'); g(repo,'config','user.email','fixture@example.invalid')
+ (repo/'one.txt').write_text('初始',encoding='utf-8'); g(repo,'add','--','one.txt'); g(repo,'commit','-m','reftable 基线')
+ head=g(repo,'rev-parse','HEAD'); guard=h.HostCommitGuard(str(repo),'第一线').acquire(); assert guard.reftable
+ (repo/'one.txt').write_text('reftable 上的卡',encoding='utf-8'); guard.bind_changes()
+ result=guard.finish(17,'reftable',evidence()); assert g(repo,'rev-parse','HEAD^')==head and result['sha']==g(repo,'rev-parse','HEAD')
+ guard.release()
+`);
+});
+
+test("本分支引用被别处挪动或换成符号引用、本检出的 HEAD 被改，均在 Git 前拒绝", () => {
+  python(CHECKOUTS + `
+def zero_git(action):
+ real=(subprocess.run,subprocess.Popen); calls=[]
+ def forbidden(*args,**kwargs): calls.append(args); raise AssertionError('控制面变动后调用了 Git')
+ subprocess.run=subprocess.Popen=forbidden
+ try: refused(action)
+ finally: subprocess.run,subprocess.Popen=real
+ assert calls==[],calls
+for kind in ('loose','packed','symbolic','head'):
+ main,work=pair(); other=other_commit(work,'另一检出提交'); repo=work if kind=='head' else main
+ if kind=='packed': g(main,'pack-refs','--all')
+ guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+ branch=g(repo,'symbolic-ref','HEAD'); assert guard._branch_value()==g(repo,'rev-parse','HEAD'),kind
+ if kind=='symbolic': (main/'.git'/branch).write_text('ref: refs/heads/card-line'+chr(10),encoding='utf-8')
+ elif kind=='head':
+  with (pathlib.Path(guard.git_dir)/'HEAD').open('ab') as changed: changed.write(b' ')
+ else: g(work,'update-ref',branch,other)
+ zero_git(guard.bind_changes)
+`);
+});
+
 test("fleet 开关默认关闭且只接受显式布尔配置", () => {
   const output = python(`sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'core'))
 import board_env
