@@ -370,7 +370,9 @@ for bad in [str(shim/'git.cmd'),'git']+[str(target) for target in inside]:
  refused(lambda:h.HostCommitGuard(str(repo),'第二线',protected=[w.DATA]))
 assert len(claims)==1 and not (shim/'shim-ran.txt').exists() and not (repo/'planted-ran.txt').exists()
 os.environ['WORKER_HOST_GIT']=git; w.HOST_GIT=None
-assert w.host_commit_gate() is None and os.path.samefile(w.host_git()[0],git)
+configured=pathlib.Path(w.host_git()[0]) if w.host_commit_gate() is None else None
+# 配置的是 cmd\\git.exe 时固定的是同一安装里的 bin\\git.exe；其余情况就是配置的那个文件。
+assert configured and configured.name.lower()=='git.exe' and configured.parent.parent==pathlib.Path(git).resolve().parent.parent,configured
 `);
 });
 
