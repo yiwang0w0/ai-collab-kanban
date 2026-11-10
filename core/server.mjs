@@ -1082,15 +1082,15 @@ const DECOMPOSE_MODELS = CFG.decompose_models;
 // Natural language for GENERATED content (decomposed cards today; other generators
 // later). Empty = say nothing, and the generator mirrors the prompt's own language.
 const LANGUAGE = String(CFG.language || "").trim();
-// 对话式首页的协调线(core/coordinator-cli.mjs):模型、强度、每次调用的时限。缺省 = 拆解用的第一个模型、medium、420 秒
-// (2026-11-10 拆解评测:claude-opus-5/high 单轮最长 265 秒,180 秒不够)。
+// 对话式首页的协调线(core/coordinator-cli.mjs):模型、强度、每次调用的时限。缺省 = 拆解用的第一个模型、high、420 秒
+// (2026-11-10 拆解评测两轮:claude-opus-5/high 质量最好,单轮最长 265〜356 秒,180 秒不够)。
 // 写了但写错就拒绝启动,与其他配置错误同一规则。
 const COORDINATOR = (() => {
   const raw = CFG.coordinator ?? {};
   try {
     if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("必须是对象 {model, effort, timeout_sec}");
     const model = raw.model ?? DECOMPOSE_MODELS?.[0]?.id ?? BUILTIN_CONFIG.decompose_models[0].id;
-    const effort = raw.effort ?? "medium", timeout = raw.timeout_sec ?? 420;
+    const effort = raw.effort ?? "high", timeout = raw.timeout_sec ?? 420;
     if (typeof model !== "string" || !model.trim()) throw new Error("model 必须是非空字符串");
     if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error("effort 只接受 low / medium / high / xhigh / max");
     if (typeof timeout !== "number" || !(timeout > 0) || timeout > 3600) throw new Error("timeout_sec 必须是 0 到 3600 之间的秒数");

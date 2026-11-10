@@ -246,7 +246,7 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
   const b = await board();
   try {
     const co = await b.api("GET", "/api/coordinator", b.operator);
-    assert.equal(co.status, 200); assert.deepEqual(co.body, { available: true, runtime: "claude", model: "claude-opus-5", effort: "medium" });
+    assert.equal(co.status, 200); assert.deepEqual(co.body, { available: true, runtime: "claude", model: "claude-opus-5", effort: "high" });
     const sse = b.listen(); await delay(300);
 
     const made = await b.api("POST", "/api/conversations", b.operator, { message: "【计划】把导出做成可配置的" });
@@ -551,7 +551,7 @@ test("鉴权边界、同一对话只跑一轮、停止与超时收掉进程树�
     const step = (await g.api("GET", "/api/setup", g.operator)).body.steps.find((s) => s.key === "bless");
     assert.equal(step.action?.path, "/api/setup/bless", JSON.stringify(step));
     assert.equal((await g.api(step.action.method, step.action.path, g.operator, step.action.body)).status, 200);
-    assert.deepEqual((await g.api("GET", "/api/coordinator", g.operator)).body, { available: true, runtime: "claude", model: "claude-opus-5", effort: "medium" });
+    assert.deepEqual((await g.api("GET", "/api/coordinator", g.operator)).body, { available: true, runtime: "claude", model: "claude-opus-5", effort: "high" });
     for (let i = 0; i < 30 && !sse.seen.text.includes('"type":"code.accepted"'); i++) await delay(100);
     assert.match(sse.seen.text, /event: change\ndata: \{"type":"code\.accepted"/, "版本确认推 code.accepted");
     const made = await g.api("POST", "/api/conversations", g.operator, { message: "在吗" });

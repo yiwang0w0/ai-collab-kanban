@@ -1376,3 +1376,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - zcodeworkertest 30/0、schedulertest 32/0、dispatchtest 65/0、servertest 226/0、selftest 402/0；全程合成供应商，没有调用模型。阻塞：无。
 - 2026-11-10 首页改版服务端补齐面板第二波留下的项（claude/home-v2-srvfix，7 个提交）：命令行「上次故障」与 CLI 版本文案同面板说法；强制释放锁可带 lock_id／holder，不一致 409 LOCK_CHANGED；委派与绑定提案记录带 brief；/api/cli-versions 加 install_source、npm_managed、upgrade_hint；/api/setup 带 last_fault；/api/usage 认 since／until，by=card 给失败尝试数与已结算合计；stopText 去掉括号补充。
 - clitest 116/0、cliversionstest 52/0、upgradeclitest 27/0、coordtest 25/0、approvaltest 20/0、servertest 228/0、usagetest 4/0、convtest 3/0、selftest 402/0、synctest 31/0、fleetactionstest 28/0、zcodeworkertest 27/0；阻塞：无。
+- 2026-11-10 并入协调线提示收紧与就地修正(claude/home-v2-coordprompt,3 个提交;只有 core/server.mjs 两边都改,自动合并,两边改动逐行都在);协调线没配 effort 时缺省改为 high(模型缺省 claude-opus-5、时限 420 秒),依据两轮拆解评测,docs/对话式首页.md 同步。
+- convtest 4/0、servertest 228/0、decomposetest 84/0、selftest 402/0、hometest 41/0、clitest 116/0；没有调用模型。阻塞：无。
