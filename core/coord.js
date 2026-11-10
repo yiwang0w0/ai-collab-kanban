@@ -426,12 +426,16 @@ function heartbeat(db, executorId, { taskId = null, leaseMin } = {}, now = Date.
   if (!r) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
   touch(db, r.id, now);
   const cards = taskId == null
-    ? db.prepare("SELECT id, run_id FROM tasks WHERE status='in_progress' AND worker=? ORDER BY id").all(r.id)
-    : db.prepare("SELECT id, run_id FROM tasks WHERE status='in_progress' AND worker=? AND id=?").all(r.id, Number(taskId));
+    ? db.prepare("SELECT id, run_id, lease_until FROM tasks WHERE status='in_progress' AND worker=? ORDER BY id").all(r.id)
+    : db.prepare("SELECT id, run_id, lease_until FROM tasks WHERE status='in_progress' AND worker=? AND id=?").all(r.id, Number(taskId));
   if (taskId != null && !cards.length)
     throw err(ERR.CONFLICT, `卡 #${taskId} 不是 ${r.id} 正在进行的卡,未续租`);
+  // 没给 lease 的心跳只往后续:取默认租约与这张卡现有剩余时间里较长的。按默认 30 分钟直接改写,
+  // 会把 240 分钟领的卡缩成 30 分钟,半小时后被回收。明确给了 lease 就按给的值。
+  const given = Number.isFinite(Number(leaseMin)) && Number(leaseMin) > 0;
   const renewed = cards.map((c) => {
-    const h = store.heartbeat(db, { id: c.id, worker: r.id, runId: c.run_id, leaseMin: executorLease(leaseMin) });
+    const keep = Math.min(Math.max(store.DEFAULT_LEASE_MIN, (Number(c.lease_until) - now) / 60000), EXECUTOR_MAX_LEASE_MIN);
+    const h = store.heartbeat(db, { id: c.id, worker: r.id, runId: c.run_id, leaseMin: given ? executorLease(leaseMin) : keep });
     return { id: c.id, lease_until: h.task?.lease_until ?? null };
   });
   return { executor: executorOut(getRow(db, r.id)), renewed };

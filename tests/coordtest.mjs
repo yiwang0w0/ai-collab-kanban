@@ -462,3 +462,22 @@ test("协作安全:心跳中断生成交接包之后又写了状态与流水,再
   coord.appendJournal(db, "agent-w", { kind: "note", body: "补一条" }, t0 + 42 * min);
   assert.equal(coord.stop(db, "agent-w", "stop", t0 + 43 * min).handoff.stop_seq, 3);
 });
+
+test("协作安全:不带 lease 的心跳只往后续租,不把长租约缩成默认的 30 分钟", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("agent-l");
+    const long = await B.card("长租约的卡", "ext"), short = await B.card("短租约的卡", "ext");
+    assert.equal((await B.take(tok, long.id, { lease_minutes: 240 })).status, 200);
+    assert.equal((await B.take(tok, short.id, { lease_minutes: 1 })).status, 200);
+    const left = (r, id) => (r.body.renewed.find((x) => x.id === id).lease_until - Date.now()) / 60000;
+    const hb = await B.api("POST", "/api/coord/heartbeat", tok, {});
+    assert.equal(hb.status, 200, JSON.stringify(hb.body));
+    assert.ok(left(hb, long.id) > 235, `长租约在无 lease 心跳后不应变短:剩 ${left(hb, long.id).toFixed(1)} 分`);
+    assert.ok(left(hb, short.id) > 29 && left(hb, short.id) < 31, `短租约续到默认 30 分:剩 ${left(hb, short.id).toFixed(1)} 分`);
+    const one = await B.api("POST", "/api/coord/heartbeat", tok, { task_id: long.id });
+    assert.ok(left(one, long.id) > 235, "只续一张时同样不缩短");
+    const set = await B.api("POST", "/api/coord/heartbeat", tok, { task_id: long.id, lease_minutes: 60 });
+    assert.ok(left(set, long.id) > 59 && left(set, long.id) < 61, "明确给了 lease 就按给的值");
+  } finally { await B.stop(); }
+});
