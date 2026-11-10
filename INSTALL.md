@@ -94,7 +94,7 @@ node cli/open.mjs
 | 打开面板；换了浏览器、清了浏览器数据、连接过期 | `node cli/open.mjs` |
 | 让所有浏览器都重新连接（比如电脑借给过别人） | `node cli/open.mjs --forget-browsers` |
 | 体检 | `node cli/doctor.mjs` |
-| 看看板现在怎么样、出了问题下一步做什么 | `node cli/status.mjs`（看板停了会打印上次的日志和重新启动的命令） |
+| 看看板现在怎么样、出了问题下一步做什么 | `node cli/status.mjs`；展开日志用 `node cli/status.mjs --log` |
 | 登录 Windows 后自动在后台启动（可选） | `node cli/autostart.mjs on`；关闭用 `off`，查看用 `node cli/autostart.mjs` |
 | 更新看板 | `git pull`，然后在面板顶部的横幅里点「更新到新代码」，它会先列出改动 |
 
@@ -124,7 +124,8 @@ node cli/open.mjs
 
 ## 出问题
 
-- 先运行 `node cli/status.mjs`：它说明看板服务在不在运行、哪里有问题、下一步做什么。
+- 先运行 `node cli/status.mjs`：一屏列出电脑、看板服务、各执行线和上次故障。同一原因的故障只出一条，各带一句下一步；它只读取，不启动、不停止、不重派任务。
+- 看板停了：它给出一句原因和恢复命令。恢复命令重复运行不会产生重复任务；要看日志加 `--log`。
 - 面板首页显示「看板服务没有应答」：在这台电脑上运行 `node cli/start.mjs --background`。已有任务和结果都保留，面板会自己恢复。
 - 后台启动说没起来：它会打印这次的日志；完整日志在 `core\.data\board.log`。
 - 后台启动说已在运行，紧接着 `node cli/open.mjs` 却说看板没有在运行：你所在的工具在每条命令结束时会结束它
