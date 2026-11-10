@@ -410,6 +410,52 @@ test("协作安全:共享 worker 令牌不能冒用已登记执行者的 id 领�
   } finally { await B.stop(); }
 });
 
+test("协作安全:worker 只接受字符串或数字,数组、嵌套数组、布尔、null 写法不能绕过身份检查冒用执行者 id", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    // String() 之后这些写法都会变成一个合法的名字:["agent-s2"]、[["agent-s2"]] → agent-s2,true → "true",null → "null"。
+    const toks = {}; for (const id of ["agent-s2", "true", "null"]) toks[id] = await B.register(id);
+    for (const [id, worker] of [["agent-s2", ["agent-s2"]], ["agent-s2", [["agent-s2"]]], ["true", true], ["null", null]]) {
+      const what = `worker 写成 ${JSON.stringify(worker)}`, brief = (r) => JSON.stringify(r.body).slice(0, 160);
+      const t = await B.card(`${id} 的卡`, "ext");
+      const got = await B.take(toks[id], t.id);
+      assert.equal(got.status, 200, JSON.stringify(got.body));
+      const run = got.body.task.run_id;
+      const hb = await B.api("POST", `/api/tasks/${t.id}/heartbeat`, B.worker, { worker, run_id: run });
+      assert.equal(hb.status, 400, `${what} 续租:${brief(hb)}`);
+      const spare = await B.card(`${id} 线上的另一张`, "ext");
+      const cl = await B.api("POST", "/api/claim", B.worker, { worker, line: "ext", worker_protocol_version: 2, agent_instance_id: randomUUID() });
+      assert.equal(cl.status, 400, `${what} 领卡:${brief(cl)}`);
+      const rep = await B.api("POST", `/api/tasks/${t.id}/report`, B.worker, { worker, run_id: run, outcome: "done", evidence: "伪造" });
+      assert.equal(rep.status, 400, `${what} 交付:${brief(rep)}`);
+      const still = (await B.api("GET", `/api/tasks/${t.id}`, B.operator)).body.task;
+      assert.deepEqual([still.status, still.worker], ["in_progress", id], `${what}:卡没有被冒名改动`);
+      const other = (await B.api("GET", `/api/tasks/${spare.id}`, B.operator)).body.task;
+      assert.equal(other.status, "not_started", `${what}:另一张没有被冒名领走`);
+      // 收掉这两张,下一种写法从干净的线开始
+      assert.equal((await B.api("POST", `/api/tasks/${t.id}/report`, toks[id], { run_id: run, outcome: "done", evidence: "执行者自己的交付" })).status, 200);
+      assert.equal((await B.take(toks[id], spare.id)).status, 200);
+    }
+    // 操作员与执行者令牌同样只接受字符串或数字
+    const t9 = await B.card("类型检查", "ext");
+    assert.equal((await B.take(B.operator, t9.id, { worker: ["agent-s2"] })).status, 400, "操作员令牌也不接受数组");
+    assert.equal((await B.take(toks["agent-s2"], t9.id, { worker: { toString: "agent-s2" } })).status, 400, "执行者令牌也不接受对象");
+    // 请求里没写 worker 时,落库比对用的名字是 "undefined":这个 id 不能登记;修复前已登记的也不能被这样冒用。
+    assert.equal((await B.api("POST", "/api/coord/executors", B.operator, { id: "undefined" })).status, 400, "undefined 是保留名");
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
+      .run("undefined", "undefined", "external", createHash("sha256").update("exe_" + "1".repeat(48)).digest("hex"), at, at);
+    db.close();
+    const held = await B.take(B.operator, t9.id, { worker: "undefined" });
+    assert.equal(held.status, 200, JSON.stringify(held.body));
+    const hbU = await B.api("POST", `/api/tasks/${t9.id}/heartbeat`, B.worker, { run_id: held.body.task.run_id });
+    assert.equal(hbU.status, 409, `不写 worker 也不能冒用名为 undefined 的执行者:${JSON.stringify(hbU.body).slice(0, 160)}`);
+    const repU = await B.api("POST", `/api/tasks/${t9.id}/report`, B.worker, { run_id: held.body.task.run_id, outcome: "done", evidence: "伪造" });
+    assert.equal(repU.status, 409, `不写 worker 的交付:${JSON.stringify(repU.body).slice(0, 160)}`);
+  } finally { await B.stop(); }
+});
+
 test("协作安全:执行者 id 不能与受管执行线的座位同名,同名的旧登记不能领卡续租交付", { timeout: 60000 }, async () => {
   const B = await board();
   try {

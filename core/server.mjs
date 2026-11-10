@@ -2244,12 +2244,20 @@ const readBody = (req) => new Promise((resolve, reject) => {
     let body;
     try { body = b ? JSON.parse(b) : {}; }
     catch { return reject(store.err(store.ERR.BAD_INPUT, "请求正文不是有效的 JSON，请检查输入格式。")); }
+    // worker 在入口正规化一次:只接受字符串或数字,统一成字符串;下面的身份检查与 store 的比对、落库看的是同一个值。
+    // 数组、布尔、null 经 String() 会变成合法的名字(["a"] → "a"、true → "true"),检查按原值、落库按 String() 就能冒名。
+    if (body && typeof body === "object" && !Array.isArray(body) && body.worker !== undefined) {
+      if (typeof body.worker !== "string" && typeof body.worker !== "number")
+        return reject(store.err(store.ERR.BAD_INPUT, "worker 必须是字符串或数字"));
+      body.worker = String(body.worker);
+    }
     // Covers claim, report, heartbeat and derived-card writes, before state changes.
     if (req.boardRole === "worker" && body?.worker !== undefined &&
-        (req.workerSeat ? body.worker !== req.workerSeat.worker : workers.get(String(body.worker))?.workerToken))
+        (req.workerSeat ? body.worker !== req.workerSeat.worker : workers.get(body.worker)?.workerToken))
       return reject(store.err(store.ERR.CONFLICT, "worker identity does not match its credential"));
     // 已登记的执行者 id 只属于它自己的 exe_ 令牌:共享 worker 令牌不能把 worker 写成它。
-    if (req.boardRole === "worker" && !req.workerSeat && body?.worker !== undefined && coord.isExecutor(db, body.worker))
+    // 没写 worker 时也按 store 会用的名字查(String(undefined) = "undefined"),不留「没写就不查」的口子。
+    if (req.boardRole === "worker" && !req.workerSeat && coord.isExecutor(db, String(body?.worker)))
       return reject(store.err(store.ERR.CONFLICT, "worker identity belongs to a registered executor"));
     // 执行者只能以自己的 id 领卡、续租、交付;不给 worker 时按令牌补上。
     if (req.boardRole === "executor" && body && typeof body === "object" && !Array.isArray(body)) {

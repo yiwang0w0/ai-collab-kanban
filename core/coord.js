@@ -33,7 +33,8 @@ const ARTIFACT_CHECK = Object.freeze({
 const HANDOFF_LIST_BUDGET = 2000;
 const HANDOFF_RECENT_JOURNAL = 10;
 // 看板自己写流水时用的执行者名;不允许登记成执行者 id。
-const RESERVED_IDS = ["operator", "system"];
+// undefined:请求里没写 worker 时,store 比对用的就是这个名字,登记成执行者 id 等于谁都能冒用。
+const RESERVED_IDS = ["operator", "system", "undefined"];
 
 // 控制字符(C0、DEL、C1)、行/段分隔符与双向控制符:进了终端或日志会改写别的行、调换显示顺序。
 // 码点用数字写,源码里不出现这些字符本身。
@@ -170,8 +171,8 @@ function getRow(db, id) {
   return db.prepare("SELECT * FROM coord_executors WHERE id=?").get(String(id));
 }
 
-/** 这个名字是不是已登记的执行者 id(领卡身份检查用)。 */
-const isExecutor = (db, id) => (typeof id === "string" || typeof id === "number") && !!getRow(db, id);   // 数字落库时也会变成字符串
+/** 这个名字是不是已登记的执行者 id(领卡身份检查用)。调用方先把 worker 正规化成字符串(server.mjs readBody)再来查。 */
+const isExecutor = (db, id) => typeof id === "string" && !!getRow(db, id);
 
 /** 操作员登记执行者。返回明文令牌(只此一次)。rotate=true 时为已登记的执行者换发令牌,旧令牌立即失效。 */
 function register(db, { id, name, kind, rotate = false } = {}, now = Date.now()) {
