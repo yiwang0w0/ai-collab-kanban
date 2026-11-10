@@ -31,6 +31,13 @@ secretGroup = 1
   description = "fea7378: redacted in c50f17a; history kept by operator decision 2026-10-14. Exempt from this rule only - the default secret rules still scan the commit."
   commits = ["fea7378bfbef422cfdbfee10688fa21e6b04e026"]
 
+  # abe045d6：tests/cliversionstest.mjs 里的单字母占位名，b0a1373 已改为 you；历史按协调裁定保留，不改写。
+  [[rules.allowlists]]
+  description = "abe045d6: single-letter placeholder name in tests/cliversionstest.mjs, changed to you in b0a1373; history kept. Exempt from this rule only, and only for this commit AND this file - the default secret rules still scan the commit."
+  condition = "AND"
+  commits = ["abe045d6a47cf2885fd4287f299438fe4ca3a298"]
+  paths = ['''^tests[\\/]cliversionstest\.mjs$''']
+
 [[rules]]
 id = "claude-desktop-session-id"
 description = "A local Claude desktop session id."
