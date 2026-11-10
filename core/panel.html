@@ -511,6 +511,7 @@
     .cli-versions{padding:var(--sp-3)}
     .cv-cells{grid-template-columns:repeat(2,minmax(0,1fr))}
     .zcode-box{padding:var(--sp-3)}
+    .zcode-box .cv-cells{grid-template-columns:minmax(0,1fr)}
   }
   /* 用量:数字用等宽数字;口径说明在 title,不进正文。四个汇总数不用强调色。 */
   .side-usage-line{margin:0 0 var(--sp-1);font-size:var(--fs-md);line-height:1.5;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
@@ -780,8 +781,7 @@
   .cr-facts p{margin:0;overflow-wrap:anywhere}
   .cr-review{grid-area:review;display:grid;gap:var(--sp-2);margin-top:var(--sp-1);padding:var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);min-width:0}
   .cr-review p{margin:0}
-  .apv-confirm{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:var(--fs-sm);line-height:1.6;max-height:320px;overflow:auto}
-  .apv-confirm.mono{font-family:var(--mono)}
+  .apv-confirm{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);font-size:var(--fs-sm);line-height:1.6;max-height:320px;overflow:auto}
   .coord-row[data-tone="need"]{box-shadow:inset 3px 0 0 var(--accent);padding-left:var(--sp-2)}
   .apv-acts{gap:var(--sp-1)}
   /* 锁行:上 资源、持有者、状态、按钮;下 用途、时间;理由输入展开时占整行。 */
