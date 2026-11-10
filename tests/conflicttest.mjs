@@ -41,13 +41,16 @@ test('H3 actual fleet dialog disables known conflict retries, preserves drafts a
  const copyStart=html.indexOf('// ── display-copy(pure;tests/panelcopytest.mjs)──'),copyEnd=html.indexOf('// ── /display-copy ──',copyStart);
  assert.ok(copyStart>=0&&copyEnd>copyStart);
  for(const scenario of ['conflict','server','network']){
-  let callback,calls=0;const draft={action_id:'original-action',project_id:'demo',command:'create_delegation',arguments:{expected_version:2},input:null};
-  const ctx={actionBusy:false,actionDraft:draft,actionSubmit:{disabled:false,textContent:''},actionStatus:{textContent:''},WH:{},AbortSignal,load(){throw Error('must not refresh into a retry');},$:()=>({addEventListener:(event,fn)=>{callback=fn;}}),
+  let callback,calls=0;const draft={action_id:'original-action',project_id:'demo',command:'create_delegation',arguments:{expected_version:2},input:null,key:'create_delegation:demo'};const saves=[];
+  const ctx={actionBusy:false,actionDraft:draft,actionSubmit:{disabled:false,textContent:''},actionStatus:{textContent:''},WH:{},AbortSignal,load(){throw Error('must not refresh into a retry');},loadHomeExtras(){throw Error('must not refresh into a retry');},saveActionDraft:(key,value)=>saves.push([key,value]),$:()=>({addEventListener:(event,fn)=>{callback=fn;}}),
    fetch:async()=>{calls++;if(scenario==='network')throw Error('connection outcome unknown');return {ok:false,status:scenario==='conflict'?409:503,json:async()=>scenario==='conflict'?{conflict:describeConflict({code:'CONFLICT',expected_version:2,current_version:3})}:{error:'unavailable'}};}};
   vm.createContext(ctx);vm.runInContext(html.slice(copyStart,copyEnd)+helper+html.slice(a,b),ctx);await callback({preventDefault(){}});
   assert.equal(calls,1);assert.equal(draft.frozen.action_id,'original-action');assert.equal(draft.frozen.arguments.expected_version,2);
   assert.equal(ctx.actionSubmit.disabled,scenario==='conflict');assert.equal(ctx.actionBusy,false);
   if(scenario==='conflict')assert.match(ctx.actionStatus.textContent,/刷新并核对/);else assert.match(ctx.actionStatus.textContent,/不会自动提交/);
+  // 提交前把原编号记进本标签页的草稿:结果未确认时留着(刷新后按原编号重试),已知冲突时丢掉编号。
+  assert.equal(JSON.stringify(saves[0]),JSON.stringify(['create_delegation:demo',{action_id:'original-action',note:'',sent:true}]));
+  assert.equal(JSON.stringify(saves.slice(1)),JSON.stringify(scenario==='conflict'?[['create_delegation:demo',null]]:[]));
  }
 });
 

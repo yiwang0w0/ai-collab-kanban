@@ -361,7 +361,7 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
     get textContent() { return this.text + this.children.map((n) => n.textContent).join(""); }
   }
   const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高", lineLabel: (line) => line });
-  vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t, need = false){", "function sideRelationshipBox(t){"), context);
+  vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t, need = false, protocol = false){", "function sideRelationshipBox(t){"), context);
   const card = { id: 4, status: "not_started", released: false, aggregate_version: 7,
     verification_repair: { max_rounds: 3 }, verification_repair_digest: "b".repeat(64), execution_profile: {
     execution_profile_id: "claude-api", profile_digest: "a".repeat(64), configuration_changed: true, label: "API 样本", channel: "claude_agent_sdk", auth_kind: "api_key", billing_kind: "anthropic_api", model: "allowed", effort: "high", tools: "write", budget: null, workspace: { path: "C:/隔离/中文 工作仓" },

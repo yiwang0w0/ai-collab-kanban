@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -153,6 +153,9 @@ test("cross-computer requests that wait for me open the global view, where they 
     ["绑定", "来自「笔记本 B」", "待确认绑定", "核对后确认", "fleet"],
     ["交付回来了", "来自「笔记本 B」", "交付已回传", "查看交付", "fleet"],
   ]);
+  // 每条带上这件事的种类、编号和原记录:侧栏按它打开,不再跳去全局视图。
+  assert.deepEqual(mine.map((r) => [r.kind, r.id, r.record === (r.kind === "incoming" ? actions.incoming[0] : r.kind === "proposal" ? actions.proposals[0] : actions.results[0])]),
+    [["incoming", "d1", true], ["proposal", "r1", true], ["result", "x1", true]]);
   assert.equal(M.homeLists({ actions: { enabled: false, incoming: actions.incoming } }).mine.length, 0);
 });
 
@@ -623,8 +626,8 @@ test("首页卡只露标题、所属电脑、状态和下一步；长串编号�
   for (const field of ["item.title", "item.computer", "item.state", "item.next"]) assert.ok(face.includes(field), "卡面写 " + field);
   for (const hidden of ["uid", "localId", "item.key", "run_id"]) assert.ok(!face.includes(hidden), "卡面不读 " + hidden);
   const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
-  assert.ok(side.includes("out.push(more, sideTech(t));") && !side.includes("UID"), "侧栏正文只留短卡号");
-  const tech = src.slice(src.indexOf("function sideTech(t){"), src.indexOf("/** 关联任务或执行回执变化时"));
+  assert.ok(side.includes("out.push(sideTech(t));") && !side.includes("UID"), "侧栏正文只留短卡号");
+  const tech = src.slice(src.indexOf("function sideTech(t){"), src.indexOf("/** 「协议记录」:默认折叠"));
   assert.ok(tech.includes('homeEl("details"') && tech.includes('homeEl("summary", "技术信息")') && tech.includes('["任务 UID", t.task_uid]'),
     "任务 UID、运行号在默认折叠的「技术信息」里");
 });
@@ -732,4 +735,139 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   const apply = src.slice(src.indexOf("async function chatPlanApply(){"), src.indexOf("function chatBadge("));
   assert.ok(apply.indexOf("await chatPlanFlush()") > 0 && apply.indexOf("await chatPlanFlush()") < apply.indexOf('"/apply"'), "建卡前先把本地改动存成新版本");
   assert.ok(src.includes("async function chatBeforeSend(){ await chatPlanFlush(); }"), "发消息前也先存");
+});
+
+// ── 跨机事项按任务归拢:fleetLinks / fleetStep ──
+// 记录形状同 core/fleet-actions.mjs 的 catalog()(tests/fleetactionstest.mjs 走的那份):委派带 source_task_uid、
+// 绑定带 task_uid 与 relation_id、交付只带编号、文件与结案在 delivery / delivery.closure 里。
+const NODE_A = "11111111-1111-4111-8111-111111111111", PCS = { [NODE_A]: "台式机 A", [NODE_B]: "笔记本 B" };
+const sent = (state, extra) => ({ project_id: "demo", direction: "outgoing", delegation_id: "d1", state, identity_current: true, source_node_id: NODE_A,
+  target_node_id: NODE_B, source_task_uid: "u1", target_task_uid: null, version: null, subject: "跑压测", description: "说明", acceptance: "验收", ...extra });
+const bound = (extra) => ({ relation_id: "r1", delegation_id: "d1", side: "source", state: "confirmed", task_uid: "u1", identity_current: 1, project_id: "demo",
+  task_version: 5, task_status: "waiting", released: true, subject: "跑压测", execution_authorized: false, binding_authorized: true, source_approved: true,
+  source_node_id: NODE_A, target_node_id: NODE_B, cancellation_state: null, ...extra });
+const back = (extra) => ({ result_id: "x1", relation_id: "r1", sequence: 1, side: "source", identity_current: 1, state: "received", project_id: "demo",
+  source_task_version: 7, review_state: "pending_evidence", ...extra });
+const delivery = (extra, closure) => ({ enabled: true, receivers: [], profiles: [], targets: [], artifacts: [], verifications: [],
+  closure: closure ? { enabled: true, policies: [], integrations: [], completions: [], ...closure } : { enabled: false }, ...extra });
+const fleet = (actions, uid = "u1", names = PCS) => M.fleetStep(M.fleetLinks({ enabled: true, ...actions }, uid), names);
+
+test("等对端的五种状态：写明等哪台电脑的什么，进「正在执行」，下一步「无需操作」", () => {
+  const done = { command: "register_completion", state: "acknowledged", result: { completion_id: "c1" } };
+  const waits = [
+    ["等待「笔记本 B」接收任务", { outgoing: [sent("pending")] }, ["poll_delegation", "resend_delegation"]],
+    ["等待「笔记本 B」接收任务", { outgoing: [sent("received")] }, ["poll_delegation", "resend_delegation"]],
+    ["等待「笔记本 B」确认绑定", { outgoing: [sent("accepted_unconfirmed")], bindings: [bound({ state: "prepared" })] }, ["poll_binding", "send_binding_proposal"]],
+    ["等待「笔记本 B」回传交付", { bindings: [bound()] }, ["send_source_ready"]],
+    ["等待「笔记本 B」停止回执", { bindings: [bound({ cancellation_state: "requested" })] }, ["poll_cancellation", "resend_cancellation"]],
+    ["等待「笔记本 B」结案回执", { bindings: [bound()], results: [back({ state: "accepted" })], actions: [done],
+      delivery: delivery({}, { completions: [{ completion_id: "c1", result_id: "x1", phase: "ready", side: "source", project_id: "demo", note: "通过" }] }) }, ["poll_completion"]],
+  ];
+  for (const [state, actions, more] of waits) {
+    const s = fleet(actions);
+    assert.deepEqual([s.lane, s.state, s.next, s.primary], ["running", state, "无需操作", null]);
+    assert.deepEqual(s.more.map((a) => a.command), more, state + " 的查询与重发");
+    assert.equal(s.hold, true, "协议还持有这张卡");
+  }
+  assert.deepEqual(fleet({ outgoing: [sent("pending")] }).more.map((a) => a.label), ["查询对端回执", "重发"]);
+  assert.equal(fleet({ outgoing: [sent("pending")] }, "u1", {}).state, "等待「另一台电脑」接收任务", "电脑名读不到不露编号");
+  assert.equal(UUID.test(JSON.stringify(waits.map(([, a]) => { const s = fleet(a); return [s.state, s.next, s.more.map((x) => [x.label, x.review])]; }))), false, "状态和核对正文里没有长串编号");
+  assert.equal(fleet({ outgoing: [sent("mystery")] }).state, "待核实", "词表外的状态");
+  // 与这张卡无关的记录不带出来;没有委派记录的卡流程不说话。
+  assert.equal(M.fleetLinks({ enabled: true, outgoing: [sent("pending")] }, "u9").any, false);
+  assert.equal(fleet({ outgoing: [sent("pending")] }, "u9").lane, null);
+  assert.equal(M.fleetLinks({ enabled: false, outgoing: [sent("pending")] }, "u1").any, false);
+});
+
+test("轮到本机：primary 是唯一下一步，命令和版本号取自对应记录；旧节点代次的记录不给 primary", () => {
+  const cmd = (s) => s.primary && [s.primary.command, s.primary.args];
+  // 来源卡
+  assert.deepEqual(cmd(fleet({ outgoing: [sent("accepted_unconfirmed", { binding_draft: { ready: true, review_digest: "g", target_node_id: NODE_B, target_task_uid: "t9", source_topology_revision: 1, target_topology_revision: 2 } })] })),
+    ["propose_binding", { delegation_id: "d1", review_digest: "g" }]);
+  assert.deepEqual(cmd(fleet({ bindings: [bound({ state: "prepared", source_approved: false })] })), ["approve_binding", { id: "r1" }]);
+  const grant = fleet({ bindings: [bound()], results: [back()], delivery: delivery({ receivers: [{ project_id: "demo", mapping_id: "m1", repo_id: "repo", base_commit: "abc" }] }) });
+  assert.deepEqual([grant.lane, grant.state, grant.primary.label, cmd(grant)], ["mine", "交付已回传", "授权接收文件 · repo", ["register_artifact_target", { result_id: "x1", mapping_id: "m1" }]]);
+  const reject = grant.more.find((a) => a.command === "reject_result");
+  assert.deepEqual([reject.label, reject.args, reject.note, reject.required], ["要求返工", { result_id: "x1", expected_version: 7 }, true, true], "返工的版本取交付记录的 source_task_version，处理说明必填");
+  assert.equal(grant.delivery, "文件未收到 · 检查未开始");
+  const artifact = { transfer_id: "tr1", result_id: "x1", state: "received", side: "source", bytes: 10, project_id: "demo", repo_id: "repo", base_commit: "abc", mapping_id: "m1" };
+  const verify = fleet({ bindings: [bound()], results: [back()], delivery: delivery({ artifacts: [artifact] }) });
+  assert.deepEqual([cmd(verify), verify.delivery], [["verify_artifact", { id: "tr1" }], "文件已收齐 · 检查未开始"]);
+  const merged = { integration_id: "i1", result_id: "x1", verification_id: "v1", phase: "settled", project_id: "demo", ref: "refs/heads/main", context_current: true, source_task_version: 8, fixture_runs: 0 };
+  const accept = fleet({ bindings: [bound()], results: [back()], delivery: delivery({ artifacts: [{ ...artifact, state: "accepted" }] }, { integrations: [merged] }) });
+  assert.deepEqual([cmd(accept), accept.primary.label, accept.primary.required], [["prepare_completion", { integration_id: "i1", expected_version: 8, allow_fixture: false }], "确认候选验收", true],
+    "验收的版本取合并记录的 source_task_version");
+  assert.deepEqual(accept.others.map((a) => a.command), ["request_cancellation", "check_integration"], "其余步骤进 others");
+  // 执行卡
+  const proposal = { relation_id: "r2", descriptor_digest: "dd", state: "pending", identity_current: true, project_id: "demo", task_version: 9, subject: "绑定", description: "说明", acceptance: "验收",
+    relation: { source_node_id: NODE_B, source_task_uid: "s1", target_task_uid: "u1", source_topology_revision: 1, target_topology_revision: 2 } };
+  const confirm = fleet({ proposals: [proposal] });
+  assert.deepEqual([confirm.lane, confirm.state, confirm.primary.label, cmd(confirm)], ["mine", "待确认绑定", "确认绑定", ["accept_binding_proposal", { relation_id: "r2", descriptor_digest: "dd", expected_version: 9 }]]);
+  assert.deepEqual(confirm.more.map((a) => [a.label, a.command]), [["拒绝", "decline_binding_proposal"]]);
+  const target = (extra) => bound({ side: "target", source_node_id: NODE_B, target_node_id: NODE_A, task_status: "not_started", released: false, ...extra });
+  const held = fleet({ bindings: [target()] }), free = fleet({ bindings: [target({ execution_authorized: true })] });
+  assert.deepEqual([held.lane, held.state, held.primary.command, held.primary.disabled], ["running", "待放行 · 等待双方就绪", "release_delegation", true], "放行条件没满足时按钮禁用");
+  assert.deepEqual([free.lane, cmd(free), free.primary.disabled, free.role], ["mine", ["release_delegation", { relation_id: "r1", expected_version: 5 }], false, "target"]);
+  assert.deepEqual(cmd(fleet({ bindings: [target({ task_status: "waiting", released: true })] })), ["prepare_result", { relation_id: "r1", expected_version: 5 }]);
+  // 首页点开、本机没有对应卡的一件事
+  const inbox = M.fleetInbox("incoming", { project_id: "demo", delegation_id: "d7", state: "received", identity_current: true, source_node_id: NODE_B, version: 3, subject: "跑压测", description: "说明", acceptance: "验收" }, PCS);
+  assert.deepEqual([inbox.state, inbox.primary.label, inbox.primary.args, inbox.secondary.label, inbox.secondary.args.decision],
+    ["收到委派 · 来自「笔记本 B」", "接收任务", { delegation_id: "d7", expected_version: 3, decision: "accept" }, "拒绝", "reject"]);
+  assert.ok(inbox.primary.review.includes("来源电脑：笔记本 B") && !UUID.test(inbox.primary.review), "核对正文写电脑名");
+  assert.deepEqual(inbox.primary.tech, [["委派", "d7"], ["来源终端", NODE_B]], "编号在 tech 里");
+  // 旧节点代次:只读
+  const old = fleet({ proposals: [{ ...proposal, identity_current: false }], bindings: [target({ execution_authorized: true, identity_current: 0 })] });
+  assert.deepEqual([old.lane, old.primary, old.more, old.others, old.readonly], [null, null, [], [], true]);
+  assert.equal(M.fleetInbox("proposal", { ...proposal, identity_current: false }, PCS).primary, null);
+  assert.deepEqual(M.homeNodeLabels([["a", "笔记本"], ["b", "笔记本"], ["c", NODE_B]]), { a: "笔记本", b: "笔记本 2", c: "另一台电脑" }, "下拉里只写电脑名，重名才加序号");
+});
+
+test("首页：发出委派的本机卡进「正在执行」并写电脑名；落在本机卡上的跨机事项不另出一条", () => {
+  const tasks = [card(1, { status: "not_started", released: 1 }), card(2, { waiting_for: "review" })];
+  const proposal = { relation_id: "r2", descriptor_digest: "dd", state: "pending", identity_current: true, project_id: "demo", task_version: 9, subject: "绑定",
+    relation: { source_node_id: NODE_B, target_task_uid: "u2" } };
+  const lists = M.homeLists({ tasks, localName: "台式机 A", nodeNames: PCS, actions: { enabled: true, outgoing: [sent("pending")], proposals: [proposal] } });
+  assert.deepEqual(lists.running.map((r) => [r.localId, r.state, r.next]), [[1, "等待「笔记本 B」接收任务", "无需操作"]]);
+  assert.deepEqual(lists.mine.map((r) => [r.localId, r.state, r.next, r.action]), [[2, "待确认绑定", "核对后确认", undefined]], "本机卡上写着同一件事，不再出一条跨机事项");
+  assert.deepEqual(M.homeLists({ tasks, actions: { enabled: false, outgoing: [sent("pending")] } }).running, [], "没有跨机配置时照旧");
+  assert.deepEqual([...M.fleetUids({ enabled: true, outgoing: [sent("pending")], proposals: [proposal], bindings: [bound({ task_uid: "u3" })] })].sort(), ["u1", "u2", "u3"]);
+});
+
+test("协议持有的待验收卡：homeStep 返回 hold，「通过」不是下一步", () => {
+  const why = (code) => ({ code, message: code, next_action: "按对应协议完成结算或人工恢复" });
+  for (const code of ["DELEGATION_FINISH_HELD", "TOPOLOGY_FINISH_HELD"]) {
+    const s = M.homeStep(card(1, { waiting_for: "review", progress_blockers: [why(code)] }), { autoReview: true });
+    assert.deepEqual([s.lane, s.state, s.next, s.hold], ["mine", "待你验收", "按对应协议完成结算或人工恢复", true]);
+  }
+  assert.equal(M.homeStep(card(1, { waiting_for: "review", progress_blockers: [why("CANCELLATION_HELD")] })).hold, undefined, "别的阻塞不算协议持有");
+  assert.equal(M.homeStep(card(1, { waiting_for: "review" })).hold, undefined);
+});
+
+test("跨机结构钉：核对正文不拼编号，编号进技术信息；侧栏经 fleetApi.act 打开同一个核对弹窗", () => {
+  const a = src.indexOf(" function openAction(label,projectId,command,args,review,{"), b = src.indexOf(' $("fleet-action-close")', a);
+  assert.ok(a > 0 && b > a, "openAction not found");
+  const open = src.slice(a, b);
+  assert.ok(open.includes("if(tech?.length)actionBody.append(techIds(tech));"), "编号由 techIds 放进默认折叠的「技术信息」");
+  assert.ok(!/task_uid|node_id|relation_id/.test(open), "核对正文不拼任务编号、终端编号、关系编号");
+  assert.ok(open.includes('actionSubmit.textContent=sent?"重试同一请求":"确认提交"') && src.includes("arguments:{...draft.arguments,"), "确认提交与提交的参数不变");
+  const view = src.slice(src.indexOf("// Global read view stays within the existing operator panel."));
+  for (const old of ["来源终端：", "目标终端：", "来源任务：", "目标任务：", "对象：", "\n关系："])
+    assert.ok(!view.includes(old + '"+'), "全局视图的核对正文不再拼「" + old + "」加编号");
+  for (const id of ['["来源终端",r.source_node_id]', '["目标终端",r.target_node_id]', '["来源任务",d.source_task_uid]', '["本机任务",d.target_task_uid]', '["关系",r.relation_id]'])
+    assert.ok(view.includes(id), "编号改由 tech 带出：" + id);
+  assert.ok(!view.includes(".slice(0,8)") && view.includes("homeNodeLabels([...ownerNames])"), "电脑下拉不带终端编号前 8 位");
+  assert.ok(src.includes("fleetApi={showTask,open:openFleet,act:openAction,evidence:taskEvidence,names:{history:historyStates,commands:commandNames,actions:actionStates}};"));
+  assert.ok(src.includes('placeholder="标题或任务编号"'));
+  // 刷新后保留:任务详情写进 #fleet-task=,关闭时清掉;处理说明按「命令 + 对象」存草稿,提交过的连编号一起存。
+  assert.ok(src.includes('p.set("fleet-task",uid)') && src.includes("detailGeneration++;fleetHash(null);"));
+  assert.ok(open.includes('const key=command+":"+JSON.stringify(args)') && open.includes("action_id:sent?saved.action_id:crypto.randomUUID()"));
+  assert.ok(src.includes("saveActionDraft(draft.key,{action_id:draft.action_id,note:draft.input?draft.input.value:\"\",sent:true});"));
+  // 全局视图里的本机任务直达侧栏;三段长文默认折叠。
+  const next = src.slice(src.indexOf(" function nextStep(t,card,body){"), src.indexOf(" function openFleet(){"));
+  assert.ok(next.includes("detail.close();dialog.close();openSide({id:card.id,uid:null,item:null});") && !next.includes("locateOnBoard"));
+  assert.ok(src.includes("if(t.local_id!==null&&byId.has(t.local_id)){dialog.close();openSide({id:t.local_id,uid:null,item:null});}else showTask(t.task_uid);"));
+  assert.ok(src.includes('long.append(el("summary","给执行者看的详细说明"));') && src.includes('const locate=el("button","在「全部任务」中定位")'));
+  // 首页跨机事项点开进侧栏,不再打开全局视图。
+  const item = src.slice(src.indexOf("function openHomeItem(item){"), src.indexOf("function sideCard(){"));
+  assert.ok(item.includes("openSide({ action: { kind: item.kind, id: item.id }") && !item.includes("fleetApi"));
 });
