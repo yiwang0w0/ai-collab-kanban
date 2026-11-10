@@ -510,3 +510,25 @@ test("首页卡只露标题、所属电脑、状态和下一步；长串编号�
   assert.ok(tech.includes('homeEl("details"') && tech.includes('homeEl("summary", "技术信息")') && tech.includes('["任务 UID", t.task_uid]'),
     "任务 UID、运行号在默认折叠的「技术信息」里");
 });
+
+test("手动建卡：原表单、编号和处理器都在，入口是输入框操作行里的次要按钮", () => {
+  const cut = (open, close) => { const i = src.indexOf(open), j = src.indexOf(close, i); assert.ok(i > 0 && j > i, open); return src.slice(i, j); };
+  const acts = cut('<div class="chat-acts">', "</div>");
+  assert.match(acts, /<button type="button" id="home-new-open">.*手动建卡<\/button>/, "入口在输入框的操作行里，不是主按钮");
+  assert.equal(src.split('id="home-new-open"').length - 1, 1, "入口只有一个");
+  assert.ok(acts.indexOf('id="home-new-open"') < acts.indexOf('id="chat-send" class="pri"'), "发送是这一行唯一的主按钮");
+  const form = cut('<form id="home-new-form" class="form-panel" hidden', "</form>");
+  for (const id of ["home-new-title", "home-new-desc", "home-new-line", "home-new-execution", "home-new-profile", "home-new-model", "home-new-preview", "home-new-err", "home-new-cancel", "home-new-x"])
+    assert.ok(form.includes(`id="${id}"`), "表单里还有 " + id);
+  assert.match(form, /<button type="submit" class="pri">.*创建任务<\/button>/);
+  const show = cut("function newShow(on){", "function newSave(){");
+  assert.ok(show.includes('getElementById("home-new-form").hidden = !on') && show.includes('getElementById("home-new-open").hidden = on'), "按下入口展开表单并收起入口");
+  for (const wired of ['document.getElementById("home-new-open").addEventListener("click", () => newShow(true));',
+    'document.getElementById("home-new-cancel").addEventListener("click", newClear);', 'document.getElementById("home-new-x").addEventListener("click", newClear);',
+    'document.getElementById("home-new-form").addEventListener("input", newSave);'])
+    assert.ok(src.includes(wired), wired);
+  const submit = cut('getElementById("home-new-form").addEventListener("submit"', "finally { btn.disabled = false; }");
+  assert.ok(submit.includes("newTaskBody(") && submit.includes('await post("/api/tasks", r.body)') && submit.includes("openSide({ id: j.task.id"), "提交照旧直接建卡并打开任务侧栏");
+  assert.deepEqual(M.newTaskBody({ title: " 手动建的卡 ", line: "engine" }, { lines: ["engine", "review"], reviewLines: ["review"] }),
+    { body: { subject: "手动建的卡", description: "", line: "engine" } });
+});
