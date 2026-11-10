@@ -46,6 +46,8 @@ from a named incident (see `docs/INCIDENTS.md`):
   请求里的 `worker` 只接受字符串或数字，进入身份检查前统一成字符串，检查与落库用同一个值；数组、布尔、null 等写法一律 400
   （它们转成字符串后会变成合法的名字）。没写 `worker` 时按落库会用的名字 `undefined` 检查，这个名字不能登记成执行者 id。
   执行者 id 不能与受管执行线或角色座席同名（登记与加线两个方向都拒绝）；修复前已同名的登记，其令牌不能领卡、续租、交付。
+  注销执行者（`DELETE /api/coord/executors/:id`）只属于操作员令牌：执行者、worker、审阅令牌 403，批准令牌与远程入口不能调；
+  还持有进行中的卡或未释放的锁时 409；注销后令牌立即失效，库里不再留它的哈希，并写一条操作员流水。
   **Measured 2026-09-07 with the real CLI on Windows (nine experiments, positive
   controls included):** a Claude worker in `-p` mode can `Read` any absolute path
   on the machine, inside or outside its working directory — so moving the data

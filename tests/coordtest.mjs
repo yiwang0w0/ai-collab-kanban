@@ -25,9 +25,9 @@ const cp = (...n) => String.fromCodePoint(...n);
 const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
 const hasUnsafe = (text) => [...String(text)].some((ch) => isUnsafeCp(ch.codePointAt(0)));
 
-async function board(env = {}) {
+async function board(env = {}, extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), "coordtest-")), config = join(dir, "fleet.json");
-  writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", external: true }], roles: [], routes: ["default"], repo: dir }));
+  writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", external: true }], roles: [], routes: ["default"], repo: dir, ...extra }));
   const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
   const port = l.address().port; await new Promise((r) => l.close(r));
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
@@ -673,5 +673,105 @@ test("协作安全:board.py journal ls 的查询参数做 URL 编码,带 + 时�
     const none = B.cli("journal", "ls", "--since", since, "--executor", "nobody&limit=500", "--token-file", tf);
     assert.equal(none.code, 0, none.out);
     assert.ok(!none.out.includes("带时区查询"), "值里的 & 不会混进别的参数");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:操作员可以注销执行者;在持卡或持锁时拒绝,其他令牌与远程入口不能注销,留流水", { timeout: 120000 }, async () => {
+  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.2", r));
+  const rport = l.address().port; await new Promise((r) => l.close(r));
+  const B = await board({}, { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.0/8"] } });
+  try {
+    const del = (id, token) => B.api("DELETE", `/api/coord/executors/${encodeURIComponent(id)}`, token);
+    const ids = async () => (await B.api("GET", "/api/coord/executors", B.operator)).body.executors.map((e) => e.id);
+    const tok = await B.register("agent-d"), other = await B.register("agent-e");
+    // 只有操作员能注销
+    const apr = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    assert.equal((await del("agent-d", B.worker)).status, 403, "worker 令牌不能注销");
+    assert.equal((await del("agent-d", tok)).status, 403, "执行者不能注销自己");
+    assert.equal((await del("agent-d", other)).status, 403, "执行者不能注销别人");
+    assert.equal((await del("agent-d", apr)).status, 401, "本机接口不认批准令牌");
+    let remote = null;
+    for (let i = 0; i < 50 && !remote; i++) {
+      try { remote = await fetch(`http://127.0.0.2:${rport}/api/coord/executors/agent-d`, { method: "DELETE", headers: { Authorization: `Bearer ${apr}` } }); }
+      catch { await delay(100); }
+    }
+    assert.equal(remote?.status, 403, "远程入口不开放注销");
+    assert.equal((await del("nobody", B.operator)).status, 404, "没登记的 id 是 404");
+    assert.ok((await ids()).includes("agent-d"), "被拒的都没有注销成");
+    // 还持有进行中的卡:409
+    await B.api("POST", "/api/coord/status", tok, { current: "跑回归", next: ["提交报告"] });
+    await B.api("POST", "/api/coord/journal", tok, { kind: "note", body: "注销之前写的流水" });
+    const t = await B.card("执行者手上的卡", "ext");
+    const got = await B.take(tok, t.id);
+    assert.equal(got.status, 200, JSON.stringify(got.body));
+    const held = await del("agent-d", B.operator);
+    assert.equal(held.status, 409, `在持卡时不能注销:${JSON.stringify(held.body).slice(0, 200)}`);
+    assert.match(held.body.error, new RegExp(`#${t.id}`), "写明是哪张卡");
+    assert.equal((await B.api("POST", `/api/tasks/${t.id}/report`, tok, { run_id: got.body.task.run_id, outcome: "done", evidence: "交付" })).status, 200);
+    // 还持有未释放的锁:409
+    assert.equal((await B.api("POST", "/api/coord/locks", tok, { resource: "device:test-phone", minutes: 5, purpose: "回归" })).status, 201);
+    const locked = await del("agent-d", B.operator);
+    assert.equal(locked.status, 409, `在持锁时不能注销:${JSON.stringify(locked.body).slice(0, 200)}`);
+    assert.match(locked.body.error, /device:test-phone/, "写明是哪把锁");
+    assert.equal((await B.api("GET", "/api/coord", tok)).status, 200, "被拒之后令牌照常");
+    assert.equal((await B.api("POST", "/api/coord/locks/release", tok, { resource: "device:test-phone" })).status, 200);
+    // 都放掉之后可以注销:令牌立即失效,列表里不再有它,留一条操作员流水;它写过的流水与锁记录还在
+    const gone = await del("agent-d", B.operator);
+    assert.equal(gone.status, 200, JSON.stringify(gone.body));
+    assert.equal(gone.body.executor.id, "agent-d");
+    assert.equal((await B.api("GET", "/api/coord", tok)).status, 401, "注销后令牌失效");
+    assert.deepEqual(await ids(), ["agent-e"]);
+    const jr = (await B.api("GET", "/api/coord/journal?limit=200", B.operator)).body.entries;
+    const note = jr.find((e) => e.kind === "executor.unregister");
+    assert.ok(note && note.executor === "operator" && note.body.includes("agent-d"), `注销要留流水:${JSON.stringify(jr.map((e) => [e.executor, e.kind]))}`);
+    assert.equal(note.id, gone.body.journal_id);
+    assert.ok(jr.some((e) => e.executor === "agent-d" && e.body === "注销之前写的流水"), "它写过的流水不删");
+    const locks = (await B.api("GET", "/api/coord/locks?all=1", B.operator)).body.locks;
+    assert.deepEqual(locks.map((x) => [x.resource, x.holder]), [["device:test-phone", "agent-d"]], "锁记录不删");
+    assert.equal((await del("agent-d", B.operator)).status, 404, "已注销的再注销是 404");
+    const db = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
+    const row = db.prepare("SELECT token_hash FROM coord_executors WHERE id='agent-d'").get(); db.close();
+    assert.notEqual(row?.token_hash, createHash("sha256").update(tok).digest("hex"), "库里不再留着旧令牌的哈希");
+    // 同一个 id 可以重新登记:新令牌可用,旧令牌仍无效,状态从空白开始
+    const again = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-d", name: "新的甲" });
+    assert.equal(again.status, 201, JSON.stringify(again.body));
+    assert.equal((await B.api("GET", "/api/coord", tok)).status, 401);
+    const me = (await B.api("GET", "/api/coord/executors", again.body.token)).body.executors.find((e) => e.id === "agent-d");
+    assert.deepEqual([me.name, me.kind, me.status.current, me.last_seen], ["新的甲", "external", "", null]);
+    assert.equal((await B.api("POST", "/api/coord/stop", again.body.token, {})).status, 201, "重新登记后照常停止并生成交接包");
+    // 命令行:exec unregister
+    const tf = join(B.dir, "e.tok"); writeFileSync(tf, other + cp(10));
+    assert.notEqual(B.cli("exec", "unregister", "agent-e", "--token-file", tf).code, 0, "执行者令牌不能用命令行注销");
+    const c = B.cli("exec", "unregister", "agent-e");
+    assert.equal(c.code, 0, c.out);
+    assert.match(c.out, /已注销执行者 agent-e/);
+    assert.equal((await B.api("GET", "/api/coord", other)).status, 401);
+    assert.notEqual(B.cli("exec", "unregister", "agent-e").code, 0, "再注销一次报 404");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:与受管线同名的旧登记注销之后,共享 worker 令牌可以再用这个座位名", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    // 手工用共享 worker 令牌跑 alpha 线,手上有一张卡
+    await B.card("受管线上的卡");
+    const cl = await B.api("POST", "/api/claim", B.worker, { worker: "alpha", line: "alpha", worker_protocol_version: 2, agent_instance_id: randomUUID() });
+    assert.equal(cl.status, 200, JSON.stringify(cl.body));
+    const beat = () => B.api("POST", `/api/tasks/${cl.body.task.id}/heartbeat`, B.worker, { worker: "alpha", run_id: cl.body.task.run_id, lease_minutes: 30 });
+    assert.equal((await beat()).status, 200, "没有同名登记时照常续租");
+    // 修复前留下的同名登记(直接写库):共享令牌从此用不了这个座位名
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    const at = new Date().toISOString();
+    db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
+      .run("alpha", "alpha", "line", createHash("sha256").update("exe_" + "2".repeat(48)).digest("hex"), at, at);
+    db.close();
+    assert.equal((await beat()).status, 409, "有同名登记时,共享令牌对已持有的卡续租也被拒");
+    // 操作员注销这条旧登记:alpha 名下进行中的卡是座位的(同名执行者领不了卡),不挡注销
+    const gone = await B.api("DELETE", "/api/coord/executors/alpha", B.operator);
+    assert.equal(gone.status, 200, `同名旧登记应能注销:${JSON.stringify(gone.body).slice(0, 200)}`);
+    assert.equal((await beat()).status, 200, "注销后共享令牌恢复续租");
+    assert.equal((await B.api("GET", "/api/coord", "exe_" + "2".repeat(48))).status, 401, "旧登记的令牌失效");
+    const still = (await B.api("GET", `/api/tasks/${cl.body.task.id}`, B.operator)).body.task;
+    assert.deepEqual([still.status, still.worker], ["in_progress", "alpha"], "座位手上的卡不受影响");
   } finally { await B.stop(); }
 });

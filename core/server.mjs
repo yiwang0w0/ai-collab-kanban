@@ -2618,6 +2618,18 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     emit("coord.executor", { id: r.executor.id });
     return json(res, r.rotated ? 200 : 201, r);
   }
+  // 注销:只属于操作员(guardWrite 已把 worker、执行者、审阅令牌挡在 403;批准令牌本机不认,远程入口不开放这条路径)。
+  const mx = p.match(/^\/api\/coord\/executors\/([^/]+)$/);
+  if (mx && m === "DELETE") {
+    if (!asOperator(req, res)) return;
+    let id;
+    try { id = decodeURIComponent(mx[1]); } catch { throw store.err(store.ERR.BAD_INPUT, "执行者 id 的 URL 编码无效"); }
+    // id 与受管座位同名的(修复前登记的)执行者领不了卡:这个名字下进行中的卡是座位的,不挡注销。锁只可能是执行者自己的。
+    const r = coord.unregister(db, id, { cardsBelongToSeat: isManagedSeatName(id) }, now);
+    console.log(`协作:操作员注销执行者 ${r.executor.id}`);
+    emit("coord.executor", { id: r.executor.id, op: "unregister" });
+    return json(res, 200, r);
+  }
   if (m === "POST" && p === "/api/coord/heartbeat") {
     const ex = asExecutor(req, res); if (!ex) return;
     const b = await readBody(req);

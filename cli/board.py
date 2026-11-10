@@ -27,6 +27,7 @@
 
 多执行者协作(docs/多执行者协作.md)。--token-file <文件> 改用执行者令牌,其余命令照旧;不给则用 board_token:
   $P exec register <id> [--kind line|external|other] [--name 名] [--file payload.json] [--save 令牌文件]   # 操作员
+  $P exec unregister <id>                    # 操作员:注销,令牌立即失效;还持有进行中的卡或未释放的锁时 409
   $P exec status [--file status.json]        # 有 --file = 写自己的 {current,done,next};没有 = 列出各执行者
   $P exec heartbeat [--task <id>] [--lease <分钟>]
   $P exec stop                               # 停下并生成交接包
@@ -237,8 +238,15 @@ def coord_cmd(cmd):
             if s >= 400: die(s, d)
             h = d["handoff"]
             print(f"已停止;交接记录 #{h['id']}" + ("" if d.get("created") else "(此前已生成,未重复生成)"))
+        elif sub == "unregister":
+            eid = pos(3)
+            if not eid: sys.exit("exec unregister <id>")
+            s, d = call("DELETE", "/api/coord/executors/" + urllib.parse.quote(eid, safe=""))
+            if s >= 400: die(s, d)
+            ex = d["executor"]
+            print(f"已注销执行者 {vis(ex['id'])}({vis(ex['name'])},{vis(ex['kind'])});令牌已失效,流水 #{d['journal_id']}")
         else:
-            sys.exit("exec register|status|heartbeat|stop")
+            sys.exit("exec register|unregister|status|heartbeat|stop")
     elif cmd == "lock":
         if sub == "acquire":
             res, mins = pos(3), arg("--minutes")

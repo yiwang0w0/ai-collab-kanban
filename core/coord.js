@@ -57,8 +57,12 @@ function migrate(db) {
     token_issued_at TEXT NOT NULL,
     last_seen INTEGER,
     stopped_at INTEGER,
-    stop_seq INTEGER NOT NULL DEFAULT 0
+    stop_seq INTEGER NOT NULL DEFAULT 0,
+    removed_at INTEGER
   )`);
+  // 注销留墓碑,不删行(见 unregister)。这一列是后加的,旧库补上。
+  if (!db.prepare("SELECT 1 FROM pragma_table_info('coord_executors') WHERE name='removed_at'").get())
+    db.exec("ALTER TABLE coord_executors ADD COLUMN removed_at INTEGER");
   // 锁:一行一次持有。未释放的行对同一资源唯一(部分唯一索引 = 库层互斥)。时刻都由服务端测。
   db.exec(`CREATE TABLE IF NOT EXISTS coord_locks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -167,8 +171,9 @@ function executorOut(r) {
            stopped_at: iso(r.stopped_at), active: r.stopped_at == null };
 }
 
+/** 已登记且未注销的执行者。注销留下的墓碑行(removed_at 非空)对登记以外的一切查询都等于不存在。 */
 function getRow(db, id) {
-  return db.prepare("SELECT * FROM coord_executors WHERE id=?").get(String(id));
+  return db.prepare("SELECT * FROM coord_executors WHERE id=? AND removed_at IS NULL").get(String(id));
 }
 
 /** 这个名字是不是已登记的执行者 id(领卡身份检查用)。调用方先把 worker 正规化成字符串(server.mjs readBody)再来查。 */
@@ -191,6 +196,10 @@ function register(db, { id, name, kind, rotate = false } = {}, now = Date.now())
   if (have && !rotate) throw err(ERR.CONFLICT, `执行者 ${eid} 已登记;换发令牌请带 rotate:true`);
   if (have) db.prepare("UPDATE coord_executors SET name=?, kind=?, token_hash=?, token_issued_at=? WHERE id=?")
     .run(nm, kind, sha256(token), at, eid);
+  // 这个 id 注销过:复用墓碑行,当作新登记。stop_seq 接着往下数,不与旧的交接记录撞号。
+  else if (db.prepare("SELECT 1 FROM coord_executors WHERE id=?").get(eid))
+    db.prepare(`UPDATE coord_executors SET name=?, kind=?, token_hash=?, created_at=?, token_issued_at=?,
+                last_seen=NULL, stopped_at=NULL, removed_at=NULL WHERE id=?`).run(nm, kind, sha256(token), at, at, eid);
   else db.prepare("INSERT INTO coord_executors (id,name,kind,token_hash,created_at,token_issued_at) VALUES (?,?,?,?,?,?)")
     .run(eid, nm, kind, sha256(token), at, at);
   return { executor: executorOut(getRow(db, eid)), token, rotated: !!have };
@@ -199,7 +208,7 @@ function register(db, { id, name, kind, rotate = false } = {}, now = Date.now())
 /** 令牌 → 执行者;查不到返回 null。只按哈希比较,库里没有明文。 */
 function byToken(db, token) {
   if (typeof token !== "string" || !token.startsWith("exe_")) return null;
-  return executorOut(db.prepare("SELECT * FROM coord_executors WHERE token_hash=?").get(sha256(token)));
+  return executorOut(db.prepare("SELECT * FROM coord_executors WHERE token_hash=? AND removed_at IS NULL").get(sha256(token)));
 }
 
 function lockOut(db, r, now = Date.now(), graceMs = 30 * 60000) {
@@ -396,8 +405,8 @@ function stop(db, executorId, reason = "stop", now = Date.now(), graceMs) {
 
 /** 心跳超过 staleMs 的活动执行者:按停止处理,各生成一份交接记录。从未心跳过的不算。 */
 function sweepStale(db, now = Date.now(), staleMs = 20 * 60000, graceMs) {
-  const rows = db.prepare(`SELECT id FROM coord_executors WHERE stopped_at IS NULL AND last_seen IS NOT NULL AND last_seen + ? < ?`)
-    .all(staleMs, now);
+  const rows = db.prepare(`SELECT id FROM coord_executors WHERE stopped_at IS NULL AND removed_at IS NULL
+                             AND last_seen IS NOT NULL AND last_seen + ? < ?`).all(staleMs, now);
   return rows.map((x) => stop(db, x.id, "heartbeat_stale", now, graceMs)).filter((x) => x.created).map((x) => x.handoff);
 }
 
@@ -426,8 +435,38 @@ function ackHandoff(db, executorId, id, now = Date.now()) {
 }
 
 function listExecutors(db) {
-  return db.prepare("SELECT * FROM coord_executors ORDER BY id").all()
+  return db.prepare("SELECT * FROM coord_executors WHERE removed_at IS NULL ORDER BY id").all()
     .map((r) => ({ ...executorOut(r), status: statusOf(db, r.id) }));
+}
+
+/** 操作员注销执行者:令牌立即失效,id 空出来(可以重新登记)。还持有进行中的卡或未释放的锁时拒绝。
+ *  行不删:锁记录与交接记录按 id 引用它,交接记录又是只追加的。改成墓碑(removed_at),令牌哈希换成不可能命中的值,
+ *  当前状态清掉;它写过的流水、锁记录、交接记录原样留着。同一事务里写一条操作员流水。
+ *  cardsBelongToSeat:id 与受管座位同名时,这个名字下进行中的卡是座位的(同名的执行者领不了卡),不算它持有。 */
+function unregister(db, executorId, { cardsBelongToSeat = false } = {}, now = Date.now()) {
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT coord_unregister");
+  try {
+    const r = getRow(db, executorId);
+    if (!r) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
+    const cards = cardsBelongToSeat ? []
+      : db.prepare("SELECT id FROM tasks WHERE status='in_progress' AND worker=? ORDER BY id").all(r.id).map((x) => Number(x.id));
+    const locks = db.prepare("SELECT resource FROM coord_locks WHERE holder=? AND released_at IS NULL ORDER BY id").all(r.id).map((x) => x.resource);
+    if (cards.length || locks.length) {
+      const what = [cards.length ? `进行中的卡 ${cards.map((c) => "#" + c).join(" ")}` : "", locks.length ? `未释放的锁 ${locks.join(" ")}` : ""];
+      throw err(ERR.CONFLICT, `执行者 ${r.id} 还持有${what.filter(Boolean).join("、")},不能注销;等它交付、释放,或等租约到期、强制释放锁之后再注销`);
+    }
+    db.prepare("UPDATE coord_executors SET removed_at=?, stopped_at=COALESCE(stopped_at, ?), token_hash=? WHERE id=?")
+      .run(now, now, `removed:${r.id}`, r.id);
+    db.prepare("DELETE FROM coord_status WHERE executor_id=?").run(r.id);
+    const name = [...String(r.name)].map((ch) => isUnsafeChar(ch) ? "?" : ch).join("");
+    const entry = appendJournal(db, "operator", { kind: "executor.unregister", body: `注销执行者 ${r.id}(${name},${r.kind});令牌已失效` }, now);
+    db.exec(own ? "COMMIT" : "RELEASE coord_unregister");
+    return { executor: { ...executorOut(r), active: false, removed_at: iso(now) }, journal_id: entry.id };
+  } catch (e) {
+    try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO coord_unregister; RELEASE coord_unregister"); } catch {}
+    throw e;
+  }
 }
 
 /** 任意执行者心跳(含卡片心跳)都刷新 last_seen,并回到活动状态。 */
@@ -463,7 +502,7 @@ function heartbeat(db, executorId, { taskId = null, leaseMin } = {}, now = Date.
 }
 
 module.exports = {
-  migrate, register, byToken, isExecutor, listExecutors, heartbeat, touch, executorLease, executorOut,
+  migrate, register, unregister, byToken, isExecutor, listExecutors, heartbeat, touch, executorLease, executorOut,
   statusOf, setStatus, STATUS_LIMITS,
   acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN, REASON_MAX,
   appendJournal, journal, ARTIFACT_CHECK, JOURNAL_BODY_MAX, RESERVED_IDS,
