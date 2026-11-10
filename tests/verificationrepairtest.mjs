@@ -48,7 +48,7 @@ class Heartbeat:
  def start(self): pass
 w.Heartbeat=Heartbeat
 
-def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tail='完成本轮修改', evidence='本轮交付', api=False, identity_changed=False, case=None, spawn=None):
+def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tail='完成本轮修改', evidence='本轮交付', api=False, identity_changed=False, case=None, spawn=None, log_blocked=False):
  # case 可复用：同一张卡被再次领取时证据目录不变；spawn 是模型首轮写下的派生建议。
  case=case or folder/str(uuid.uuid4()); case.mkdir(exist_ok=True)
  w.DATA=str(case); w.EVID=str(case/'evidence'); w.LEDGER=str(case/'usage_ledger.jsonl')
@@ -87,6 +87,8 @@ def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tai
   if len(calls)==1: w.LAST_ACCT={'sid':sid,'t0':None,'usage':{'calls':1,'in':12,'cc':0,'cr':0,'out':3,'note':None}}
   if evidence: pathlib.Path(path).write_text(evidence,encoding='utf-8')
   if spawn and len(calls)==1: pathlib.Path(w.spawn_path_for(7)).write_text(json.dumps(spawn,ensure_ascii=False),encoding='utf-8')
+  # log_blocked：本轮验证日志的路径被一个同名目录占住，宿主写不了日志。
+  if log_blocked: (pathlib.Path(w.EVID)/'verify_runs'/task['run_id']/('attempt-%d-round-%d.log'%(attempt,len(calls)))).mkdir(parents=True,exist_ok=True)
   return rc,tail
  w.run_worker=run_worker
  def verify(task):
@@ -405,6 +407,66 @@ try: exercise([green],case=case,spawn=suggestion)
 except KeyError: pass
 else: raise AssertionError('夹具异常没有抛出')
 assert not (case/'evidence'/'spawn-7.json').exists() and len(list((case/'evidence').glob('spawn-7-retained-*.json')))==1
+`);
+});
+
+test("验证日志落盘失败不改写验证结果：执行线转等待不重跑模型，审阅线本轮跳过不裁决", () => {
+  python(WORKER_FIXTURE + `import verify_lib as v
+import reviewer_loop as r
+occupied=folder/'被文件占住'; occupied.write_text('占位',encoding='utf-8')
+for passed in (True,False):
+ vr={'ok':passed,'key':'fixture-check','cmd':'本地函数桩','rc':0 if passed else 1,'out':'本地输出','full_out':'本地输出','registry_sha256':'a'*64}
+ assert v.save_verify_log(vr,str(occupied/'verify_runs'/'x.log')) is False
+ assert vr['ok'] is passed and 'code' not in vr and 'log_path' not in vr and vr['log_error'].startswith('VERIFY_LOG_UNAVAILABLE'),vr
+ text=v.fmt_verify(vr)
+ assert ('结果: 通过' if passed else '结果: 失败') in text and '保存失败' in text,text
+# 新路径：验证通过但日志存不下来 → 转等待，原因单独记一类；不追加模型调用。
+f=exercise([green],log_blocked=True)
+assert f.result=='wait' and len(f.calls)==1 and [row['reason'] for row in f.rows]==['verify_log_unavailable'],(f.result,f.rows)
+report=f.deliveries[0][0][3]
+assert f.deliveries[0][0][2]=='wait' and '结果: 通过' in report and '保存失败' in report and 'verify_log_unavailable' in report,report
+# 旧阶梯路径：同样转等待。把通过的验证当失败去重跑模型的话，会向看板要新的 attempt —— 夹具对任何看板请求直接报错。
+w.os.environ['WORKER_LEGACY_RETRY']='1'
+case=folder/'旧阶梯'; case.mkdir(); w.DATA=str(case); w.EVID=str(case/'evidence'); w.LEDGER=str(case/'ledger.jsonl')
+w.LAST_ACCT={'sid':None,'t0':None,'usage':{'calls':None,'in':None,'cc':None,'cr':None,'out':None}}
+old={'id':7,'run_id':str(uuid.uuid4()),'attempts':1,'attempts_this_claim':1,'max_attempts':3,'verify_cmd':'fixture-check','subject':'旧阶梯夹具','weight':'standard'}
+models=[]; delivered=[]
+def model(task,worker,path,prev,attempt,name,effort):
+ models.append(attempt); pathlib.Path(path).write_text('旧阶梯交付',encoding='utf-8')
+ (pathlib.Path(w.EVID)/'verify_runs'/task['run_id']/('attempt-%d-legacy.log'%attempt)).mkdir(parents=True)
+ return 0,'完成'
+w.run_worker=model
+w.run_verify=lambda task:{'ok':True,'key':'fixture-check','cmd':'本地函数桩','rc':0,'out':'PASS 本地桩验证','registry_sha256':'a'*64}
+def refuse(method,path,body=None,**kwargs): raise AssertionError('旧阶梯不应重试或写看板:'+method+' '+path)
+w.call=refuse
+w.deliver=lambda *args,**kwargs:(delivered.append(args),True)[1]
+try: outcome=w.handle(old,'fixture')
+finally: w.os.environ.pop('WORKER_LEGACY_RETRY',None)
+assert outcome=='wait' and models==[1],(outcome,models)
+assert delivered[0][2]=='wait' and '结果: 通过' in delivered[0][3] and '保存失败' in delivered[0][3],delivered
+# 审阅线：验证是绿的，只是日志写不了 → 本轮跳过这张卡：不调用模型、不打回、不盖已审印，日志里单独记一行。
+reviewed=[]; sent=[]; logged=[]
+r.review_one=lambda t,vr:(reviewed.append(1) or {'verdict':'approve','reason':'夹具'},None)
+r.call=lambda method,path,body=None:(sent.append((method,path,body)),(200,{}))[1]
+r.log=lambda message:logged.append(message)
+card={'id':7,'subject':'审阅夹具','acceptance':'静态核对','aggregate_version':3,'updated_at':'夹具时刻'}
+for passed in (True,False):
+ r.DATA=str(occupied); sent.clear(); logged.clear()
+ r.run_verify=lambda t:{'ok':passed,'key':'fixture-check','cmd':'本地函数桩','rc':0 if passed else 1,'out':'本地输出','full_out':'本地输出'}
+ kind,d,err,vr=r.judge_one(card)
+ assert kind=='host_error' and vr['ok'] is passed and not reviewed and '日志' in err,(kind,err,vr)
+ assert r.settle(card,kind,d,err,vr)=='skipped' and sent==[],(sent,logged)
+ assert any('#7' in line and '跳过' in line for line in logged),logged
+# 对照：日志能写时，验证真的红照旧机械打回；绿的照旧交给模型判读。
+r.DATA=str(folder/'审阅数据'); sent.clear()
+r.run_verify=lambda t:{'ok':False,'key':'fixture-check','cmd':'本地函数桩','rc':1,'out':'1 failed','full_out':'1 failed'}
+kind,d,err,vr=r.judge_one(card)
+assert kind=='mech_reject' and not reviewed and vr.get('log_path'),(kind,err,vr)
+assert r.settle(card,kind,d,err,vr)=='reject'
+assert len(sent)==1 and sent[0][1]=='/api/tasks/7/resolve' and sent[0][2]['verdict']=='reject' and sent[0][2]['verify_ok'] is False,sent
+r.run_verify=lambda t:{'ok':True,'key':'fixture-check','cmd':'本地函数桩','rc':0,'out':'PASS','full_out':'PASS'}
+kind,d,err,vr=r.judge_one(card)
+assert kind=='model' and reviewed==[1] and d['verdict']=='approve',(kind,d,err)
 `);
 });
 

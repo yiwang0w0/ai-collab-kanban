@@ -396,15 +396,17 @@ def run_verify(t):
         return {"ok": False, "registry_sha256": _REGISTRY_SHA256, "key": key, "cmd": shown, "rc": -2, "out": f"(无法启动: {e})"}
 
 def save_verify_log(vr, path):
-    """先保存本轮完整机器输出，再在提示和回报中使用有界的完整项。"""
+    """先保存本轮完整机器输出，再在提示和回报中使用有界的完整项。
+    存不下来(磁盘满、路径被占、没有写权限)是宿主环境故障，不是验证失败：
+    验证结果(ok / rc / code)原样不动，只在 log_error 里单独记下，由调用方决定停在哪里。"""
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with io.open(path, "w", encoding="utf-8", newline="") as output:
             output.write(str(vr.get("full_out", vr.get("out")) or ""))
         vr["log_path"], vr["log_bytes"] = path, os.path.getsize(path)
         return True
-    except OSError:
-        vr["code"], vr["ok"] = "VERIFY_LOG_UNAVAILABLE", False
+    except OSError as error:
+        vr["log_error"] = f"VERIFY_LOG_UNAVAILABLE: {type(error).__name__}: {error}"
         return False
 
 
@@ -415,7 +417,9 @@ def fmt_verify(vr):
         f"结果: {'通过' if vr['ok'] else '失败'}   rc={vr.get('rc')}",
         "登记簿 SHA-256: " + (vr.get("registry_sha256") or "未固定") +
         ("   code=" + vr["code"] if vr.get("code") else ""),
-        "输出按完整行取舍；省略项不代表已核验。" + ("完整日志：" + vr["log_path"] if vr.get("log_path") else "全文由宿主保留；尚无落盘日志编号。"),
+        "输出按完整行取舍；省略项不代表已核验。" + ("完整日志：" + vr["log_path"] if vr.get("log_path") else
+                                    "完整日志保存失败（" + vr["log_error"] + "）；上面的结果是验证命令的真实结果。" if vr.get("log_error") else
+                                    "全文由宿主保留；尚无落盘日志编号。"),
         "```",
         (vr.get("out") or "").rstrip(),
         "```",

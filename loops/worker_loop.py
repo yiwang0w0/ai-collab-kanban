@@ -2599,9 +2599,22 @@ def handle_legacy(t, worker):
             #   有产出但验证挂了就不算交付(把真实输出交给下一次尝试)。
             vr = run_verify(t) if ev else None
             if vr:
-                save_verify_log(vr, os.path.join(EVID, "verify_runs", run_id, f"attempt-{attempt}-legacy.log"))
+                logged = save_verify_log(vr, os.path.join(EVID, "verify_runs", run_id, f"attempt-{attempt}-legacy.log"))
                 ev += chr(10) + chr(10) + fmt_verify(vr)
                 log(f"  验证 {vr['key']}: " + ("通过" if vr["ok"] else f"失败 rc={vr.get('rc')}"))
+                if not logged:
+                    # 日志存不下来是宿主环境故障:验证结果如实写进报告,但不把它当成验证失败去重跑模型,
+                    # 也不带着缺日志的证据交付。修好数据目录后重新放行即可。
+                    log(f"  ⚠验证日志落盘失败({vr.get('log_error')})—— 转等待,不重试")
+                    LAST_FAIL_FP = "verify-log-unavailable"
+                    st_memo = stash_spawn(tid, "父卡未成功(验证日志落盘失败)")
+                    deliver_run(tid, worker, "wait",
+                                "**验证日志落盘失败**(宿主环境故障,不是本卡内容的问题):验证命令的真实结果见下,"
+                                "未重试、未追加模型调用。修好看板数据目录(磁盘空间、写权限、路径被占)后重新放行。"
+                                + chr(10) + chr(10) + ev
+                                + ((chr(10) + chr(10) + st_memo) if st_memo else "")
+                                + chr(10) + chr(10) + fmt_acct(acct), what="转等待")
+                    return "wait"
 
             if ev and (vr is None or vr["ok"]):
                 ev = host_delivery(t, ev, ev_path, vr, rc)
@@ -2828,7 +2841,8 @@ def handle(t, worker):
             log_path = os.path.join(log_dir, f"attempt-{attempt}-round-{number}.log")
             if vr:
                 if not save_verify_log(vr, log_path):
-                    reason = "environment"
+                    # 宿主写不了日志:验证结果不改写(附录照实写通过或失败),只是停在这里,原因单独记一类。
+                    reason = "verify_log_unavailable"
                 if contract:
                     appendix = (f"—— 宿主验证附录 ——\n{vr.get('cmd') or vr.get('key')} -> pass {1 if vr['ok'] else 0} / fail {0 if vr['ok'] else 1}（命令数）\n"
                                 + (f"日志：{log_path}（{vr['log_bytes']} UTF-8 bytes）" if vr.get("log_path") else "日志保存失败"))
