@@ -186,7 +186,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 | 现象 | 做什么 |
 |---|---|
 | `status` 显示 `needs_attention` | 有分派没结清,整条线被扣住。先 `node cli/zcode-worker.mjs reconcile --assignment <请求ID>`:只补交回执并补记账,不启动。 |
-| 开关已经关掉,但要补回执 | `node cli/scheduler.mjs reconcile` 只补回执;账本行等开关再打开后用上一条命令补,不会重复。 |
+| 开关已经关掉,但要补回执 | `node cli/scheduler.mjs reconcile` 只补回执,它的配置文件就是本配置里 `scheduler` 那一块原样另存。账本行等开关再打开后用上一条命令补,不会重复。 |
 | 领取后还没启动就中断 | `node cli/dispatch.mjs abandon`。许可没有消费,保留的那一次额度随之释放。 |
 | 结果不明的运行 | `node cli/dispatch.mjs prepare-uncertain`,核对后 `record-uncertain`。 |
 | 异常退出留下调度锁 | `node cli/runtime-lock.mjs prepare`,核对后 `apply`。不按心跳超时自动接管。 |
