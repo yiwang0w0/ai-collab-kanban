@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels,homeLineFaults,homeLogLines,homeLastFault,homeLastFaultTip};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -27,7 +27,7 @@ test("decisions and answers wait for me; a delivery waits for me only when no re
   ];
   const plain = M.homeLists({ tasks, localName: "台式机 A" });
   assert.deepEqual(ids(plain.mine), [1, 2, 3, 4], "confirm, then decision, then deliveries oldest first");
-  assert.deepEqual(plain.mine.map((r) => r.next), ["选择方案", "给出决定", "确认验收", "确认验收"]);
+  assert.deepEqual(plain.mine.map((r) => r.next), ["选择方案", "同意或否决", "通过或打回", "通过或打回"]);
   assert.equal(plain.running.length, 0, "dependency and re-review waits are machine-tended, not on the home lists");
   const reviewed = M.homeLists({ tasks, localName: "台式机 A", autoReview: true });
   assert.deepEqual(ids(reviewed.mine), [1, 2, 3], "a running reviewer takes deliveries — except one it may not judge");
@@ -52,10 +52,43 @@ test("a card the machine will not move is mine even with the reviewer running", 
   const { mine, running } = M.homeLists({ tasks, autoReview: true });
   assert.deepEqual(running.map((r) => [r.localId, r.state]), [[4, "等待自动审阅"]], "only an unheld, unjudged delivery is the reviewer's");
   assert.deepEqual(mine.map((r) => [r.localId, r.state, r.next]), [
-    [1, "待你验收", "确认验收"], [2, "待你验收", "确认验收"], [3, "待你验收", "按对应协议完成结算或人工恢复"],
+    [1, "待你验收", "通过或打回"], [2, "待你验收", "通过或打回"], [3, "待你验收", "按对应协议完成结算或人工恢复"],
     [6, "重审受阻", "核对审阅记录及子任务结果"], [8, "待人工裁定", "由操作者裁定或显式解除人工闸"],
-    [9, "待人工裁定", "由操作者裁定或显式解除人工闸"],
-  ], "unfinished children and a judged dependency wait are the machine's; an unreleased card stays in 全部任务");
+    [9, "待人工裁定", "由操作者裁定或显式解除人工闸"], [10, "待放行", "核对后放行"],
+  ], "unfinished children and a judged dependency wait are the machine's; a card that only lacks its release waits for me, last");
+});
+
+test("只差放行的卡进「待我处理」；祖先未放行或还有别的阻塞的不进；未放行的目标卡进", () => {
+  const why = (code, extra) => ({ code, message: code, next_action: "按服务端给的做", ...extra });
+  const tasks = [
+    card(1, { status: "not_started", released: 0, progress_blockers: [why("NOT_RELEASED")] }),
+    card(2, { status: "not_started", released: 0, parent_id: 5, progress_blockers: [why("NOT_RELEASED"), why("ANCESTOR_NOT_RELEASED", { related_task_ids: [5] })] }),
+    card(3, { status: "not_started", released: 0, progress_blockers: [why("NOT_RELEASED"), why("DEPENDENCIES_UNFINISHED", { related_task_ids: [1] })] }),
+    card(4, { status: "not_started", released: 1 }),
+    card(5, { kind: "goal", status: "not_started", released: 0, progress_blockers: [why("DESCENDANTS_UNFINISHED", { related_task_ids: [2] })] }),
+    card(6, { kind: "goal", status: "not_started", released: 1, progress_blockers: [why("DESCENDANTS_UNFINISHED", { related_task_ids: [9] })] }),
+    card(7, { kind: "goal", status: "not_started", released: 0, progress_blockers: [why("GOAL_WITHOUT_CHILDREN")] }),
+    card(8, { status: "not_started", released: 0, human_gate: 1, progress_blockers: [why("NOT_RELEASED"), why("HUMAN_GATE")] }),
+  ];
+  const { mine, running } = M.homeLists({ tasks });
+  assert.deepEqual(mine.map((r) => [r.localId, r.state, r.next, r.rank]),
+    [[8, "待人工裁定", "按服务端给的做", 4], [1, "待放行", "核对后放行", 5], [5, "待放行", "核对后放行", 5]],
+    "人工闸先于放行；祖先未放行的子卡、依赖未完成的卡、已放行的卡、已放行或没有子任务的目标都不进");
+  assert.equal(running.length, 0);
+  assert.equal(M.homeStep(tasks[0], { remoteName: "笔记本 B" }).lane, null, "另一台电脑的卡在它自己那里放行");
+  assert.equal(M.homeStep(card(9, { status: "not_started", released: 0 })).lane, null, "服务端没给「尚未放行」这一条就不猜");
+});
+
+test("侧栏次按钮去哪、受阻原因：心跳中断去执行线，进程未启动看逐项记录，受阻带服务端原因", () => {
+  const run = { status: "in_progress", run_id: "r" };
+  assert.equal(M.homeStep({ ...run, hb: "dead" }).go, "lines");
+  const cold = M.homeStep({ ...run, hb: "fresh", execution_trace: { run_id: "r", process_state: "not_started" } });
+  assert.deepEqual([cold.next, cold.go], ["检查启动回执", "receipt"]);
+  assert.equal(M.homeStep({ ...run, hb: "fresh" }).go, undefined, "正常在跑的卡没有次按钮");
+  const stuck = M.homeStep({ status: "waiting", waiting_for: "rearm",
+    progress_blockers: [{ code: "NO_NEW_CHILD_RESULT", message: "未观察到上次审阅之后的新子任务结果", next_action: "核对审阅记录及子任务结果" }] });
+  assert.deepEqual([stuck.lane, stuck.state, stuck.why, stuck.next], ["mine", "重审受阻", "未观察到上次审阅之后的新子任务结果", "核对审阅记录及子任务结果"]);
+  assert.equal("why" in M.homeStep({ status: "waiting", waiting_for: "dep", progress_blockers: [{ code: "HUMAN_GATE", next_action: "裁定" }] }), false, "服务端没写原因就不出这一行");
 });
 
 test("running cards name their executor and a silent one comes first with a warning", () => {
@@ -120,6 +153,9 @@ test("cross-computer requests that wait for me open the global view, where they 
     ["绑定", "来自「笔记本 B」", "待确认绑定", "核对后确认", "fleet"],
     ["交付回来了", "来自「笔记本 B」", "交付已回传", "查看交付", "fleet"],
   ]);
+  // 每条带上这件事的种类、编号和原记录:侧栏按它打开,不再跳去全局视图。
+  assert.deepEqual(mine.map((r) => [r.kind, r.id, r.record === (r.kind === "incoming" ? actions.incoming[0] : r.kind === "proposal" ? actions.proposals[0] : actions.results[0])]),
+    [["incoming", "d1", true], ["proposal", "r1", true], ["result", "x1", true]]);
   assert.equal(M.homeLists({ actions: { enabled: false, incoming: actions.incoming } }).mine.length, 0);
 });
 
@@ -127,7 +163,7 @@ test("the device line is one sentence when all is well and lists what needs atte
   const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
   const b = (state, name = "笔记本 B") => ({ node_id: NODE_B, display_name: name, local: false, connection_state: state });
   const ok = M.homeStatus({ localName: "台式机 A", nodes: [local, b("recent")], health: { issues: [] }, setup: { complete: true, steps: [] } });
-  assert.deepEqual([ok.tone, ok.alerts.length, ok.line], ["ok", 0, "2 台电脑正常：台式机 A（本机）、笔记本 B 最近已同步"]);
+  assert.deepEqual([ok.tone, ok.alerts.length, ok.line], ["ok", 0, "2 台电脑正常：本机 台式机 A、笔记本 B 最近已同步"]);
   assert.equal(M.homeStatus({ localName: "台式机 A", nodes: [local] }).line, "本机「台式机 A」运行正常",
     "one computer is the ordinary case, not a missing second one");
   assert.equal(M.homeStatus({ nodes: [local, b("syncing")] }).tone, "ok", "catching up is not a fault");
@@ -140,7 +176,7 @@ test("the device line is one sentence when all is well and lists what needs atte
   assert.deepEqual(bad.alerts.map((a) => [a.tone, a.where, a.what, a.go]), [
     ["bad", "另一台电脑", "同步失败", "fleet"],
     ["warn", "多机视图", "暂时读不到", null],
-    ["bad", "台式机 A", "磁盘空间不足（2 项）", null],
+    ["bad", "台式机 A", "磁盘空间不足，共 2 项", null],
     ["warn", "台式机 A", "调度器运行锁异常", null],
     ["warn", "看板设置", "还差 1 步：定义你自己的线", "settings"],
   ]);
@@ -202,9 +238,17 @@ test("side panel controls follow the board card rule: no more power, no less", (
     "the board shows 通过 on every waiting card without options; so does the side panel");
   assert.equal(M.sideControls(w({ waiting_for: "dep" }), { mine: false }).primary, false, "but folded when the next step is not mine");
   for (const status of ["not_started", "in_progress", "done"])
-    assert.equal(M.sideControls({ id: 9, status }).kind, "none", status + " has nothing to rule on");
+    assert.equal(M.sideControls({ id: 9, status, released: 1 }).kind, "none", status + " has nothing to rule on");
   assert.equal(M.sideControls(w({ waiting_for: "review" }), { remote: true, mine: true }).kind, "none", "another computer's cache is read-only");
   assert.equal(M.sideControls(null).kind, "none");
+  // 未开始的卡两种轮到人的情形:人工闸、还没放行。远端卡照旧只读。
+  const q = (extra) => ({ id: 9, status: "not_started", ...extra });
+  assert.deepEqual(M.sideControls(q({ human_gate: 1, released: 0 }), { mine: true }), { kind: "gate", primary: true }, "人工闸先于放行");
+  assert.deepEqual(M.sideControls(q({ released: 0 }), { mine: true }), { kind: "release", primary: true });
+  assert.deepEqual(M.sideControls(q({ released: 0 }), { mine: false }), { kind: "release", primary: false }, "还有别的阻塞时放行不是主操作");
+  assert.equal(M.sideControls(w({ waiting_for: "review", human_gate: 1 }), { mine: true }).kind, "accept", "等待中的人工闸卡照旧是通过");
+  for (const extra of [{ human_gate: 1 }, { released: 0 }])
+    assert.equal(M.sideControls(q(extra), { remote: true, mine: true }).kind, "none", "远端卡仍为 none");
 });
 
 test("new task: a title, a configured working line, and no internal ids", () => {
@@ -235,7 +279,8 @@ test("side panel pins: the board's own buttons, the note beside the button, draf
   assert.ok(src.includes('p.set("task", uid)') && src.includes('window.addEventListener("hashchange", sideFromHash)'));
   assert.ok(src.includes("verdictDraft.set(Number(id), e.target.value);" + String.fromCharCode(10) + "  persistDrafts();"));
   assert.ok(src.includes("function loadDrafts(){ try {") && src.includes("sessionStorage.setItem(DRAFTS_KEY"));
-  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #line-add select, #home-new input")'),
+  // 选择器后面加了协作区批准行的备注(#approvals input);守的语义不变:没发出去的新建任务标题拦住自动刷新。
+  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #line-add select, #home-new input, #approvals input")'),
     "an unsent new-task title holds the page against an automatic reload too");
   // Creating a task is a plain POST /api/tasks through the panel's post(): no release key, no internal id.
   const at = src.indexOf('getElementById("home-new-form").addEventListener("submit"');
@@ -264,13 +309,23 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
     for (const [, s, body] of html.matchAll(/<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g))
       els.push({ scope, tagName: "TEXTAREA", id: attr(s, "id"), type: "textarea", value: body });
   }
+  // 协作区的三样:批准行的备注(#approvals input)、只显示一次的新令牌(#apt-new 没带 hidden)、展开中的强制释放理由。
+  const coord = { notes: [], tokenShown: false, lockForm: false };
   const document = { querySelectorAll: (sel) => sel.split(",").flatMap((part) => {
     part = part.trim();
     if (part === "textarea") return els.filter((e) => e.tagName === "TEXTAREA");
+    if (part === "#approvals input") return coord.notes;
     const m = part.match(/^#(line-add|home-new) (input|select)$/);
     assert.ok(m, "选择器多了没造过的部分:" + part);
     return els.filter((e) => e.scope === m[1] && e.tagName === m[2].toUpperCase());
-  }) };
+  }), querySelector: (sel) => {
+    const hit = sel.split(",").map((part) => part.trim()).some((part) => {
+      if (part === "#apt-new:not([hidden])") return coord.tokenShown;
+      if (part === "#coord [data-lock-form]") return coord.lockForm;
+      assert.fail("选择器多了没造过的部分:" + part);
+    });
+    return hit ? {} : null;
+  } };
   const hasUnsavedInput = new Function("document", src.slice(a, b) + "\nreturn hasUnsavedInput;")(document);
   const el = (id) => { const e = els.find((x) => x.id === id); assert.ok(e, id); return e; };
   assert.equal(el("line-add-ro").type, "checkbox"); assert.equal(el("line-add-auto").value, "on");
@@ -288,6 +343,21 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
   assert.equal(hasUnsavedInput(), true, "身份改成评审 = 偏离默认");
   el("line-add-kind").selectedIndex = 0; el("home-new-line").selectedIndex = 2;
   assert.equal(hasUnsavedInput(), false, "新建任务的下拉由代码填值,不算");
+  // 协作区:写了一半的批准备注、还开着的新令牌、展开中的强制释放理由,各自都拦。
+  assert.ok(src.slice(a, b).includes('document.querySelector("#apt-new:not([hidden]), #coord [data-lock-form]")'), "选择器含 #apt-new 与展开中的理由");
+  coord.notes = [{ tagName: "INPUT", type: "text", value: "  " }];
+  assert.equal(hasUnsavedInput(), false, "批准备注只有空白不算");
+  coord.notes = [{ tagName: "INPUT", type: "text", value: "持有者已离开" }];
+  assert.equal(hasUnsavedInput(), true, "批准行写了备注");
+  coord.notes = []; coord.tokenShown = true;
+  assert.equal(hasUnsavedInput(), true, "新令牌只显示一次,还开着就不自动刷新");
+  coord.tokenShown = false; coord.lockForm = true;
+  assert.equal(hasUnsavedInput(), true, "强制释放的理由框开着,空着也算");
+  coord.lockForm = false;
+  assert.equal(hasUnsavedInput(), false);
+  // 新令牌显示框是文本块不是输入框:不被 textarea / input 的判定带走,靠 #apt-new 的显隐判。
+  assert.match(src, /<code class="apt-token" id="apt-new-token" tabindex="0" aria-label="新生成的批准令牌"><\/code>/);
+  assert.ok(src.includes('document.getElementById("apt-new-token").textContent = r.token;') && src.includes('document.getElementById("apt-new").hidden = true;'));
 });
 
 test("手机看板一次一栏:默认等待中有卡优先,定位与筛选切到命中卡所在的栏,选择只存本标签页且读写包 try", () => {
@@ -367,9 +437,77 @@ test("side panel says what any card is doing, not only the two home lanes", () =
     { state: "已打回 · 排队中", next: "等待「引擎」继续" }, "handed back with a note: say so");
   assert.deepEqual(M.sideFallback({ ...base, status: "not_started", released: false }, o), { state: "未放行", next: "放行后才会被领取" });
   assert.deepEqual(M.sideFallback({ ...base, status: "done" }, o), { state: "已完成", next: "无需操作" });
-  assert.deepEqual(M.sideFallback({ ...base, status: "waiting", waiting_for: "dep" }, o), { state: "等待中 · 依赖完成", next: "等待依赖完成" });
+  assert.deepEqual(M.sideFallback({ ...base, status: "waiting", waiting_for: "dep" }, o), { state: "等待中 · 依赖完成", next: "依赖完成" });
+  const rearm = M.sideFallback({ ...base, status: "waiting", waiting_for: "rearm" }, { ...o, wfLabels: { rearm: "等待重审" } });
+  assert.deepEqual(rearm, { state: "等待中 · 等待重审", next: "等待重审" }, "下一步直接用状态词");
+  assert.ok(!rearm.next.includes("等待等待"));
   const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
   assert.ok(side.includes("sideTaskStep(t, item)"), "侧栏使用同一状态与下一步计算");
+});
+
+test("未开始的卡为什么没被领：服务端原因、无进展、线未启动，都不是才写排队中", () => {
+  const base = { id: 2, line: "engine", released: true, status: "not_started" };
+  const o = { lineName: (l) => ({ engine: "引擎" })[l] || l };
+  const dep = { code: "DEPENDENCIES_UNFINISHED", message: "依赖任务尚未完成", next_action: "核对依赖任务与定义", related_task_ids: [4, 9] };
+  assert.deepEqual(M.sideFallback({ ...base, released: false, progress_blockers: [{ code: "NOT_RELEASED", message: "任务尚未放行", next_action: "核对任务后显式放行" }, dep] }, o),
+    { state: "依赖任务尚未完成", next: "核对依赖任务与定义", related: [4, 9] }, "「尚未放行」之外的第一条原因原样写，带它指向的卡号");
+  assert.deepEqual(M.sideFallback({ ...base, progress_blockers: [{ code: "ATTEMPT_LIMIT", message: "累计派发次数已达到上限", next_action: "人工核对失败原因并补充输入或调整任务" }] }, o),
+    { state: "累计派发次数已达到上限", next: "人工核对失败原因并补充输入或调整任务" }, "原因不指向别的卡就不带 related");
+  assert.deepEqual(M.sideFallback({ ...base, no_progress: { since: at(1) } }, { ...o, lineState: "stopped" }),
+    { state: "无进展，已暂停派发", next: "补充任务说明或推进依赖" }, "无进展先于线的状态");
+  assert.deepEqual(M.sideFallback(base, { ...o, lineState: "stopped" }), { state: "「引擎」未启动", next: "启动执行线", go: "lines" });
+  for (const lineState of ["running", "external", null])
+    assert.deepEqual(M.sideFallback(base, { ...o, lineState }), { state: "排队中", next: "等待「引擎」领取" }, String(lineState));
+  // 目标卡:状态写子任务完成数。
+  const goal = { id: 3, kind: "goal", status: "not_started", released: true };
+  assert.deepEqual(M.sideFallback(goal, { children: { done: 1, total: 3 } }), { state: "子任务 1/3 完成", next: "推进未完成的子任务" });
+  assert.deepEqual(M.sideFallback(goal, { children: { done: 3, total: 3 } }), { state: "子任务 3/3 完成", next: "无需操作" }, "全部完成后由看板收尾，不写内部用语");
+  assert.equal(M.sideFallback(goal, { children: { done: 0, total: 0 } }).state, "还没有子任务");
+  // 调用处用执行线接口算出线的状态再传入。
+  const step = src.slice(src.indexOf("function sideLineState(line){"), src.indexOf("/** 进行中的卡:最近一次心跳"));
+  assert.ok(step.includes("workers.find((x) => x.line === line)") && step.includes("lineState: sideLineState(t.line)"));
+});
+
+test("刷新后保留：留言、方案选择、执行结果、回执和草稿版本写进本标签页，读回后恢复", () => {
+  const a = src.indexOf('const DRAFTS_KEY = "tb_drafts_v1";'), b = src.indexOf("\nrestoreDrafts();\n", a);
+  assert.ok(a > 0 && b > a, "drafts block not found");
+  const NAMES = ["verdictDraft", "decisionChoice", "receiptDraft", "outcomeDraft", "draftVersions"];
+  const boot = (sessionStorage) => {
+    const maps = NAMES.map(() => new Map());
+    const api = new Function("sessionStorage", ...NAMES, src.slice(a, b) + ";return { persistDrafts, restoreDrafts };")(sessionStorage, ...maps);
+    return { api, maps: Object.fromEntries(NAMES.map((n, i) => [n, maps[i]])) };
+  };
+  const mem = new Map(), storage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  const first = boot(storage);
+  first.maps.verdictDraft.set(7, "请补一条测试"); first.maps.verdictDraft.set(8, "   ");
+  first.maps.decisionChoice.set(9, "B"); first.maps.outcomeDraft.set(9, "failure"); first.maps.receiptDraft.set(9, "exit 1");
+  first.maps.draftVersions.set(7, 3); first.maps.draftVersions.set(9, 12); first.maps.draftVersions.set(20, 4);
+  first.api.persistDrafts({ new: { title: "草稿标题" } });
+  const stored = JSON.parse(mem.get("tb_drafts_v1"));
+  for (const key of ["vin", "choice", "outcome", "receipt", "versions"]) assert.ok(Object.hasOwn(stored, key), key);
+  assert.deepEqual(stored, { vin: { 7: "请补一条测试" }, choice: { 9: "B" }, outcome: { 9: "failure" }, receipt: { 9: "exit 1" },
+    versions: { 7: 3, 9: 12 }, new: { title: "草稿标题" } }, "只有空白的留言不存；没有草稿的卡不留版本");
+  const again = boot(storage); again.api.restoreDrafts();
+  assert.deepEqual([...again.maps.decisionChoice], [[9, "B"]]);
+  assert.deepEqual([...again.maps.outcomeDraft], [[9, "failure"]]);
+  assert.deepEqual([...again.maps.receiptDraft], [[9, "exit 1"]]);
+  assert.deepEqual([...again.maps.verdictDraft], [[7, "请补一条测试"]]);
+  assert.deepEqual([...again.maps.draftVersions], [[7, 3], [9, 12]]);
+  // 存储读写都抛错时照常工作,只是不保留;存进去的脏数据不进草稿。
+  const broken = boot({ getItem() { throw Error("denied"); }, setItem() { throw Error("denied"); } });
+  broken.maps.decisionChoice.set(1, "A"); broken.api.persistDrafts(); broken.api.restoreDrafts();
+  assert.deepEqual([...broken.maps.decisionChoice], [[1, "A"]]);
+  mem.set("tb_drafts_v1", JSON.stringify({ choice: { x: "A", 5: 9 }, versions: { 5: "3" }, receipt: null }));
+  const dirty = boot(storage); dirty.api.restoreDrafts();
+  assert.deepEqual([dirty.maps.decisionChoice.size, dirty.maps.draftVersions.size, dirty.maps.receiptDraft.size], [0, 0, 0]);
+  // 结构钉:三处输入都落盘;启动时读回;侧栏恢复后有方案草稿就重开方案弹窗;纯数字的 #task= 按卡号打开。
+  for (const line of ["receiptDraft.set(Number(receiptId), e.target.value);\n    persistDrafts();",
+    "outcomeDraft.set(Number(outcomeId), e.target.value);\n    persistDrafts();", "decisionChoice.set(Number(id), e.target.value);\n  persistDrafts();"])
+    assert.ok(src.includes(line), line);
+  const boot2 = src.slice(src.indexOf("function sideAfterRefresh(){"), src.indexOf("// ── 首页「新建任务」(第 3 批)"));
+  assert.ok(boot2.includes("if (t && decisionChoice.has(t.id) && t.status === \"waiting\" && t.decision_package?.options?.length) openDecisionModal(t);"));
+  const hash = src.slice(src.indexOf("function sideFromHash(){"), src.indexOf("function sideAfterRefresh(){"));
+  assert.ok(hash.includes("if (/^\\d+$/.test(ref)) {") && hash.includes("openSide({ id, uid: null, item: null });"), "批准接口给的 /#task=卡号 链接能打开");
 });
 
 test("领取、启动许可、进程与输出观察分开，不接受旧运行观察", () => {
@@ -421,6 +559,16 @@ test("暖色主题沿用原有色彩变量，浅深两种模式的常用文字�
   }
 });
 
+test("视觉底座：侧栏底色两种模式都有定义，两押上膛字色跟主题走，首页页脚不带括号补充", () => {
+  const roots = [...src.matchAll(/:root\{([^}]+)\}/g)].slice(0, 2);
+  assert.equal(roots.length, 2);
+  for (const root of roots) assert.match(root[1], /--bg2:\s*#[0-9a-f]{6}/, "浅色与深色都定义 --bg2");
+  const armed = src.match(/button\.armed\{[^}]*\}/);
+  assert.ok(armed && !armed[0].includes("#1a1a1a") && armed[0].includes("color:var(--bg)!important"), "上膛态的字用纸色，不写死深色");
+  assert.ok(!src.includes("（其中"), "页脚文案不带全角括号补充");
+  assert.ok(src.includes('(held ? "，其中 " + held + " 项未放行" : "")'));
+});
+
 test("推理强度初次渲染和拖动后共用中文展示，协议值不变", () => {
   const start = src.indexOf("function effortName(value){"), end = src.indexOf("function renderCfg(){", start);
   const copyStart = src.indexOf("// ── display-copy(pure;tests/panelcopytest.mjs)──"), copyEnd = src.indexOf("// ── /display-copy ──", copyStart);
@@ -436,16 +584,169 @@ test("服务没有应答时只显示一条故障与恢复命令，不并列旧�
     health: { issues: [{ code: "STORAGE_LOW", level: "problem", next_action: "inspect_storage_before_new_work", count: 1 }] },
     setup: { complete: false, done: 3, total: 4, steps: [{ state: "todo", title: "定义你自己的线" }] } };
   const down = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", status: null, local: true } });
-  assert.deepEqual([down.tone, down.line, down.alerts.length], ["bad", "看板服务没有应答，下面是断开前的内容", 1],
+  // 文案按「只说一遍、不带括号」改过;守的语义不变:断开时只有一条告警,断开前的告警不并列。
+  assert.deepEqual([down.tone, down.line, down.alerts.length], ["bad", "下面是断开前的内容", 1],
     "断开前的设备、磁盘与设置告警不能冒充现状");
-  assert.deepEqual([down.alerts[0].where, down.alerts[0].what, down.alerts[0].copy],
-    ["台式机 A", "电脑在线，看板服务没有应答（14:05 起）", "node cli/start.mjs --background"]);
-  assert.match(down.alerts[0].next, /已有任务和结果都保留/);
+  assert.deepEqual([down.alerts[0].where, down.alerts[0].what, down.alerts[0].next, down.alerts[0].copy],
+    ["台式机 A", "看板服务从 14:05 起没有应答", "重新启动看板：node cli/start.mjs --background", "node cli/start.mjs --background"]);
+  assert.match(down.alerts[0].tip, /已有任务和结果都保留/, "保留数据这一句进悬停说明，不进正文");
+  assert.equal(down.alerts[0].cmd, "node cli/status.mjs --log", "查看日志的命令折叠在告警行里");
   const away = M.homeStatus({ ...before, down: { since: "14:05", kind: "unreachable", local: false } });
-  assert.equal(away.alerts[0].what, "连不上「台式机 A」上的看板（14:05 起）", "远程页面不能把服务断开直接断言成电脑在线");
-  assert.match(away.alerts[0].next, /电脑关着就先开机/);
+  assert.equal(away.alerts[0].what, "从 14:05 起连不上「台式机 A」上的看板", "远程页面不能把服务断开直接断言成电脑在线");
+  assert.equal(away.alerts[0].next, "到那台电脑上运行 node cli/status.mjs");
   const err = M.homeStatus({ ...before, down: { since: "14:05", kind: "error", status: 500, local: true } });
-  assert.deepEqual([err.line, err.alerts[0].what, err.alerts[0].copy], ["看板服务出错，下面是出错前的内容", "看板服务出错（HTTP 500）（14:05 起）", null]);
+  assert.deepEqual([err.line, err.alerts[0].what, err.alerts[0].copy], ["下面是断开前的内容", "看板服务从 14:05 起出错，返回 HTTP 500", null]);
+  for (const s of [down, away, err]) {
+    assert.match(s.alerts[0].what, /从 14:05 起/);
+    assert.doesNotMatch(JSON.stringify(s), /[（）]/, "断开的原因、下一步和状态行都不带全角括号");
+  }
+  assert.equal(M.homeStatus({ ...before, down: { kind: "unreachable", local: true } }).alerts[0].what, "看板服务没有应答", "不知道从几点起就不写时刻");
+  // 页头只留短状态,原因和下一步不说第二遍。
+  assert.ok(src.includes('const downText = () => boardDown && boardDown.kind === "error" ? "出错" : "已断开";'));
+  assert.ok(src.includes('live(false, "看板还没回来。下一步：查看 board.log", "日志：" + log)'), "30 秒提示：一句状态加一句下一步，日志路径进悬停说明");
+  assert.ok(src.includes("el.textContent = txt; el.title = title || \"\";"), "live() 的第三个入参只进 title");
+});
+
+test("执行线故障按原因合并：同因的线一条，外部线与运行中的线不算，待核实是警告", () => {
+  // 样例与预期输出取自运维线 core/board-run.mjs 的 mergeLineFaults(同输入同输出);两处合并后只留这一份。
+  const workers = [
+    { line: "engine", running: true, desired_running: true, exit_code: null, stop_reason: null, stop_text: "", last_log: ["领取 #4"] },
+    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },
+    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: [] },
+    { line: "qa", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动  "] },
+    { line: "docs", running: false, desired_running: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃（退出码 1） · 2026-11-10 05:00:00Z", last_log: ["Traceback", "", 7] },
+    { line: "ops", running: false, desired_running: true, exit_code: null, stop_reason: null, stop_text: "", last_log: [] },
+    { line: "ext", running: false, external: true, desired_running: true, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）" },
+    { line: "idle", running: false, desired_running: false, exit_code: 0, stop_reason: { reason: "by_user", at: "2026-11-10T04:00:00.000Z" }, stop_text: "用户停止 · 2026-11-10 04:00:00Z" },
+    null, { running: false, exit_code: 3 },
+  ];
+  const labels = { engine: "引擎", design: "设计", review: "审阅" };
+  assert.deepEqual(M.homeLineFaults(workers, labels), [
+    { tone: "bad", where: "执行线", what: "设计、审阅、qa 启动被拒绝（退出码 3）", next: "运行 node cli/doctor.mjs 找出原因，修好后在面板启动执行线",
+      lines: ["design", "review", "qa"], log: ["设计：源码闸拒绝启动", "设计：源码闸拒绝启动", "qa：源码闸拒绝启动"] },
+    { tone: "bad", where: "执行线", what: "docs 崩溃（退出码 1）", next: "运行 node cli/status.mjs --log 查看最近日志，修好后在面板启动执行线",
+      lines: ["docs"], log: ["docs：Traceback"] },
+    { tone: "warn", where: "执行线", what: "ops 已请求启动，待核实", next: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线",
+      lines: ["ops"], log: [] },
+  ], "三条线同因合成一条；外部线、运行中的线、正常停止的线不算");
+  assert.deepEqual(M.homeLineFaults(null), []);
+  assert.deepEqual(M.homeLineFaults([{ line: "toString", running: false, exit_code: 3, stop_reason: null }], {})[0].what, "toString 启动被拒绝", "线名对不上显示名时原样写，不取原型上的键");
+  assert.deepEqual(M.homeLogLines(["设计：源码闸拒绝启动", "设计：源码闸拒绝启动", "qa：源码闸拒绝启动", "设计：源码闸拒绝启动"]),
+    ["设计：源码闸拒绝启动  ×2", "qa：源码闸拒绝启动", "设计：源码闸拒绝启动"], "只合并连续重复的行");
+  assert.deepEqual(M.homeLogLines(undefined), []);
+  // 首页:故障接在其余告警之后,计数算进状态行;断开时只出断开一条。
+  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
+  const setup = { complete: false, done: 3, total: 4, steps: [{ state: "todo", title: "定义你自己的线" }] };
+  const s = M.homeStatus({ localName: "台式机 A", nodes: [local], setup, workers, lineLabels: labels });
+  assert.deepEqual(s.alerts.map((a) => [a.tone, a.where, a.go]), [["warn", "看板设置", "settings"], ["bad", "执行线", "lines"], ["bad", "执行线", "lines"], ["warn", "执行线", "lines"]]);
+  assert.deepEqual([s.tone, s.line], ["bad", "4 项需要注意"]);
+  assert.equal(s.alerts[1].what, "设计、审阅、qa 启动被拒绝（退出码 3）");
+  const down = M.homeStatus({ localName: "台式机 A", nodes: [local], setup, workers, lineLabels: labels, down: { since: "14:05", kind: "unreachable", local: true } });
+  assert.deepEqual(down.alerts.map((a) => a.where), ["台式机 A"], "断开时不并列执行线故障");
+  assert.equal(M.homeStatus({ localName: "台式机 A", nodes: [local] }).alerts.length, 0, "不传 workers 时与原来一样");
+  // 命令行与首页读同一份。
+  const model = readFileSync(new URL("../core/home-model.mjs", import.meta.url), "utf8");
+  assert.ok(model.includes("return { homeStatus, homeName, homeLineFaults, homeLogLines };"));
+});
+
+test("订阅额度用完被看板停下的线：单列一种原因，不建议重启，首页这一条不给去设置的按钮", () => {
+  // 服务端在池不可用时带着运行意图把线停下:desired_running 仍为真,停止原因是随看板停止,另给 pool_blocked。
+  const stopped = { reason: "stopped-with-board", at: "2026-11-10T05:00:00.000Z" };
+  const workers = [
+    { line: "engine", running: false, desired_running: true, pool_blocked: true, exit_code: null, stop_reason: stopped, stop_text: "随看板停止 · 2026-11-10 05:00:00Z", last_log: [] },
+    { line: "design", running: false, desired_running: true, pool_blocked: true, exit_code: null, stop_reason: stopped, stop_text: "随看板停止 · 2026-11-10 05:00:00Z", last_log: [] },
+    { line: "ops", running: false, desired_running: true, pool_blocked: false, exit_code: null, stop_reason: null, stop_text: "", last_log: [] },
+    // 没想跑的线:池不可用也不算故障。在跑的线(切到另一个池)不算。
+    { line: "idle", running: false, desired_running: false, pool_blocked: true, exit_code: 0, stop_reason: { reason: "stopped-by-user", at: "2026-11-10T04:00:00.000Z" }, stop_text: "用户停止" },
+    { line: "moved", running: true, desired_running: true, pool_blocked: false, exit_code: null, stop_reason: null, stop_text: "" },
+  ];
+  const faults = M.homeLineFaults(workers, { engine: "引擎", design: "设计" });
+  assert.deepEqual(faults, [
+    { tone: "warn", where: "执行线", what: "引擎、设计 订阅额度用完，已暂停", next: "无需操作，额度恢复后看板自动启动", lines: ["engine", "design"], log: [], go: null },
+    { tone: "warn", where: "执行线", what: "ops 已请求启动，待核实", next: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线", lines: ["ops"], log: [] },
+  ]);
+  assert.doesNotMatch(faults[0].next, /重新启动|重启/, "池没恢复前重启不起作用,不建议");
+  // 崩溃和启动被拒绝优先于池:那是要人处理的故障。
+  assert.equal(M.homeLineFaults([{ line: "x", running: false, desired_running: true, pool_blocked: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃（退出码 1）" }])[0].tone, "bad");
+  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
+  const s = M.homeStatus({ localName: "台式机 A", nodes: [local], workers, lineLabels: {} });
+  assert.deepEqual(s.alerts.map((a) => [a.what, a.go]), [["engine、design 订阅额度用完，已暂停", null], ["ops 已请求启动，待核实", "lines"]]);
+  // 设置页那一行的状态词和告警说同一件事。
+  assert.ok(src.includes('!w.desired_running ? "已停止" : w.pool_blocked === true ? "额度用完，已暂停" : "已请求启动，待核实"'));
+});
+
+test("上次故障一句话：字段不合格不出，只写发生了什么，可能的原因进悬停说明", () => {
+  assert.equal(M.homeLastFault({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: 3 }), "看板服务退出，退出码 3");
+  assert.equal(M.homeLastFault({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: null }), "看板服务被结束");
+  assert.equal(M.homeLastFault({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z" }), "看板连续重启，已停止自动重启");
+  assert.equal(M.homeLastFault({ kind: "interrupted", at: "2026-11-10T05:00:00.000Z" }), "看板运行中断");
+  for (const bad of [null, undefined, "x", {}, { kind: "exit" }, { at: "2026-11-10T05:00:00.000Z" }]) assert.equal(M.homeLastFault(bad), null);
+  // 正文不写内部说法和猜测的原因:可能的原因只进这一行的 title。
+  for (const kind of ["exit", "restart_loop", "interrupted"])
+    assert.doesNotMatch(M.homeLastFault({ kind, at: "2026-11-10T05:00:00.000Z", exit_code: 1 }), /守护|重起|可能/);
+  assert.equal(M.homeLastFaultTip({ kind: "interrupted", at: "2026-11-10T05:00:00.000Z" }), "可能是关机、断电或进程被结束");
+  assert.equal(M.homeLastFaultTip({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z" }), "");
+  assert.equal(M.homeLastFaultTip({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: 3 }), "");
+  for (const bad of [null, {}, { kind: "interrupted" }]) assert.equal(M.homeLastFaultTip(bad), "");
+  assert.ok(src.includes('tip = homeLastFaultTip(fault);'), "原因放在这一行的 title");
+  assert.ok(src.includes('const fault = boardDown ? null : lastSetup?.last_fault || meta.last_fault, faultText = homeLastFault(fault);'), "断开时不出这一行");
+  assert.ok(src.includes('last.dataset.tone = "quiet"; if (tip) last.title = tip;'));
+});
+
+test("结构钉：触摸目标、手机任务面板的焦点、核对弹窗的主按钮、日志一层滚动、未保存的编辑浮层", () => {
+  const style = src.slice(src.indexOf("<style>"), src.indexOf("</style>"));
+  // 触摸:折叠标题至少 40px。计划旧版、技术信息、最近流水三处补进最后那一块触摸规则。
+  const touch = style.slice(style.lastIndexOf("@media (max-width:620px),(pointer:coarse){"));
+  assert.ok(touch.includes(".coord-fold > summary,.fleet-tech > summary{padding:11px 0}"), "技术信息的折叠标题");
+  assert.ok(touch.includes(".plan-old > summary{padding-block:11px}"), "计划旧版的折叠条只加上下，左右内边距照旧");
+  assert.ok(touch.includes(".coord-fold.coord-sec > summary{padding:13px 0}"), "最近流水字号小，多垫才到 40");
+  // 没有悬停可看全文的地方不截断。
+  assert.ok(touch.includes(".coord-ex .ex-now{display:block;-webkit-line-clamp:none;line-clamp:none;overflow:visible}"));
+  assert.ok(touch.includes(".hand-row .cr-sum{white-space:normal}"));
+  // 手机上任务面板打开:被盖住的对话区和输入区不在 Tab 顺序和读屏里;焦点进面板,收起回到开关。
+  const phone = style.slice(style.indexOf("  @media (max-width:620px){\n    #home-view > .home-status{"), style.indexOf("  @media (prefers-reduced-motion: reduce){ .chat-list"));
+  assert.ok(phone.includes(".chat-shell.work-open :is(.chat-flow,.chat-compose){visibility:hidden}"));
+  const work = src.slice(src.indexOf("function chatWork(open){"), src.indexOf("/** 发一条消息。"));
+  assert.ok(work.includes("if (!toggle.offsetParent || open === was) return;"), "桌面宽度开关不显示，不挪焦点");
+  assert.ok(work.includes('if (open) (work.querySelector("button:not([disabled]), [tabindex]:not([tabindex=\'-1\'])") || toggle).focus({ preventScroll: true });'));
+  assert.ok(work.includes("else if (inside || !document.activeElement || document.activeElement === document.body) toggle.focus({ preventScroll: true });"));
+  // 核对弹窗里真正提交的那一个是主按钮;关闭不是。
+  assert.ok(src.includes('<button type="submit" id="fleet-action-submit" class="pri">确认提交</button>'));
+  assert.ok(src.includes('<button type="button" id="fleet-action-close">关闭</button>'));
+  // 首页状态条里展开日志:只留日志自己那一层滚动。
+  assert.ok(style.includes("#home-view > .home-status:has(.hs-log[open]){max-height:none}"));
+  // 批准行的按钮式标题与同列文字标题同一行高。
+  assert.match(style, /button\.cr-link\{[^}]*line-height:1\.5\}/);
+  // 浅色对比度:对话列表悬停时第二行小字用墨色。
+  assert.ok(style.includes('.cl-item:hover:not([aria-current="true"]) .cl-s{color:var(--fg)}'));
+  // 编辑浮层里说明或验收条件改了没保存:再点「编辑」「改执行线」不重填。
+  const edit = src.slice(src.indexOf("function openEdit(anchor, taskId){"), src.indexOf("/** 编辑浮层里有没有改了还没保存的说明或验收条件。 */"));
+  const guard = edit.indexOf('if (epop.classList.contains("show") && editDirty()) {'), fill = edit.indexOf("epop.innerHTML = `");
+  assert.ok(guard > 0 && fill > guard, "先判未保存，再重填");
+  assert.ok(edit.slice(guard, fill).includes('if (n) n.textContent = "先保存或关闭";') && edit.slice(guard, fill).includes("return;"));
+});
+
+test("告警行组件：首页与设置页共用，日志走 textContent，展开状态按原因记住；接口缺席的两类读取不进 refresh 的并行读取", () => {
+  const row = src.slice(src.indexOf("function homeAlertRow(a){"), src.indexOf("/** Other computers known to this board"));
+  assert.ok(row.includes("pre.textContent = homeLogLines(a.log).join(String.fromCharCode(10));"), "日志是执行线的原始输出，只按纯文本放");
+  assert.ok(!/innerHTML\s*=/.test(row) && !row.includes("insertAdjacentHTML(\"afterbegin\", a"), "告警行不把数据拼成 HTML");
+  assert.ok(row.includes("if (a.tip) row.title = a.tip;") && row.includes('fold("日志命令", homeEl("code", a.cmd, "hs-cmd"))'));
+  assert.ok(row.includes('if (!String(a.what).includes(a.where)) what.append(homeEl("b", a.where, "hs-where"), " ");'), "原因里已经写了是哪里，就不再重复一遍");
+  assert.ok(row.includes("d.open = homeLogOpen.has(key);") && row.includes('key = a.where + " " + a.what'), "重建后照原样展开");
+  assert.equal(row.split("row.append(b);").length - 1, 3, "三种按钮");
+  assert.ok(/if \(a\.action\)\{[^]*?\n  else if \(a\.go\)\{[^]*?\n  else if \(a\.copy\)\{/.test(row), "三种按钮互斥：一条告警最多一个");
+  const rig = src.slice(src.indexOf("function renderRig(){"), src.indexOf("let MODELS = []"));
+  assert.ok(rig.includes('homeFill(document.getElementById("rig-faults"), JSON.stringify(faults), () => faults.map((a) => homeAlertRow(a)));'));
+  assert.ok(!rig.includes("last_log") && !rig.includes("sl.tail"), "执行线行里不再写日志");
+  assert.ok(rig.includes("w.stop_reason?.at ? localTime(w.stop_reason.at)"), "停止时间取服务端记下的时刻");
+  assert.match(src, /<div class="rig-faults" id="rig-faults"><\/div>\s*<div class="rig" id="rig"><\/div>/);
+  assert.ok(src.includes("healthError: homeHealthError, setup: lastSetup, workers, lineLabels: LINE_LABELS,"), "首页把执行线交给 homeStatus");
+  const refresh = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt, title){"));
+  const all = refresh.slice(refresh.indexOf("await Promise.all(["), refresh.indexOf("]);"));
+  assert.ok(all.includes('fetch("/api/usage")') && !all.includes("/api/usage/card") && !all.includes("/api/usage?by=") && !all.includes("/api/cli-versions"),
+    "单卡用量、用量汇总与 CLI 版本不进每次刷新的并行读取");
+  assert.ok(src.includes('else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad();') && src.includes('if (v === "history") historyUsageLoad();'));
+  assert.ok(src.includes("if (homeView === \"settings\" && !document.hidden && Date.now() - cliVersions.at >= 600000) cliVersionsLoad();"), "停留在设置页时最多十分钟读一次");
 });
 
 test("同一故障家族合并原因、症状和优先下一步，未知代码仍可显示", () => {
@@ -458,10 +759,10 @@ test("同一故障家族合并原因、症状和优先下一步，未知代码�
     "调度器状态待核对：运行锁与记录不符、看不出进程还在不在", "没有停止证据时不能断言已经停机");
   const apart = M.homeHealthAlerts([i("NODE_HEARTBEAT_STALE", "inspect_node_runtime"), i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer", "notice"),
                                     i("STORAGE_LOW", "inspect_storage_before_new_work", "problem", 2)]);
-  assert.deepEqual(apart.map((a) => a.what), ["节点运行器心跳超时", "同步正在重试", "磁盘空间不足（2 项）"]);
+  assert.deepEqual(apart.map((a) => a.what), ["节点运行器心跳超时", "同步正在重试", "磁盘空间不足，共 2 项"]);
   assert.equal(M.homeHealthAlerts([i("NODE_SYNC_RETRY", "inspect_node_sync_then_peer")], { skip: ["NODE_SYNC_RETRY"] }).length, 0);
   assert.deepEqual(M.homeHealthAlerts([i("FUTURE_ISSUE", "future"), i("FUTURE_ISSUE", "future")]).map((a) => a.what),
-    ["运行检查报告了问题（2 项）"], "未知家族的重复记录不导致整页渲染失败");
+    ["运行检查报告了问题，共 2 项"], "未知家族的重复记录不导致整页渲染失败");
 });
 
 test("远端电脑连不上与电脑在线但看板没有应答分开说明", () => {
@@ -471,7 +772,7 @@ test("远端电脑连不上与电脑在线但看板没有应答分开说明", ()
                                                           peer("台式机 D", "PEER_REFUSED"), peer("台式机 E", "NETWORK_ERROR")],
     health: { issues: [{ code: "NODE_SYNC_RETRY", level: "notice", next_action: "inspect_node_sync_then_peer", count: 1 }] } });
   assert.deepEqual(s.alerts.map((a) => [a.where, a.what]), [
-    ["笔记本 B", "连不上这台电脑（可能关机或断网）"],
+    ["笔记本 B", "连不上这台电脑"],
     ["台式机 C", "电脑在线，但它的看板服务没有应答"],
     ["台式机 D", "电脑在线，但它的看板服务没有应答"],
     ["台式机 E", "同步失败"],
@@ -482,7 +783,7 @@ test("远端电脑连不上与电脑在线但看板没有应答分开说明", ()
 
 test("页面经匿名健康探测确认故障，成功读取和实时重连都可恢复", () => {
   assert.ok(src.includes('await window.fetch("/health", { cache: "no-store", credentials: "omit" })'));
-  const r = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt){"));
+  const r = src.slice(src.indexOf("async function refresh(){"), src.indexOf("function live(on, txt, title){"));
   assert.ok(r.includes("const p = await probeBoard();") && r.includes("if (restartPending) return;") && r.includes("boardDown = null;"));
   assert.ok(r.includes("if (wasDown) loadHomeExtras(true);"), "恢复后重新读取设备与运行检查，不展示断开前旧值");
   assert.ok(r.includes("if (lastGoodRead > started) return;") && r.includes('if (liveOpen) live(true, "实时");'), "过时的失败不能覆盖新成功");
@@ -505,8 +806,8 @@ test("首页卡只露标题、所属电脑、状态和下一步；长串编号�
   for (const field of ["item.title", "item.computer", "item.state", "item.next"]) assert.ok(face.includes(field), "卡面写 " + field);
   for (const hidden of ["uid", "localId", "item.key", "run_id"]) assert.ok(!face.includes(hidden), "卡面不读 " + hidden);
   const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
-  assert.ok(side.includes("out.push(more, sideTech(t));") && !side.includes("UID"), "侧栏正文只留短卡号");
-  const tech = src.slice(src.indexOf("function sideTech(t){"), src.indexOf("/** 关联任务或执行回执变化时"));
+  assert.ok(side.includes("out.push(sideTech(t));") && !side.includes("UID"), "侧栏正文只留短卡号");
+  const tech = src.slice(src.indexOf("function sideTech(t){"), src.indexOf("/** 「协议记录」:默认折叠"));
   assert.ok(tech.includes('homeEl("details"') && tech.includes('homeEl("summary", "技术信息")') && tech.includes('["任务 UID", t.task_uid]'),
     "任务 UID、运行号在默认折叠的「技术信息」里");
 });
@@ -536,7 +837,7 @@ test("手动建卡：原表单、编号和处理器都在，入口是输入框�
 test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、要提交的改动和输入框上方那一行都由纯函数算出", async () => {
   const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
   assert.ok(c0 > 0 && c1 > c0, "chat-model block not found in core/panel.html");
-  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend};")();
+  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend,chatListLine,chatListNeed};")();
   const task = (n, extra) => ({ n, subject: "第 " + n + " 步", summary: "摘要 " + n, description: "", acceptance: "", line: "engine", after: [],
     needs_confirm: false, needs_bash: false, enabled: true, edited: [], ...extra });
   const plan = { rev: 2, author: "coordinator", base_rev: 1, created_at: at(3), goal: { subject: "<b>目标</b>", description: "说明" }, applied: null,
@@ -602,6 +903,14 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   assert.equal(C.chatStateLine({ coordinator: ok, text: long }).text, "这条消息 4001 字，一条最多 4000 字。删短或分几条发。");
   assert.equal(C.chatStateLine({ coordinator: ok, conversation: { status: "idle" }, text: "做" }), null);
 
+  // 对话列表:四种状态里只有「计划第 N 版 · 待建卡」标成轮到你;正在回复、上一轮失败时即使有计划也不标
+  const rows = [{ status: "running", plan_rev: 1, plan_applied: false }, { status: "failed", plan_rev: 1, plan_applied: false },
+    { status: "idle", plan_rev: 2, plan_applied: false }, { status: "idle", plan_rev: 2, plan_applied: true }];
+  assert.deepEqual(rows.map((c) => [C.chatListLine(c), C.chatListNeed(c)]),
+    [["协调线正在回复", false], ["上一轮没有完成", false], ["计划第 2 版 · 待建卡", true], ["已建卡", false]]);
+  assert.deepEqual([C.chatListNeed(null), C.chatListNeed({ status: "idle", plan_rev: null, plan_applied: false })], [false, false], "还没有计划的对话不标");
+  assert.ok(src.includes('if (chatListNeed(c)) b.dataset.need = "";') && src.includes(".cl-item[data-need] .cl-s{color:var(--accent)}"));
+
   // 页面只用 textContent 放协调线的字:消息与计划卡这一段不拼 HTML
   const dom = src.slice(src.indexOf("function chatMessage(m){"), src.indexOf("function chatSync(){"));
   assert.ok(dom.length > 0 && !dom.includes("innerHTML") && !dom.includes("insertAdjacentHTML"), "消息与计划卡不拼 HTML");
@@ -644,4 +953,186 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
     ["协调线现在不可用：这个版本还没确认过。确认当前版本后协调线才能用。可以先用「手动建卡」。", null, "把导出做成可配置的"]);
   const [running] = await sendRefused(Object.assign(Error("协调线还在回复上一条消息"), { status: 409, code: "TURN_RUNNING" }));
   assert.deepEqual([running.text, running.act], ["没有发出去：看板的原话：协调线还在回复上一条消息", "resend"]);
+});
+
+// ── 跨机事项按任务归拢:fleetLinks / fleetStep ──
+// 记录形状同 core/fleet-actions.mjs 的 catalog()(tests/fleetactionstest.mjs 走的那份):委派带 source_task_uid、
+// 绑定带 task_uid 与 relation_id、交付只带编号、文件与结案在 delivery / delivery.closure 里。
+const NODE_A = "11111111-1111-4111-8111-111111111111", PCS = { [NODE_A]: "台式机 A", [NODE_B]: "笔记本 B" };
+const sent = (state, extra) => ({ project_id: "demo", direction: "outgoing", delegation_id: "d1", state, identity_current: true, source_node_id: NODE_A,
+  target_node_id: NODE_B, source_task_uid: "u1", target_task_uid: null, version: null, subject: "跑压测", description: "说明", acceptance: "验收", ...extra });
+const bound = (extra) => ({ relation_id: "r1", delegation_id: "d1", side: "source", state: "confirmed", task_uid: "u1", identity_current: 1, project_id: "demo",
+  task_version: 5, task_status: "waiting", released: true, subject: "跑压测", execution_authorized: false, binding_authorized: true, source_approved: true,
+  source_node_id: NODE_A, target_node_id: NODE_B, cancellation_state: null, ...extra });
+const back = (extra) => ({ result_id: "x1", relation_id: "r1", sequence: 1, side: "source", identity_current: 1, state: "received", project_id: "demo",
+  source_task_version: 7, review_state: "pending_evidence", ...extra });
+const delivery = (extra, closure) => ({ enabled: true, receivers: [], profiles: [], targets: [], artifacts: [], verifications: [],
+  closure: closure ? { enabled: true, policies: [], integrations: [], completions: [], ...closure } : { enabled: false }, ...extra });
+const fleet = (actions, uid = "u1", names = PCS) => M.fleetStep(M.fleetLinks({ enabled: true, ...actions }, uid), names);
+
+test("等对端的五种状态：写明等哪台电脑的什么，进「正在执行」，下一步「无需操作」", () => {
+  const done = { command: "register_completion", state: "acknowledged", result: { completion_id: "c1" } };
+  const waits = [
+    ["等待「笔记本 B」接收任务", { outgoing: [sent("pending")] }, ["poll_delegation", "resend_delegation"]],
+    ["等待「笔记本 B」接收任务", { outgoing: [sent("received")] }, ["poll_delegation", "resend_delegation"]],
+    ["等待「笔记本 B」确认绑定", { outgoing: [sent("accepted_unconfirmed")], bindings: [bound({ state: "prepared" })] }, ["poll_binding", "send_binding_proposal"]],
+    ["等待「笔记本 B」回传交付", { bindings: [bound()] }, ["send_source_ready"]],
+    ["等待「笔记本 B」停止回执", { bindings: [bound({ cancellation_state: "requested" })] }, ["poll_cancellation", "resend_cancellation"]],
+    ["等待「笔记本 B」结案回执", { bindings: [bound()], results: [back({ state: "accepted" })], actions: [done],
+      delivery: delivery({}, { completions: [{ completion_id: "c1", result_id: "x1", phase: "ready", side: "source", project_id: "demo", note: "通过" }] }) }, ["poll_completion"]],
+  ];
+  for (const [state, actions, more] of waits) {
+    const s = fleet(actions);
+    assert.deepEqual([s.lane, s.state, s.next, s.primary], ["running", state, "无需操作", null]);
+    assert.deepEqual(s.more.map((a) => a.command), more, state + " 的查询与重发");
+    assert.equal(s.hold, true, "协议还持有这张卡");
+  }
+  assert.deepEqual(fleet({ outgoing: [sent("pending")] }).more.map((a) => a.label), ["查询对端回执", "重发"]);
+  assert.equal(fleet({ outgoing: [sent("pending")] }, "u1", {}).state, "等待「另一台电脑」接收任务", "电脑名读不到不露编号");
+  assert.equal(UUID.test(JSON.stringify(waits.map(([, a]) => { const s = fleet(a); return [s.state, s.next, s.more.map((x) => [x.label, x.review])]; }))), false, "状态和核对正文里没有长串编号");
+  assert.equal(fleet({ outgoing: [sent("mystery")] }).state, "待核实", "词表外的状态");
+  // 与这张卡无关的记录不带出来;没有委派记录的卡流程不说话。
+  assert.equal(M.fleetLinks({ enabled: true, outgoing: [sent("pending")] }, "u9").any, false);
+  assert.equal(fleet({ outgoing: [sent("pending")] }, "u9").lane, null);
+  assert.equal(M.fleetLinks({ enabled: false, outgoing: [sent("pending")] }, "u1").any, false);
+});
+
+test("轮到本机：primary 是唯一下一步，命令和版本号取自对应记录；重新登记前的旧记录不给 primary", () => {
+  const cmd = (s) => s.primary && [s.primary.command, s.primary.args];
+  // 来源卡
+  assert.deepEqual(cmd(fleet({ outgoing: [sent("accepted_unconfirmed", { binding_draft: { ready: true, review_digest: "g", target_node_id: NODE_B, target_task_uid: "t9", source_topology_revision: 1, target_topology_revision: 2 } })] })),
+    ["propose_binding", { delegation_id: "d1", review_digest: "g" }]);
+  assert.deepEqual(cmd(fleet({ bindings: [bound({ state: "prepared", source_approved: false })] })), ["approve_binding", { id: "r1" }]);
+  // 按钮写动作,核对正文写按下去会发生什么;协议规则本身不进正文。
+  const resume = fleet({ bindings: [bound({ state: "prepared", source_approved: false })] });
+  assert.deepEqual([resume.state, resume.next, resume.primary.label], ["绑定待本机确认", "确认绑定", "确认绑定"]);
+  assert.equal(resume.primary.review.split("\n").pop(), "重新提交本机对这次绑定的确认；对方电脑仍须独立确认。");
+  assert.deepEqual(resume.others.map((a) => [a.label, a.command, a.review.split("\n").pop()]), [["撤回未确认绑定", "cancel_binding", "撤回这次绑定申请，对方电脑不再需要确认。"]]);
+  const pending = fleet({ bindings: [bound({ side: "target", source_node_id: NODE_B, target_node_id: NODE_A, state: "prepared" })] });
+  assert.deepEqual(pending.others.map((a) => [a.label, a.command]), [["重新提交本机确认", "approve_binding"], ["撤回未确认绑定", "cancel_binding"]]);
+  assert.ok(![resume.primary, ...resume.others, ...pending.others].some((a) => /恢复|未知结果/.test(a.label + a.review)), "不写「恢复」「未知结果」这类协议内的说法");
+  const grant = fleet({ bindings: [bound()], results: [back()], delivery: delivery({ receivers: [{ project_id: "demo", mapping_id: "m1", repo_id: "repo", base_commit: "abc" }] }) });
+  assert.deepEqual([grant.lane, grant.state, grant.primary.label, cmd(grant)], ["mine", "交付已回传", "授权接收文件 · repo", ["register_artifact_target", { result_id: "x1", mapping_id: "m1" }]]);
+  const reject = grant.more.find((a) => a.command === "reject_result");
+  assert.deepEqual([reject.label, reject.args, reject.note, reject.required], ["要求返工", { result_id: "x1", expected_version: 7 }, true, true], "返工的版本取交付记录的 source_task_version，处理说明必填");
+  assert.equal(grant.delivery, "文件未收到 · 检查未开始");
+  const artifact = { transfer_id: "tr1", result_id: "x1", state: "received", side: "source", bytes: 10, project_id: "demo", repo_id: "repo", base_commit: "abc", mapping_id: "m1" };
+  const verify = fleet({ bindings: [bound()], results: [back()], delivery: delivery({ artifacts: [artifact] }) });
+  assert.deepEqual([cmd(verify), verify.delivery], [["verify_artifact", { id: "tr1" }], "文件已收齐 · 检查未开始"]);
+  const merged = { integration_id: "i1", result_id: "x1", verification_id: "v1", phase: "settled", project_id: "demo", ref: "refs/heads/main", context_current: true, source_task_version: 8, fixture_runs: 0 };
+  const accept = fleet({ bindings: [bound()], results: [back()], delivery: delivery({ artifacts: [{ ...artifact, state: "accepted" }] }, { integrations: [merged] }) });
+  assert.deepEqual([cmd(accept), accept.primary.label, accept.primary.required], [["prepare_completion", { integration_id: "i1", expected_version: 8, allow_fixture: false }], "确认候选验收", true],
+    "验收的版本取合并记录的 source_task_version");
+  assert.deepEqual(accept.others.map((a) => a.command), ["request_cancellation", "check_integration"], "其余步骤进 others");
+  // 执行卡
+  const proposal = { relation_id: "r2", descriptor_digest: "dd", state: "pending", identity_current: true, project_id: "demo", task_version: 9, subject: "绑定", description: "说明", acceptance: "验收",
+    relation: { source_node_id: NODE_B, source_task_uid: "s1", target_task_uid: "u1", source_topology_revision: 1, target_topology_revision: 2 } };
+  const confirm = fleet({ proposals: [proposal] });
+  assert.deepEqual([confirm.lane, confirm.state, confirm.primary.label, cmd(confirm)], ["mine", "待确认绑定", "确认绑定", ["accept_binding_proposal", { relation_id: "r2", descriptor_digest: "dd", expected_version: 9 }]]);
+  assert.deepEqual(confirm.more.map((a) => [a.label, a.command]), [["拒绝", "decline_binding_proposal"]]);
+  const target = (extra) => bound({ side: "target", source_node_id: NODE_B, target_node_id: NODE_A, task_status: "not_started", released: false, ...extra });
+  const held = fleet({ bindings: [target()] }), free = fleet({ bindings: [target({ execution_authorized: true })] });
+  assert.deepEqual([held.lane, held.state, held.primary.command, held.primary.disabled], ["running", "待放行 · 等待双方就绪", "release_delegation", true], "放行条件没满足时按钮禁用");
+  assert.deepEqual([held.next, held.why, free.why], ["无需操作", "双方就绪、当前权限或本地结构尚未满足放行条件", undefined], "没满足的原因随状态走，写在「现在」那一行");
+  assert.deepEqual([free.lane, cmd(free), free.primary.disabled, free.role], ["mine", ["release_delegation", { relation_id: "r1", expected_version: 5 }], false, "target"]);
+  assert.deepEqual(cmd(fleet({ bindings: [target({ task_status: "waiting", released: true })] })), ["prepare_result", { relation_id: "r1", expected_version: 5 }]);
+  // 首页点开、本机没有对应卡的一件事
+  const inbox = M.fleetInbox("incoming", { project_id: "demo", delegation_id: "d7", state: "received", identity_current: true, source_node_id: NODE_B, version: 3, subject: "跑压测", description: "说明", acceptance: "验收" }, PCS);
+  assert.deepEqual([inbox.state, inbox.primary.label, inbox.primary.args, inbox.secondary.label, inbox.secondary.args.decision],
+    ["收到委派 · 来自「笔记本 B」", "接收任务", { delegation_id: "d7", expected_version: 3, decision: "accept" }, "拒绝", "reject"]);
+  assert.ok(inbox.primary.review.includes("来源电脑：笔记本 B") && !UUID.test(inbox.primary.review), "核对正文写电脑名");
+  assert.deepEqual(inbox.primary.tech, [["委派", "d7"], ["来源终端", NODE_B]], "编号在 tech 里");
+  // 这台电脑重新登记前的旧记录:只读
+  const old = fleet({ proposals: [{ ...proposal, identity_current: false }], bindings: [target({ execution_authorized: true, identity_current: 0 })] });
+  assert.deepEqual([old.lane, old.primary, old.more, old.others, old.readonly], [null, null, [], [], true]);
+  assert.equal(M.fleetInbox("proposal", { ...proposal, identity_current: false }, PCS).primary, null);
+  // 状态写给人看的说法;「节点代次」只留在技术信息里。
+  assert.deepEqual([old.state, old.next], ["这台电脑重新登记前的旧记录", "无需操作"]);
+  assert.deepEqual([M.fleetInbox("proposal", { ...proposal, identity_current: false }, PCS).state, M.fleetInbox("proposal", { ...proposal, identity_current: false }, PCS).next],
+    ["这台电脑重新登记前的旧记录", "无需操作"]);
+  assert.ok(!src.includes("旧节点代次"), "面板正文里不出现「节点代次」");
+  assert.deepEqual(M.homeNodeLabels([["a", "笔记本"], ["b", "笔记本"], ["c", NODE_B]]), { a: "笔记本", b: "笔记本 2", c: "另一台电脑" }, "下拉里只写电脑名，重名才加序号");
+});
+
+test("首页：发出委派的本机卡进「正在执行」并写电脑名；落在本机卡上的跨机事项不另出一条", () => {
+  const tasks = [card(1, { status: "not_started", released: 1 }), card(2, { waiting_for: "review" })];
+  const proposal = { relation_id: "r2", descriptor_digest: "dd", state: "pending", identity_current: true, project_id: "demo", task_version: 9, subject: "绑定",
+    relation: { source_node_id: NODE_B, target_task_uid: "u2" } };
+  const lists = M.homeLists({ tasks, localName: "台式机 A", nodeNames: PCS, actions: { enabled: true, outgoing: [sent("pending")], proposals: [proposal] } });
+  assert.deepEqual(lists.running.map((r) => [r.localId, r.state, r.next]), [[1, "等待「笔记本 B」接收任务", "无需操作"]]);
+  assert.deepEqual(lists.mine.map((r) => [r.localId, r.state, r.next, r.action]), [[2, "待确认绑定", "核对后确认", undefined]], "本机卡上写着同一件事，不再出一条跨机事项");
+  assert.deepEqual(M.homeLists({ tasks, actions: { enabled: false, outgoing: [sent("pending")] } }).running, [], "没有跨机配置时照旧");
+  assert.deepEqual([...M.fleetUids({ enabled: true, outgoing: [sent("pending")], proposals: [proposal], bindings: [bound({ task_uid: "u3" })] })].sort(), ["u1", "u2", "u3"]);
+});
+
+test("协议持有的待验收卡：homeStep 返回 hold，「通过」不是下一步", () => {
+  const why = (code) => ({ code, message: code, next_action: "按对应协议完成结算或人工恢复" });
+  for (const code of ["DELEGATION_FINISH_HELD", "TOPOLOGY_FINISH_HELD"]) {
+    const s = M.homeStep(card(1, { waiting_for: "review", progress_blockers: [why(code)] }), { autoReview: true });
+    assert.deepEqual([s.lane, s.state, s.next, s.hold], ["mine", "待你验收", "按对应协议完成结算或人工恢复", true]);
+  }
+  assert.equal(M.homeStep(card(1, { waiting_for: "review", progress_blockers: [why("CANCELLATION_HELD")] })).hold, undefined, "别的阻塞不算协议持有");
+  assert.equal(M.homeStep(card(1, { waiting_for: "review" })).hold, undefined);
+});
+
+test("跨机结构钉：核对正文不拼编号，编号进技术信息；侧栏经 fleetApi.act 打开同一个核对弹窗", () => {
+  const a = src.indexOf(" function openAction(label,projectId,command,args,review,{"), b = src.indexOf(' $("fleet-action-close")', a);
+  assert.ok(a > 0 && b > a, "openAction not found");
+  const open = src.slice(a, b);
+  assert.ok(open.includes("if(tech?.length)actionBody.append(techIds(tech));"), "编号由 techIds 放进默认折叠的「技术信息」");
+  assert.ok(!/task_uid|node_id|relation_id/.test(open), "核对正文不拼任务编号、终端编号、关系编号");
+  assert.ok(open.includes('actionSubmit.textContent=sent?"重试同一请求":"确认提交"') && src.includes("arguments:{...draft.arguments,"), "确认提交与提交的参数不变");
+  const view = src.slice(src.indexOf("// Global read view stays within the existing operator panel."));
+  for (const old of ["来源终端：", "目标终端：", "来源任务：", "目标任务：", "对象：", "\n关系："])
+    assert.ok(!view.includes(old + '"+'), "全局视图的核对正文不再拼「" + old + "」加编号");
+  for (const id of ['["来源终端",r.source_node_id]', '["目标终端",r.target_node_id]', '["来源任务",d.source_task_uid]', '["本机任务",d.target_task_uid]', '["关系",r.relation_id]'])
+    assert.ok(view.includes(id), "编号改由 tech 带出：" + id);
+  assert.ok(!view.includes(".slice(0,8)") && view.includes("homeNodeLabels([...ownerNames])"), "电脑下拉不带终端编号前 8 位");
+  assert.ok(src.includes("fleetApi={showTask,open:openFleet,act:openAction,evidence:taskEvidence,names:{history:historyStates,commands:commandNames,actions:actionStates}};"));
+  assert.ok(src.includes('placeholder="标题或任务编号"'));
+  // 刷新后保留:任务详情写进 #fleet-task=,关闭时清掉;处理说明按「命令 + 对象」存草稿,提交过的连编号一起存。
+  assert.ok(src.includes('p.set("fleet-task",uid)') && src.includes("detailGeneration++;fleetHash(null);"));
+  assert.ok(open.includes('const key=command+":"+JSON.stringify(args)') && open.includes("action_id:sent?saved.action_id:crypto.randomUUID()"));
+  assert.ok(src.includes("saveActionDraft(draft.key,{action_id:draft.action_id,note:draft.input?draft.input.value:\"\",sent:true});"));
+  // 全局视图里的本机任务直达侧栏;三段长文默认折叠。
+  const next = src.slice(src.indexOf(" function nextStep(t,card,body){"), src.indexOf(" function openFleet(){"));
+  assert.ok(next.includes("detail.close();dialog.close();openSide({id:card.id,uid:null,item:null});") && !next.includes("locateOnBoard"));
+  assert.ok(src.includes("if(t.local_id!==null&&byId.has(t.local_id)){dialog.close();openSide({id:t.local_id,uid:null,item:null});}else showTask(t.task_uid);"));
+  assert.ok(src.includes('long.append(el("summary","给执行者看的详细说明"));') && src.includes('const locate=el("button","在「全部任务」中定位")'));
+  // 首页跨机事项点开进侧栏,不再打开全局视图。
+  const item = src.slice(src.indexOf("function openHomeItem(item){"), src.indexOf("function sideCard(){"));
+  assert.ok(item.includes("openSide({ action: { kind: item.kind, id: item.id }") && !item.includes("fleetApi"));
+});
+
+test("执行者请求与逾期锁进「待我处理」，到设置页处理；任务类批准事项卡片已在列表里，不重复进", () => {
+  const tasks = [card(2, { waiting_for: "decision" }), card(4, { waiting_for: "review" })];
+  // 形状照 GET /api/approvals:任务类带 detail_ref.type = task;锁的标题是资源名;请求的摘要是执行者要做的事。
+  const approvals = [
+    { id: "decision:2:5", kind: "decision", title: "#2 卡 2", summary: "卡 2", detail_ref: { type: "task", id: 2 }, created_at: at(2) },
+    { id: "delivery:4:3", kind: "delivery", title: "#4 卡 4", summary: "卡 4", detail_ref: { type: "task", id: 4 }, created_at: at(4) },
+    { id: "release:9:1.a.0", kind: "release", title: "#9 卡 9", summary: "卡 9", detail_ref: { type: "task", id: 9 }, created_at: at(9) },
+    { id: "version:bless:abc", kind: "version", title: "确认当前版本", summary: "确认版本 abc", detail_ref: { type: "setup" }, created_at: at(1) },
+    { id: "lock:7:1790000000000", kind: "lock", title: "device:test-phone", summary: "device:test-phone 已逾期:甲 · 回归", detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, created_at: at(6) },
+    { id: "request:3:1", kind: "request", title: "ext-a 请求批准", summary: "重启共享设备上的应用", risk: "high", detail_ref: { type: "request", id: 3 }, created_at: at(5) },
+  ];
+  const { mine } = M.homeLists({ tasks, localName: "台式机 A", approvals });
+  assert.deepEqual(mine.map((r) => [r.localId ?? r.key, r.title, r.state, r.next]), [
+    [2, "卡 2", "执行方在等你决定", "同意或否决"],
+    ["approval:request:3:1", "重启共享设备上的应用", "执行者请求", "到设置页处理"],
+    [4, "卡 4", "待你验收", "通过或打回"],
+    ["approval:lock:7:1790000000000", "device:test-phone", "逾期锁", "到设置页处理"],
+  ], "任务类三种和版本确认都不另出一条");
+  assert.ok(mine.filter((r) => r.action === "approval").every((r) => r.computer === "台式机 A" && r.uid === null && r.localId === null));
+  assert.deepEqual(M.homeLists({ tasks }).mine.map((r) => r.localId), [2, 4], "不传 approvals 时照旧");
+  assert.deepEqual(M.homeLists({ tasks, approvals: null }).mine.map((r) => r.localId), [2, 4]);
+  // 首页的两个状态词与设置页「待你批准」的种类词是同一对。
+  const c0 = src.indexOf("// ── coord-copy(pure;tests/panelcopytest.mjs)──"), c1 = src.indexOf("// ── /coord-copy ──");
+  const kinds = new Function("copyLabel", src.slice(src.indexOf("\n", c0) + 1, c1) + ";return COORD_COPY.apvKind;")(() => "");
+  assert.deepEqual([kinds.request, kinds.lock], ["执行者请求", "逾期锁"]);
+  // 点开:切到设置页并滚到「待你批准」;页签标题的待裁计数加上这两类。
+  const open = src.slice(src.indexOf("function openHomeItem(item){"), src.indexOf("function sideCard(){"));
+  assert.ok(open.includes('if (item.action === "approval") {') && open.includes('setView("settings");') && open.includes('document.getElementById("approvals")?.scrollIntoView({ block: "start" })'));
+  assert.ok(src.includes('const asks = (approvalData?.approvals || []).filter((a) => a && (a.kind === "request" || a.kind === "lock")).length;'));
+  assert.ok(src.includes('document.title = c.waiting > 0 || asks > 0 ? `(${(c.waiting || 0) + asks} 待裁)AI 协作看板` : "AI 协作看板";'));
+  assert.ok(src.includes("approvals: approvalData?.approvals || [],"), "首页把批准事项交给 homeLists");
 });

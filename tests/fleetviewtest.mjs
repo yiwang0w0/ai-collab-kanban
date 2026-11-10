@@ -78,6 +78,19 @@ test("detail only returns public view fields, preserving hostile text literally"
  const db=node(),s=source(db),subject='<img src=x onerror="alert(1)">',uid=replica(db,s,{subject,description:"<script>fixture</script>",verify_cmd:"PRIVATE-COMMAND",evidence_path:"PRIVATE-PATH",token:"PRIVATE-TOKEN"});
  const detail=readFleetTask(db,uid),encoded=JSON.stringify([view(db),detail]);assert.equal(detail.subject,subject);assert.equal(detail.read_only,true);assert.equal(detail.local_id,null);assert.ok(!encoded.includes("PRIVATE-"));
 });
+test("list rows and detail carry the human brief and result summary, computed from the card's own text",()=>{
+ const db=node(),s=source(db,{received:true});
+ const plain=replica(db,s,{subject:"没有一句话"}),brief=replica(db,s,{subject:"有一句话",description:"【一句话】回放一小时流量\n其余是给执行者看的长说明"});
+ const delivered=replica(db,s,{subject:"交付了",status:"waiting",waiting_for:"review",result:"## "+store.RESULT_SUMMARY_HEAD+"\n- 结论：通过\n\n## 证据\n日志"});
+ const silent=replica(db,s,{subject:"交付了没摘要",status:"waiting",waiting_for:"review",result:"只有日志"});
+ const rows=new Map(view(db).tasks.map(t=>[t.task_uid,t]));
+ assert.equal(rows.get(plain).brief,null);assert.equal(rows.get(plain).result_summary,null);
+ assert.equal(rows.get(brief).brief,"回放一小时流量");
+ assert.equal(rows.get(delivered).result_summary,"结论：通过");assert.equal(rows.get(silent).result_summary,null);
+ const detail=readFleetTask(db,delivered);assert.equal(detail.result_summary,"结论：通过");assert.equal(detail.brief,null);assert.ok(detail.result.includes("日志"));
+ assert.equal(readFleetTask(db,brief).brief,"回放一小时流量");
+ const local=store.add(db,{subject:"本机卡",summary:"给人看的一行"});assert.equal(view(db).tasks.find(t=>t.local_id===local).brief,"给人看的一行");
+});
 test("caller transaction is retained and old sync schema is not migrated by reads",()=>{
  const db=node();db.exec("BEGIN");store.add(db,{subject:"uncommitted"});assert.equal(view(db).tasks.length,1);assert.equal(db.isTransaction,true);db.exec("ROLLBACK");assert.equal(view(db).tasks.length,0);
  db.exec("UPDATE federation_sync_schema SET version=3");assert.equal(view(db).sync_state,"upgrade_required");assert.equal(db.prepare("SELECT version FROM federation_sync_schema").get().version,3);

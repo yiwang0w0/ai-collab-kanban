@@ -8,7 +8,7 @@ const start = source.indexOf("// ── display-copy(pure;tests/panelcopytest.mj
 const end = source.indexOf("// ── /display-copy ──", start);
 assert.ok(start >= 0 && end > start, "未找到纯展示文案测试边界");
 const copy = new Function(source.slice(source.indexOf("\n", start) + 1, end) +
-  "\nreturn { copyLabel, routeLabel, copyError, formatCount };")();
+  "\nreturn { copyLabel, routeLabel, copyError, formatCount, usageValue, usageCostMark, usageDuration, usageMerge, usageTop, USAGE_PHASE, cliVersionCells };")();
 
 function panelSection(start, end) {
   const a = source.indexOf(start), b = source.indexOf(end, a);
@@ -17,6 +17,10 @@ function panelSection(start, end) {
 }
 const readinessSource = panelSection("// ── runtime-readiness(pure;tests/panelcopytest.mjs) ──", "// ── /runtime-readiness ──");
 const profileSource = panelSection("// ── execution-profile-copy(pure;tests/panelcopytest.mjs) ──", "// ── /execution-profile-copy ──");
+// 设置页协作区的文案表与纯函数:用到 display-copy 的 copyLabel,其余自足。
+const coordSource = panelSection("// ── coord-copy(pure;tests/panelcopytest.mjs)──", "// ── /coord-copy ──");
+const coord = new Function("copyLabel", coordSource +
+  "\nreturn { COORD_COPY, armedLabel, coordExecView, coordLockView, coordLockCheck, coordHandoffView, coordHandoffPack, coordJournalView, approvalRowView, aptRemoteLine, aptTokenView };")(copy.copyLabel);
 const readiness = new Function(readinessSource + "\nreturn { runtimeReadiness, runtimeProbeKey };")();
 const profileCopy = new Function(profileSource + "\nreturn {executionChannelName,executionAuthName,executionBillingName,executionBudgetText,taskExecutionChoices};")();
 
@@ -53,6 +57,100 @@ test("用量显示使用中文计数单位，不改变计数值", () => {
   assert.match(source, /role="radiogroup"/);
   assert.match(source, /aria-label="\$\{esc\(effortName\(v\)\)\}"><span>\$\{esc\(effortName\(v\)\)\}<\/span>/);
   assert.ok(source.includes('const b = el.closest(".agent").querySelector(".cap b"); if (b) b.textContent = effortName(a.effort);'));
+});
+
+test("用量的数：未知不当 0，有已知部分写「不少于」，费用带来源标记", () => {
+  // 形状照用量接口的一组汇总:有未知行的项是 null,已知部分的和在 known。
+  const full = { rows: 3, attempts: 2, calls: 14, in: 12000, cc: 800, cr: 90000, out: 3400, duration_ms: 200000, cost_usd: 0.4213, cost_source: "reported", cost_sources: { reported: 3 }, known: {}, unknown: {} };
+  assert.equal(copy.usageValue(full, "in"), "1.2万");
+  assert.equal(copy.usageValue(full, ["in", "out"]), "1.5万", "词元 = 输入 + 输出");
+  assert.equal(copy.usageValue(full, "attempts"), "2");
+  assert.equal(copy.usageValue(full, "duration_ms"), "3 分 20 秒");
+  assert.equal(copy.usageValue(full, "cost_usd") + copy.usageCostMark(full), "0.42 美元");
+  const partial = { ...full, in: null, cost_usd: null, known: { in: 5000, cost_usd: 0.2 }, unknown: { in: 1, out: 0, cost_usd: 1 } };
+  assert.equal(copy.usageValue(partial, "in"), "不少于 5.0千", "有未知行：只有已知部分，不写成确数");
+  assert.equal(copy.usageValue(partial, ["in", "out"]), "不少于 8.4千", "和里有一项不全，整个和就是下限");
+  assert.equal(copy.usageValue(partial, "cost_usd"), "不少于 0.20 美元");
+  const blank = { rows: 2, attempts: 1, calls: null, in: null, cc: null, cr: null, out: null, duration_ms: null, cost_usd: null, cost_source: "unknown", cost_sources: { unknown: 2 }, known: {}, unknown: { in: 2 } };
+  for (const key of ["in", "out", "cr", "cc", "calls", "duration_ms", "cost_usd"]) assert.equal(copy.usageValue(blank, key), "待核实", key);
+  assert.equal(copy.usageValue(blank, ["in", "out"]), "待核实");
+  assert.ok(!/(^|[^.\d])0($|[^.\d])/.test(["in", "out", "cost_usd", "duration_ms"].map((k) => copy.usageValue(blank, k)).join(" ")), "未知的数不显示成 0");
+  assert.equal(copy.usageValue(undefined, "in"), "待核实");
+  assert.equal(copy.usageValue({ ...full, cost_usd: 0.0042 }, "cost_usd"), "0.0042 美元", "不到一分钱的费用不抹成 0.00");
+  assert.equal(copy.usageValue({ ...full, cost_usd: 0 }, "cost_usd"), "0.00 美元", "确知为 0 才写 0");
+  // 五种费用来源。
+  const mark = (cost_source, cost_sources = {}) => copy.usageCostMark({ cost_source, cost_sources });
+  assert.equal(mark("reported"), "");
+  assert.equal(mark("estimated"), " · 估算");
+  assert.equal(mark("mixed", { reported: 2, estimated: 1 }), " · 含估算");
+  assert.equal(mark("mixed", { reported: 2, "external-reported": 1 }), "", "混合但没有估算行，不标估算");
+  assert.equal(mark("external-reported"), " · 外部自报");
+  assert.equal(copy.usageValue(blank, "cost_usd") + copy.usageCostMark(blank), "待核实", "来源未知：费用只写待核实");
+  assert.equal(copy.usageValue({ ...partial, cost_source: "estimated" }, "cost_usd") + copy.usageCostMark({ ...partial, cost_source: "estimated" }), "不少于 0.20 美元 · 估算");
+  // 耗时与阶段名。
+  assert.deepEqual([999, 59000, 60000, 200000, 3600000, 5400000, 86399000].map(copy.usageDuration), ["1 秒", "59 秒", "1 分", "3 分 20 秒", "1 小时", "1 小时 30 分", "24 小时"]);
+  assert.deepEqual(copy.USAGE_PHASE, { implement: "实现", fix: "续修", review: "审阅", decompose: "拆解", compact: "压缩", coord: "协调", "?": "待核实" });
+  // 合并:rows 为 0 的组不参与(没有失败尝试 = 浪费为 0);有未知行的项只剩下限。
+  const none = { rows: 0, attempts: 0, in: null, out: null, known: {}, unknown: {} };
+  assert.deepEqual(copy.usageMerge([none, none], ["in", "out"]), { rows: 0, known: {}, in: 0, out: 0 });
+  assert.equal(copy.usageValue(copy.usageMerge([none], ["in", "out"]), ["in", "out"]), "0");
+  assert.equal(copy.usageValue(copy.usageMerge([full, none, full], ["in", "out"]), ["in", "out"]), "3.1万");
+  assert.equal(copy.usageValue(copy.usageMerge([full, partial], ["in", "out"]), ["in", "out"]), "不少于 2.4万");
+  // 最贵的几张:费用有未知行的按已知部分排;费用全未知的不进榜;"?" 单列。
+  const g = (key, cost_usd, known = {}) => ({ key, rows: 1, cost_usd, known });
+  const top = copy.usageTop([g("1", 0.5), g("2", null, { cost_usd: 2 }), g("3", null), g("?", 9), g("4", 1.5), g("5", null)], 2);
+  assert.deepEqual([top.rows.map((x) => x.key), top.unknown, top.loose.key], [["2", "4"], 2, "?"]);
+  assert.deepEqual(copy.usageTop([]), { rows: [], unknown: 0, loose: null });
+});
+
+test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态都带下一步，判断不了新旧就不写，没配置的整行不出", () => {
+  const when = (iso) => "T" + iso.slice(5, 10);
+  const base = { id: "claude", name: "Claude CLI", state: "found", path: "C:/secret/path/claude.exe", current: "2.1.290", latest: "2.1.300", latest_state: "ok",
+    latest_checked_at: "2026-11-10T00:00:00.000Z", update_available: true, tested: { state: "boundary", at: "2026-11-09T00:00:00.000Z" } };
+  const cells = (c) => copy.cliVersionCells(c, when).cells.map((x) => [x.k, x.v, x.st]);
+  assert.deepEqual(cells(base), [["当前", "2.1.290", "ok"], ["最新", "2.1.300", "warn"], ["上次核对", "T11-10", "ok"], ["实测", "已实测", "ok"]]);
+  const up = copy.cliVersionCells(base, when);
+  assert.equal(up.cells[1].badge, "可升级");
+  assert.equal(up.next, "运行 node cli/upgrade-cli.mjs claude 查看会做什么，加 --yes 才执行");
+  assert.equal(up.cells[3].title, "参数与读写权限范围都已实测；实测于 T11-09");
+  assert.equal(copy.cliVersionCells({ ...base, npm_managed: false }, when).next, "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs", "不是 npm 装的：写得出动作");
+  assert.equal(copy.cliVersionCells({ ...base, npm_managed: true }, when).next, up.next);
+  assert.ok(!JSON.stringify(up).includes("secret"), "可执行文件的路径不进正文");
+  // 已是最新 / 判断不了。
+  const same = copy.cliVersionCells({ ...base, current: "2.1.300", update_available: false }, when);
+  assert.deepEqual([same.cells[1].st, same.cells[1].note, same.cells[1].badge, same.next], ["ok", "已是最新", undefined, null]);
+  const unsure = copy.cliVersionCells({ ...base, update_available: null }, when);
+  assert.deepEqual([unsure.cells[1].v, unsure.cells[1].st, unsure.next], ["2.1.300", "unknown", null]);
+  assert.ok(!JSON.stringify(unsure).includes("已是最新") && !JSON.stringify(unsure).includes("可升级"), "update_available 为 null 时不判断新旧");
+  // 最新格的三种查询状态。
+  const offline = copy.cliVersionCells({ ...base, latest_state: "unavailable", update_available: true }, when);
+  assert.deepEqual([offline.cells[1].v, offline.cells[1].note, offline.cells[1].st, offline.cells[2].st, offline.next], ["未能查询", "上次查到 2.1.300", "unknown", "unknown", null]);
+  assert.equal(copy.cliVersionCells({ ...base, latest_state: "unavailable", latest: null }, when).cells[1].note, undefined);
+  assert.deepEqual(cells({ ...base, latest: null, latest_state: "not_checked", latest_checked_at: null, update_available: null }).slice(1, 3),
+    [["最新", "未查询", "unknown"], ["上次核对", "无", "unknown"]]);
+  // 当前格读不到。
+  assert.deepEqual(cells({ ...base, state: "wrapper", current: null, update_available: null })[0], ["当前", "未找到", "warn"]);
+  assert.deepEqual(cells({ ...base, state: "not_found", current: null, update_available: null })[0], ["当前", "未找到", "warn"]);
+  assert.deepEqual(cells({ ...base, current: null, update_available: null })[0], ["当前", "版本读不出", "warn"]);
+  // 警示态不能只有一个三角:这两种情况行下都有一句下一步,即使查得到更新的版本也先说这一句。
+  for (const broken of [{ state: "wrapper", current: null }, { state: "not_found", current: null }, { current: null }, { current: null, update_available: null }])
+    assert.equal(copy.cliVersionCells({ ...base, ...broken }, when).next, "运行 node cli/doctor.mjs 查看原因", JSON.stringify(broken));
+  assert.equal(copy.cliVersionCells({ ...base, state: "not_found", current: null }, when).cells[0].title, "没有找到可以直接启动的 CLI 程序");
+  // 实测格:正文三态短词,口径说明在 title,三种状态都有。
+  assert.deepEqual(cells({ ...base, tested: { state: "contract", at: "2026-11-09T00:00:00.000Z" } })[3], ["实测", "部分实测", "unknown"]);
+  assert.equal(copy.cliVersionCells({ ...base, tested: { state: "contract", at: "2026-11-09T00:00:00.000Z" } }, when).cells[3].title, "参数已核对，读写权限范围未实测；实测于 T11-09");
+  assert.deepEqual(cells({ ...base, tested: { state: "none", at: null } })[3], ["实测", "未实测", "unknown"]);
+  assert.equal(copy.cliVersionCells({ ...base, tested: { state: "none", at: null } }, when).cells[3].title, "这个版本没有实测记录");
+  for (const tested of [{ state: "boundary", at: null }, { state: "contract", at: null }, undefined])
+    assert.ok(copy.cliVersionCells({ ...base, tested }, when).cells[3].title, "实测格总有悬停说明");
+  const allCells = JSON.stringify(["wrapper", "not_found", "found"].flatMap((state) => ["boundary", "contract", "none"].map((t) => copy.cliVersionCells({ ...base, state, tested: { state: t, at: null } }, when).cells.map((x) => x.v))));
+  assert.ok(!/原生可执行文件|读写边界/.test(allCells), "格子正文不写内部说法");
+  assert.equal(copy.cliVersionCells({ ...base, state: "not_configured" }, when), null, "没有配置的 CLI 整行不出");
+  assert.equal(copy.cliVersionCells(null), null);
+  // 版本块不放升级按钮:只有「重新核对」。
+  const block = panelSection("function renderCliVersions(){", "/** The three fleet reads");
+  assert.deepEqual([...block.matchAll(/homeEl\("button", ([^)]*)\)/g)].map((m) => m[1]), ['cliChecking ? "核对中…" : "重新核对"']);
+  assert.ok(block.includes('badge.dataset.tone = "warn"') && block.includes('homeCmdText(homeEl("p", undefined, "cv-next"), r.next)'));
 });
 
 test("浏览器错误使用中文说明，中文消息及未知原始错误完整保留", () => {
@@ -113,10 +211,10 @@ test("本批文案调整保留 ef2ad8f 的原 Kanban 暖色变量", () => {
     .map((match) => Object.fromEntries([...match[1].matchAll(/--([\w-]+):\s*(#[0-9a-f]{6})\b/gi)]
       .map((entry) => [entry[1], entry[2].toLowerCase()])));
   assert.deepEqual(palettes, [
-    { bg: "#f7f2e8", panel: "#fffcf6", panel2: "#f1e9dc", line: "#ddcfbb", fg: "#332b23",
+    { bg: "#f7f2e8", bg2: "#f2ebdf", panel: "#fffcf6", panel2: "#f1e9dc", line: "#ddcfbb", fg: "#332b23",
       dim: "#756652", dim2: "#726451", accent: "#9b530b", cc: "#80572c", l0: "#936544",
       ok: "#396a4c", warn: "#7f5d0e", bad: "#b74332" },
-    { bg: "#1e1a16", panel: "#27211c", panel2: "#312920", line: "#574737", fg: "#f4eadb",
+    { bg: "#1e1a16", bg2: "#191511", panel: "#27211c", panel2: "#312920", line: "#463a2d", fg: "#f4eadb",
       dim: "#c2b19a", dim2: "#a7957d", accent: "#e7ab5c", cc: "#c99760", l0: "#cfb18b",
       ok: "#8db394", warn: "#d7b765", bad: "#f08a77" },
   ]);
@@ -360,8 +458,8 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
     append(...nodes) { this.children.push(...nodes); }
     get textContent() { return this.text + this.children.map((n) => n.textContent).join(""); }
   }
-  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高" });
-  vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t){", "function sideRelationshipBox(t){"), context);
+  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高", lineLabel: (line) => line });
+  vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t, need = false, protocol = false){", "function sideRelationshipBox(t){"), context);
   const card = { id: 4, status: "not_started", released: false, aggregate_version: 7,
     verification_repair: { max_rounds: 3 }, verification_repair_digest: "b".repeat(64), execution_profile: {
     execution_profile_id: "claude-api", profile_digest: "a".repeat(64), configuration_changed: true, label: "API 样本", channel: "claude_agent_sdk", auth_kind: "api_key", billing_kind: "anthropic_api", model: "allowed", effort: "high", tools: "write", budget: null, workspace: { path: "C:/隔离/中文 工作仓" },
@@ -393,6 +491,29 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
   assert.ok(source.includes('released: true, expected_version: Number(b.dataset.version)'));
   assert.ok(source.includes('confirm_execution_profile_digest: b.dataset.executionProfileDigest'), "两押提交原按钮绑定的摘要，配置变化不静默确认");
   assert.ok(source.includes('confirm_verification_repair_digest: b.dataset.verificationRepairDigest'), "续修策略沿原放行请求提交，不自动扩大旧授权");
+  // 目标卡沿用同一个放行入口,只换按钮上的字;只差放行时整节标成「要你做什么」,按钮还是那一个。
+  const goal = context.sideExecution({ ...legacy, kind: "goal" }), goalButtons = goal.children.filter((n) => n.tag === "button");
+  assert.deepEqual(goalButtons.map((n) => [n.textContent, n.dataset.a, n.dataset.version, n.dataset.verificationRepairDigest]), [["放行这个目标", "release", "7", "b".repeat(64)]]);
+  const need = context.sideExecution(card, true);
+  assert.equal(need.dataset.tone, "need"); assert.equal(need.children[0].textContent, "要你做什么");
+  assert.equal(need.children.filter((n) => n.tag === "button").length, 1, "标成要你做什么不新增第二个放行入口");
+  assert.equal(section.dataset.tone, undefined);
+});
+
+test("侧栏验收区不写说明句：按钮上的字随留言变，占位符不带括号，人工闸只写命令行里的处理位置", () => {
+  const box = panelSection("function sideControlsBox(t, ctl){", "/** 这条线现在的样子");
+  assert.ok(!source.includes("留空按「通过」= 结案") && !source.includes("按两次才生效。\" +"), "原说明句已删");
+  assert.ok(!source.includes("(写了=打回继续)") && box.includes('"可选:补充给原执行方的一句指示"'), "占位符去掉括号里的内容");
+  assert.ok(box.includes('if (ctl.kind === "accept" && t.execution_profile) box.append(homeEl("p", PROFILE_RELEASE_NOTE));'), "只在显式执行配置卡保留取消放行这一句");
+  // 留言跟随:侧栏是留言范围,打字时按钮上的字同样跟着变;重建回填草稿后也同步一次。
+  assert.ok(source.includes('e.target.closest(".card") || e.target.closest("[data-decision-scope]") || e.target.closest("[data-task-scope]");\n  if (scope) syncHandoff(scope);'));
+  assert.ok(source.includes('syncHandoff(document.getElementById("task-side"));'));
+  // 人工闸:面板没有解闸按钮,两押名单里也没有这个动作;处理位置写成 cli/board.py 实有的命令。
+  assert.ok(!source.includes('"ungate"') && !source.includes("humanGate:false") && !source.includes("humanGate: false"), "面板不新增解除人工闸的权力");
+  assert.ok(box.includes('"python cli/board.py edit " + t.id + " --file gate.json --version " + t.aggregate_version'));
+  const cli = readFileSync(new URL("../cli/board.py", import.meta.url), "utf8");
+  assert.ok(cli.includes("$P edit  <id> --file payload.json --version <aggregate_version>") && cli.includes('elif cmd == "edit":')
+    && cli.includes("description / acceptance / line / route / humanGate / blockedBy"), "命令行的 edit 接受 humanGate，写法与面板上的命令一致");
 });
 
 test("写了指示的卡按放行状态显示：未放行说明须放行后再跑，已放行保留原文案", () => {
@@ -525,14 +646,110 @@ test("回执区句末与补充指示框按执行结果和服务端去向说：�
   assert.ok(!source.includes("请先填写执行回执,再交回智能体"), "缺回执提示不预设交回原智能体");
 });
 
+test("协作区文案：执行者三态与已停止、锁的逾期与持有中、任务类批准只给「打开任务」、上膛的字、远程入口的句子", () => {
+  const T = Date.parse("2026-11-10T06:00:00.000Z"), ago = (min) => new Date(T - min * 60000).toISOString();
+  const ex = (extra) => ({ id: "a", name: "甲", kind: "external", active: true, last_seen: null, status: { current: "", done: [], next: [] }, ...extra });
+  // 执行者:从未心跳「已登记」;有心跳「活动」;离心跳超时不到四分之一时警示色;停止了「已停止」。
+  const state = (x, stale = 20) => { const v = coord.coordExecView(x, T, stale); return [v.state.label, v.state.tone, v.state.icon, v.seen]; };
+  assert.deepEqual(state(ex()), ["已登记", "quiet", "wait", "还没有心跳"]);
+  assert.deepEqual(state(ex({ last_seen: ago(0.5) })), ["活动", "ok", "success", "最后心跳 刚刚"]);
+  assert.deepEqual(state(ex({ last_seen: ago(14) })), ["活动", "ok", "success", "最后心跳 14 分钟前"]);
+  assert.deepEqual(state(ex({ last_seen: ago(15) })), ["活动", "warn", "warn", "最后心跳 15 分钟前"], "20 分钟超时:15 分钟起算接近");
+  assert.equal(coord.coordExecView(ex({ last_seen: ago(15) }), T, 20).state.title, "超过 20 分钟没有心跳按停止处理");
+  assert.deepEqual(state(ex({ last_seen: ago(30) }), 60), ["活动", "ok", "success", "最后心跳 30 分钟前"], "判定用接口给的 stale_min");
+  assert.deepEqual(state(ex({ last_seen: ago(500) }), null), ["活动", "ok", "success", "最后心跳 8 小时 20 分前"], "没给 stale_min 就不判接近");
+  assert.deepEqual(state(ex({ active: false, last_seen: ago(125) })), ["已停止", "quiet", "stop", "最后心跳 2 小时 5 分前"]);
+  assert.deepEqual(state(ex({ active: false })), ["已停止", "quiet", "stop", "还没有心跳"]);
+  const card = coord.coordExecView(ex({ kind: "line", status: { current: "  回归测试  ", next: ["跑测试", "", "写报告", 7] } }), T, 20);
+  assert.deepEqual([card.name, card.id, card.kind, card.current, card.next, card.nextLabel], ["甲", "a", "执行线", "回归测试", ["跑测试", "写报告"], "下一步 2 项"]);
+  const blank = coord.coordExecView(ex({ kind: "constructor", name: "" }), T, 20);
+  assert.deepEqual([blank.name, blank.kind, blank.current, blank.next, blank.nextLabel], ["a", "待核实", "待核实", [], ""], "未知值写「待核实」,不显示机器字段、不写「–」");
+
+  // 锁:逾期由服务端的 overdue 判;过了预计结束、还在宽限里的仍是「持有中」,只多一个 late。
+  const lock = (extra) => ({ id: 7, resource: "device:test-phone", holder: "a", holder_name: "甲", purpose: "回归", started_at: ago(90), expected_end: ago(60), overdue: true, ...extra });
+  const over = coord.coordLockView(lock(), T);
+  assert.deepEqual([over.state.label, over.state.tone, over.state.icon, over.late], ["逾期", "warn", "warn", false]);
+  assert.deepEqual([over.resource, over.holder, over.holderName, over.purpose, over.release], ["device:test-phone", "a", "甲", "回归", "强制释放"]);
+  assert.equal(over.armed, "再按=确认强制释放 device:test-phone，持有者 甲");
+  const held = coord.coordLockView(lock({ overdue: false, expected_end: new Date(T + 30 * 60000).toISOString() }), T);
+  assert.deepEqual([held.state.label, held.state.tone, held.state.icon, held.late], ["持有中", "run", "wait", false]);
+  assert.equal(coord.coordLockView(lock({ overdue: false, expected_end: ago(10) }), T).late, true, "过了预计结束、还没逾期");
+  assert.deepEqual([coord.coordLockView(lock({ holder_name: "", purpose: " " }), T).holderName, coord.coordLockView(lock({ holder_name: "", holder: "", purpose: " " }), T).purpose], ["a", "待核实"]);
+  // 第二下之前的核对。
+  const locks = [lock()];
+  assert.equal(coord.coordLockCheck(locks, "device:test-phone", "a", "7"), "");
+  assert.equal(coord.coordLockCheck(locks, "device:test-phone", "b", "7"), "这把锁已换人，请重新核对");
+  assert.equal(coord.coordLockCheck(locks, "device:test-phone", "a", "8"), "这把锁已重新加锁，请重新核对");
+  assert.equal(coord.coordLockCheck([], "device:test-phone", "a", "7"), "这把锁已经释放");
+  assert.equal(coord.coordLockCheck(null, "device:test-phone", "a", "7"), "这把锁已经释放");
+
+  // 待你批准:任务类只给「打开任务」;版本确认、逾期锁、执行者请求留按钮。
+  const apv = (kind, extra) => ({ id: kind + ":9:1", kind, title: "标题", summary: "摘要", created_at: ago(1), expected_version: 1,
+    actions: ["approve", "reject"], labels: { approve: "通过", reject: "打回" }, detail_ref: { type: "task", id: 9 }, ...extra });
+  for (const [kind, word] of [["decision", "待裁定"], ["delivery", "待验收"], ["release", "放行确认"]]) {
+    const v = coord.approvalRowView(apv(kind));
+    assert.deepEqual([v.kind, v.open, v.actions, v.note], [word, { type: "task", id: 9, label: "打开任务" }, [], null], kind);
+  }
+  const version = coord.approvalRowView(apv("version", { id: "version:upgrade:r2.0", detail_ref: { type: "setup" }, labels: { approve: "更新并重启", reject: "暂不更新" } }));
+  assert.deepEqual(version.actions, [{ decision: "approve", label: "更新并重启", armed: "再按=确认更新并重启", primary: true, needsNote: false },
+    { decision: "reject", label: "暂不更新", armed: "再按=确认暂不更新", primary: false, needsNote: false }]);
+  assert.deepEqual([version.open, version.key, version.note], [null, "version:upgrade", { required: false, max: 500, label: "备注", placeholder: "备注，可不填" }]);
+  const lk = coord.approvalRowView(apv("lock", { id: "lock:7:1790000000000", title: "device:test-phone", detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, labels: { approve: "强制释放", reject: "保留" } }));
+  assert.deepEqual([lk.kind, lk.open, lk.key], ["逾期锁", { type: "lock", resource: "device:test-phone" }, "lock:7"]);
+  assert.deepEqual(lk.actions.map((x) => [x.label, x.armed, x.needsNote]), [["强制释放", "再按=确认强制释放", true], ["保留", "再按=确认保留", false]]);
+  assert.deepEqual(lk.note, { required: true, max: 200, label: "释放理由", placeholder: "释放理由，必填" }, "理由随备注进流水,上限跟服务端的强制释放理由一致");
+  const req = coord.approvalRowView(apv("request", { risk: "high", detail_ref: { type: "request", id: 9 }, labels: undefined }));
+  assert.deepEqual([req.kind, req.actions.map((x) => x.label)], ["执行者请求 · 高风险", ["批准", "拒绝"]]);
+  const odd = coord.approvalRowView({ id: "future:1:1", kind: "future_kind", risk: "toString", title: "", summary: undefined, actions: ["approve", "escalate"], detail_ref: null });
+  assert.deepEqual([odd.kind, odd.title, odd.summary, odd.blocked, odd.createdAt, odd.actions.map((x) => x.decision)], ["待核实 · 待核实", "待核实", "", "", null, ["approve"]],
+    "未知的种类和风险写「待核实」,认不得的动作不给按钮");
+
+  // 上膛的字:再按=确认 + 原按钮文字。
+  assert.equal(coord.armedLabel("更新并重启"), "再按=确认更新并重启");
+  assert.equal(coord.armedLabel("吊销"), "再按=确认吊销");
+  assert.equal(coord.armedLabel(" 批准 "), "再按=确认批准");
+
+  // 远程入口那一句。
+  assert.equal(coord.aptRemoteLine({ enabled: false, listening: [], allow_ips: [] }), "远程入口已关闭。在配置里打开 remote_access。");
+  assert.equal(coord.aptRemoteLine(null), "远程入口已关闭。在配置里打开 remote_access。");
+  assert.equal(coord.aptRemoteLine({ enabled: true, listening: ["192.168.1.5:47830"], allow_ips: ["192.168.1.20", "192.168.1.21"], errors: [] }),
+    "远程入口：192.168.1.5:47830 · 允许来源 192.168.1.20、192.168.1.21");
+  assert.equal(coord.aptRemoteLine({ enabled: true, listening: [], allow_ips: [], errors: ["0.0.0.0:47830"] }), "远程入口：未在监听 · 允许来源 未设置 · 监听失败 0.0.0.0:47830");
+  const token = coord.aptTokenView({ id: 4, label: "手机", created_at: ago(600), last_used_at: ago(3), active: true }, T);
+  assert.deepEqual([token.no, token.label, token.used, token.revoke], ["#4", "手机", "最近使用 3 分钟前", "吊销"]);
+  assert.equal(coord.aptTokenView({ id: 5, label: "", created_at: ago(1) }, T).used, "未使用");
+
+  // 交接与流水。
+  const hand = { id: 3, executor: "a", reason: "heartbeat_stale", created_at: ago(5), package: { executor: { id: "a", name: "甲" }, goal: "回归首页", done: ["改了状态条"],
+    next: ["跑测试", { omitted: true, see: "full_status.next[1]", chars: 400 }], journal: { recent_ids: [12, 13] }, locks: [{ resource: "device:test-phone", purpose: "回归", overdue: true }, { resource: "repo:main", purpose: "" }] } };
+  const row = coord.coordHandoffView(hand, [{ holder: "a" }, { holder: "b" }]);
+  assert.deepEqual([row.no, row.who, row.reason, row.goal, row.locks, row.state.label, row.state.tone, row.pack], ["#3", "甲", "心跳中断", "回归首页", "仍持有 1 把锁", "待接手", "quiet", "查看交接包"]);
+  assert.equal(coord.coordHandoffView(hand, []).locks, "不持锁", "锁放掉以后不再写仍持有");
+  assert.equal(coord.coordHandoffView(hand).locks, "仍持有 2 把锁", "没给现在的锁表就按交接包里记的算");
+  assert.deepEqual([coord.coordHandoffView({ id: 4, executor: "x", reason: "stop", package: {} }).reason, coord.coordHandoffView({ id: 4, executor: "x", reason: "hasOwnProperty", package: {} }).reason], ["主动停止", "待核实"]);
+  const pack = coord.coordHandoffPack({ ...hand, full_status: { done: ["改了状态条"], next: ["跑测试", "补 390 宽的截图"] } });
+  assert.deepEqual(pack, { sections: [["已完成", ["改了状态条"]], ["下一步", ["跑测试", "补 390 宽的截图"]], ["交接时仍持有的锁", ["device:test-phone · 回归 · 逾期", "repo:main"]]],
+    journal: "最近流水编号 #12 #13", ackLabel: "接手方运行", command: "board.py handoff ack 3" });
+  assert.deepEqual(coord.coordHandoffPack(hand).sections[1], ["下一步", ["跑测试"]], "没有全文时只列交接包里整项保留的");
+  assert.deepEqual(["operator", "system", "ext-a", ""].map((executor) => coord.coordJournalView({ at: ago(1), executor, body: "x" }).who), ["操作员", "看板", "ext-a", "待核实"]);
+  // 文案表:空态与小标题逐句。
+  const C = coord.COORD_COPY;
+  assert.deepEqual([C.empty.journal, C.empty.locks, C.empty.handoffs, C.empty.approvals, C.empty.execs.join("")],
+    ["还没有流水。", "没有被锁的资源。", "没有待接手的交接。", "没有要你批准的事项。", "用 board.py exec register 登记第一个执行者。"]);
+  assert.deepEqual(C.head, { approvals: "待你批准", execs: "执行者", external: "外部执行线", locks: "资源锁", handoffs: "待接手的交接", journal: "最近流水" });
+  assert.equal(C.unknown, "待核实");
+});
+
 // ══ 文案闸(卡 #16):给 docs/style-guide.md「不写注释性语句」装一个机器闸 ══════════════
 //  为什么:卡 #9 清掉了二十多句注释性文案,但规则落地只有纪律 —— 下一个写引导步骤、错误文案或页脚
 //  说明的人(人或模型)照旧能写回「(开始干活前需要)」「—— 其实…」,没有任何机器会出声。文案最容易
 //  悄悄回潮:#9 清掉的那些,有好几句就是历次迭代一层层加上去的。
 //
-//  ⚠ 这个闸**不是全量扫描**,够得到的面只有下面三个;够不到的明说,不假装:
-//   A core/server.mjs 的上手引导四个函数(blessStep / upgradeState / setupState / acceptPreview)里的
-//     字面量 —— 这一面是全量的:那几个函数产出的 title/detail/hint/label/confirm 全从这里来。
+//  ⚠ 这个闸**不是全量扫描**,够得到的面只有下面四个;够不到的明说,不假装:
+//   A core/server.mjs 的上手引导四个函数(blessStep / upgradeState / setupState / acceptPreview)与批准事项
+//     四个函数(taskApprovalEntry / versionApprovalEntry / lockApprovalEntry / requestApprovalEntry)里的
+//     字面量 —— 这一面是全量的:那几个函数产出的 title/detail/hint/label/confirm/summary 全从这里来。
+//   D core/panel.html 的 coord-copy 段(设置页协作区的文案表与纯函数)—— 整段的字面量,全量。
 //   B core/panel.html 的 HTML 文本节点(按 `>…<` 取)—— 属性值永远不在这两个尖括号之间,所以
 //     title= / aria-label / placeholder 结构上就不在扫描里(style-guide 明说悬停说明允许写解释);
 //     SVG 的 <title> 与执行器设置的「说明」折叠区(cfg-about)同理剔除。
@@ -587,6 +804,8 @@ const COPY_ALLOW = [
     why: "时间轴图例:括号里是「点哪里会怎样」的图形编码,图例本身就是对照表,不是正文旁白" },
   { file: "core/panel.html", line: 2461, text: "(时刻见悬浮/时变小字)",
     why: "同上:时间轴坐标轴的图例,整行都是「符号=含义」的对照表" },
+  { file: "core/server.mjs", line: 2977, text: "—— 当前运行状态 ——",
+    why: "taskApprovalEntry 里切分 result 用的分隔符,与 core/store.js 收回放行时写进 result 的标记同值;不显示给人看" },
 ];
 
 /** 取出一段源码里的字符串字面量(带行号与它前面的上下文)。注释里的引号不算字面量:
@@ -625,11 +844,19 @@ test("文案闸：引导与面板的可见文案里没有注释性语句（规�
     return serverSrc.slice(a, b);
   };
   const found = [];
-  // ── A 面:上手引导的四个函数
+  // ── A 面:上手引导的四个函数,加批准事项的四个函数(待你批准那几行的标题、摘要、按钮字都从这里来)
   for (const head of ["function blessStep() {", "function upgradeState() {", "function setupState() {",
-                      "function acceptPreview(tree, prev) {"])
+                      "function acceptPreview(tree, prev) {", "function taskApprovalEntry(t) {",
+                      "function versionApprovalEntry(op = null) {", "function lockApprovalEntry(l) {",
+                      "function requestApprovalEntry(r) {"])
     for (const lit of literalsOf(fnSlice(head)))
       for (const rule of copyFindings(lit.text)) found.push({ file: "core/server.mjs", ...lit, rule });
+
+  // ── D 面:设置页协作区的文案段(coord-copy),整段字面量
+  const coordLits = literalsOf(coordSource), coordLine = source.slice(0, source.indexOf(coordSource)).split("\n").length - 1;
+  assert.ok(coordLits.length > 60, "coord-copy 段的字面量没扫到");
+  for (const lit of coordLits)
+    for (const rule of copyFindings(lit.text)) found.push({ file: "core/panel.html", ...lit, line: lit.line + coordLine, rule });
 
   // ── B 面:panel.html 的 HTML 文本节点
   const panelText = source

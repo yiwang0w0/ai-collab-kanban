@@ -39,7 +39,7 @@
   try{response=await nativeFetch('/api/auth',{headers:{'X-Board-Token':value},credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10000)});}
   catch{throw Object.assign(Error('暂时连不上看板。'),{transient:true});}
   if(response.status===401||response.status===403)throw Error(response.status===403?'需要操作员令牌，执行或审阅令牌不能打开管理面板。':'配对失败，请核对配对码或本机操作员令牌。');
-  if(!response.ok)throw Object.assign(Error('看板暂时没有应答（'+response.status+'）。'),{transient:true});
+  if(!response.ok)throw Object.assign(Error('看板返回 HTTP '+response.status+'。稍后重试。'),{transient:true});
   const result=await response.json();if(result.role!=='operator')throw Error('服务未确认操作员身份。');
   token=value;remember(token);input.value='';note.textContent='';pair.hidden=true;shell.hidden=false;paired=true;resolveReady();
  }
@@ -50,7 +50,7 @@
    try{await activate(value);return;}
    catch(e){
     if(!e.transient){remember('');throw Error('保存的授权已失效，请重新配对：在看板电脑上运行 node cli/open.mjs。');}
-    if(attempt>=40)throw Error('连不上看板。确认它在运行（node cli/start.mjs --background），再刷新这一页。');
+    if(attempt>=40)throw Error('连不上看板。下一步：运行 node cli/start.mjs --background，再刷新这一页。');
     note.textContent='看板暂时没有应答，正在重试…';await new Promise(r=>setTimeout(r,3000));
    }
   }

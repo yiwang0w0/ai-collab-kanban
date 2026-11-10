@@ -117,7 +117,8 @@ function notRunning({ url, dataDir, logFile, probe, showLog }) {
   let logMtime = null;
   try { logMtime = statSync(logFile).mtimeMs; } catch {}
   const cause = downCause({ record, probe, lines: logLines(logFile, { from, n: 200 }), logMtime });
-  console.log(`本机:${probe.state === "http" ? "电脑在线，" : ""}${o.what}`);
+  // 本机地址:命令就在这台电脑上跑,电脑在线可以直接断言;首页模型的那句话不一定带「电脑在线」。
+  console.log(`本机:${o.what.startsWith("电脑在线") ? "" : "电脑在线，"}${o.what}`);
   console.log(`  地址:${url}`);
   console.log(`  原因:${cause.cause}`);
   console.log(`  已有的任务和结果保留在 ${dataDir}，重新启动后照原样回来。`);
