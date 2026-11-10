@@ -131,6 +131,9 @@ detached 的(Windows 上非 detached 的子进程会随父进程一起被杀,实
 同一行给出下一步「运行 node cli/doctor.mjs 查看原因」。升级用 `node cli/upgrade-cli.mjs claude`:
 不加 `--yes` 只列出会做什么;加了才执行——没有任务正在执行时停下用到它的执行线,npm 全局安装指定版本,跑体检,
 恢复执行线;任何一步不过就装回原版本。它不打断正在执行的任务。升级这件事由你点头,你的 Claude 不替你加 `--yes`。
+`GET /api/cli-versions` 的每个 CLI 带 `install_source`:看板调用的文件在 npm 全局安装的包里是 `npm-global`,在别处是
+`native`,没找到是 `unknown`;`npm_managed` 与它同义(布尔);`upgrade_hint` 只在 `npm-global` 时给
+`npm install -g <包名>@latest`,其余为 `null`。不是 npm 安装的,按这个 CLI 的官方说明升级,再运行 `node cli/doctor.mjs`。
 
 ## 二点一、面板顶上的上手引导(v0.6)
 

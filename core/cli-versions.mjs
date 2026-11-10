@@ -165,7 +165,11 @@ export async function readCliVersions({ dataDir, env = process.env, now = Date.n
       cache[cli.id] = entry; changed = true;
     }
     const cmp = entry?.latest && current ? compareVersions(current, entry.latest) : null;
+    // 安装来源只按找到的那个文件判:在 npm 包里 = npm-global,在别处 = native,没找到 = unknown。升级命令只给 npm 安装的。
+    const npm = npmManaged(cli.id, where.path);
+    const source = where.state === "found" && where.path ? (npm ? "npm-global" : "native") : "unknown";
     return { id: cli.id, name: cli.name, package: cli.package, state: where.state, path: where.path, current,
+             install_source: source, npm_managed: npm, upgrade_hint: source === "npm-global" ? `npm install -g ${cli.package}@latest` : null,
              latest: entry?.latest ?? null, latest_state: entry ? entry.state : "not_checked", latest_checked_at: entry?.checked_at ?? null,
              latest_ok_at: entry?.ok_at ?? null, update_available: cmp == null ? null : cmp < 0,
              tested: current ? testedState(tested, cli.id, current) : { state: "none", at: null } };
