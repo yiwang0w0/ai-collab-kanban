@@ -679,6 +679,14 @@ for invalid in (1,'1','true'):
  os.environ.pop('WORKER_HOST_COMMIT',None)
  path.write_text(json.dumps({'host_auto_commit':invalid}),encoding='utf-8'); board_env.apply()
  assert 'WORKER_HOST_COMMIT' not in os.environ
+path.write_text(json.dumps({'host_git':git,'host_commit_timeout_sec':900}),encoding='utf-8')
+import git_program
+configured=pathlib.Path(git_program.program())
+assert configured.name.lower().startswith('git') and configured.parent.parent==pathlib.Path(git).resolve().parent.parent,configured
+board_env.apply(); assert os.environ['WORKER_HOST_GIT']==git and os.environ['WORKER_HOST_COMMIT_TIMEOUT_SEC']=='900'
+os.environ['WORKER_HOST_COMMIT_TIMEOUT_SEC']='45'; board_env.apply(); assert os.environ['WORKER_HOST_COMMIT_TIMEOUT_SEC']=='45','环境变量已设时不被配置覆盖'
+import worker_loop as w
+assert w.HOST_COMMIT_TIMEOUT==45
 `);
   assert.equal(output, "");
 });
