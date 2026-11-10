@@ -41,7 +41,7 @@ async function board({ config = {}, files = {}, env = {}, expectExit = false } =
            BOARD_RESTART_MODE: "exit", BOARD_DELIVERABLE_GATE: "off", ...env } });
   let logs = ""; const add = (v) => { logs = (logs + String(v)).slice(-20000); };
   child.stdout.on("data", add); child.stderr.on("data", add);
-  let exitCode = null; const closed = new Promise((r) => child.once("close", (c) => { exitCode = c; r(); }));
+  let exitCode = null; const closed = new Promise((r) => child.once("close", (c) => { exitCode = c; r(c); }));
   const base = `http://127.0.0.1:${port}`;
   const cleanup = () => { try { rmSync(dir, { recursive: true, force: true }); } catch {} };
   if (expectExit) { await Promise.race([closed, delay(15000)]); cleanup(); return { exitCode, logs }; }
@@ -81,7 +81,7 @@ async function board({ config = {}, files = {}, env = {}, expectExit = false } =
     return { code: r.status, out: (r.stdout || "") + (r.stderr || "") };
   };
   const stop = async () => { child.kill(); await closed; cleanup(); };
-  return { dir, base, port, api, operator, register, card, deliver, list, decide, journal, cli, stop, logs: () => logs };
+  return { dir, base, port, api, operator, register, card, deliver, list, decide, journal, cli, stop, closed, logs: () => logs };
 }
 
 const PROFILE = { config: { gated_subtree: ".", execution_profiles: [{ id: "claude-api", enabled: true, budget: { timeout_sec: 120, max_turns: 4, max_cost_usd: 0.5 } }] },
@@ -323,37 +323,78 @@ test("流水记下来源与操作者;board.py approvals / approval-token;面板�
 
 const remoteBoard = async (extra = {}) => {
   const rport = await freePort("127.0.0.2");
-  const B = await board({ config: { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32"] } }, ...extra });
+  const B = await board({ ...extra, config: { ...extra.config, remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32"] } } });
   for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
   const audit = () => { const db = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
     try { return db.prepare("SELECT * FROM remote_audit ORDER BY id").all(); } finally { db.close(); } };
   return { B, rport, audit };
 };
 
-test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,按来源与原因聚合并有总量上限", { timeout: 120000 }, async () => {
-  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: "3000" } });
+test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,按来源与原因聚合,按窗口限速", { timeout: 120000 }, async () => {
+  const WINDOW = 3000;
+  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: String(WINDOW) } });
   try {
+    // 首条记 1 次,汇总行「原因 +N」记 N 次:加起来就是请求次数。请求跨不跨窗口,这个数都守恒。
+    const counted = (list) => list.reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
+    const anonOf = (list) => list.filter((r) => r.token_id == null);
+    // 一段时间最多碰到几个窗口(窗口不与测试对齐,两头各算一个)
+    const t0 = Date.now(), windowsSince = (t) => Math.floor((Date.now() - t) / WINDOW) + 2;
     for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/x" + "a".repeat(150), local: "127.0.0.3" })).status, 403);
     // 已认证的调用照旧一次一行
     const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body;
     for (let i = 0; i < 3; i++) assert.equal((await raw(rport, { token: tok.token })).status, 200);
     for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/y" + i })).status, 401);
     let rows = audit();
-    assert.ok(rows.filter((r) => r.ip === "127.0.0.3").length <= 2, `白名单外来源 30 次请求不应各写一行:${rows.filter((r) => r.ip === "127.0.0.3").length}`);
-    const anon = rows.filter((r) => r.ip === "127.0.0.2" && r.token_id == null);
-    assert.ok(anon.length <= 2, `无令牌 30 次请求不应各写一行:${anon.length}`);
+    // 每个窗口里每个(来源,原因)最多两行:首条和汇总
+    const out3 = rows.filter((r) => r.ip === "127.0.0.3").length, anon2 = rows.filter((r) => r.ip === "127.0.0.2" && r.token_id == null).length;
+    assert.ok(out3 <= 2 * windowsSince(t0), `白名单外来源 30 次请求不应各写一行:${out3}`);
+    assert.ok(anon2 <= 2 * windowsSince(t0), `无令牌 30 次请求不应各写一行:${anon2}`);
     // 很多不同来源:每个窗口合计也有上限
+    const t1 = Date.now();
     for (let i = 4; i < 94; i++) assert.equal((await raw(rport, { path: "/z", local: `127.0.0.${i}` })).status, 403);
-    // 窗口结束后补汇总行:行数有界,次数一次不丢
-    const counted = (list) => list.filter((r) => r.token_id == null)
-      .reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
-    for (let i = 0; i < 60 && counted(rows = audit()) < 150; i++) await delay(250);
-    assert.equal(counted(rows), 150, `汇总后次数应等于请求数:${JSON.stringify(rows.map((r) => [r.ip, r.note]))}`);
-    assert.ok(rows.some((r) => r.ip === "127.0.0.3" && r.note === "ip +29"), "同一来源同一原因:第一条加一行汇总");
-    assert.ok(rows.some((r) => r.ip === "*" && /^denied \+\d+$/.test(r.note)), "来源很多时超出上限的并成一行");
-    assert.ok(rows.filter((r) => r.token_id == null).length < 90, `未认证请求的审计行数有上限:${rows.length}`);
+    const burstWindows = windowsSince(t1);
+    // 窗口结束后补汇总行:次数一次不丢
+    for (let i = 0; i < 80 && counted(anonOf(rows = audit())) < 150; i++) await delay(250);
+    const dump = JSON.stringify(rows.map((r) => [r.ip, r.note]));
+    assert.equal(counted(anonOf(rows)), 150, `汇总后次数应等于请求数:${dump}`);
+    assert.equal(counted(rows.filter((r) => r.ip === "127.0.0.3")), 30, `同一来源同一原因的次数守恒,不论这 30 次落在几个窗口里:${dump}`);
+    assert.equal(counted(rows.filter((r) => r.ip === "127.0.0.2" && r.token_id == null)), 30, `无令牌请求的次数守恒:${dump}`);
+    // 90 个来源落在 burstWindows 个窗口里;每个窗口只给 20 组(来源,原因)各写首条,所以窗口数不超过 4 时必有并掉的
+    if (90 > 20 * burstWindows) assert.ok(rows.some((r) => r.ip === "*" && /^denied \+\d+$/.test(r.note)), `来源很多时超出上限的并成一行:${dump}`);
+    // 行数按窗口有界:每个窗口最多 20 条首行、20 条汇总、1 条并掉的
+    const windows = windowsSince(t0);
+    assert.ok(anonOf(rows).length <= 41 * windows, `未认证请求的审计行数按窗口有界(${windows} 个窗口):${anonOf(rows).length}`);
+    assert.ok(anonOf(rows).length < 150, "行数少于请求数");
     assert.equal(rows.filter((r) => r.token_id === tok.record.id && r.status === 200).length, 3, "已认证的调用每次一行");
   } finally { await B.stop(); }
+});
+
+/** 等看板进程自己退出,再读它留下的审计行。 */
+const anonAfterExit = async (B, audit, ip) => { await Promise.race([B.closed, delay(20000, null, { ref: false })]); return audit().filter((r) => r.ip === ip).map((r) => r.note); };
+
+test("协作安全:重启、停止、经批准接口更新重启之前,未认证拒绝在当前窗口里的计数先落成汇总行", { timeout: 180000 }, async () => {
+  // 窗口设成 10 分钟:汇总行只可能来自关停路径,不会是窗口自然结束补的。
+  const env = { BOARD_REMOTE_AUDIT_WINDOW_MS: "600000" };
+  const ways = [
+    ["重启", {}, (B) => B.api("POST", "/api/setup/restart", B.operator, {}), 75],
+    ["停止", {}, (B) => B.api("POST", "/api/setup/stop", B.operator, {}), 0],
+    ["经批准接口更新重启", { config: { gated_subtree: "." }, env: { ...env, BOARD_TEST_BOOT_REV: "0000000" } }, async (B) => {
+      const v = (await B.list()).find((a) => a.kind === "version" && a.id.startsWith("version:upgrade:"));
+      assert.ok(v, "有待批准的更新事项");
+      return B.decide(v.id, { decision: "approve", source: src("cli"), expected_version: v.expected_version });
+    }, 75],
+  ];
+  for (const [what, extra, trigger, code] of ways) {
+    const { B, rport, audit } = await remoteBoard({ env, ...extra });
+    try {
+      for (let i = 0; i < 50; i++) assert.equal((await raw(rport, { path: "/x", local: "127.0.0.3" })).status, 403);
+      assert.deepEqual(audit().filter((r) => r.ip === "127.0.0.3").map((r) => r.note), ["ip"], `${what}:窗口没结束时库里只有第一条`);
+      const r = await trigger(B);
+      assert.equal(r.status, 202, `${what}:${JSON.stringify(r.body)}`);
+      assert.deepEqual(await anonAfterExit(B, audit, "127.0.0.3"), ["ip", "ip +49"], `${what}:退出前把当前窗口的 49 次补成汇总行`);
+      assert.equal(await B.closed, code, `${what} 的退出码`);
+    } finally { await B.stop(); }
+  }
 });
 
 test("协作安全:同一来源的失败请求不能把有效批准令牌锁在门外", { timeout: 120000 }, async () => {

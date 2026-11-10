@@ -3175,6 +3175,12 @@ function auditRemoteDenied(rec, now = Date.now()) {
   remoteDenied.set(k, { rec, first: now, more: 0 });
   approvals.audit(db, rec, now);
 }
+/** 把还只在内存里的计数全部落成汇总行。停止与重启在退出前调用:不然当前窗口里「+N」的次数跟着进程一起没了。
+ *  进程被强杀(任务管理器、kill -9)时走不到这里,当前窗口的计数会丢,首条仍在库里。 */
+function flushRemoteAudit() {
+  try { flushRemoteDenied(Date.now(), true); }
+  catch (e) { console.error(`远程入口审计写入失败:${e.message}`); }
+}
 const remoteStatus = () => REMOTE.enabled
   ? { enabled: true, listen: REMOTE.listen.map(approvals.formatListen), allow_ips: REMOTE.allow_ips,
       listening: [...remoteState.listening], errors: [...remoteState.errors] }
@@ -3283,10 +3289,11 @@ function startRemote() {
   // 没有新请求时也要把上一个窗口的计数补成汇总行。
   setInterval(() => { try { flushRemoteDenied(); } catch (e) { console.error(`远程入口审计写入失败:${e.message}`); } }, REMOTE_DENY_WINDOW_MS).unref();
 }
+// 先关监听、断开连接,再落汇总:顺序反过来的话,落完之后进来的请求又只留在内存里。
 const closeRemote = () => Promise.all(remoteServers.map((s) => new Promise((r) => {
   if (!s.listening) return r();
   s.close(() => r()); s.closeAllConnections?.();
-})));
+}))).then(flushRemoteAudit);
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
@@ -4224,6 +4231,7 @@ async function stopWithBoard(trigger) {
       try { await workerStop(l, { keepIntent: true, reason: STOP_REASON.WITH_BOARD }); } catch {}
     }
   }
+  flushRemoteAudit();   // 远程入口当前窗口的拒绝计数,退出前落库(restartBoard 走 closeRemote)
   process.exit(0);
 }
 /** The panel's 「更新」/「重启看板」 (v0.18). Same shutdown as stopWithBoard — lines stopped with
