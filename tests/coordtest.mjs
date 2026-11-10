@@ -13,8 +13,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
+// 不起服务、直接测 coord.js 的用例用内存库。
+const coord = createRequire(import.meta.url)("../core/coord.js");
+const memdb = () => { const db = new DatabaseSync(":memory:"); coord.migrate(db); return db; };
+const badInput = (fn, what) => assert.throws(fn, (e) => e.code === "BAD_INPUT", what);
 
 async function board(env = {}) {
   const dir = mkdtempSync(join(tmpdir(), "coordtest-")), config = join(dir, "fleet.json");
@@ -418,4 +423,16 @@ test("协作安全:执行者 id 不能与受管执行线的座位同名,同名�
     const still = (await B.api("GET", `/api/tasks/${t.id}`, B.operator)).body.task;
     assert.equal(still.status, "in_progress");
   } finally { await B.stop(); }
+});
+
+test("协作安全:流水产物的 type 必须是字符串,数组与嵌套数组不能冒充合法类型", () => {
+  const db = memdb(), sha = "a".repeat(64);
+  coord.register(db, { id: "agent-t" });
+  let deep = "sha256"; for (let i = 0; i < 50; i++) deep = [deep];
+  for (const type of [["sha256"], [[["sha256"]]], deep, { toString: () => "sha256" }, 7, null])
+    badInput(() => coord.appendJournal(db, "agent-t", { kind: "note", body: "x", artifacts: [{ type, value: sha }] }), JSON.stringify(type).slice(0, 40));
+  badInput(() => coord.appendJournal(db, "agent-t", { kind: "note", body: "x", artifacts: [null] }), "产物项为 null");
+  const ok = coord.appendJournal(db, "agent-t", { kind: "note", body: "x", artifacts: [{ type: "sha256", value: sha.toUpperCase() }] });
+  assert.deepEqual(ok.artifacts, [{ type: "sha256", value: sha }]);
+  assert.equal(coord.journal(db, {}).length, 1, "被拒的都没有入库");
 });

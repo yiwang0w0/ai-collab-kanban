@@ -264,7 +264,8 @@ function normalizeArtifacts(raw) {
   if (!Array.isArray(list)) throw err(ERR.BAD_INPUT, "artifacts 必须是数组");
   if (list.length > ARTIFACT_MAX) throw err(ERR.BAD_INPUT, `产物最多 ${ARTIFACT_MAX} 个`);
   return list.map((a, i) => {
-    const type = a?.type, check = Object.hasOwn(ARTIFACT_CHECK, String(type)) ? ARTIFACT_CHECK[type] : null;
+    // type 必须本身是字符串:数组会被 String() 和属性访问强转成合法类型名,然后原样(任意深度)入库。
+    const type = a?.type, check = typeof type === "string" && Object.hasOwn(ARTIFACT_CHECK, type) ? ARTIFACT_CHECK[type] : null;
     if (!check) throw err(ERR.BAD_INPUT, `artifacts[${i}].type 只接受 ${Object.keys(ARTIFACT_CHECK).join(" / ")}`);
     let value = typeof a.value === "string" ? a.value : "";
     if (type === "sha256" || type === "commit") value = value.toLowerCase();
