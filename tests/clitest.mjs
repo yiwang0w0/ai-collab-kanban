@@ -318,8 +318,8 @@ console.log(NL + "[⑧ start:bg / open / stop]");
     '  if (req.method === "GET" && req.url === "/api/meta") return send(res, 200, { node: { display_name: "台式机 A" } });',
     // One line running and two refused at the gate for the same reason (one fault, not two).
     '  if (req.method === "GET" && req.url === "/api/workers") return send(res, 200, { lines: ["engine", "design", "review"], line_labels: { engine: "引擎", design: "设计", review: "审阅" }, workers: [{ line: "engine", running: true },',
-    '    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },',
-    '    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: [] }] });',
+    '    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },',
+    '    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝", last_log: [] }] });',
     '  if (req.method === "GET" && req.url === "/api/setup") return send(res, 200, { version: "stub-rev", complete: true, steps: [] });',
     '  if (req.method === "GET" && req.url === "/api/fleet?limit=1") return send(res, 200, { nodes: [{ node_id: "n-a", display_name: "台式机 A", local: true, connection_state: "local" },',
     '    { node_id: "n-b", display_name: "笔记本 B", local: false, connection_state: "failed", projects: [{ project_id: "p", error_code: "PEER_UNREACHABLE" }] }] });',
@@ -376,7 +376,7 @@ console.log(NL + "[⑧ start:bg / open / stop]");
      && st.out.split(NL).filter((l) => l.includes("台式机 A:")).length === 1, st.out.slice(-500));
   ok("⭐two lines refused for the same reason are one fault with one next step; the last fault is named; the log stays folded",
      st.out.split(NL).filter((l) => l.includes("启动被拒绝")).length === 1
-     && /✗ 执行线:设计、审阅 启动被拒绝（退出码 3）。下一步:运行 node cli\/doctor\.mjs/.test(st.out)
+     && /✗ 执行线:设计、审阅 启动被拒绝。下一步:运行 node cli\/doctor\.mjs/.test(st.out)
      && /上次故障:没有记录/.test(st.out) && /3 项需要注意/.test(st.out)
      && /详细日志:node cli\/status\.mjs --log/.test(st.out) && !/源码闸拒绝启动|stub boot/.test(st.out), st.out.slice(-500));
   ok("⭐the executor CLI row: current / latest / last checked / measured or not; a CLI that is not configured is not listed",

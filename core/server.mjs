@@ -1755,16 +1755,16 @@ const validStop = (v) => v && STOP_REASON_SET.has(v.reason) && Number.isFinite(D
   ? { reason: v.reason, at: new Date(Date.parse(v.at)).toISOString() } : null;
 
 /** The one place a reason becomes words. The panel renders this string and maps
- *  nothing itself — two mapping tables would drift. */
+ *  nothing itself — two mapping tables would drift.
+ *  只写状态与时刻(docs/style-guide.md「不写注释性语句」),不带括号补充;退出码在同一条记录的 exit_code 字段。 */
 function stopText(stop, exitCode) {
   const s = validStop(stop);
-  if (!s) return exitCode === REFUSED_EXIT ? `启动被拒绝（退出码 ${REFUSED_EXIT}）`
-                                           : (exitCode == null ? "" : `已停止（退出码 ${exitCode}）`);
+  if (!s) return exitCode === REFUSED_EXIT ? "启动被拒绝" : (exitCode == null ? "" : "已停止");
   const at = s.at.replace("T", " ").replace(/\.\d{3}Z$/, "Z");
   if (s.reason === STOP_REASON.BY_USER) return `用户停止 · ${at}`;
   if (s.reason === STOP_REASON.WITH_BOARD) return `随看板停止 · ${at}`;
   if (s.reason === STOP_REASON.EXIT_NORMAL) return `正常结束 · ${at}`;
-  return `崩溃${exitCode == null ? "" : `（退出码 ${exitCode}）`} · ${at}`;
+  return `崩溃 · ${at}`;
 }
 
 const loopScriptOf = (line) =>

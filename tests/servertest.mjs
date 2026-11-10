@@ -233,8 +233,8 @@ try {
     const w = await B.until(LINE, (x) => x.stop_reason?.reason === "crash", 20000);
     ok("B1 ⭐无人预告的非零退出记为 crash + 时刻", !!w && w.stop_reason.reason === "crash",
        JSON.stringify(w?.stop_reason || null));
-    ok("B2 文案带退出码,与人停/正常结束分得开",
-       /^崩溃（退出码 1） · /.test(w?.stop_text || ""), w?.stop_text || "(none)");
+    ok("B2 ⭐文案只写状态与时刻,不带括号补充(退出码在 exit_code 字段),与人停/正常结束分得开",
+       /^崩溃 · /.test(w?.stop_text || "") && !/[（(]/.test(w?.stop_text || ""), w?.stop_text || "(none)");
     ok("B3 ⭐crash 才排退避,且日志说明第几次",
        /crash\(code=1\)/.test(B.out()) && /后第 1 次自动重启/.test(B.out()),
        (B.out().match(/crash\(code=\d+\)[^\n]*/) || ["(no crash line)"])[0].slice(0, 60));
@@ -271,8 +271,8 @@ try {
        (B2.out().match(/拒绝启动[^\n]*/) || ["(no refusal line)"])[0].slice(0, 60));
     ok("C3 拒绝时意图也落下(面板上不留『想跑却跑不起来』的线)",
        w?.desired_running === false, `desired_running=${w?.desired_running}`);
-    ok("C4 ⭐本次拒绝不回退显示磁盘上那条旧的用户停止",
-       w?.stop_reason == null && /启动被拒绝（退出码 3）/.test(w?.stop_text || ""),
+    ok("C4 ⭐本次拒绝不回退显示磁盘上那条旧的用户停止;文案只写「启动被拒绝」,退出码 3 在 exit_code 字段",
+       w?.stop_reason == null && w?.stop_text === "启动被拒绝" && w?.exit_code === 3,
        `stop_reason=${JSON.stringify(w?.stop_reason)} text=${w?.stop_text}`);
   }
 
