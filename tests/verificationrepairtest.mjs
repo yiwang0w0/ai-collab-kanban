@@ -42,16 +42,15 @@ const WORKER_FIXTURE = `import worker_loop as w
 w.API_MODE=False; w.PROFILE_MODE=False; w.RUNTIME='codex'; w.MODEL='fixture-model'; w.EFFORT='high'
 w.TOOL_PROFILE='read-only'; w.TIMEOUT=60; w.log=lambda *args,**kwargs:None
 w.gates_lib.append_spend=lambda *args,**kwargs:None
-w.harvest_spawned=lambda *args,**kwargs:([], '')
-w.stash_spawn=lambda *args,**kwargs:''
 w.usage_of=lambda *args,**kwargs:{'calls':None,'in':None,'cc':None,'cr':None,'out':None,'note':'夹具未知用量'}
 class Heartbeat:
  def __init__(self,*args): self.stop=threading.Event(); self.beats=0
  def start(self): pass
 w.Heartbeat=Heartbeat
 
-def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tail='完成本轮修改', evidence='本轮交付', api=False, identity_changed=False):
- case=folder/str(uuid.uuid4()); case.mkdir()
+def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tail='完成本轮修改', evidence='本轮交付', api=False, identity_changed=False, case=None, spawn=None):
+ # case 可复用：同一张卡被再次领取时证据目录不变；spawn 是模型首轮写下的派生建议。
+ case=case or folder/str(uuid.uuid4()); case.mkdir(exist_ok=True)
  w.DATA=str(case); w.EVID=str(case/'evidence'); w.LEDGER=str(case/'usage_ledger.jsonl')
  w.os.environ['CODEX_HOME']=str(case/'认证目录')
  w.API_MODE=api; w.PROFILE_MODE=False; w.LAST_ACCT={'sid':'旧账','t0':None,'usage':{'calls':999,'in':999,'cc':999,'cr':999,'out':999}}
@@ -61,9 +60,11 @@ def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tai
     'agent_instance_id':w.AGENT_INSTANCE_ID,'verify_cmd':'fixture-check','subject':'不得重堆的任务背景'}
  repair={'max_rounds':rounds,'legacy_retry':False}
  if policy: t['verification_repair']=repair
- calls=[]; requests=[]; deliveries=[]; verifies=[]; sid=str(uuid.uuid4())
+ calls=[]; requests=[]; deliveries=[]; verifies=[]; posts=[]; sid=str(uuid.uuid4())
  def call(method,path,body=None,**kwargs):
   requests.append((method,path,body))
+  if method=='POST' and path=='/api/tasks':
+   posts.append(body); return 201,{'task':{'id':100+len(posts),'parent_id':7,'released':len(posts)==1}}
   if method=='GET' and path.endswith('/runs'):
    return 200,{'runs':[{'run_id':t['run_id'],'worker':'fixture','agent_instance_id':w.AGENT_INSTANCE_ID,
     'state':'running','runtime':'codex','first_attempt':9,'last_attempt':9,
@@ -85,6 +86,7 @@ def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tai
   # 第二轮刻意不提供用量，旧轮数据必须被清空，不许沿用第一轮的已知值。
   if len(calls)==1: w.LAST_ACCT={'sid':sid,'t0':None,'usage':{'calls':1,'in':12,'cc':0,'cr':0,'out':3,'note':None}}
   if evidence: pathlib.Path(path).write_text(evidence,encoding='utf-8')
+  if spawn and len(calls)==1: pathlib.Path(w.spawn_path_for(7)).write_text(json.dumps(spawn,ensure_ascii=False),encoding='utf-8')
   return rc,tail
  w.run_worker=run_worker
  def verify(task):
@@ -97,7 +99,7 @@ def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tai
  w.deliver=deliver
  result=w.handle(t,'fixture')
  rows=[json.loads(line) for line in pathlib.Path(w.LEDGER).read_text(encoding='utf-8').splitlines()] if pathlib.Path(w.LEDGER).exists() else []
- return types.SimpleNamespace(result=result,t=t,calls=calls,requests=requests,deliveries=deliveries,rows=rows,verifies=verifies)
+ return types.SimpleNamespace(result=result,t=t,calls=calls,requests=requests,deliveries=deliveries,rows=rows,verifies=verifies,posts=posts)
 red={'ok':False,'out':'AssertionError: 预期 2，实际 1'}
 green={'ok':True,'out':'PASS 本地桩验证'}
 `;
@@ -314,6 +316,40 @@ assert blocked.result=='wait' and len(blocked.calls)==1,(blocked.result,blocked.
 maximum=exercise([red],rounds=3)
 assert maximum.result=='wait' and len(maximum.calls)==3,(maximum.result,maximum.calls)
 assert len(maximum.rows)==3 and {row['attempt'] for row in maximum.rows}=={9},maximum.rows
+`);
+});
+
+test("失败后再成功不收割旧建议：非完成出口把派生文件留档，说明并入等待报告", () => {
+  python(WORKER_FIXTURE + `suggestion={'tasks':[{'subject':'失败路线上的建议','description':'只在首轮写下'}]}
+shared=folder/'同一张卡'
+# 第 1 次派发：模型写了建议与证据，登记验证属环境故障，转等待。
+first=exercise([{'ok':False,'out':'timeout'}],case=shared,spawn=suggestion)
+assert first.result=='wait' and first.posts==[],(first.result,first.posts)
+spawn=pathlib.Path(w.spawn_path_for(7))
+kept=list(pathlib.Path(w.EVID).glob('spawn-7-retained-*.json'))
+assert not spawn.exists() and len(kept)==1 and json.loads(kept[0].read_text(encoding='utf-8'))==suggestion,(spawn.exists(),kept)
+report=first.deliveries[0][0][3]
+assert '候选发现' in report and '失败路线上的建议' in report and str(kept[0]) in report and 'environment' in report,report
+# 第 2 次派发（人裁定退回原线后再领）：模型没有重写建议，验证通过。旧建议不立卡。
+second=exercise([green],case=shared)
+assert second.result=='done' and second.posts==[],(second.result,second.posts)
+assert '派生' not in second.deliveries[0][0][3],second.deliveries[0][0][3]
+# 对照：同一次派发里写下建议并通过验证，照常立卡（上面的「不立」不是因为收割不工作）。
+third=exercise([green],spawn=suggestion)
+assert third.result=='done' and [body['subject'] for body in third.posts]==['失败路线上的建议'],third.posts
+# 其余非完成出口同样留档：轮数用尽、模型声明卡住、续修前失租、没有证据。
+for options in ({'outputs':[red],'rounds':2},{'outputs':[red],'tail':'我已卡住，需要人工处理'},
+  {'outputs':[red,green],'lost':'lease'},{'outputs':[green],'evidence':''}):
+ outputs=options.pop('outputs'); f=exercise(outputs,spawn=suggestion,**options)
+ assert f.result=='wait' and f.posts==[],(options,f.result,f.posts)
+ assert not pathlib.Path(w.spawn_path_for(7)).exists() and '候选发现' in f.deliveries[0][0][3],(options,f.deliveries[0][0][3])
+# 处置中途抛出未预期的异常（由主循环兜底转等待）：派生文件也留档。
+w.acct_attempt=lambda *args,**kwargs:(_ for _ in ()).throw(KeyError('夹具异常'))
+case=folder/'异常卡'
+try: exercise([green],case=case,spawn=suggestion)
+except KeyError: pass
+else: raise AssertionError('夹具异常没有抛出')
+assert not (case/'evidence'/'spawn-7.json').exists() and len(list((case/'evidence').glob('spawn-7-retained-*.json')))==1
 `);
 });
 

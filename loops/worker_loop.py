@@ -2635,7 +2635,19 @@ def handle(t, worker):
     os.makedirs(EVID, exist_ok=True)
     log_dir = os.path.join(EVID, "verify_runs", run_id)
     os.makedirs(log_dir, exist_ok=True)
-    def finish(outcome, text):
+    def set_aside(why):
+        """父卡没成功:派生文件留档不立卡,返回要并进报告的说明。
+        放着不管,这张卡下次成功时会把失败路线上的建议立成卡(首案还会自动放行)。"""
+        try:
+            memo = stash_spawn(tid, f"父卡未成功({why})")
+        except OSError as error:
+            log(f"  ⚠派生文件留档失败({error})—— 文件仍在证据目录,下次成功前须人工移走")
+            return f"\n\n⚠派生文件留档失败({error}):{spawn_path_for(tid)} 仍在原处,本卡再次放行前请先移走。"
+        return "\n\n" + memo if memo else ""
+
+    def finish(outcome, text, why=None):
+        if outcome != "done":
+            text += set_aside(why or "未完成")
         text += lessons.close(outcome == "done")    # 收尾:经验入库;验证通过时给附过的条目各记一次命中
         delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id)
         return "done" if delivered and outcome == "done" else "wait" if delivered else "rejected"
@@ -2648,7 +2660,7 @@ def handle(t, worker):
                           "session_missing" if not context.get("session_id") else None)
                 if reason:
                     LAST_FAIL_FP = reason
-                    return finish("wait", f"停止续修：{reason}。\n" + last_result)
+                    return finish("wait", f"停止续修：{reason}。\n" + last_result, reason)
             ev_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number}.md")
             try:
                 os.remove(ev_path)
@@ -2724,16 +2736,20 @@ def handle(t, worker):
                 return finish("done", last_result)
             LAST_FAIL_FP = reason
             if reason not in ("test_failure", "evidence_contract"):
-                return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result)
+                return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result, reason)
             next_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md")
             context["prompt"] = (evidence_contract.correction(body_check, contract, ev_path, next_path)
                                  if reason == "evidence_contract" else verification_repair.repair_prompt(vr, log_path, next_path, number + 1))
             # 出错先查经验库:用这次失败的输出查,命中的条目附在续修消息后面(开场附过的不重复)。
             context["prompt"] += lessons.failure_block((vr or {}).get("full_out") or (vr or {}).get("out") or "")
-        return finish("wait", "续修轮数用尽。\n" + last_result)
+        return finish("wait", "续修轮数用尽。\n" + last_result, "round_limit")
     except HostCommitError as error:
         LAST_FAIL_FP = "host-commit-refused"
-        return finish("wait", "宿主自动提交停止：" + str(error) + "\n" + last_result)
+        return finish("wait", "宿主自动提交停止：" + str(error) + "\n" + last_result, "host-commit-refused")
+    except Exception:
+        # 未预期的异常由主循环兜底转等待;派生文件同样先留档,不留给下一次成功去收割。
+        set_aside("loop 异常")
+        raise
     finally:
         hb.stop.set()
 
