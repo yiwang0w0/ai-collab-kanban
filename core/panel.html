@@ -4020,27 +4020,28 @@ function coordLockClose(b){
   coordFlush();
   [...document.querySelectorAll("#coord [data-lock-release]")].find((x) => x.dataset.lockRelease === resource)?.focus();
 }
-/** 强制释放的确认钮:两押。第二下提交前重读一次锁表,按现在的持有者核对(面板手上那份在实时连接断开时可能旧十几秒,
- *  重画又被这一行的输入挡着):换人了就中止、不发请求,把原因写在锁表上方;锁表读不到也不发。
- *  释放接口只认资源名,所以核对和提交之间仍隔着一次往返。 */
+/** 强制释放的确认钮:两押。第二下的请求带这一行画出来时的锁记录编号与持有者,由服务端比对:
+ *  换了人或重新加过锁回 409 LOCK_CHANGED,已经放掉回 404。这两种都中止,在锁表上方写一句,重读锁表后立即重画。 */
 async function coordLockPress(b){
   const form = b.closest("[data-lock-form]"), input = form ? form.querySelector("[data-lock-reason]") : null;
   const reason = input ? String(input.value || "").trim() : "", resource = b.dataset.lockConfirm, C = COORD_COPY.lock;
   if (!form || !reason || b.disabled) return;
   if (b.dataset.armed !== "1"){ coordArm(b, armedLabel(C.release + " " + resource + "，" + C.holder + " " + b.dataset.lockHolderName)); return; }
   coordDisarm(b); b.disabled = true;
-  const fail = (err) => { b.disabled = false; const note = form.querySelector(".coord-note"); if (note) note.textContent = C.failed + copyError(err); };
-  let locks;
-  try {
-    locks = (await homeGet("/api/coord/locks")).locks;
-    if (!Array.isArray(locks)) throw Error("锁表读不到");
-  } catch (err){ fail(err); return; }
-  if (!form.isConnected) return;                      // 读的这一下里理由框被收起了:不发
-  if (coordData) coordData = { ...coordData, locks };
-  const stale = coordLockCheck(locks, resource, b.dataset.lockHolder, b.dataset.lockId);
-  if (stale){ form.remove(); coordSettle(document.getElementById("coord")); coordLockNote = resource + "：" + stale; renderCoord(); return; }
-  try { await post("/api/coord/locks/release", { resource, force: true, reason }); }
-  catch (err){ fail(err); return; }
+  const holder = b.dataset.lockHolder || "", id = b.dataset.lockId || "";
+  const body = { resource, force: true, reason, ...(/^\d+$/.test(id) ? { lock_id: Number(id) } : {}), ...(holder ? { holder } : {}) };
+  try { await post("/api/coord/locks/release", body); }
+  catch (err){
+    const changed = err?.status === 409 && err.body?.code === "LOCK_CHANGED", gone = err?.status === 404;
+    if (!changed && !gone){ b.disabled = false; const note = form.querySelector(".coord-note"); if (note) note.textContent = C.failed + copyError(err); return; }
+    const go = form.closest(".coord-row")?.querySelector("[data-lock-release]");
+    form.remove(); if (go) go.hidden = false; coordSettle(document.getElementById("coord"));
+    let locks = null;
+    try { locks = (await homeGet("/api/coord/locks")).locks; } catch {}
+    if (Array.isArray(locks) && coordData) coordData = { ...coordData, locks };
+    coordLockNote = resource + "：" + ((Array.isArray(locks) && coordLockCheck(locks, resource, holder, id)) || (gone ? C.gone : C.moved));
+    renderCoord(); refresh(); return;
+  }
   form.remove(); coordLockNote = ""; coordSettle(document.getElementById("coord")); refresh();
 }
 // ── /coord-view ──

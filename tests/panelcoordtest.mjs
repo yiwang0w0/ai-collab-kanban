@@ -358,8 +358,9 @@ test("锁表强制释放：理由为空时确认钮禁用；上膛写明资源�
   assert.equal(box.replacements, 1); assert.deepEqual(f.state().pending, ["coord"]);
   assert.deepEqual(f.gets, [], "第一下只上膛，不读也不发");
   await f.context.coordLockPress(ok);
-  assert.deepEqual(f.gets, ["/api/coord/locks"], "第二下提交前先重读一次锁表");
-  assert.deepEqual(f.posts, [{ url: "/api/coord/locks/release", body: { resource: "repo:main", force: true, reason: "持有者说可以放" } }]);
+  assert.deepEqual(f.gets, [], "第二下直接提交，持有者由服务端比对");
+  assert.deepEqual(f.posts, [{ url: "/api/coord/locks/release", body: { resource: "repo:main", force: true, reason: "持有者说可以放", lock_id: 8, holder: "b" } }],
+    "请求带这一行画出来时的锁记录编号与持有者");
   assert.equal(f.refreshes(), 1);
   assert.equal(box.querySelector("[data-lock-form]"), null, "发出后收起理由框");
   // 取消:收起,等着的重画补上。
@@ -383,48 +384,7 @@ test("锁表强制释放：理由为空时确认钮禁用；上膛写明资源�
   assert.equal(ok3.disabled, false);
 });
 
-test("持有者变化后第二下不发请求：中止并写「这把锁已换人，请重新核对」", async () => {
-  const f = fixture(), box = f.box("coord");
-  const arm = async () => {
-    f.context.renderCoord();
-    f.context.coordLockOpen(box.querySelector("[data-lock-release]"));
-    const form = box.querySelector("[data-lock-form]"), input = form.querySelector("[data-lock-reason]"), ok = form.querySelector("[data-lock-confirm]");
-    input.value = "持有者已离开"; f.context.coordLockReasonInput(input);
-    await f.context.coordLockPress(ok);
-    assert.equal(ok.dataset.armed, "1");
-    return ok;
-  };
-  f.set({ coord: coordData() });
-  let ok = await arm();
-  assert.equal(ok.textContent, "再按=确认强制释放 device:test-phone，持有者 甲");
-  // 上膛之后这把锁换了人:重画被理由框挡着,行里还写着「甲」。
-  f.set({ coord: coordData({ locks: [lock({ id: 9, holder: "b", holder_name: "乙", overdue: false })] }) });
-  f.context.renderCoord();
-  assert.match(box.querySelector(".lock-row").textContent, /甲/);
-  await f.context.coordLockPress(ok);
-  assert.equal(f.posts.length, 0, "换人了:不发请求");
-  assert.equal(f.refreshes(), 0);
-  assert.equal(box.querySelector("[data-lock-form]"), null);
-  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已换人，请重新核对");
-  assert.match(box.querySelector(".lock-row").textContent, /乙/, "中止后立即重画,行里是现在的持有者");
-  // 同一个持有者放了又锁:不是原来那一次。
-  ok = await arm();
-  f.set({ coord: coordData({ locks: [lock({ id: 10, holder: "b", holder_name: "乙" })] }) });
-  await f.context.coordLockPress(ok);
-  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已重新加锁，请重新核对");
-  // 已经被放掉。
-  ok = await arm();
-  f.set({ coord: coordData({ locks: [] }) });
-  await f.context.coordLockPress(ok);
-  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已经释放");
-  assert.equal(f.posts.length, 0);
-  // 再开理由框,那一句清掉。
-  f.set({ coord: coordData() }); f.context.renderCoord();
-  f.context.coordLockOpen(box.querySelector("[data-lock-release]"));
-  assert.equal(f.state().lockNote, "");
-});
-
-test("面板手上的锁表还没更新、服务端已经换人：第二下重读后中止，不发请求；锁表读不到也不发", async () => {
+test("服务端回 409 LOCK_CHANGED 或 404：中止并写「这把锁已换人，请重新核对」，重读锁表后立即重画", async () => {
   const f = fixture(), box = f.box("coord");
   const arm = async () => {
     f.context.renderCoord();
@@ -435,35 +395,41 @@ test("面板手上的锁表还没更新、服务端已经换人：第二下重�
     assert.equal(ok.dataset.armed, "1");
     return { form, ok };
   };
-  // 面板这一份里持有者还是「甲」(实时连接断着,没有新数据进来);服务端那边这把锁已经换给「乙」。
+  const changed = () => Object.assign(new Error("锁已变化，没有释放"), { status: 409, body: { code: "LOCK_CHANGED" } });
+  // 面板这一份里持有者还是「甲」;服务端那边这把锁已经换给「乙」,按请求里的 lock_id / holder 比对后回 409。
   f.set({ coord: coordData() });
   let { ok } = await arm();
-  f.serverLocks([lock({ id: 9, holder: "b", holder_name: "乙", overdue: false })]);
+  assert.equal(ok.textContent, "再按=确认强制释放 device:test-phone，持有者 甲");
+  f.serverLocks([lock({ id: 9, holder: "b", holder_name: "乙", overdue: false })]); f.failPosts(changed());
   await f.context.coordLockPress(ok);
-  assert.deepEqual(f.gets, ["/api/coord/locks"]);
-  assert.equal(f.posts.length, 0, "核对用的是刚读到的锁表：换人了不发请求");
-  assert.equal(box.querySelector("[data-lock-form]"), null);
+  assert.deepEqual(f.posts.map((p) => p.body), [{ resource: "device:test-phone", force: true, reason: "持有者已离开", lock_id: 7, holder: "a" }]);
+  assert.deepEqual([f.gets, f.alerts, box.querySelector("[data-lock-form]")], [["/api/coord/locks"], [], null], "409 之后重读锁表,不弹窗,收起理由框");
   assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已换人，请重新核对");
   assert.match(box.querySelector(".lock-row").textContent, /乙/, "重画用刚读到的锁表，行里是现在的持有者");
-  // 锁表读不到:不知道现在是谁持有,不发;原因写在理由框下面,理由还在,按钮恢复可按。
+  // 同一个持有者放了又锁:不是原来那一次。锁表读不到时按「已换人」写。
   f.serverLocks(null); f.set({ coord: coordData() });
-  let form; ({ form, ok } = await arm());
-  f.failGets("读取失败(503)");
+  ({ ok } = await arm()); f.serverLocks([lock({ id: 10 })]);
   await f.context.coordLockPress(ok);
-  assert.equal(f.posts.length, 0, "读不到锁表：不发请求");
-  assert.equal(form.querySelector(".coord-note").textContent, "释放失败：读取失败(503)");
-  assert.deepEqual([ok.disabled, form.querySelector("[data-lock-reason]").value, !!box.querySelector("[data-lock-form]")], [false, "持有者已离开", true]);
-  // 读得到了:再按两下照常发出。
-  f.failGets(null);
-  await f.context.coordLockPress(ok); await f.context.coordLockPress(ok);
-  assert.deepEqual(f.posts, [{ url: "/api/coord/locks/release", body: { resource: "device:test-phone", force: true, reason: "持有者已离开" } }]);
-  // 读的这一下里理由框被收起(按了「取消」):不发。
-  f.set({ coord: coordData() });
-  ({ form, ok } = await arm());
-  const pending = f.context.coordLockPress(ok);
-  f.context.coordLockClose(form.querySelector("[data-lock-cancel]"));
-  await pending;
-  assert.equal(f.posts.length, 1, "理由框收起后不再发");
+  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已重新加锁，请重新核对");
+  f.serverLocks(null); f.set({ coord: coordData() });
+  ({ ok } = await arm()); f.failGets("读取失败(503)");
+  await f.context.coordLockPress(ok);
+  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已换人，请重新核对");
+  // 已经被放掉:服务端 404。
+  f.failGets(null); f.set({ coord: coordData() });
+  ({ ok } = await arm()); f.serverLocks([]); f.failPosts(Object.assign(new Error("资源当前没有被锁"), { status: 404, body: {} }));
+  await f.context.coordLockPress(ok);
+  assert.equal(box.querySelector(".coord-note").textContent, "device:test-phone：这把锁已经释放");
+  // 其他错误:原因写在理由框下面,理由还在,按钮恢复可按。
+  f.serverLocks(null); f.set({ coord: coordData() });
+  let form; ({ form, ok } = await arm()); f.failPosts("操作员强制释放需要 force:true 和理由 reason");
+  await f.context.coordLockPress(ok);
+  assert.deepEqual([form.querySelector(".coord-note").textContent, ok.disabled, form.querySelector("[data-lock-reason]").value],
+    ["释放失败：操作员强制释放需要 force:true 和理由 reason", false, "持有者已离开"]);
+  // 再开理由框,那一句清掉。
+  f.failPosts(null); f.context.coordLockClose(form.querySelector("[data-lock-cancel]"));
+  f.context.coordLockOpen(box.querySelector("[data-lock-release]"));
+  assert.equal(f.state().lockNote, "");
   // 按住回车的连发不算一下:一次长按不能走完两押。
   assert.ok(source.includes('if (e.key === "Enter"){ e.preventDefault(); if (e.repeat) return; const ok = form.querySelector("[data-lock-confirm]"); if (!ok.disabled) coordLockPress(ok); }'));
 });
