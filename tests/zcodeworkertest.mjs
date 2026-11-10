@@ -28,9 +28,10 @@ const ROOT=fileURLToPath(new URL('../',import.meta.url)),TMP=realpathSync.native
 const inside=(parent,child)=>{const r=relative(resolve(parent),resolve(child));return !!r&&!r.startsWith('..')&&!isAbsolute(r);};
 const dbs=[],closers=[];
 const git=(root,args)=>execFileSync('git',['-C',root,...args],{encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe']}).trim();
-// 临时治理仓副本:只带 core、cli;开发检出里被忽略的数据目录不带进来。
+// 临时治理仓副本:core、cli 与 loops 下两个证据脚本;开发检出里被忽略的数据目录不带进来。
 const source=join(TMP,'governance');mkdirSync(source);
 for(const d of ['core','cli'])cpSync(join(ROOT,d),join(source,d),{recursive:true,filter:from=>!from.split(sep).includes('.data')});
+mkdirSync(join(source,'loops'));for(const name of ['evidence_contract.py','zcode_evidence_check.py'])copyFileSync(join(ROOT,'loops',name),join(source,'loops',name));
 git(source,['init','--quiet','--template=']);git(source,['config','core.autocrlf','false']);git(source,['add','.']);
 git(source,['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','fixture']);
 const approval=join(TMP,'accepted-fixture');writeFileSync(approval,git(source,['rev-parse','HEAD:']));
@@ -84,6 +85,25 @@ const dispatch=f=>f.db.prepare('SELECT * FROM broker_dispatches ORDER BY created
 const observation=f=>JSON.parse(f.db.prepare('SELECT observation_json FROM broker_execution_records').get().observation_json);
 const taskReads=(f,principalId)=>f.db.prepare("SELECT count(*) n FROM broker_audit WHERE principal_id=? AND tool_name='get_task' AND outcome='succeeded'").get(principalId).n;
 
+// 与产品相同的调用形:隔离模式、最小环境、UTF-8 字节进、ASCII JSON 出。
+function evidenceCheck(args,input=''){
+ const out=execFileSync(python.path,['-I','-S','-B','-X','utf8',join(source,'loops','zcode_evidence_check.py'),...args],{input:Buffer.from(input,'utf8'),env:environment,windowsHide:true,timeout:30000});
+ assert.ok(out.every(byte=>byte<128));return JSON.parse(out.toString('ascii'));
+}
+test('证据脚本复用同一份四节合同;中文与表情往返后字符数按码点计、字节按 UTF-8 计',{skip},()=>{
+ // 合格与不合格样本取自 evidencecontracttest 的 BODY 及其改坏形。
+ const body='# 给人看的结果\n完成本地桩修改。\n无需人工操作。\n# 改动\ncore/demo.py:12-14 修复夹具。\n# 检查\nfixture-check -> pass 2 / fail 0\n# 未决\n无\n';
+ const good=evidenceCheck(['validate','--max-chars','4000'],body);
+ assert.deepEqual(good,{ok:true,chars:Array.from(body).length,bytes:Buffer.byteLength(body),errors:[]});
+ const bad=evidenceCheck(['validate','--max-chars','4000'],body.replace('# 检查','# 背景'));assert.equal(bad.ok,false);assert.ok(bad.errors.length>0);
+ const emoji=body.replace('无需人工操作。','无需人工操作 😀。'),measured=evidenceCheck(['validate','--max-chars','4000'],emoji);
+ assert.equal(measured.ok,true);assert.equal(measured.chars,Array.from(emoji).length);assert.equal(measured.chars,emoji.length-1);assert.equal(measured.bytes,Buffer.byteLength(emoji));
+ assert.equal(evidenceCheck(['validate','--max-chars','50'],body).ok,false);
+ assert.equal(evidenceCheck(['validate','--max-chars','4000'],vendor.EVIDENCE).ok,true);assert.equal(evidenceCheck(['validate','--max-chars','4000'],vendor.PROSE).ok,false);
+ const lines=evidenceCheck(['prompt','--max-chars','4000']);
+ for(const heading of ['# 给人看的结果','# 改动','# 检查','# 未决'])assert.ok(lines.includes(heading));assert.ok(lines.some(line=>line.includes('4000')));
+ for(const args of [['validate'],['prompt','--max-chars','0'],['other','--max-chars','10']])assert.throws(()=>evidenceCheck(args));
+});
 test('调度器层:合成供应商经真实 MCP 桥读卡并回传,结算保留模型自己的交付',{skip},async()=>{
  const f=await fixture(),t=card(f);
  callTool(f.db,f.auth,'request_assignment',{request_id:randomUUID(),task_uid:t.task_uid,expected_version:t.aggregate_version});
