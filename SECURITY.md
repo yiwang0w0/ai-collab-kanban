@@ -86,6 +86,10 @@ from a named incident (see `docs/INCIDENTS.md`):
   dontAsk 下读范围是 cwd 加 `--add-dir`，所以 cwd 用看板自建的空目录，越界读靠 dontAsk 拒绝，仓内敏感路径靠拒绝规则拒绝。
   同日真实 CLI（haiku、假数据）实测：令牌、登记簿、认证目录的读取与列目录都被拒，工作仓外文件的读取被拒，Grep 结果
   不含被拒文件，对照文件可读。规则命中不会出现在结果的 `permission_denials` 里，dontAsk 范围外的拒绝会出现。
+  对话式首页的协调线（`core/coordinator-cli.mjs`，见 `docs/对话式首页.md`）是服务端起的第三种 Claude CLI：工具、权限模式、
+  设置隔离、路径拒绝规则与环境剔除同拆解器一组，另外要续接会话（首轮 `--session-id`，之后 `--resume`），cwd 是按数据目录
+  定名的专用空目录。它没有写工具、建卡接口或令牌；计划经 `structured_output` 交回，建卡只发生在操作员按下的 apply 接口。
+  对话接口只认面板会话或操作员令牌，执行者令牌、批准令牌与远程入口都不可用。
   v0.24.0 起执行线（`loops/worker_loop.py` 的 `cli_argv`）与审阅线（`loops/reviewer_loop.py`）用**同一组合**：
   `--tools` 白名单 + `--permission-mode dontAsk` + `--setting-sources ""` + `--strict-mcp-config` + `--add-dir`
   工作仓（审阅线另加判决目录，执行线另加证据目录）+ 既有路径拒绝规则。两条线都不再给不带路径的
