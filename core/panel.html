@@ -4909,6 +4909,16 @@ function sideRelationshipBox(t){
   }
   return section;
 }
+/** 长串编号只在这一块里,默认折叠(style-guide §五 技术信息):侧栏其余部分只留短卡号。 */
+function sideTech(t){
+  const box = homeEl("details", undefined, "side-sec fleet-tech"), dl = homeEl("dl");
+  box.id = "task-side-tech";
+  box.append(homeEl("summary", "技术信息"));
+  for (const [label, value] of [["任务 UID", t.task_uid], ["运行", t.run_id], ["任务版本", t.aggregate_version]])
+    if (value != null && value !== "") dl.append(homeEl("dt", label), homeEl("dd", String(value)));
+  box.append(dl);
+  return box;
+}
 /** 关联任务或执行回执变化时，只刷新只读区，保留当前任务的输入与确认按钮。 */
 function updateSideContext(t){
   if (!t) return;
@@ -4961,8 +4971,8 @@ function renderSide(){
     const loc = homeEl("button", "在「全部任务」中定位"); loc.type = "button";
     loc.addEventListener("click", () => { const id = t.id; closeSide(); locateOnBoard(id); });
     acts.append(loc);
-    more.append(acts, homeEl("p", "编号 #" + t.id + (t.task_uid ? " · UID " + t.task_uid : ""), "side-state"));
-    out.push(more);
+    more.append(acts, homeEl("p", "编号 #" + t.id, "side-state"));
+    out.push(more, sideTech(t));
   } else if (sideRef.uid && fleetApi) {
     const b = homeEl("button", "查看全局详情"); b.type = "button";
     b.addEventListener("click", () => fleetApi.showTask(sideRef.uid));

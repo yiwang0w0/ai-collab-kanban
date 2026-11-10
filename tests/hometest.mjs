@@ -491,3 +491,22 @@ test("页面经匿名健康探测确认故障，成功读取和实时重连都�
   assert.ok(src.includes('document.getElementById("home-view").classList.toggle("stale", !!boardDown);'));
   assert.ok(src.includes("navigator.clipboard.writeText(a.copy)"));
 });
+
+test("首页卡只露标题、所属电脑、状态和下一步；长串编号只在侧栏折叠的「技术信息」里", () => {
+  const lists = M.homeLists({ localName: NODE_B, tasks: [
+    card(1, { task_uid: NODE_B, run_id: NODE_B, status: "in_progress", last_runtime: "codex", hb: "fresh" }),
+    card(2, { task_uid: NODE_B, waiting_for: "review" }), card(3, { task_uid: NODE_B, status: "done", resolved_by: "auto" }) ],
+    remote: [{ read_only: true, task_uid: NODE_B + ":9", owner_name: NODE_B, subject: "远端卡", status: "waiting", waiting_for: "decision", updated_at: at(2) }] });
+  const shown = [...lists.mine, ...lists.running, ...lists.history].map((r) => [r.title, r.computer, r.state, r.next]);
+  assert.equal(shown.length, 4);
+  assert.equal(UUID.test(JSON.stringify(shown)), false, "卡面四样里没有长串编号");
+  const face = src.slice(src.indexOf("function homeCard(item, lane){"), src.indexOf("/** Rebuild one list only when what it shows changed"));
+  assert.ok(face.length > 0);
+  for (const field of ["item.title", "item.computer", "item.state", "item.next"]) assert.ok(face.includes(field), "卡面写 " + field);
+  for (const hidden of ["uid", "localId", "item.key", "run_id"]) assert.ok(!face.includes(hidden), "卡面不读 " + hidden);
+  const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
+  assert.ok(side.includes("out.push(more, sideTech(t));") && !side.includes("UID"), "侧栏正文只留短卡号");
+  const tech = src.slice(src.indexOf("function sideTech(t){"), src.indexOf("/** 关联任务或执行回执变化时"));
+  assert.ok(tech.includes('homeEl("details"') && tech.includes('homeEl("summary", "技术信息")') && tech.includes('["任务 UID", t.task_uid]'),
+    "任务 UID、运行号在默认折叠的「技术信息」里");
+});
