@@ -1475,6 +1475,18 @@ try {
     ok("S2 未设 gated_subtree → 验收步 blocked 并点名要写哪个键(不是 done)",
        (() => { const b = s0.su.steps.find((x) => x.key === "bless");
                 return b.state === "blocked" && /gated_subtree/.test(b.hint || ""); })(), "");
+    // 上次故障来自守护的运行记录(core/board-run.mjs,含干净退出标记的判定);每次请求现读,没有就不给字段。
+    const runFile = join(B.DATA, "probes", "board_run.json");
+    ok("S2b 没有运行记录:/api/setup 不带 last_fault", !("last_fault" in s0.su), JSON.stringify(s0.su.last_fault));
+    mkdirSync(join(B.DATA, "probes"), { recursive: true });
+    writeFileSync(runFile, JSON.stringify({ current: null, last_fault: { kind: "interrupted", at: "2026-11-10T01:02:00Z", started_at: "2026-11-10T00:00:00Z" } }));
+    const lf = (await B.api("GET", "/api/setup")).body.last_fault;
+    writeFileSync(runFile, JSON.stringify({ current: null, last_fault: { kind: "restart_loop", at: "2026-11-10T01:03:00Z", exit_code: 1 } }));
+    const loop = (await B.api("GET", "/api/setup")).body.last_fault;
+    rmSync(runFile, { force: true });
+    ok("S2c ⭐运行记录里有上次故障:/api/setup 带 last_fault {kind, at, exit_code, reason},原因与命令行同一句",
+       lf?.kind === "interrupted" && lf.at === "2026-11-10T01:02:00.000Z" && lf.exit_code === null && lf.reason === "可能是关机、断电或进程被结束"
+       && loop?.kind === "restart_loop" && loop.exit_code === 1 && loop.reason === "短时间内重启次数超过上限", JSON.stringify([lf, loop]));
     const init1 = await B.api("POST", "/api/setup/init-config");
     const init2 = await B.api("POST", "/api/setup/init-config");
     const afterInit = await stepOf("config");

@@ -32,7 +32,7 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
-import { noteCleanExit } from "./board-run.mjs";
+import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliResult} from "./board-claude-cli.mjs";
 import {coordinatorSystemPrompt,buildTurnContent,coordinatorCliArgs,coordinatorCliEnvironment,argsFingerprint,
@@ -921,8 +921,16 @@ function setupState() {
     { key: "bless", title: "确认当前版本", ...blessStep() },
   ];
   const doneN = steps.filter((s) => s.state === "done").length;
+  const fault = lastFault();
   return { steps, done: doneN, total: steps.length, complete: doneN === steps.length,
-           version: BOOT_REV, sentries: sentries.size, upgrade: upgradeState() };
+           version: BOOT_REV, sentries: sentries.size, upgrade: upgradeState(), ...(fault ? { last_fault: fault } : {}) };
+}
+/** 上次故障:守护写的运行记录(core/board-run.mjs,是否正常停止按干净退出标记判定),每次请求现读。
+ *  kind: exit · restart_loop · interrupted;reason 与 cli/status.mjs 的「原因」同一句。没有记录返回 null(不给字段)。 */
+function lastFault() {
+  let f = null;
+  try { f = readRunRecord(store.DATA_DIR).last_fault; } catch {}
+  return f ? { kind: f.kind, at: f.at, exit_code: f.exit_code, reason: faultReason(f) } : null;
 }
 
 const badLine = (res, line, allowed) => allowed.includes(line) ? false
