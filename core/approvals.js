@@ -6,6 +6,7 @@ const crypto = require("crypto");
 const net = require("net");
 const store = require("./store.js");
 const { err, ERR } = store;
+const { isUnsafeChar, hasUnsafeText } = require("./coord.js");
 
 const KINDS = Object.freeze(["decision", "delivery", "release", "version", "lock", "request"]);
 // 事项 id = 类型:对象:版本。对象的状态一变版本就变,同一个 id 只对应一个确定的状态:可以重放,不会落到新状态上。
@@ -17,7 +18,8 @@ const CLIENT_RE = /^[a-z][a-z0-9_.-]{0,31}$/;
 const OPEN_REQUESTS_MAX = 20;
 const LIVE_TOKENS_MAX = 20;
 const TOKEN_RE = /^apr_[0-9a-f]{48}$/;
-const CONTROL_RE = /[\u0000-\u001f\u007f]/;
+// 一行文字里的控制字符与双向控制符换成这个可见的占位(U+FFFD)。
+const PLACEHOLDER = String.fromCodePoint(0xfffd);
 
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const iso = (ms) => new Date(Number(ms)).toISOString();
@@ -82,9 +84,10 @@ function migrate(db) {
   appendOnly(db, "remote_audit");
 }
 
-/** 白话一行:空白折成一个空格,超长截断并留「…」。 */
+/** 白话一行:空白折成一个空格,超长截断并留「…」。折叠后剩下的控制字符与双向控制符换成可见的占位:
+ *  标题与摘要会进终端、控制台日志和远程客户端,ESC 之类能改写屏幕上别的事项。 */
 function oneLine(text, max = SUMMARY_MAX) {
-  const a = [...String(text ?? "").replace(/\s+/g, " ").trim()];
+  const a = [...String(text ?? "").replace(/\s+/g, " ").trim()].map((ch) => isUnsafeChar(ch) ? PLACEHOLDER : ch);
   return a.length > max ? a.slice(0, max - 1).join("") + "…" : a.join("");
 }
 const makeId = (kind, object, version) => `${kind}:${object}:${version}`;
@@ -108,7 +111,7 @@ function normalizeDecision(body) {
   if (!CLIENT_RE.test(client)) throw err(ERR.BAD_INPUT, "source.client 只允许小写字母开头的字母、数字和 . _ -,1-32 位");
   let device = null;
   if (src.device != null && src.device !== "") {
-    if (typeof src.device !== "string" || chars(src.device) > DEVICE_MAX || CONTROL_RE.test(src.device) || src.device.trim() !== src.device)
+    if (typeof src.device !== "string" || chars(src.device) > DEVICE_MAX || hasUnsafeText(src.device) || src.device.trim() !== src.device)
       throw err(ERR.BAD_INPUT, `source.device 必须是不含控制字符、首尾无空白的字符串,最多 ${DEVICE_MAX} 字`);
     device = src.device;
   }
@@ -156,6 +159,8 @@ const OPEN_SQL = `SELECT r.* FROM approval_requests r
 /** 执行者发起批准请求:动作描述(白话一行)+ 风险等级。 */
 function addRequest(db, executor, { action, risk } = {}, now = Date.now()) {
   if (typeof action !== "string" || !action.trim()) throw err(ERR.BAD_INPUT, "action 必须是非空字符串:要做什么");
+  // 换行与制表符照旧折成空格;其余控制字符与双向控制符直接拒绝,不让它进只追加的请求表。
+  if (hasUnsafeText(action.replace(/\s+/g, " "))) throw err(ERR.BAD_INPUT, "action 不能含控制字符或双向控制符");
   const text = oneLine(action, Infinity);
   if (chars(text) > ACTION_MAX) throw err(ERR.BAD_INPUT, `action 最多 ${ACTION_MAX} 字,实际 ${chars(text)}`);
   if (!RISKS.includes(risk)) throw err(ERR.BAD_INPUT, `risk 只接受 ${RISKS.join(" / ")}`);
@@ -176,7 +181,7 @@ function tokenOut(r) {
 /** 操作员生成批准令牌。明文只在这里返回一次,库里只存 sha256。 */
 function createToken(db, { label } = {}, now = Date.now()) {
   const name = typeof label === "string" ? label.trim() : "";
-  if (!name || chars(name) > LABEL_MAX || CONTROL_RE.test(name)) throw err(ERR.BAD_INPUT, `label 必填,不含控制字符,最多 ${LABEL_MAX} 字`);
+  if (!name || chars(name) > LABEL_MAX || hasUnsafeText(name)) throw err(ERR.BAD_INPUT, `label 必填,不含控制字符,最多 ${LABEL_MAX} 字`);
   const live = db.prepare("SELECT COUNT(*) n FROM approval_tokens WHERE revoked_at IS NULL").get().n;
   if (live >= LIVE_TOKENS_MAX) throw err(ERR.CONFLICT, `有效的批准令牌已有 ${live} 枚,上限 ${LIVE_TOKENS_MAX};先吊销不用的`);
   const token = "apr_" + crypto.randomBytes(24).toString("hex");

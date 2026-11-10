@@ -151,6 +151,18 @@ def arg(flag, default=None):
 def readfile(p):
     return io.open(p, encoding="utf-8").read() if p else ""
 
+def vis(v):
+    """打印前把控制字符(含换行)、行分隔符与双向控制符换成可见的转义。执行者写进库里的文字
+    原样打印的话,换行能伪造出别的行,ESC 能改写终端上已经打印的行。"""
+    out, bs = [], chr(92)
+    for ch in str(v):
+        c = ord(ch)
+        if c <= 0x1f or 0x7f <= c <= 0x9f or c in (0x2028, 0x2029) or 0x202a <= c <= 0x202e or 0x2066 <= c <= 0x2069:
+            out.append(f"{bs}x{c:02x}" if c <= 0xff else f"{bs}u{c:04x}")
+        else:
+            out.append(ch)
+    return "".join(out)
+
 def args_of(flag):
     """同一个 flag 可给多次(--artifact)。"""
     out, i = [], 0
@@ -308,7 +320,7 @@ def approvals_cmd(cmd):
             if not d["approvals"]: print("没有待批准的事项")
             for a in d["approvals"]:
                 risk = f" [{a['risk']}]" if a.get("risk") else ""
-                print(f"  {a['id']}{risk}  {a['summary']}  可选 {'/'.join(a.get('actions') or [])}")
+                print(f"  {vis(a['id'])}{vis(risk)}  {vis(a['summary'])}  可选 {'/'.join(a.get('actions') or [])}")
         elif sub in ("approve", "reject"):
             aid = pos(3)
             if not aid or aid.count(":") < 2:
@@ -320,7 +332,7 @@ def approvals_cmd(cmd):
                     "expected_version": int(ver) if ver.isascii() and ver.isdigit() else ver}
             s, d = call("POST", f"/api/approvals/{urllib.parse.quote(aid, safe='')}/decide", body)
             if s == 409 and d.get("current"):
-                sys.exit(f"409 {d.get('error')}\n  当前这一项:{d['current']['id']}  {d['current']['summary']}")
+                sys.exit(f"409 {vis(d.get('error'))}\n  当前这一项:{vis(d['current']['id'])}  {vis(d['current']['summary'])}")
             if s >= 400: die(s, d)
             res = d.get("result") or {}
             print(f"{'已批准' if sub == 'approve' else '已拒绝'} {aid}" +

@@ -19,6 +19,10 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url));
 // 不起服务、直接测 approvals.js 的用例用内存库。
 const approvals = createRequire(import.meta.url)("../core/approvals.js");
 const memdb = () => { const db = new DatabaseSync(":memory:"); approvals.migrate(db); return db; };
+// 控制字符与双向控制符一律用码点拼出来,源码里不出现这些字符本身。
+const cp = (...n) => String.fromCodePoint(...n);
+const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+const hasUnsafe = (text) => [...String(text)].some((ch) => isUnsafeCp(ch.codePointAt(0)));
 const freePort = async (host = "127.0.0.1") => {
   const l = createServer(); await new Promise((r) => l.listen(0, host, r));
   const port = l.address().port; await new Promise((r) => l.close(r)); return port;
@@ -290,6 +294,15 @@ test("流水记下来源与操作者;board.py approvals / approval-token;面板�
     assert.match(B.cli("approval-token", "ls").out, /#1\s+phone\s+已吊销/);
     assert.notEqual(B.cli("approval-token", "revoke", "1").code, 0, "已吊销的再吊销 409");
 
+    // 修复前已经入库、带终端转义的请求:列表接口与命令行输出里都不再有控制字符
+    const ldb = new DatabaseSync(join(B.dir, "board.db")); ldb.exec("PRAGMA busy_timeout=5000");
+    ldb.prepare("INSERT INTO approval_requests (executor, action, risk, created_at) VALUES (?,?,?,?)")
+      .run("agent-c", "旧数据" + cp(0x1b) + "[1A" + cp(0x1b) + "[2K", "low", new Date().toISOString());
+    ldb.close();
+    assert.ok(!hasUnsafe(JSON.stringify((await B.list()).map((a) => [a.title, a.summary]))), "列表里的标题与摘要不带控制字符");
+    c = B.cli("approvals", "ls");
+    assert.ok(c.out.includes("旧数据") && !hasUnsafe(c.out.replace(/[\r\n]/g, "")), `命令行输出不带控制字符:${JSON.stringify(c.out)}`);
+
     // 面板:待你批准的按钮走同一个决定接口,来源记为 panel;渲染只用事项自带的字段
     const html = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
     assert.ok(html.includes('await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`,'));
@@ -419,4 +432,16 @@ test("协作安全:只追加的批准表挡住 REPLACE(整行替换),重复决�
   assert.equal(approvals.addRequest(db, "agent-a", { action: "第二个请求", risk: "low" }, t0 + 3000).id, rq.id + 1);
   approvals.audit(db, { ip: "127.0.0.2", method: "GET", path: "/api/summary", status: 200, tokenId: 1 }, t0 + 4000);
   assert.equal(approvals.listAudit(db).length, 2);
+});
+
+test("协作安全:待批准事项的一行文字不带控制字符与双向覆盖符;执行者请求里直接拒绝", () => {
+  const db = memdb(), ESC = cp(0x1b);
+  const raw = "a" + ESC + "[1Ab" + cp(8) + "c" + cp(7) + "d" + cp(0x9b) + "e" + cp(0x202e) + "f" + cp(0x2066) + "g" + cp(0x2028) + "h" + cp(9) + "i" + cp(13, 10) + "j";
+  const line = approvals.oneLine(raw);
+  assert.ok(!hasUnsafe(line), `oneLine 留下了控制字符:${JSON.stringify(line)}`);
+  assert.match(line, /^a.\[1Ab.c.d.e.f.g.h i j$/u, "可见文字与空白折叠照旧,控制字符换成可见的占位");
+  for (const action of ["整理日志" + ESC + "[1A" + ESC + "[2K", "清缓存" + cp(0x9b) + "2J", "改名" + cp(0x202e) + "gnp.exe", "退格" + cp(8), "隔离" + cp(0x2067) + "x"])
+    assert.throws(() => approvals.addRequest(db, "agent-a", { action, risk: "low" }), (e) => e.code === "BAD_INPUT", JSON.stringify(action));
+  assert.equal(approvals.openRequests(db).length, 0, "被拒的请求没有入库");
+  assert.equal(approvals.addRequest(db, "agent-a", { action: "重启" + cp(9) + "共享设备" + cp(10) + "上的" + cp(0x2028) + "应用", risk: "low" }).action, "重启 共享设备 上的 应用", "换行、制表符、行分隔符照旧折成空格");
 });

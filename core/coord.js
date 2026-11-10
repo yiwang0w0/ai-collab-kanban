@@ -34,6 +34,13 @@ const HANDOFF_RECENT_JOURNAL = 10;
 // 看板自己写流水时用的执行者名;不允许登记成执行者 id。
 const RESERVED_IDS = ["operator", "system"];
 
+// 控制字符(C0、DEL、C1)、行/段分隔符与双向控制符:进了终端或日志会改写别的行、调换显示顺序。
+// 码点用数字写,源码里不出现这些字符本身。
+const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 ||
+  (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
+const isUnsafeChar = (ch) => isUnsafeCp(ch.codePointAt(0));
+const hasUnsafeText = (s) => { for (const ch of String(s)) if (isUnsafeChar(ch)) return true; return false; };
+
 const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 const iso = (ms) => ms == null ? null : new Date(Number(ms)).toISOString();
 const chars = (s) => [...String(s)].length;
@@ -455,5 +462,5 @@ module.exports = {
   acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN,
   appendJournal, journal, ARTIFACT_CHECK, JOURNAL_BODY_MAX, RESERVED_IDS,
   stop, sweepStale, listHandoffs, getHandoff, ackHandoff, HANDOFF_LIST_BUDGET,
-  EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN,
+  EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN, isUnsafeChar, hasUnsafeText,
 };
