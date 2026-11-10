@@ -326,7 +326,7 @@ function handoffOut(db, r, { full = false } = {}) {
            ...(full ? { full_status: JSON.parse(r.full_status) } : {}) };
 }
 
-/** 停止执行者并生成交接记录。已停止(未再心跳)时返回那一次的记录,不再生成。 */
+/** 停止执行者并生成交接记录。已停止(未再心跳)且此后没有新的状态、流水或锁变化时,返回那一次的记录,不再生成。 */
 function stop(db, executorId, reason = "stop", now = Date.now(), graceMs) {
   const own = !db.isTransaction;
   db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT coord_stop");
@@ -334,20 +334,31 @@ function stop(db, executorId, reason = "stop", now = Date.now(), graceMs) {
     const r = getRow(db, executorId);
     if (!r) throw err(ERR.NOT_FOUND, `执行者 ${executorId} 未登记`);
     let created = false;
-    if (r.stopped_at == null) {
+    const st = statusOf(db, r.id);
+    const recent = db.prepare("SELECT id FROM coord_journal WHERE executor=? ORDER BY id DESC LIMIT ?")
+      .all(r.id, HANDOFF_RECENT_JOURNAL).map((x) => Number(x.id)).reverse();
+    const lastId = recent.length ? recent[recent.length - 1] : null;
+    const locks = listLocks(db, { holder: r.id }, now, graceMs).map((l) =>
+      ({ resource: l.resource, purpose: l.purpose, started_at: l.started_at, expected_end: l.expected_end, overdue: l.overdue }));
+    // 已停止(多半是心跳中断)之后又写了状态、流水或动了锁:上一份交接包停在那一刻,已经过期,这次重新生成一份。
+    // 写状态和流水不算心跳,所以「还在干活但 20 分钟没心跳」的执行者正好走到这里。
+    let outdated = false;
+    if (r.stopped_at != null) {
+      const prev = db.prepare("SELECT package FROM coord_handoffs WHERE executor=? ORDER BY stop_seq DESC LIMIT 1").get(r.id);
+      let p = null; try { p = JSON.parse(prev.package); } catch {}
+      outdated = !p || p.status_updated_at !== st.updated_at || (p.journal?.last_id ?? null) !== lastId ||
+        (p.locks || []).map((l) => l.resource).join(" ") !== locks.map((l) => l.resource).join(" ");
+    }
+    if (r.stopped_at == null || outdated) {
       const seq = Number(r.stop_seq) + 1;
       db.prepare("UPDATE coord_executors SET stopped_at=?, stop_seq=? WHERE id=?").run(now, seq, r.id);
-      const st = statusOf(db, r.id);
-      const recent = db.prepare("SELECT id FROM coord_journal WHERE executor=? ORDER BY id DESC LIMIT ?")
-        .all(r.id, HANDOFF_RECENT_JOURNAL).map((x) => Number(x.id)).reverse();
       const pkg = {
         executor: { id: r.id, name: r.name, kind: r.kind }, reason, stopped_at: iso(now), status_updated_at: st.updated_at,
         goal: st.current,
         done: pickWhole(st.done, "done", HANDOFF_LIST_BUDGET, true),
         next: pickWhole(st.next, "next", HANDOFF_LIST_BUDGET, false),
-        journal: { recent_ids: recent, last_id: recent.length ? recent[recent.length - 1] : null },
-        locks: listLocks(db, { holder: r.id }, now, graceMs).map((l) =>
-          ({ resource: l.resource, purpose: l.purpose, started_at: l.started_at, expected_end: l.expected_end, overdue: l.overdue })),
+        journal: { recent_ids: recent, last_id: lastId },
+        locks,
       };
       db.prepare(`INSERT INTO coord_handoffs (executor, stop_seq, reason, created_at, package, full_status) VALUES (?,?,?,?,?,?)`)
         .run(r.id, seq, reason, iso(now), JSON.stringify(pkg), JSON.stringify({ current: st.current, done: st.done, next: st.next }));

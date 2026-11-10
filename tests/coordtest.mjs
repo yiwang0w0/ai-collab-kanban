@@ -436,3 +436,29 @@ test("协作安全:流水产物的 type 必须是字符串,数组与嵌套数组
   assert.deepEqual(ok.artifacts, [{ type: "sha256", value: sha }]);
   assert.equal(coord.journal(db, {}).length, 1, "被拒的都没有入库");
 });
+
+test("协作安全:心跳中断生成交接包之后又写了状态与流水,再 stop 拿到的是新的交接包", () => {
+  const db = memdb(), t0 = 1_800_000_000_000, min = 60000;
+  coord.register(db, { id: "agent-w" });
+  coord.touch(db, "agent-w", t0);
+  coord.setStatus(db, "agent-w", { current: "开工:跑回归" }, t0 + min);
+  coord.acquire(db, "agent-w", { resource: "device:test-phone", minutes: 60, purpose: "回归" }, t0 + 2 * min);
+  const swept = coord.sweepStale(db, t0 + 21 * min, 20 * min);
+  assert.deepEqual(swept.map((h) => [h.reason, h.stop_seq, h.package.goal]), [["heartbeat_stale", 1, "开工:跑回归"]]);
+  const j = coord.appendJournal(db, "agent-w", { kind: "note", body: "回归跑完" }, t0 + 38 * min);
+  coord.release(db, { role: "executor", id: "agent-w" }, { resource: "device:test-phone" }, t0 + 38.5 * min);
+  coord.setStatus(db, "agent-w", { current: "收尾完成", done: ["回归全绿", "报告已提交"] }, t0 + 39 * min);
+  const s = coord.stop(db, "agent-w", "stop", t0 + 40 * min);
+  assert.equal(s.created, true, "中断之后写过最终状态:这次 stop 重新生成");
+  assert.deepEqual([s.handoff.reason, s.handoff.stop_seq, s.handoff.package.goal], ["stop", 2, "收尾完成"]);
+  assert.deepEqual(s.handoff.package.done, ["回归全绿", "报告已提交"]);
+  assert.deepEqual(s.handoff.package.journal.recent_ids, [j.id]);
+  assert.deepEqual(s.handoff.package.locks, [], "已释放的锁不再出现在交接包里");
+  assert.deepEqual(coord.getHandoff(db, s.handoff.id).full_status.done, ["回归全绿", "报告已提交"]);
+  const again = coord.stop(db, "agent-w", "stop", t0 + 41 * min);
+  assert.deepEqual([again.created, again.handoff.id], [false, s.handoff.id], "没有新内容时重复 stop 仍是同一份");
+  assert.equal(coord.listHandoffs(db).length, 2);
+  // 只多了一条流水也算有新内容
+  coord.appendJournal(db, "agent-w", { kind: "note", body: "补一条" }, t0 + 42 * min);
+  assert.equal(coord.stop(db, "agent-w", "stop", t0 + 43 * min).handoff.stop_seq, 3);
+});
