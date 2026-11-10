@@ -48,7 +48,7 @@
 
 ## 请求与持久回执
 
-GET /api/fleet/actions[?project=demo] 返回当前协调身份获准的本地协议记录与操作历史。POST /api/fleet/actions 接受严格四字段：
+GET /api/fleet/actions[?project=demo] 返回当前协调身份获准的本地协议记录与操作历史。委派(incoming / outgoing)与绑定提案(proposals)记录带 brief：被委派或被绑定的卡在本机时取卡片自己的「要做什么」(与卡片的 brief 同一函数 store.cardBrief，作者没写为 null)；收到的委派在接受之前、卡在对方电脑上时不给这个字段。POST /api/fleet/actions 接受严格四字段：
 
 ```json
 {

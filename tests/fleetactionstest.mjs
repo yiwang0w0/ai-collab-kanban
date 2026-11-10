@@ -56,6 +56,18 @@ test("actual HTTP proposal, acceptance and status stay distinct and duplicate cl
  assert.equal(f.source.catalog("demo").outgoing[0].state,"accepted_unconfirmed");
  assert.equal(f.source.catalog("demo").actions.filter(a=>a.state==="acknowledged").length,2);
 });
+test("delegation records carry the local card's brief (store.cardBrief); a card that lives on the other computer gives no brief field",async()=>{
+ const f=await pair(),id=store.add(f.a.db,{subject:"修导出",summary:"把导出按钮修好",description:"【一句话】导出按钮点了没反应\n细节",acceptance:"explicit review",treeMode:"hierarchical",released:0});
+ enrollTask(f.a.db,{id,projectId:"demo",workKind:"implement",capabilities:["board-tools"],expectedVersion:store.get(f.a.db,id).aggregate_version});
+ const input=proposal(f,store.get(f.a.db,id));f.source.enqueue(input);await f.source.tick();
+ assert.equal(f.source.catalog("demo").outgoing[0].brief,"把导出按钮修好","outgoing: the delegated card is local");
+ assert.equal(Object.hasOwn(f.target.catalog("demo").incoming[0],"brief"),false,"incoming before acceptance: the delegated card is on the other computer, no brief is made up");
+ f.target.enqueue({action_id:randomUUID(),project_id:"demo",command:"decide_delegation",arguments:{delegation_id:input.action_id,expected_version:1,decision:"accept",note:"ok"}});
+ const local=store.list(f.b.db).tasks[0],after=f.target.catalog("demo").incoming[0];
+ assert.equal(after.target_task_uid,local.task_uid);
+ assert.ok(typeof after.brief==="string"&&after.brief.length>0,JSON.stringify(after.brief));
+ assert.equal(after.brief,store.cardBrief(store.get(f.b.db,local.id)),"incoming after acceptance: the local target card's brief, same function as the card itself");
+});
 test("lost acknowledgement resumes same durable intent after reopen without another target task",async()=>{
  let lost=true;const f=await pair({fetchImpl:async(...args)=>{const r=await fetch(...args);if(lost&&String(args[0]).endsWith("/offer")){lost=false;await r.arrayBuffer();throw Error("lost ACK PRIVATE");}return r;}});
  const input=proposal(f);f.source.enqueue(input);await f.source.tick();assert.equal(f.source.catalog("demo").actions[0].state,"retry_pending");assert.equal(f.target.catalog("demo").incoming.length,1);
@@ -265,6 +277,7 @@ for(const localRegistrar of [false,true])test("panel workflow independently conf
  assert.equal(f.left.catalog("demo").bindings[0].source_approved,true);
  action(f.left,"send_binding_proposal",{id:rid});await f.left.tick();
  const p=f.right.catalog("demo").proposals[0];assert.equal(p.relation_id,rid);assert.equal(p.description,"public work");assert.equal(p.acceptance,"explicit review");
+ assert.ok(Object.hasOwn(p,"brief"),"the proposal's target card is local: brief is given");assert.equal(p.brief,store.cardBrief(store.get(f.b.db,f.target.id)));
  assert.throws(()=>action(f.right,"release_delegation",{relation_id:rid,expected_version:p.task_version}));
  action(f.right,"accept_binding_proposal",{relation_id:rid,descriptor_digest:p.descriptor_digest,expected_version:p.task_version});await f.right.tick();
  assert.equal(f.right.catalog("demo").bindings[0].state,"confirmed");assert.equal(f.right.catalog("demo").bindings[0].execution_authorized,false);
