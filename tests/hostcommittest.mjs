@@ -421,6 +421,34 @@ h.HostCommitGuard(str(repo),'核对占用已释放').acquire().release()
 `);
 });
 
+test("reset 之后的第一张卡照常提交：循环读工作区状态不重写索引，领卡时先让索引落定", () => {
+  python(`import time
+repo=setup()
+` + WORKER + `
+def index_identity(): path=repo/'.git'/'index'; return (path.stat().st_ino,path.read_bytes())
+(repo/'one.txt').write_text('上一张失败卡的残留',encoding='utf-8'); g(repo,'reset','--hard')
+original_model=w.run_worker
+def prompted(task,*args):
+ w.worktree_state(); return original_model(task,*args)
+w.run_worker=prompted
+_,body=w.claim_task('第一线','alpha','default'); task=body['task']
+assert w.handle(task,'第一线')=='done',deliveries[-1]
+assert g(repo,'log','-1','--format=%s')=='#1 同文件逐卡提交'; task['_host_commit_guard'].release()
+past=time.time()-300
+guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+(repo/'one.txt').write_text('本轮改动',encoding='utf-8'); os.utime(repo/'two.txt',(past,past)); before=index_identity()
+state=w.worktree_state()
+assert state and 'one.txt' in state[0] and 'one.txt' in state[1],state
+assert index_identity()==before,'循环自己的 git status 重写了索引'
+assert guard.bind_changes()==['one.txt']; guard.release()
+repo=setup(); w.REPO=str(repo)
+for name in ('one.txt','two.txt'): os.utime(repo/name,(past,past))
+guard=h.HostCommitGuard(str(repo),'第一线').acquire(); before=index_identity()
+assert g(repo,'status','--porcelain')=='' and index_identity()==before,'领卡时索引没有落定，别的程序一跑普通 status 就会重写它'
+assert guard.bind_changes()==[]; guard.release()
+`);
+});
+
 test("fleet 开关默认关闭且只接受显式布尔配置", () => {
   const output = python(`sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'core'))
 import board_env

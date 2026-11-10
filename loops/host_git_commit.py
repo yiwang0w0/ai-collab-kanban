@@ -193,11 +193,12 @@ class HostCommitGuard:
         self.lock = None
         self.bound = None
 
-    def _run(self, args, data=None, optional=False):
+    def _run(self, args, data=None, optional=False, refresh=False):
+        """refresh 只给领卡时那一次索引落定用；其余调用一律不让 Git 顺手重写索引。"""
         if _file(self.git) != self.git_pin:
             _fail("固定 Git 程序已改变")
         try:
-            p = subprocess.run([self.git, "--no-pager", "--no-optional-locks", "--no-replace-objects"] + args,
+            p = subprocess.run([self.git, "--no-pager"] + ([] if refresh else ["--no-optional-locks"]) + ["--no-replace-objects"] + args,
                                cwd=self.root, env=self.env, input=data, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, timeout=60,
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
@@ -299,6 +300,10 @@ class HostCommitGuard:
             if dirty:
                 self.release()
                 _fail("工作仓不干净，不领卡；请人工处理现有改动和暂存区")
+            # 仓已核实干净、控制面尚未绑定：让索引的 stat 缓存在这里落定一次(唯一允许 Git 顺手写索引的地方)。
+            # checkout / reset 之后索引里是过期的 stat；不先落定，卡在途时 IDE、提示符插件跑一次普通
+            # git status 就会重写索引，被判成控制面篡改。同一秒内的改动落不定，所以只是尽力而为。
+            self._run(["status", "--porcelain=v1", "-z", "--untracked-files=no"], refresh=True)
             hidden = self._run(["ls-files", "-v", "-z"]).split(b"\0")
             if any(row and (row[:1].islower() or row[:1] == b"S") for row in hidden):
                 _fail("索引含忽略工作区变化的标记，无法证明干净；需人工处理")

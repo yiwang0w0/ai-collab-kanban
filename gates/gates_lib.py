@@ -118,7 +118,9 @@ def source_gate(repo, data_dir, subtree=None, log=print, loaded_tree=_UNSET):
                 "git rev-parse HEAD:%s > %s)" % (rev_file, subtree, rev_file))
 
     def _git(*args):
-        r = subprocess.run(["git", "--no-lazy-fetch", "-C", repo, *args], capture_output=True,
+        # --no-optional-locks: the cleanliness check must not rewrite .git/index as a side
+        # effect — the host's per-card commit pins the index while a card is in flight.
+        r = subprocess.run(["git", "--no-optional-locks", "--no-lazy-fetch", "-C", repo, *args], capture_output=True,
                            text=True, encoding="utf-8", errors="replace",
                            timeout=30)
         return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()

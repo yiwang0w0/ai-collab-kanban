@@ -265,7 +265,9 @@ const absentOf = (t) => {
 const dirtyFiles = () => {
   let out;
   try {
-    out = execFileSync("git", ["-C", REPO_ROOT, "--no-lazy-fetch", "status", "--porcelain", "-z"],
+    // --no-optional-locks: a status read must not rewrite .git/index (the host's per-card
+    // commit pins the index of the work repo while a card is in flight).
+    out = execFileSync("git", ["-C", REPO_ROOT, "--no-lazy-fetch", "--no-optional-locks", "status", "--porcelain", "-z"],
                        { maxBuffer: 64 * 1024 * 1024 }).toString("utf8");
   } catch { return null; }        // unmeasurable ⇒ null ⇒ callers pass
   const rows = [];
@@ -808,7 +810,7 @@ function acceptTree(confirmTree, who) {
   writeFileSync(acceptedFile(), tree + "\n", "utf8");
   let dirty = 0;
   try {
-    dirty = execFileSync("git", ["-C", CODE_ROOT, "--no-lazy-fetch", "status", "--short", "--", CFG_GATED_SUBTREE === "." ? "." : CFG_GATED_SUBTREE],
+    dirty = execFileSync("git", ["-C", CODE_ROOT, "--no-lazy-fetch", "--no-optional-locks", "status", "--short", "--", CFG_GATED_SUBTREE === "." ? "." : CFG_GATED_SUBTREE],
                          { encoding: "utf8", windowsHide: true }).split("\n").filter((l) => l.trim()).length;
   } catch {}
   console.log(`已确认 ${CFG_GATED_SUBTREE} = ${tree}(${who})` + (prev ? `,上次 ${prev.slice(0, 12)}` : ",首次")

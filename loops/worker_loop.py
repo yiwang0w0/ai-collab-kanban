@@ -602,10 +602,20 @@ def harvest_spawned(t, worker):
 def worktree_state():
     """未提交的改动由 **loop** 读出来交给 worker(worker 没有 Bash)。
     只调只读的 git。共享 worktree,所以别的线正在做的行也会混进来
-    —— 因此要明写「不一定是你写的」。"""
+    —— 因此要明写「不一定是你写的」。
+    ⚠只读也包括**不重写 .git/index**:普通 git status / git diff 会顺手把索引的 stat 缓存刷新后写回
+      (checkout / reset 之后必然如此)。宿主逐卡提交在领卡时已按文件号与字节钉住索引,
+      这里刷新一次,模型跑完后那张卡就会被判成控制面篡改。
+      · status 靠 --no-optional-locks;
+      · diff **不认** --no-optional-locks(Git 2.54 实测照写),要 diff.autoRefreshIndex=false。
+        关掉以后只有 stat 变了、内容没变的文件也不会出现在 --stat 里,输出不变。
+    宿主提交开着时用启动时固定的那份 Git 程序,不再按名字另找一次。"""
+    program = HOST_GIT[0] if HOST_GIT else "git"
+    quiet = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
     def git(*a):
         try:
-            w = subprocess.run(["git", "--no-lazy-fetch", *a], cwd=REPO, capture_output=True, text=True,
+            w = subprocess.run([program, "--no-optional-locks", "--no-lazy-fetch", "-c", "diff.autoRefreshIndex=false", *a],
+                               cwd=REPO, env=quiet, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=20)
             return w.stdout.strip() if w.returncode == 0 else ""
         except Exception:
