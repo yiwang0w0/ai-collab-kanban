@@ -2401,9 +2401,11 @@ const isPanelCredential = (tok) => {
 /** An anonymous caller's body: small JSON, or null. Excess is read and dropped, so the
  *  socket stays usable for the refusal. */
 const readSmallJson = (req, max = 1024) => new Promise((resolve) => {
-  let b = "", over = false;
-  req.on("data", (c) => { if (!over) { b += c; over = b.length > max; } });
-  req.on("end", () => { if (over) return resolve(null); try { resolve(b ? JSON.parse(b) : {}); } catch { resolve(null); } });
+  // 分片按字节收齐后整体解码:逐片解码会把跨分片的多字节字符改成 U+FFFD(JSON 照样能解析)。上限也按字节算。
+  const chunks = []; let size = 0, over = false;
+  req.on("data", (c) => { if (!over) { size += c.length; over = size > max; if (!over) chunks.push(c); } });
+  req.on("end", () => { if (over) return resolve(null); const b = Buffer.concat(chunks).toString("utf8");
+                        try { resolve(b ? JSON.parse(b) : {}); } catch { resolve(null); } });
   req.on("error", () => resolve(null));
 });
 

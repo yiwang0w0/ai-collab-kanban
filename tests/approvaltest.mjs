@@ -352,3 +352,42 @@ test("协作安全:同一来源的失败请求不能把有效批准令牌锁在�
     assert.equal((await raw(rport, { token: tok, path: "/api/summary" })).status, 200);
   } finally { await B.stop(); }
 });
+
+/** 裸 TCP 分两次写正文:第一段写到 cut 字节,隔一会儿再写剩下的。 */
+const rawSplit = (port, { path, token, body, cut, local = "127.0.0.2", host = "127.0.0.2" }) => new Promise((ok, ko) => {
+  const buf = Buffer.from(body, "utf8");
+  const s = connect({ host, port, localAddress: local });
+  let out = Buffer.alloc(0);
+  s.on("data", (c) => { out = Buffer.concat([out, c]); });
+  s.on("error", ko);
+  s.on("close", () => { const text = out.toString("utf8"); const m = /^HTTP\/1\.1 (\d+)/.exec(text);
+    const tail = text.slice(text.indexOf("\r\n\r\n") + 4);   // 响应可能是分块编码:取第一个 { 到最后一个 }
+    let j = null; try { j = JSON.parse(tail.slice(tail.indexOf("{"), tail.lastIndexOf("}") + 1)); } catch {} ok({ status: m ? Number(m[1]) : 0, body: j }); });
+  s.once("connect", async () => {
+    s.setNoDelay(true);
+    s.write(`POST ${path} HTTP/1.1\r\nHost: ${host}:${port}\r\nAuthorization: Bearer ${token}\r\nContent-Type: application/json\r\nContent-Length: ${buf.length}\r\nConnection: close\r\n\r\n`);
+    s.write(buf.subarray(0, cut));
+    await delay(300);
+    s.write(buf.subarray(cut));
+  });
+});
+
+test("协作安全:远程决定的正文跨分片到达时,多字节字符不被改坏;4KB 上限按字节算", { timeout: 120000 }, async () => {
+  const { B, rport } = await remoteBoard();
+  try {
+    const ex = await B.register("agent-u");
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    const rq = (await B.api("POST", "/api/approvals/request", ex, { action: "换测试设备的系统语言", risk: "low" })).body.request;
+    const note = "请先补上回归测试再送审";
+    const body = JSON.stringify({ decision: "reject", note, source: { client: "phone-app" }, expected_version: 1 });
+    const at = Buffer.from(body.slice(0, body.indexOf("补")), "utf8").length + 1;   // 切在「补」的 3 个字节中间
+    const d = await rawSplit(rport, { path: `/api/approvals/${encodeURIComponent(rq.approval_id)}/decide`, token: tok, body, cut: at });
+    assert.equal(d.status, 200, JSON.stringify(d.body));
+    assert.equal(d.body.decision.note, note, "跨分片的汉字原样写进决定记录");
+    // 1500 个汉字 = 4500 字节 > 4KB:按字节拒绝(按字符数只有 1500 多,会被放过)
+    const rq2 = (await B.api("POST", "/api/approvals/request", ex, { action: "第二个请求", risk: "low" })).body.request;
+    const big = await raw(rport, { token: tok, method: "POST", path: `/api/approvals/${encodeURIComponent(rq2.approval_id)}/decide`,
+      body: JSON.stringify({ decision: "reject", note: "字".repeat(400), pad: "字".repeat(1100), source: { client: "phone-app" }, expected_version: 1 }) });
+    assert.equal(big.status, 400, `超过 4KB(字节)的正文应拒绝:${JSON.stringify(big.body)}`);
+  } finally { await B.stop(); }
+});
