@@ -407,15 +407,21 @@ test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat w
 
 
 test("HTTP claim identity enforces canonical v4 UUIDs and uses the loaded charter snapshot",()=>{
-  const source=readFileSync(join(ROOT,"core/server.mjs"),"utf8"),charter=join(TMP,"claim-charter.md");
+  const source=readFileSync(join(ROOT,"core/server.mjs"),"utf8").replace(/\r\n/g,"\n"),charter=join(TMP,"claim-charter.md");
   // 领取上下文从原任务授权事件读取续修策略，抽取服务函数时也使用真实隔离任务库。
   const {db,id}=fixture(), task={...store.get(db,id),line:"dev"};
   writeFileSync(charter,"original charter");let reads=0;
   const role={kind:"implement",tools:"write",charter:"claim-charter.md",seat:null};
   const context=vm.createContext({CFG:{lines:[{id:"dev",role}]},ROLES:[],CODE_ROOT:TMP,store,db,resolve,createHash,
     normalizeRole:value=>value??null,readFileSync:path=>{reads++;return readFileSync(path);}});
+  // 第二段只切到 claimIdentity 函数结束。原先一直切到 http.createServer 之前，把中间的协作接口段也带进来；
+  // 那一段自 51b5583 起在加载时读 process.env(envMinutes)，沙箱里没有 process，本用例从那时起就红。
+  // 本用例守的是领取身份与章程快照，只需要这两个函数的真实源码。
+  const from=source.indexOf("const WORKER_PROTOCOL_VERSION = 2;"),fn=source.indexOf("function claimIdentity(",from);
+  const to=source.indexOf("\n}\n",fn)+3;
+  assert.ok(from>=0&&fn>from&&to>fn,"core/server.mjs 里找不到 claimIdentity 的切片边界");
   vm.runInContext(source.slice(source.indexOf("let LINES, SUPERVISED,"),source.indexOf("try { rebuildLines(); }"))+
-    source.slice(source.indexOf("const WORKER_PROTOCOL_VERSION = 2;"),source.indexOf("const server = http.createServer")),context);
+    source.slice(from,to),context);
   vm.runInContext("rebuildLines()",context);assert.equal(reads,1);
   const good="550e8400-e29b-41d4-a716-446655440000";
   for(const bad of [good.toUpperCase(),good.replace("41d4","11d4"),good.replace("a716","0716"),"bad",null])
