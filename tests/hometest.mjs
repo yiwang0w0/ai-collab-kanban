@@ -837,7 +837,7 @@ test("手动建卡：原表单、编号和处理器都在，入口是输入框�
 test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、要提交的改动和输入框上方那一行都由纯函数算出", async () => {
   const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
   assert.ok(c0 > 0 && c1 > c0, "chat-model block not found in core/panel.html");
-  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend,chatListLine,chatListNeed};")();
+  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend,chatListLine,chatListNeed,chatWaited};")();
   const task = (n, extra) => ({ n, subject: "第 " + n + " 步", summary: "摘要 " + n, description: "", acceptance: "", line: "engine", after: [],
     needs_confirm: false, needs_bash: false, enabled: true, edited: [], ...extra });
   const plan = { rev: 2, author: "coordinator", base_rev: 1, created_at: at(3), goal: { subject: "<b>目标</b>", description: "说明" }, applied: null,
@@ -886,6 +886,12 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   const plans = [{ ...plan, rev: 1, created_at: at(2) }, { ...plan, rev: 2, author: "human", created_at: at(4) }];
   assert.deepEqual(C.chatTimeline(messages, plans).map((x) => x.kind === "plan" ? "计划" + x.plan.rev + (x.latest ? "*" : "") : "消息" + x.message.id),
     ["消息1", "消息2", "计划1", "计划2*", "消息3"]);
+  // 第三波:重试把上一条你的话再发一遍,紧挨着的同一句只显示一条;回复中带出这一轮开始的时刻,已等待的时长按秒、分写
+  const retried = [...messages, { id: 4, role: "user", text: " 再改 ", created_at: at(6) }, { id: 5, role: "coordinator", text: "改好了", created_at: at(7) },
+    { id: 6, role: "user", text: "再改", created_at: at(8) }];
+  assert.deepEqual(C.chatTimeline(retried, []).map((x) => x.message.id), [1, 2, 3, 5, 6], "中间有回复的同一句照常显示");
+  assert.deepEqual([C.chatStateLine({ conversation: { status: "running" }, since: at(6) }).since, C.chatWaited(45000), C.chatWaited(185000), C.chatWaited(120000), C.chatWaited(NaN)],
+    [at(6), "已等待 45 秒", "已等待 3 分 5 秒", "已等待 2 分", ""]);
 
   // 输入框上方那一行:协调线不可用的原因照服务端给的写;失败的一轮只有对话上的 error;一条消息最多 4000 字
   // reason 用服务端真会给的一条(core/config-setup.mjs 的 resolveClaudeCli:找不到 Claude CLI)。GET /api/coordinator 只在
@@ -919,6 +925,12 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   const apply = src.slice(src.indexOf("async function chatPlanApply(){"), src.indexOf("function chatBadge("));
   assert.ok(apply.indexOf("await chatPlanFlush()") > 0 && apply.indexOf("await chatPlanFlush()") < apply.indexOf('"/apply"'), "建卡前先把本地改动存成新版本");
   assert.ok(src.includes("async function chatBeforeSend(){ await chatPlanFlush(); }"), "发消息前也先存");
+  // 对话列表:当前对话下面「改名」「归档」走 PATCH;已归档的另读一份,收在「已归档」折叠里;触摸屏上 Enter 不发
+  const acts = src.slice(src.indexOf("function chatItemActs(c, archived){"), src.indexOf("/** 图标节点"));
+  assert.ok(acts.includes('chatApi("PATCH", "/api/conversations/" + encodeURIComponent(id), { title })') && acts.includes('{ archived })') &&
+    acts.includes('archived ? "取消归档" : "归档"') && !acts.includes("innerHTML"));
+  assert.ok(src.includes('chatApi("GET", "/api/conversations?archived=1")') && src.includes('fold.append(homeEl("summary", "已归档 " + chatArchRows.length), ...list);'));
+  assert.ok(src.includes("e.keyCode === 229 || CHAT_TOUCH.matches) return;") && src.includes('chatInput.enterKeyHint = touch ? "enter" : "send";'));
 
   // 实时事件(真实处理段切出来跑):对话有变只重读对话;版本确认了(code.accepted)对话区也立即重读——
   // 协调线能不能用跟着版本确认变,不等 5 秒的读取间隔;其余事件照旧只刷新看板。

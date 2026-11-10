@@ -1116,6 +1116,17 @@
   /* 悬停底比 --bg2 深,第二行的小字用 --fg 才够 4.5:1;当前对话是 --panel 底,不在此列。 */
   .cl-item:hover:not([aria-current="true"]) .cl-s{color:var(--fg)}
   .cl-empty{margin:0;padding:var(--sp-2) var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
+  /* 当前对话下面一行:改名、归档;改名时是输入框加「保存」「取消」。已归档的对话收在「已归档」折叠里。 */
+  .cl-acts{flex:none;display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1);padding:0 var(--sp-1) var(--sp-1) var(--sp-2)}
+  .cl-acts > button.ghost{color:var(--dim);font-weight:400}
+  .cl-acts > button.ghost:hover{background:var(--side-hover);color:var(--fg)}
+  .cl-rename > input{flex:1 1 100%;min-width:0}
+  .cl-note{flex-basis:100%;margin:0;color:var(--bad);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .cl-arch{flex:none;display:flex;flex-direction:column;gap:2px;margin-top:var(--sp-2)}
+  .cl-arch > summary{padding:var(--sp-1) var(--sp-3);color:var(--dim);font-size:var(--fs-sm);cursor:pointer;border-radius:var(--r-sm)}
+  .cl-arch > summary:hover{background:var(--side-hover);color:var(--fg)}
+  .cl-arch[open] > summary{margin-bottom:2px}
+  .cs-wait{color:var(--dim);font-variant-numeric:tabular-nums}
   .chat-scrim{display:none}
   .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
   .chat-top{flex:none;display:flex;align-items:center;gap:var(--sp-2);min-height:44px;padding-block:var(--sp-1);
@@ -1319,6 +1330,7 @@
     .card-more > summary{min-height:40px}
     .side-rec > summary,.side-sec > summary,.cfg-about > summary,.hs-log > summary,.usage-top > summary,.coord-fold > summary,.fleet-tech > summary{padding:11px 0}
     .plan-old > summary{padding-block:11px}
+    .cl-arch > summary{padding-block:11px}
     .coord-fold.coord-sec > summary{padding:13px 0}   /* 眉标签字号小,多垫 2px 才到 40 */
     button.cr-link{min-height:40px}
     /* 没有悬停可看全文:执行者卡的「当前」和交接的目标不截断。 */
@@ -6125,10 +6137,12 @@ const chatLength = (text) => [...String(text ?? "").trim()].length;
 /** 输入框上方的那一行:没发出去 > 正在回复 > 这条太长 > 协调线不可用 > 上一轮没有完成。null = 不显示。
  *  协调线不可用的原因照服务端给的原样写(GET /api/coordinator 只在两种情况给 available:false:Claude CLI 找不到
  *  或不能直接启动、当前版本还没确认;CLI 登录失效不在这里,表现为那一轮 failed + error)。
- *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。 */
-function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "" } = {}) {
+ *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。
+ *  since = 这一轮开始的时刻(上一条你的话的 created_at):正在回复时带出,调用方每秒写「已等待 …」。 */
+function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "", since = null } = {}) {
   if (fail) return { tone: "bad", icon: "warn", text: "没有发出去：" + fail, act: "resend", label: "重试" };
-  if (conversation && conversation.status === "running") return { tone: "run", icon: "chat", text: "协调线正在回复", act: "stop", label: "停止本轮" };
+  if (conversation && conversation.status === "running")
+    return { tone: "run", icon: "chat", text: "协调线正在回复", act: "stop", label: "停止本轮", ...(since ? { since: String(since) } : {}) };
   if (sending) return { tone: "run", icon: "chat", text: "正在发送", act: null, label: "" };
   if (chatLength(text) > CHAT_MESSAGE_MAX)
     return { tone: "warn", icon: "warn", text: "这条消息 " + chatLength(text) + " 字，一条最多 " + CHAT_MESSAGE_MAX + " 字。删短或分几条发。", act: null, label: "" };
@@ -6139,6 +6153,12 @@ function chatStateLine({ coordinator = null, conversation = null, sending = fals
   if (conversation && conversation.status === "failed")
     return { tone: "bad", icon: "warn", text: "上一轮没有完成：" + (String(conversation.error || "").trim() || "原因未记录"), act: "retry", label: "重试" };
   return null;
+}
+/** 协调线这一轮已等了多久:「已等待 N 秒」「已等待 N 分 M 秒」。ms 不是有限数返回空串。 */
+function chatWaited(ms) {
+  if (typeof ms !== "number" || !Number.isFinite(ms)) return "";
+  const s = Math.floor(Math.max(0, ms) / 1000);
+  return "已等待 " + (s < 60 ? s + " 秒" : Math.floor(s / 60) + " 分" + (s % 60 ? " " + (s % 60) + " 秒" : ""));
 }
 /** 能不能发:协调线可用、这个对话没有在跑、没有正在发、写了字且不超上限。 */
 function chatCanSend({ coordinator = null, conversation = null, sending = false, text = "" } = {}) {
@@ -6151,7 +6171,12 @@ function chatTimeline(messages = [], plans = []) {
   const byRev = new Map(plans.map((p) => [p.rev, p])), used = new Set(), out = [];
   const latest = plans.reduce((max, p) => Math.max(max, p.rev), 0), done = plans.find((p) => p.applied), appliedRev = done ? done.rev : null;
   const card = (p) => ({ kind: "plan", plan: p, latest: p.rev === latest, appliedRev });
+  let prev = null;
   for (const m of messages) {
+    // 「重试」把上一条你的话再发一遍:紧挨着的两条相同的你的话只显示一条(中间没有回复,就是同一轮重来)。
+    const same = prev && prev.role === "user" && m.role === "user" && String(prev.text ?? "").trim() === String(m.text ?? "").trim();
+    prev = m;
+    if (same) continue;
     out.push({ kind: "message", message: m });
     if (m.plan_rev != null && byRev.has(m.plan_rev) && !used.has(m.plan_rev)) { used.add(m.plan_rev); out.push(card(byRev.get(m.plan_rev))); }
   }
@@ -7634,6 +7659,7 @@ function homeAfterRefresh(){
 // ⭐ 协调线、人和系统写的字一律走 textContent(homeEl);这一段不拼 innerHTML,图标只用 icon() 的固定标记。
 let chatCoord = null, chatRows = null, chatRowsError = null, chatId = null, chatData = null, chatDataError = null;
 let chatLoadedAt = 0, chatSeq = 0, chatSending = false, chatFail = null, chatTimer = 0, chatStick = true;
+let chatArchRows = [], chatRename = null, chatArchOpen = false, chatListNote = null;   // 已归档的对话、正在改名的对话、「已归档」开没开、改名/归档没成的原因
 const chatInput = document.getElementById("chat-input"), chatShell = document.getElementById("chat-shell");
 const chatKey = (id = chatId) => id == null ? "new" : "c:" + id;
 const chatSame = (a, b) => a != null && b != null && String(a) === String(b);
@@ -7661,9 +7687,10 @@ async function chatLoad(force = false){
   if (!force && Date.now() - chatLoadedAt < 5000) return;
   chatLoadedAt = Date.now();
   const seq = ++chatSeq, id = chatId;
-  const [c, l, d] = await Promise.allSettled([chatApi("GET", "/api/coordinator"), chatApi("GET", "/api/conversations?archived=0"),
-    id == null ? null : chatApi("GET", chatPath())]);
+  const [c, l, d, a] = await Promise.allSettled([chatApi("GET", "/api/coordinator"), chatApi("GET", "/api/conversations?archived=0"),
+    id == null ? null : chatApi("GET", chatPath()), chatApi("GET", "/api/conversations?archived=1")]);
   if (seq !== chatSeq || !chatSame(id ?? "", chatId ?? "")) return;   // 更晚的一次读取或换了对话:这一次的结果不用
+  if (a.status === "fulfilled" && Array.isArray(a.value.conversations)) chatArchRows = a.value.conversations;   // 读不到时保留上次的
   chatCoord = c.status === "fulfilled" ? c.value
     : { available: false, reason: c.reason?.status === 404 ? "这个版本的看板没有协调线对话接口" : copyError(c.reason) };
   if (l.status === "fulfilled") { chatRows = Array.isArray(l.value.conversations) ? l.value.conversations : []; chatRowsError = null; }
@@ -7679,7 +7706,7 @@ function chatChanged(){ if (homeView !== "home") return; clearTimeout(chatTimer)
 /** 换到一个对话(null = 新对话):各对话的输入草稿分开记。 */
 function chatOpen(id){
   chatDraftSave();
-  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatPlanNote = null; chatStick = true;
+  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatPlanNote = null; chatStick = true; chatRename = null; chatListNote = null;
   chatSave({ cur: chatId });
   chatInput.value = (chatStore().input || {})[chatKey()] || "";
   chatGrow(); chatDrawer(false); renderChat();
@@ -7739,6 +7766,47 @@ async function chatStop(){
 function chatRetryTurn(){
   const last = [...(chatData?.messages || [])].reverse().find((m) => m.role === "user");
   if (last) chatSend(last.text);
+}
+/** 当前对话在列表里的两个动作:改名、归档(已归档的是「取消归档」)。改名时换成一个输入框与「保存」「取消」。 */
+function chatItemActs(c, archived){
+  const box = homeEl("div", undefined, "cl-acts");
+  if (chatRename && chatSame(chatRename.id, c.id)) {
+    box.classList.add("cl-rename");
+    const input = homeEl("input"); input.type = "text"; input.maxLength = 60; input.value = chatRename.text;
+    input.dataset.fk = "rename-input"; input.setAttribute("aria-label", "对话标题");
+    input.addEventListener("input", () => { if (chatRename) chatRename.text = input.value; });
+    input.addEventListener("keydown", (e) => {
+      if (e.isComposing || e.keyCode === 229) return;
+      if (e.key === "Enter"){ e.preventDefault(); chatRenameSave(c.id, input.value); }
+      else if (e.key === "Escape"){ e.preventDefault(); e.stopPropagation(); chatRename = null; chatListNote = null; renderChat(); }
+    });
+    const ok = homeEl("button", "保存"); ok.type = "button"; ok.dataset.fk = "rename-save";
+    ok.addEventListener("click", () => chatRenameSave(c.id, input.value));
+    const no = homeEl("button", "取消", "ghost"); no.type = "button"; no.dataset.fk = "rename-cancel";
+    no.addEventListener("click", () => { chatRename = null; chatListNote = null; renderChat(); });
+    box.append(input, ok, no);
+    if (chatRename.fresh) { chatRename.fresh = false; requestAnimationFrame(() => { if (input.isConnected){ input.focus({ preventScroll: true }); input.select(); } }); }
+  } else {
+    const rename = homeEl("button", "改名", "ghost"); rename.type = "button"; rename.dataset.fk = "rename";
+    rename.addEventListener("click", () => { chatRename = { id: c.id, text: String(c.title || "").trim(), fresh: true }; chatListNote = null; renderChat(); });
+    const arch = homeEl("button", archived ? "取消归档" : "归档", "ghost"); arch.type = "button"; arch.dataset.fk = "archive";
+    arch.addEventListener("click", () => chatArchive(c.id, !archived));
+    box.append(rename, arch);
+  }
+  if (chatListNote) { const n = homeEl("p", chatListNote, "cl-note"); n.setAttribute("role", "status"); box.append(n); }
+  return box;
+}
+async function chatRenameSave(id, value){
+  const title = String(value || "").trim();
+  if (!title) { chatListNote = "标题不能为空"; renderChat(); return; }
+  try { await chatApi("PATCH", "/api/conversations/" + encodeURIComponent(id), { title }); chatRename = null; chatListNote = null; }
+  catch (e) { chatListNote = "没有改成：" + chatErrorText(e); }
+  await chatLoad(true); renderChat();
+}
+async function chatArchive(id, archived){
+  try { await chatApi("PATCH", "/api/conversations/" + encodeURIComponent(id), { archived }); chatListNote = null; if (archived) chatArchOpen = true; }
+  catch (e) { chatListNote = (archived ? "没有归档：" : "没有取消归档：") + chatErrorText(e); }
+  await chatLoad(true); renderChat();
 }
 /** 图标节点:名字只来自本文件的固定表,标记由 icon() 生成。 */
 function chatIcon(name){ const t = document.createElement("template"); t.innerHTML = icon(name); return t.content.firstChild; }
@@ -7951,13 +8019,17 @@ function chatFill(box, sig, build){
 /** 输入区:状态一行和发送按钮。打字时也走这里(超过字数上限要当场写明),不动消息流。 */
 function chatSync(){
   const conversation = chatData?.conversation || null;
-  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value });
+  const since = [...(chatData?.messages || [])].reverse().find((m) => m.role === "user")?.created_at || conversation?.updated_at || null;
+  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value, since });
   const state = document.getElementById("chat-state");
   state.hidden = !line;
   if (line) state.dataset.tone = line.tone;
   homeFill(state, JSON.stringify(line), () => {
     if (!line) return [];
-    const out = [chatIcon(line.icon), homeEl("span", line.text, "cs-text")];
+    const text = homeEl("span", line.text, "cs-text");
+    // 已等待的秒数每秒原位更新(chatWaitTick),不重建这一行,「停止本轮」不丢焦点。
+    if (line.since && Number.isFinite(Date.parse(line.since))){ const w = homeEl("span", "", "cs-wait"); w.dataset.since = line.since; w.title = "一轮通常约 3 分钟"; text.append(" · ", w); }
+    const out = [chatIcon(line.icon), text];
     if (line.act) {
       const b = homeEl("button", line.label); b.type = "button";
       b.addEventListener("click", () => line.act === "stop" ? chatStop() : line.act === "retry" ? chatRetryTurn() : chatSend(chatFail?.text));
@@ -7965,25 +8037,43 @@ function chatSync(){
     }
     return out;
   });
+  chatWaitTick();
   document.getElementById("chat-send").disabled = !chatCanSend({ coordinator: chatCoord, conversation, sending: chatSending, text: chatInput.value });
 }
+function chatWaitTick(){
+  for (const w of document.querySelectorAll("#chat-state .cs-wait[data-since]")){
+    const text = chatWaited(Date.now() - Date.parse(w.dataset.since));
+    if (w.textContent !== text) w.textContent = text;
+  }
+}
+setInterval(chatWaitTick, 1000);
 function renderChat(){
   if (homeView !== "home") return;
   const conversation = chatData?.conversation || null, row = (chatRows || []).find((c) => chatSame(c.id, chatId));
   // 左栏:对话列表
-  chatFill(document.getElementById("chat-items"), JSON.stringify([chatRows, chatRowsError, chatId]), () => {
+  chatFill(document.getElementById("chat-items"), JSON.stringify([chatRows, chatRowsError, chatId, chatArchRows, chatRename?.id ?? null, chatListNote]), () => {
     if (chatRows === null) return [homeEl("p", "正在读取…", "cl-empty")];
     const out = [];
     if (chatRowsError) out.push(homeEl("p", "对话列表暂时读不到：" + chatRowsError, "cl-empty"));
     if (!chatRows.length && !chatRowsError) out.push(homeEl("p", "还没有对话。", "cl-empty"));
-    for (const c of chatRows) {
+    const item = (c, archived, into) => {
       const b = homeEl("button", undefined, "cl-item"); b.type = "button"; b.dataset.st = String(c.status || "idle"); b.dataset.fk = "conv:" + c.id;
       if (chatSame(c.id, chatId)) b.setAttribute("aria-current", "true");
       if (chatListNeed(c)) b.dataset.need = "";
       if (c.status === "failed" && c.error) b.title = String(c.error);
       b.append(homeEl("span", String(c.title || "").trim() || "未命名对话", "cl-t"), homeEl("span", chatListLine(c), "cl-s"));
       b.addEventListener("click", () => chatOpen(c.id));
-      out.push(b);
+      into.push(b);
+      if (chatSame(c.id, chatId)) into.push(chatItemActs(c, archived));
+    };
+    for (const c of chatRows) item(c, false, out);
+    if (chatArchRows.length) {
+      const fold = homeEl("details", undefined, "cl-arch"), list = [];
+      fold.open = chatArchOpen || chatArchRows.some((c) => chatSame(c.id, chatId));
+      fold.addEventListener("toggle", () => { chatArchOpen = fold.open; });
+      for (const c of chatArchRows) item(c, true, list);
+      fold.append(homeEl("summary", "已归档 " + chatArchRows.length), ...list);
+      out.push(fold);
     }
     return out;
   });
@@ -8009,8 +8099,17 @@ document.getElementById("chat-flow").addEventListener("scroll", (e) => {
 }, { passive: true });
 chatInput.addEventListener("input", () => { chatGrow(); chatDraftSave(); chatSync(); });
 // Enter 发送,Shift+Enter 换行;输入法选字时的 Enter 不发。触摸屏的软键盘没有 Shift+Enter:Enter 换行,用按钮发。
+const CHAT_TOUCH = matchMedia("(pointer:coarse), (hover:none) and (any-pointer:coarse)");
+function chatKeysSync(){
+  const touch = CHAT_TOUCH.matches, hint = touch ? "Enter 换行 · 按「发送」发出" : "Enter 发送 · Shift+Enter 换行";
+  chatInput.enterKeyHint = touch ? "enter" : "send";
+  chatInput.title = hint.replace(" · ", "，");
+  const tip = document.querySelector(".chat-hint"); if (tip) tip.textContent = hint;
+}
+chatKeysSync();
+CHAT_TOUCH.addEventListener?.("change", chatKeysSync);
 chatInput.addEventListener("keydown", (e) => {
-  if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229 || matchMedia("(pointer:coarse)").matches) return;
+  if (e.key !== "Enter" || e.shiftKey || e.isComposing || e.keyCode === 229 || CHAT_TOUCH.matches) return;
   e.preventDefault(); chatSend();
 });
 document.getElementById("chat-send").addEventListener("click", () => chatSend());
