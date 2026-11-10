@@ -5703,7 +5703,10 @@ async function chatSend(text){
     }
     if (typed) { chatInput.value = ""; chatGrow(); chatDraftSave(); }
   } catch (e) {
-    chatFail = { why: chatErrorText(e), text: typed ? undefined : message };
+    // 协调线不可用(409 COORDINATOR_UNAVAILABLE):不写「没有发出去 · 重试」——这时重试也发不出去。
+    // 原因照服务端给的写在「协调线现在不可用」那一行;字还在输入框里,协调线恢复后再发。
+    if (e?.code === "COORDINATOR_UNAVAILABLE") chatCoord = { ...(chatCoord || {}), available: false, reason: e.message };
+    else chatFail = { why: chatErrorText(e), text: typed ? undefined : message };
   } finally {
     chatSending = false;
     await chatLoad(true);

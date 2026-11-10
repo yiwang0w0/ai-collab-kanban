@@ -533,7 +533,7 @@ test("手动建卡：原表单、编号和处理器都在，入口是输入框�
     { body: { subject: "手动建的卡", description: "", line: "engine" } });
 });
 
-test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、要提交的改动和输入框上方那一行都由纯函数算出", () => {
+test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、要提交的改动和输入框上方那一行都由纯函数算出", async () => {
   const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
   assert.ok(c0 > 0 && c1 > c0, "chat-model block not found in core/panel.html");
   const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline,chatStateLine,chatCanSend};")();
@@ -619,4 +619,25 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   };
   assert.deepEqual([heard("conversation.changed"), heard("code.accepted"), heard("task.created"), heard("board.restarting")],
     [["对话"], ["对话", "看板"], ["看板"], ["重启"]]);
+
+  // 发送被拒(真实的 chatSend 切出来跑,接口换成替身):409 COORDINATOR_UNAVAILABLE 不写「没有发出去 · 重试」
+  // (这时重试也发不出去),输入框上方照服务端给的原因写「协调线现在不可用」,字留在输入框里;别的拒绝照旧。
+  const s0 = src.indexOf("async function chatSend(text){"), s1 = src.indexOf("/** 发消息前要先做完的事", s0);
+  assert.ok(s0 > 0 && s1 > s0, "chatSend 没找到");
+  const sendRefused = async (error) => {
+    const input = { value: "把导出做成可配置的" };
+    const run = new Function("chatInput", "chatCanSend", "chatApi", "chatErrorText", `
+      let chatCoord = { available: true }, chatData = null, chatSending = false, chatFail = null, chatStick = true, chatId = null;
+      const renderChat = () => {}, chatLoad = async () => {}, chatGrow = () => {}, chatDraftSave = () => {}, chatStore = () => ({}), chatSave = () => {},
+        chatBeforeSend = async () => {}, chatPath = () => "";
+      ${src.slice(s0, s1)}
+      return chatSend().then(() => ({ coordinator: chatCoord, fail: chatFail?.why || null }));`);
+    const after = await run(input, C.chatCanSend, async () => { throw error; }, (e) => "看板的原话：" + e.message);
+    return [C.chatStateLine({ ...after, text: input.value }), input.value];
+  };
+  const [refused, stillTyped] = await sendRefused(Object.assign(Error("这个版本还没确认过。确认当前版本后协调线才能用"), { status: 409, code: "COORDINATOR_UNAVAILABLE" }));
+  assert.deepEqual([refused.text, refused.act, stillTyped],
+    ["协调线现在不可用：这个版本还没确认过。确认当前版本后协调线才能用。可以先用「手动建卡」。", null, "把导出做成可配置的"]);
+  const [running] = await sendRefused(Object.assign(Error("协调线还在回复上一条消息"), { status: 409, code: "TURN_RUNNING" }));
+  assert.deepEqual([running.text, running.act], ["没有发出去：看板的原话：协调线还在回复上一条消息", "resend"]);
 });
