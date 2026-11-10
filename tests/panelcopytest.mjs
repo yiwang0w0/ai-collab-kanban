@@ -124,6 +124,10 @@ test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态
   assert.equal(copy.cliVersionCells({ ...base, npm_managed: false }, when).next, "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs", "不是 npm 装的：写得出动作");
   assert.equal(copy.cliVersionCells({ ...base, npm_managed: true }, when).next, up.next);
   assert.ok(!JSON.stringify(up).includes("secret"), "可执行文件的路径不进正文");
+  // 第三波:安装来源写在名字后面;npm 装的、服务端给了升级命令时,行下写这条命令供复制。
+  const npm = copy.cliVersionCells({ ...base, install_source: "npm-global", npm_managed: true, upgrade_hint: "npm install -g @anthropic-ai/claude-code@latest" }, when);
+  assert.deepEqual([npm.source, npm.next, npm.copy, copy.cliVersionCells({ ...base, install_source: "native", npm_managed: false }, when).source, up.source, up.copy],
+    ["npm 全局安装", "升级命令", "npm install -g @anthropic-ai/claude-code@latest", "独立安装", "", undefined]);
   // 已是最新 / 判断不了。
   const same = copy.cliVersionCells({ ...base, current: "2.1.300", update_available: false }, when);
   assert.deepEqual([same.cells[1].st, same.cells[1].note, same.cells[1].badge, same.next], ["ok", "已是最新", undefined, null]);
@@ -155,9 +159,10 @@ test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态
   assert.ok(!/原生可执行文件|读写边界/.test(allCells), "格子正文不写内部说法");
   assert.equal(copy.cliVersionCells({ ...base, state: "not_configured" }, when), null, "没有配置的 CLI 整行不出");
   assert.equal(copy.cliVersionCells(null), null);
-  // 版本块不放升级按钮:只有「重新核对」。
+  // 版本块不放升级按钮:只有「重新核对」和升级命令旁的「复制」(只写剪贴板,不执行)。
   const block = panelSection("function renderCliVersions(){", "/** The three fleet reads");
-  assert.deepEqual([...block.matchAll(/homeEl\("button", ([^)]*)\)/g)].map((m) => m[1]), ['cliChecking ? "核对中…" : "重新核对"']);
+  assert.deepEqual([...block.matchAll(/homeEl\("button", ([^)]*)\)/g)].map((m) => m[1]), ['cliChecking ? "核对中…" : "重新核对"', '"复制"']);
+  assert.ok(block.includes("navigator.clipboard.writeText(r.copy)") && !/fetch\(|post\(/.test(block.slice(block.indexOf("if (r.copy)"), block.indexOf("else if (r.next)"))));
   assert.ok(block.includes('badge.dataset.tone = "warn"') && block.includes('homeCmdText(homeEl("p", undefined, "cv-next"), r.next)'));
 });
 

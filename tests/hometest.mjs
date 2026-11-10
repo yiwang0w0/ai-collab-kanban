@@ -611,20 +611,20 @@ test("执行线故障按原因合并：同因的线一条，外部线与运行�
   // 样例与预期输出取自运维线 core/board-run.mjs 的 mergeLineFaults(同输入同输出);两处合并后只留这一份。
   const workers = [
     { line: "engine", running: true, desired_running: true, exit_code: null, stop_reason: null, stop_text: "", last_log: ["领取 #4"] },
-    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },
-    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: [] },
-    { line: "qa", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动  "] },
-    { line: "docs", running: false, desired_running: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃（退出码 1） · 2026-11-10 05:00:00Z", last_log: ["Traceback", "", 7] },
+    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },
+    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝", last_log: [] },
+    { line: "qa", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝", last_log: ["源码闸拒绝启动  "] },
+    { line: "docs", running: false, desired_running: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃 · 2026-11-10 05:00:00Z", last_log: ["Traceback", "", 7] },
     { line: "ops", running: false, desired_running: true, exit_code: null, stop_reason: null, stop_text: "", last_log: [] },
-    { line: "ext", running: false, external: true, desired_running: true, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）" },
+    { line: "ext", running: false, external: true, desired_running: true, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝" },
     { line: "idle", running: false, desired_running: false, exit_code: 0, stop_reason: { reason: "by_user", at: "2026-11-10T04:00:00.000Z" }, stop_text: "用户停止 · 2026-11-10 04:00:00Z" },
     null, { running: false, exit_code: 3 },
   ];
   const labels = { engine: "引擎", design: "设计", review: "审阅" };
   assert.deepEqual(M.homeLineFaults(workers, labels), [
-    { tone: "bad", where: "执行线", what: "设计、审阅、qa 启动被拒绝（退出码 3）", next: "运行 node cli/doctor.mjs 找出原因，修好后在面板启动执行线",
+    { tone: "bad", where: "执行线", what: "设计、审阅、qa 启动被拒绝", next: "运行 node cli/doctor.mjs 找出原因，修好后在面板启动执行线",
       lines: ["design", "review", "qa"], log: ["设计：源码闸拒绝启动", "设计：源码闸拒绝启动", "qa：源码闸拒绝启动"] },
-    { tone: "bad", where: "执行线", what: "docs 崩溃（退出码 1）", next: "运行 node cli/status.mjs --log 查看最近日志，修好后在面板启动执行线",
+    { tone: "bad", where: "执行线", what: "docs 崩溃", next: "运行 node cli/status.mjs --log 查看最近日志，修好后在面板启动执行线",
       lines: ["docs"], log: ["docs：Traceback"] },
     { tone: "warn", where: "执行线", what: "ops 已请求启动，待核实", next: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线",
       lines: ["ops"], log: [] },
@@ -640,7 +640,7 @@ test("执行线故障按原因合并：同因的线一条，外部线与运行�
   const s = M.homeStatus({ localName: "台式机 A", nodes: [local], setup, workers, lineLabels: labels });
   assert.deepEqual(s.alerts.map((a) => [a.tone, a.where, a.go]), [["warn", "看板设置", "settings"], ["bad", "执行线", "lines"], ["bad", "执行线", "lines"], ["warn", "执行线", "lines"]]);
   assert.deepEqual([s.tone, s.line], ["bad", "4 项需要注意"]);
-  assert.equal(s.alerts[1].what, "设计、审阅、qa 启动被拒绝（退出码 3）");
+  assert.equal(s.alerts[1].what, "设计、审阅、qa 启动被拒绝");
   const down = M.homeStatus({ localName: "台式机 A", nodes: [local], setup, workers, lineLabels: labels, down: { since: "14:05", kind: "unreachable", local: true } });
   assert.deepEqual(down.alerts.map((a) => a.where), ["台式机 A"], "断开时不并列执行线故障");
   assert.equal(M.homeStatus({ localName: "台式机 A", nodes: [local] }).alerts.length, 0, "不传 workers 时与原来一样");
@@ -667,7 +667,7 @@ test("订阅额度用完被看板停下的线：单列一种原因，不建议�
   ]);
   assert.doesNotMatch(faults[0].next, /重新启动|重启/, "池没恢复前重启不起作用,不建议");
   // 崩溃和启动被拒绝优先于池:那是要人处理的故障。
-  assert.equal(M.homeLineFaults([{ line: "x", running: false, desired_running: true, pool_blocked: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃（退出码 1）" }])[0].tone, "bad");
+  assert.equal(M.homeLineFaults([{ line: "x", running: false, desired_running: true, pool_blocked: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃" }])[0].tone, "bad");
   const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
   const s = M.homeStatus({ localName: "台式机 A", nodes: [local], workers, lineLabels: {} });
   assert.deepEqual(s.alerts.map((a) => [a.what, a.go]), [["engine、design 订阅额度用完，已暂停", null], ["ops 已请求启动，待核实", "lines"]]);
@@ -688,6 +688,10 @@ test("上次故障一句话：字段不合格不出，只写发生了什么，�
   assert.equal(M.homeLastFaultTip({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z" }), "");
   assert.equal(M.homeLastFaultTip({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: 3 }), "");
   for (const bad of [null, {}, { kind: "interrupted" }]) assert.equal(M.homeLastFaultTip(bad), "");
+  // 第三波:悬停说明取 /api/setup 的 last_fault.reason;退出类的退出码已在正文里,不重复。执行线行的兜底只写状态与时刻,退出码进技术信息。
+  assert.deepEqual([M.homeLastFaultTip({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z", reason: "短时间内重启次数超过上限" }),
+    M.homeLastFaultTip({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: 3, reason: "退出码 3" })], ["短时间内重启次数超过上限", ""]);
+  assert.ok(src.includes('"已停止" + (w.stop_reason?.at ? " · " + localTime(w.stop_reason.at) : "")') && src.includes('"技术信息：退出码 " + w.exit_code') && !src.includes("已停止，退出码"));
   assert.ok(src.includes('tip = homeLastFaultTip(fault);'), "原因放在这一行的 title");
   assert.ok(src.includes('const fault = boardDown ? null : lastSetup?.last_fault || meta.last_fault, faultText = homeLastFault(fault);'), "断开时不出这一行");
   assert.ok(src.includes('last.dataset.tone = "quiet"; if (tip) last.title = tip;'));

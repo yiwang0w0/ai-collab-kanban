@@ -499,6 +499,8 @@
   .cv-cells dd{display:flex;flex-wrap:wrap;justify-content:flex-end;align-items:center;gap:2px var(--sp-2);font-variant-numeric:tabular-nums}
   .cv-note{color:var(--dim);font-weight:400}
   .cv-next{margin:var(--sp-2) 0 0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .cv-copy{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-2)}
+  .cv-copy .hs-cmd{user-select:all}
   /* Zcode 独立执行循环:与 CLI 版本同一套格子;标题行右侧循环状态徽标,下一行白话原因。 */
   .zcode-box{padding:var(--sp-3) var(--sp-4);border-top:1px solid var(--line)}
   .zcode-box .cv-head .badge{flex:none}
@@ -1814,11 +1816,14 @@ function cliVersionCells(c, when = (iso) => String(iso)){
                    st: state === "boundary" ? "ok" : "unknown",
                    title: (state === "boundary" ? "参数与读写权限范围都已实测" : state === "contract" ? "参数已核对，读写权限范围未实测" : "这个版本没有实测记录") +
                           (c.tested?.at ? "；实测于 " + when(c.tested.at) : "") };
+  // npm 装的:服务端给出升级命令(upgrade_hint)时行下写这条命令,旁边「复制」;旧服务端不给就照旧指向 upgrade-cli。
+  const hint = newer === true && c.install_source === "npm-global" && typeof c.upgrade_hint === "string" && c.upgrade_hint.trim() ? c.upgrade_hint.trim() : null;
   const next = current.st === "warn" ? "运行 node cli/doctor.mjs 查看原因"
     : newer !== true ? null
     : c.npm_managed === false ? "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs"
-    : "运行 node cli/upgrade-cli.mjs " + c.id + " 查看会做什么，加 --yes 才执行";
-  return { id: String(c.id ?? ""), name: String(c.name || c.id || "执行器"), cells: [current, latest, checked, tested], next };
+    : hint ? "升级命令" : "运行 node cli/upgrade-cli.mjs " + c.id + " 查看会做什么，加 --yes 才执行";
+  const source = c.install_source === "npm-global" ? "npm 全局安装" : c.install_source === "native" ? "独立安装" : "";
+  return { id: String(c.id ?? ""), name: String(c.name || c.id || "执行器"), source, cells: [current, latest, checked, tested], next, ...(hint && current.st !== "warn" ? { copy: hint } : {}) };
 }
 // Zcode 独立执行循环(GET /api/zcode/status,只读)。循环的状态词、分派的阶段与结果;认不得的写「待核实」。
 const ZCODE_LOOP = { __proto__: null, not_configured: ["未配置", "quiet", "wait"], disabled: ["已关闭", "quiet", "stop"], blocked: ["受阻", "warn", "warn"],
@@ -3637,7 +3642,9 @@ function renderRig(){
     //   原因的原文(stop_text)放悬停说明,旧版服务端不给 stop_text 时才用退出码那一句。
     const stopped = !w.external && !w.running;
     const at = stopped && !w.desired_running && w.stop_reason?.at ? localTime(w.stop_reason.at) : "";
-    const why = stopped ? (w.stop_text || (w.exit_code == null ? "" : `已停止，退出码 ${w.exit_code}`)) : "";
+    // 旧版服务端不给 stop_text 时只写状态与时刻;退出码只进悬停说明里的「技术信息」。
+    const why = !stopped ? "" : [w.stop_text || (w.exit_code == null ? "" : "已停止" + (w.stop_reason?.at ? " · " + localTime(w.stop_reason.at) : "")),
+      w.exit_code == null ? "" : "技术信息：退出码 " + w.exit_code].filter(Boolean).join("\n");
     return `<div class="wk${w.running ? " on" : ""}${open ? " editing" : ""}"${why ? ` title="${esc(why)}"` : ""}>` +
            `<span class="st" aria-hidden="true"></span><span class="nm" style="color:${lineColor(w.line)}" title="${esc(LINE_HINTS[w.line] || "")}">${esc(label)}${xN}</span>` +
            roleBadge(w) + (w.external ? `<span class="badge" data-tone="quiet" title="由持执行者令牌的外部执行者领卡">外部执行</span>` : `<span class="wk-state">${state}</span>`) +
@@ -5572,9 +5579,12 @@ function homeLastFault(f) {
   return f.kind === "exit" ? (f.exit_code == null ? "看板服务被结束" : "看板服务退出，退出码 " + f.exit_code)
     : f.kind === "restart_loop" ? "看板连续重启，已停止自动重启" : "看板运行中断";
 }
-/** 上次故障那一行的悬停说明：运行中断时写可能的原因；其余没有。 */
+/** 上次故障那一行的悬停说明：取服务端给的原因（last_fault.reason）；退出类的退出码已在正文里，不重复。
+ *  旧版服务端不给原因时，运行中断写可能的原因，其余没有。 */
 function homeLastFaultTip(f) {
-  return homeLastFault(f) && f.kind !== "exit" && f.kind !== "restart_loop" ? "可能是关机、断电或进程被结束" : "";
+  if (!homeLastFault(f) || f.kind === "exit") return "";
+  const reason = typeof f.reason === "string" ? f.reason.trim() : "";
+  return reason || (f.kind !== "restart_loop" ? "可能是关机、断电或进程被结束" : "");
 }
 /** Where one task stands for the person looking: which list, its state, the next step.
  *  `t.hb` is hbClass(t) for this board's cards; `t.progress_blockers` is the server's own
@@ -7052,7 +7062,9 @@ function renderSideAction(){
   const box = homeEl("section", undefined, "side-brief");
   const line = (label, ...nodes) => { const row = homeEl("div", undefined, "side-brief-row"); row.append(homeEl("span", label, "side-brief-k"), ...nodes); return row; };
   // 「要做什么」与本机卡同一条规矩:只用记录带的 brief,没有就不出这一行;任务说明全文只在下面的折叠区。
-  if (r?.brief) box.append(line("要做什么", homeEl("p", r.brief, "side-brief-v")));
+  // 交付记录本身不带 brief,用它所在绑定的那一份。
+  const brief = typeof r?.brief === "string" && r.brief.trim() ? r.brief : typeof bound?.brief === "string" && bound.brief.trim() ? bound.brief : "";
+  if (brief) box.append(line("要做什么", homeEl("p", brief, "side-brief-v")));
   const state = homeEl("p", inbox.state, "side-brief-v"); state.id = "task-side-state";
   const next = homeEl("p", "下一步：" + inbox.next, "side-brief-v side-brief-next"); next.id = "task-side-next";
   const stack = homeEl("div", undefined, "side-brief-stack"); stack.append(state, next);
@@ -7632,8 +7644,18 @@ function renderCliVersions(){
         cell.append(homeEl("dt", c.k), value);
         cells.append(cell);
       }
-      row.append(homeEl("p", r.name, "cv-name"), cells);
-      if (r.next) row.append(homeCmdText(homeEl("p", undefined, "cv-next"), r.next));
+      row.append(homeEl("p", r.name + (r.source ? " · " + r.source : ""), "cv-name"), cells);
+      if (r.copy) {
+        const p = homeEl("p", r.next + " ", "cv-next cv-copy"), cmd = homeEl("code", r.copy, "hs-cmd"), b = homeEl("button", "复制");
+        b.type = "button";
+        b.addEventListener("click", async () => {
+          try { await navigator.clipboard.writeText(r.copy); b.textContent = "已复制"; }
+          catch { b.textContent = "复制不了，请手动选中命令"; }
+        });
+        p.append(cmd, " ", b);
+        row.append(p);
+      }
+      else if (r.next) row.append(homeCmdText(homeEl("p", undefined, "cv-next"), r.next));
       out.push(row);
     }
     return out;
