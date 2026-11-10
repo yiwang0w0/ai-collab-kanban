@@ -320,7 +320,7 @@ test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,
     // 已认证的调用照旧一次一行
     const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body;
     for (let i = 0; i < 3; i++) assert.equal((await raw(rport, { token: tok.token })).status, 200);
-    for (let i = 0; i < 30; i++) assert.ok([401, 429].includes((await raw(rport, { path: "/y" + i })).status));
+    for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/y" + i })).status, 401);
     let rows = audit();
     assert.ok(rows.filter((r) => r.ip === "127.0.0.3").length <= 2, `白名单外来源 30 次请求不应各写一行:${rows.filter((r) => r.ip === "127.0.0.3").length}`);
     const anon = rows.filter((r) => r.ip === "127.0.0.2" && r.token_id == null);
@@ -336,5 +336,19 @@ test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,
     assert.ok(rows.some((r) => r.ip === "*" && /^denied \+\d+$/.test(r.note)), "来源很多时超出上限的并成一行");
     assert.ok(rows.filter((r) => r.token_id == null).length < 90, `未认证请求的审计行数有上限:${rows.length}`);
     assert.equal(rows.filter((r) => r.token_id === tok.record.id && r.status === 200).length, 3, "已认证的调用每次一行");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:同一来源的失败请求不能把有效批准令牌锁在门外", { timeout: 120000 }, async () => {
+  const { B, rport } = await remoteBoard();
+  try {
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    for (let i = 0; i < 12; i++) assert.equal((await raw(rport, { path: "/x" })).status, 401, "不带令牌的请求不计入失败次数");
+    assert.equal((await raw(rport, { token: tok })).status, 200, "12 次无令牌请求之后,有效令牌照常");
+    const bad = "apr_" + "0".repeat(48);
+    for (let i = 0; i < 10; i++) assert.equal((await raw(rport, { token: bad })).status, 401);
+    assert.equal((await raw(rport, { token: bad })).status, 429, "无效令牌失败满 10 次后被限流");
+    assert.equal((await raw(rport, { token: tok })).status, 200, "有效令牌先认证,不受同一来源的失败计数影响");
+    assert.equal((await raw(rport, { token: tok, path: "/api/summary" })).status, 200);
   } finally { await B.stop(); }
 });

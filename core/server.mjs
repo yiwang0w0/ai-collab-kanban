@@ -3097,7 +3097,7 @@ async function approvalTokensRoute(req, res, url, p, m) {
 const remoteServers = [];
 const remoteState = { listening: [], errors: [] };
 const REMOTE_FAIL_WINDOW_MS = 10 * 60000, REMOTE_FAIL_MAX = 10;
-const remoteFails = new Map();   // ip -> { n, first }:认证失败计数,按来源地址限流
+const remoteFails = new Map();   // ip -> { n, first }:无效令牌的失败计数,按来源地址限流(只拦无效令牌)
 const remoteThrottled = (ip) => {
   const f = remoteFails.get(ip);
   if (f && Date.now() - f.first > REMOTE_FAIL_WINDOW_MS) { remoteFails.delete(ip); return false; }
@@ -3163,10 +3163,12 @@ async function remoteHandler(req, res) {
     if (req.headers.origin !== undefined || req.headers["sec-fetch-site"] !== undefined || req.headers["sec-fetch-mode"] !== undefined) {
       note = "browser"; return send(403, { error: "远程入口不接受浏览器发起的请求" });
     }
-    if (remoteThrottled(ip)) { note = "throttled"; return send(429, { error: "认证失败次数过多,稍后再试" }, { "Retry-After": "600" }); }
+    // 先认令牌:有效令牌不受同一来源的失败计数影响,否则同地址的任何一方发几个坏请求就能把持有者锁在门外。
+    // 失败计数只拦后续的无效令牌;不带令牌的请求不可能是在猜令牌,不计数。
     const bearer = /^Bearer ([A-Za-z0-9_]{1,128})$/.exec(String(req.headers.authorization || ""));
     const tok = bearer ? approvals.tokenByValue(db, bearer[1]) : null;
-    if (!tok) { remoteFail(ip); note = "auth"; return send(401, { error: "缺少或无效的批准令牌" }); }
+    if (!tok && bearer && remoteThrottled(ip)) { note = "throttled"; return send(429, { error: "认证失败次数过多,稍后再试" }, { "Retry-After": "600" }); }
+    if (!tok) { if (bearer) remoteFail(ip); note = "auth"; return send(401, { error: "缺少或无效的批准令牌" }); }
     tokenId = tok.id;
     if (m === "GET" && p === "/api/approvals") return send(200, approvalList());
     if (m === "GET" && p === "/api/summary") return send(200, remoteSummary());

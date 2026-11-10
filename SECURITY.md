@@ -187,7 +187,7 @@ before treating this development branch as a production deployment.
 - 只认批准令牌（`Authorization: Bearer apr_…`）。令牌由操作员生成，库里只存 sha256，明文只显示一次，吊销立即失效；
   操作员令牌、面板配对凭据、执行者与 worker 令牌在远程入口上一律 401，本机接口也不认批准令牌。
 - 只开放 `GET /api/approvals`、`GET /api/approvals/:id`、`POST /api/approvals/:id/decide` 与只读摘要 `GET /api/summary`，
-  其他路径 403。带 `Origin` / `Sec-Fetch-*` 的浏览器请求 403，不回 CORS 头。同一来源认证失败过多返回 429。
+  其他路径 403。带 `Origin` / `Sec-Fetch-*` 的浏览器请求 403，不回 CORS 头。同一来源用无效令牌失败过多后，后续无效令牌返回 429；有效令牌先于失败计数校验，不会被同地址的失败请求锁在门外。
 - 带有效令牌的每次调用写只追加的 `remote_audit`；未认证就被拒的请求按来源与原因聚合（每分钟一行加一行计数，总量有上限），不逐条落库；每次决定写 `approval.decided` 流水与只追加的决定记录，带操作者、凭据通道与客户端自报的来源。
 - **没有自带 TLS。** 令牌与内容在链路上是明文，加密靠 VPN；只适合经 VPN 或可信局域网访问，不要做公网转发、隧道或反代。
   来源白名单不是认证，能借用白名单地址的人仍需令牌；批准令牌能批准列表里的一切（含让看板更新重启、强制释放锁），
