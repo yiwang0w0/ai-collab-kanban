@@ -3636,7 +3636,9 @@ async function conversationsRoute(req, res, url, p, m, boardRole) {
         return json(res, 200, { conversation });
       }
       if (mc[2] === "messages" && m === "POST") return await turn((b, cli) => {
-        const message = conversations.beginTurn(db, id, { message: b.message });
+        // 带 retry_of:重试失败的那一轮,不追加消息,用那条消息的原文再跑(条件见 conversations.retryTurn)。
+        const message = b.retry_of == null ? conversations.beginTurn(db, id, { message: b.message })
+          : conversations.retryTurn(db, id, { retryOf: b.retry_of });
         startCoordinatorTurn(id, message, cli);
         emit("conversation.changed", { id });
         return json(res, 202, { turn: { id: message.id, status: "running" } });
