@@ -22,7 +22,9 @@ CONFIG_FILE = os.environ.get("BOARD_CONFIG") or os.path.join(CODE_ROOT, "fleet.c
 _KEYS = (("port", "BOARD_PORT"), ("repo", "BOARD_REPO"), ("gated_subtree", "BOARD_GATED_SUBTREE"),
          # codex 座席的两个开关(npm run setup -- --codex 写入);与 core/env.mjs 的 SEAT_KEYS 同表。
          ("codex_cmd", "BOARD_CODEX_CMD"), ("codex_released", "BOARD_CODEX_RELEASED"),
-         ("host_auto_commit", "WORKER_HOST_COMMIT"))
+         ("host_auto_commit", "WORKER_HOST_COMMIT"),
+         # 宿主一侧的 Git 程序(绝对路径)与宿主提交的 commit 秒数上限;server 起循环时同样下传。
+         ("host_git", "WORKER_HOST_GIT"), ("host_commit_timeout_sec", "WORKER_HOST_COMMIT_TIMEOUT_SEC"))
 
 
 def load():

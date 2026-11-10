@@ -706,9 +706,14 @@ def main():
             sys.exit("BOARD_GATED_SUBTREE 未设 —— 先决定闸住哪棵子树(独立部署常用 \".\"=整树),再 bless")
         spec = "" if sub == "." else sub
         repo = os.path.dirname(HERE)
+        import git_program     # 宿主侧唯一的 Git 程序解析；不按名字启动(按名字会先搜当前目录)
+        try:
+            program = git_program.program()
+        except git_program.GitProgramError as e:
+            sys.exit("找不到可用的 Git 程序:" + str(e))
         def git(*a):
-            return subprocess.run(["git", "--no-lazy-fetch", *a], capture_output=True, text=True,
-                                  encoding="utf-8", errors="replace", cwd=repo)
+            return subprocess.run([program, "--no-optional-locks", "--no-lazy-fetch", *a], capture_output=True, text=True,
+                                  encoding="utf-8", errors="replace", cwd=repo, env=git_program.environment())
         r = git("rev-parse", f"HEAD:{spec}")
         if r.returncode != 0:
             sys.exit("git rev-parse 失败:" + (r.stderr or r.stdout).strip())

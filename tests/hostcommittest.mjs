@@ -4,10 +4,10 @@ const HOST_ENV = harnessEnvironment();
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const TMP = realpathSync.native(mkdtempSync(join(tmpdir(), "kanban-host-commit-")));
@@ -201,11 +201,11 @@ for name in ('config','HEAD','index','MERGE_HEAD','index.lock','attributes','nes
  elif name=='hook': path=repo/'.git'/'hooks'/'pre-commit'
  else: path=repo/'.git'/name
  path.write_bytes(path.read_bytes()+b'\\n# mutated' if path.exists() else b'*.txt filter=unexpected\\n')
- original=subprocess.run; calls=[]
+ original=(subprocess.run,subprocess.Popen); calls=[]
  def forbidden(*args,**kwargs): calls.append(args); raise AssertionError('篡改后运行了 Git')
- subprocess.run=forbidden
+ subprocess.run=subprocess.Popen=forbidden
  try: refused(guard.bind_changes)
- finally: subprocess.run=original
+ finally: subprocess.run,subprocess.Popen=original
  assert calls==[],(name,calls)
 `);
 });
@@ -248,11 +248,11 @@ for name in ('include','global-attributes','external-hooks','git-pointer'):
  if path.exists():
   with path.open('r+b') as changed: changed.seek(0,2); changed.write(b'\\n# changed')
  else: path.write_bytes(b'*.txt filter=unexpected\\n')
- original_run=subprocess.run; calls=[]
+ original_run=(subprocess.run,subprocess.Popen); calls=[]
  def forbidden(*args,**kwargs): calls.append(args); raise AssertionError('有效控制面变动后调用了 Git')
- subprocess.run=forbidden
+ subprocess.run=subprocess.Popen=forbidden
  try: refused(guard.bind_changes)
- finally: subprocess.run=original_run
+ finally: subprocess.run,subprocess.Popen=original_run
  assert calls==[],name
  if name=='global-attributes': path.unlink()
 `);
@@ -339,6 +339,335 @@ guard.release()
 `);
 });
 
+test("工作仓里的 git.cmd 不被执行；PATH 上的 .cmd 垫片、落在工作仓或数据目录内的 Git 程序一律拒绝", { skip: process.platform !== "win32" }, () => {
+  python(`repo=setup()
+(repo/'.gitignore').write_text('git.cmd\\nplanted-ran.txt\\n',encoding='utf-8')
+g(repo,'add','--','.gitignore'); g(repo,'commit','-m','忽略夹具')
+(repo/'git.cmd').write_text('@echo off\\r\\necho ran> "%~dp0planted-ran.txt"\\r\\nexit /b 1\\r\\n',encoding='ascii',newline='')
+os.environ.pop('NoDefaultCurrentDirectoryInExePath',None); os.chdir(repo)
+` + WORKER + `
+try: _,body=w.claim_task('第一线','alpha','default')
+finally: assert not (repo/'planted-ran.txt').exists(),'工作仓里的 git.cmd 被宿主执行'
+guard=body['task']['_host_commit_guard']; program=pathlib.Path(guard.git)
+assert len(claims)==1 and program.suffix.lower()=='.exe' and repo.resolve() not in program.resolve().parents,program
+assert guard.env.get('NODEFAULTCURRENTDIRECTORYINEXEPATH')=='1'
+guard.release()
+shim=folder/'shim'; shim.mkdir()
+(shim/'git.cmd').write_text('@echo off\\r\\necho ran> "%~dp0shim-ran.txt"\\r\\nexit /b 1\\r\\n',encoding='ascii',newline='')
+saved=os.environ['PATH']; os.environ['PATH']=str(shim)+os.pathsep+saved
+try:
+ refused(lambda:h.HostCommitGuard(str(repo),'第二线').acquire())
+ assert not (shim/'shim-ran.txt').exists(),'PATH 上的 .cmd 垫片被宿主执行'
+ w.HOST_GIT=None; assert w.host_commit_gate()
+ refused(lambda:w.claim_task('第二线','beta','default'))
+finally: os.environ['PATH']=saved
+inside=[repo/'tools'/'git.exe',folder/'data'/'bin'/'git.exe']
+for target in inside: target.parent.mkdir(parents=True); target.write_bytes(b'MZ')
+for bad in [str(shim/'git.cmd'),'git']+[str(target) for target in inside]:
+ os.environ['WORKER_HOST_GIT']=bad; w.HOST_GIT=None
+ assert w.host_commit_gate(),bad
+ refused(lambda:w.claim_task('第二线','beta','default'))
+ refused(lambda:h.HostCommitGuard(str(repo),'第二线',protected=[w.DATA]))
+assert len(claims)==1 and not (shim/'shim-ran.txt').exists() and not (repo/'planted-ran.txt').exists()
+os.environ['WORKER_HOST_GIT']=git; w.HOST_GIT=None
+configured=pathlib.Path(w.host_git()[0]) if w.host_commit_gate() is None else None
+# 配置的是 cmd\\git.exe 时固定的是同一安装里的 bin\\git.exe；其余情况就是配置的那个文件。
+assert configured and configured.name.lower()=='git.exe' and configured.parent.parent==pathlib.Path(git).resolve().parent.parent,configured
+`);
+});
+
+test("卡标题里的引号与 & | 不进入任何命令行，提交信息经标准输入逐字保留", () => {
+  python(`repo=setup(); guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+title='注入" & echo INJECTED>injected.txt & rem "|x'
+seen=[]; real=subprocess.Popen
+class Spy(real):
+ def __init__(self,args,*rest,**options): seen.append([str(part) for part in args]); super().__init__(args,*rest,**options)
+subprocess.Popen=Spy
+try:
+ (repo/'one.txt').write_text('本轮',encoding='utf-8'); guard.bind_changes()
+ result=guard.finish(17,title,evidence())
+finally: subprocess.Popen=real
+assert any('commit' in argv for argv in seen),'前提：本轮确实执行了 commit'
+assert not any('INJECTED' in part or '注入' in part for argv in seen for part in argv),seen
+assert g(repo,'log','-1','--format=%B')=='#17 '+title and result['sha']==g(repo,'rev-parse','HEAD')
+assert not (repo/'injected.txt').exists(); guard.release()
+`);
+});
+
+test("证据目录在工作仓内的默认布局在领卡前拒绝；没有登记验证的卡不调用模型，转等待并释放占用", () => {
+  python(`repo=setup()
+(repo/'.gitignore').write_text('core/.data/\\n',encoding='utf-8')
+g(repo,'add','--','.gitignore'); g(repo,'commit','-m','默认布局夹具')
+` + WORKER + `
+outside=(w.DATA,w.EVID); assert w.host_commit_gate() is None
+w.DATA=str(repo/'core'/'.data'); w.EVID=str(repo/'core'/'.data'/'evidence'); os.makedirs(w.EVID)
+assert g(repo,'status','--porcelain')=='','前提：数据目录被忽略，干净检查看不见它'
+reason=w.host_commit_gate(); assert reason and 'BOARD_DATA_DIR' in reason,reason
+refused(lambda:w.claim_task('第一线','alpha','default'))
+assert claims==[] and models==[] and deliveries==[]
+h.HostCommitGuard(str(repo),'核对无残留锁').acquire().release()
+started=subprocess.run([sys.executable,'-X','utf8',str(pathlib.Path(sys.argv[1])/'loops'/'worker_loop.py'),'--as','alpha','--once'],
+ env=dict(os.environ,BOARD_REPO=str(repo),BOARD_DATA_DIR=w.DATA,BOARD_URL='http://127.0.0.1:9',
+  WORKER_CLI_ARGV=json.dumps([sys.executable,'-c','pass'])),capture_output=True,timeout=25)
+printed=started.stdout.decode('utf-8','replace')
+assert started.returncode==3 and '宿主逐卡提交' in printed and 'BOARD_DATA_DIR' in printed and '拒绝启动' in printed,(started.returncode,printed)
+w.DATA,w.EVID=outside
+def bare(method,path,body=None,**kwargs):
+ claims.append(body); return 200,{'task':{'id':7,'subject':'没有登记验证','run_id':str(uuid.uuid4()),'attempts':1}}
+w.call=bare
+status,body=w.claim_task('第一线','alpha','default')
+assert len(claims)==1 and not body.get('task') and body.get('host_commit_parked')==7,body
+assert models==[] and len(deliveries)==1 and deliveries[0][0][:3]==(7,'第一线','wait') and '登记验证' in deliveries[0][0][3]
+assert g(repo,'status','--porcelain')==''
+h.HostCommitGuard(str(repo),'核对占用已释放').acquire().release()
+`);
+});
+
+test("reset 之后的第一张卡照常提交：循环读工作区状态不重写索引，领卡时先让索引落定", () => {
+  python(`import time
+repo=setup()
+` + WORKER + `
+def index_identity(): path=repo/'.git'/'index'; return (path.stat().st_ino,path.read_bytes())
+(repo/'one.txt').write_text('上一张失败卡的残留',encoding='utf-8'); g(repo,'reset','--hard')
+original_model=w.run_worker
+def prompted(task,*args):
+ w.worktree_state(); return original_model(task,*args)
+w.run_worker=prompted
+_,body=w.claim_task('第一线','alpha','default'); task=body['task']
+assert w.handle(task,'第一线')=='done',deliveries[-1]
+assert g(repo,'log','-1','--format=%s')=='#1 同文件逐卡提交'; task['_host_commit_guard'].release()
+past=time.time()-300
+guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+(repo/'one.txt').write_text('本轮改动',encoding='utf-8'); os.utime(repo/'two.txt',(past,past)); before=index_identity()
+state=w.worktree_state()
+assert state and 'one.txt' in state[0] and 'one.txt' in state[1],state
+assert index_identity()==before,'循环自己的 git status 重写了索引'
+assert guard.bind_changes()==['one.txt']; guard.release()
+repo=setup(); w.REPO=str(repo)
+for name in ('one.txt','two.txt'): os.utime(repo/name,(past,past))
+guard=h.HostCommitGuard(str(repo),'第一线').acquire(); before=index_identity()
+assert g(repo,'status','--porcelain')=='' and index_identity()==before,'领卡时索引没有落定，别的程序一跑普通 status 就会重写它'
+assert guard.bind_changes()==[]; guard.release()
+`);
+});
+
+test("宿主的 commit 不顺带做自动维护：松散引用与松散对象够多时也不打包引用，提交照常成功", () => {
+  python(`import hashlib
+repo=setup(); head=g(repo,'rev-parse','HEAD'); packed=repo/'.git'/'packed-refs'
+def fill():
+ # 两种触发条件都布置：较新的 Git 按松散引用数打包引用，较早的按 gc.auto 与 objects/17 里的松散对象数。
+ lines=''.join('create refs/heads/loose-'+uuid.uuid4().hex+' '+head+chr(10) for number in range(40))
+ subprocess.run([git,'update-ref','--stdin'],cwd=repo,input=lines.encode(),check=True)
+ found=0; number=0
+ while found<3:
+  number+=1; content=(uuid.uuid4().hex+str(number)).encode()
+  if hashlib.sha1(b'blob '+str(len(content)).encode()+bytes(1)+content).hexdigest().startswith('17'):
+   subprocess.run([git,'hash-object','-w','--stdin'],cwd=repo,input=content,check=True,capture_output=True); found+=1
+for key,value in (('gc.auto','1'),('gc.autoDetach','false'),('maintenance.autoDetach','false')): g(repo,'config',key,value)
+fill(); assert not packed.exists(),'前提：领卡前引用是松散的'
+guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+(repo/'one.txt').write_text('本轮',encoding='utf-8'); guard.bind_changes()
+result=guard.finish(17,'松散引用很多',evidence())
+assert result['sha']==g(repo,'rev-parse','HEAD') and result['sha']!=head
+assert not packed.exists(),'宿主的 commit 顺带打包了引用'
+guard.release()
+g(repo,'commit','--allow-empty','-m','对照：同一个仓里的普通提交')
+assert packed.exists(),'对照失效：本机 Git 在这个夹具上不触发自动维护，夹具需要更新'
+`);
+});
+
+test("工作仓是 linked worktree：主检出里的提交、fetch、status、建分支、打包引用不影响在途卡；领卡前的拒绝不留锁", () => {
+  python(`main=setup(); work=folder/str(uuid.uuid4()); g(main,'worktree','add','-b','card-line',str(work))
+head=g(work,'rev-parse','HEAD'); lock=main/'.git'/'kanban-host-commit.lock'
+guard=h.HostCommitGuard(str(work),'第一线').acquire()
+(work/'one.txt').write_text('本卡',encoding='utf-8')
+(main/'two.txt').write_text('主检出的活',encoding='utf-8'); g(main,'add','--','two.txt'); g(main,'commit','-m','主检出提交')
+g(main,'status'); g(main,'branch','other-line')
+(main/'.git'/'FETCH_HEAD').write_text(head+chr(9)+chr(9)+'branch fixture of example.invalid'+chr(10),encoding='utf-8')
+(main/'.git'/'ORIG_HEAD').write_text(head+chr(10),encoding='utf-8')
+g(main,'pack-refs','--all'); assert not (main/'.git'/'refs'/'heads'/'card-line').exists(),'前提：本分支已从松散引用变成打包引用'
+assert guard.bind_changes()==['one.txt']
+result=guard.finish(17,'别的检出在干活',evidence())
+assert result['sha']==g(work,'rev-parse','HEAD') and g(work,'rev-parse','HEAD^')==head
+assert g(main,'log','-1','--format=%s')=='主检出提交'; guard.release(); assert not lock.exists()
+(main/'.git'/'MERGE_MSG').write_text('主检出合并到一半',encoding='utf-8')
+h.HostCommitGuard(str(work),'第一线').acquire().release()
+(main/'.git'/'MERGE_MSG').unlink()
+state=pathlib.Path(g(work,'rev-parse','--path-format=absolute','--git-dir'))/'MERGE_HEAD'
+state.write_text(head+chr(10),encoding='utf-8')
+refused(lambda:h.HostCommitGuard(str(work),'第一线').acquire())
+assert state.exists() and not lock.exists(),'领卡前的拒绝留下了锁'
+state.unlink(); h.HostCommitGuard(str(work),'第一线').acquire().release()
+`);
+});
+
+const CHECKOUTS = `def pair():
+ main=setup(); work=folder/str(uuid.uuid4()); g(main,'worktree','add','-b','card-line',str(work)); return main,work
+def other_commit(work,text):
+ (work/'two.txt').write_text(text,encoding='utf-8'); g(work,'add','--','two.txt'); g(work,'commit','-m',text); g(work,'status')
+ return g(work,'rev-parse','HEAD')
+`;
+
+test("工作仓是主检出：别的检出提交不影响在途卡；游离 HEAD 与 reftable 引用库照常提交", () => {
+  python(CHECKOUTS + `main,work=pair(); head=g(main,'rev-parse','HEAD')
+guard=h.HostCommitGuard(str(main),'第一线').acquire()
+(main/'one.txt').write_text('主检出的卡',encoding='utf-8'); other_commit(work,'另一检出提交')
+assert guard.bind_changes()==['one.txt']
+result=guard.finish(17,'主检出的卡',evidence()); assert g(main,'rev-parse','HEAD^')==head and result['sha']==g(main,'rev-parse','HEAD')
+guard.release()
+g(work,'checkout','--detach'); head=g(work,'rev-parse','HEAD')
+guard=h.HostCommitGuard(str(work),'第一线').acquire(); assert guard.branch is None
+(work/'one.txt').write_text('游离 HEAD 上的卡',encoding='utf-8'); guard.bind_changes()
+result=guard.finish(17,'游离 HEAD',evidence()); assert g(work,'rev-parse','HEAD^')==head and result['sha']==g(work,'rev-parse','HEAD')
+assert g(work,'rev-parse','card-line')==head; guard.release()
+repo=folder/str(uuid.uuid4()); repo.mkdir()
+try: g(repo,'-c','init.defaultBranch=main','init','--ref-format=reftable')
+except subprocess.CalledProcessError: repo=None
+if repo:
+ g(repo,'config','user.name','本地夹具'); g(repo,'config','user.email','fixture@example.invalid')
+ (repo/'one.txt').write_text('初始',encoding='utf-8'); g(repo,'add','--','one.txt'); g(repo,'commit','-m','reftable 基线')
+ head=g(repo,'rev-parse','HEAD'); guard=h.HostCommitGuard(str(repo),'第一线').acquire(); assert guard.reftable
+ (repo/'one.txt').write_text('reftable 上的卡',encoding='utf-8'); guard.bind_changes()
+ result=guard.finish(17,'reftable',evidence()); assert g(repo,'rev-parse','HEAD^')==head and result['sha']==g(repo,'rev-parse','HEAD')
+ guard.release()
+`);
+});
+
+test("本分支引用被别处挪动或换成符号引用、本检出的 HEAD 被改，均在 Git 前拒绝", () => {
+  python(CHECKOUTS + `
+def zero_git(action):
+ real=(subprocess.run,subprocess.Popen); calls=[]
+ def forbidden(*args,**kwargs): calls.append(args); raise AssertionError('控制面变动后调用了 Git')
+ subprocess.run=subprocess.Popen=forbidden
+ try: refused(action)
+ finally: subprocess.run,subprocess.Popen=real
+ assert calls==[],calls
+for kind in ('loose','packed','symbolic','head'):
+ main,work=pair(); other=other_commit(work,'另一检出提交'); repo=work if kind=='head' else main
+ if kind=='packed': g(main,'pack-refs','--all')
+ guard=h.HostCommitGuard(str(repo),'第一线').acquire()
+ branch=g(repo,'symbolic-ref','HEAD'); assert guard._branch_value()==g(repo,'rev-parse','HEAD'),kind
+ if kind=='symbolic': (main/'.git'/branch).write_text('ref: refs/heads/card-line'+chr(10),encoding='utf-8')
+ elif kind=='head':
+  with (pathlib.Path(guard.git_dir)/'HEAD').open('ab') as changed: changed.write(b' ')
+ else: g(work,'update-ref',branch,other)
+ zero_git(guard.bind_changes)
+`);
+});
+
+const SLOW_HOOK = `import time
+def slow_hook(repo,name):
+ marker=repo/'.git'/(name+'-finished'); hook=repo/'.git'/'hooks'/name
+ hook.write_text('#!/bin/sh\\nsleep 6\\necho done > "'+marker.as_posix()+'"\\n',encoding='utf-8'); hook.chmod(0o755)
+ return marker
+`;
+
+test("commit 超时收掉整棵进程树：钩子不再带着管道跑完，提交未生成时如实说明并保留暂存与占用", () => {
+  python(SLOW_HOOK + `repo=setup(); marker=slow_hook(repo,'pre-commit')
+guard=h.HostCommitGuard(str(repo),'第一线',commit_timeout=2).acquire(); before=g(repo,'rev-parse','HEAD')
+(repo/'one.txt').write_text('本轮',encoding='utf-8'); guard.bind_changes(); started=time.monotonic()
+try: guard.finish(17,'钩子太慢',evidence())
+except h.HostCommitError as error: message=str(error)
+else: raise AssertionError('本应拒绝却继续')
+elapsed=time.monotonic()-started
+assert '超过 2 秒' in message and '整棵进程树' in message and '提交没有生成' in message and 'Git 操作失败' not in message,message
+time.sleep(max(0,8-elapsed))
+assert not marker.exists(),'超时之后钩子仍然跑完了：只终止了直接子进程（finish 用时 %.1f 秒）'%elapsed
+assert g(repo,'rev-parse','HEAD')==before and g(repo,'diff','--cached','--name-only')=='one.txt'
+refused(lambda:h.HostCommitGuard(str(repo),'第二线').acquire())
+`);
+});
+
+test("commit 超时但提交其实已生成：核对后按成功处理，原卡报告带 SHA 并说明超时", () => {
+  python(SLOW_HOOK + `repo=setup(); marker=slow_hook(repo,'post-commit')
+` + WORKER + `
+w.HOST_COMMIT_TIMEOUT=3; before=g(repo,'rev-parse','HEAD')
+_,body=w.claim_task('第一线','alpha','default'); task=body['task']; started=time.monotonic()
+assert w.handle(task,'第一线')=='done',deliveries[-1]
+elapsed=time.monotonic()-started; sha=g(repo,'rev-parse','HEAD'); report=deliveries[-1][0][3]
+assert sha!=before and g(repo,'rev-parse','HEAD^')==before and g(repo,'log','-1','--format=%s')=='#1 同文件逐卡提交'
+assert sha in report and '超过 3 秒' in report and '提交已生成' in report and 'Git 操作失败' not in report,report
+time.sleep(max(0,9-elapsed))
+assert not marker.exists(),'超时之后钩子仍然跑完了：只终止了直接子进程（handle 用时 %.1f 秒）'%elapsed
+task['_host_commit_guard'].release()
+`);
+});
+
+test("当前目录里的 git.exe 与 git.cmd 不会被选中（Python：源码闸、只读规则、工作区状态共用一个解析结果）", { skip: process.platform !== "win32" }, () => {
+  python(`repo=setup(); trap=folder/'trap'; trap.mkdir()
+shutil.copyfile(os.path.join(os.environ['SystemRoot'],'System32','hostname.exe'),trap/'git.exe')
+(trap/'git.cmd').write_text('@echo off\\r\\necho ran> "%~dp0cmd-ran.txt"\\r\\nexit /b 1\\r\\n',encoding='ascii',newline='')
+os.environ.pop('NoDefaultCurrentDirectoryInExePath',None); os.chdir(trap)
+by_name=subprocess.run(['git','--version'],capture_output=True)
+assert b'git version' not in by_name.stdout,'对照失效：按名字启动没有选中当前目录里的 git.exe，夹具需要更新'
+sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'gates')); import gates_lib
+tree,error=gates_lib.gated_tree(str(repo),'.')
+assert tree==g(repo,'rev-parse','HEAD:') and error is None,(tree,error)
+import git_program,verify_lib
+program=pathlib.Path(git_program.program())
+assert program.name.lower()=='git.exe' and trap.resolve() not in program.resolve().parents,program
+assert git_program.environment({'nodefaultcurrentdirectoryinexepath':'0'})=={'NODEFAULTCURRENTDIRECTORYINEXEPATH':'1'}
+data=repo/'sub'/'data'; (repo/'sub').mkdir(); (repo/'sub'/'kept.txt').write_text('已入库',encoding='utf-8')
+g(repo,'add','--','sub/kept.txt'); g(repo,'commit','-m','只读规则夹具')
+rules=verify_lib.readonly_edit_rules(str(repo),str(data)); assert rules and any('one.txt' in rule for rule in rules),rules
+` + WORKER + `
+os.environ['WORKER_HOST_COMMIT']='0'; w.HOST_GIT=None
+(repo/'one.txt').write_text('未提交',encoding='utf-8'); state=w.worktree_state()
+assert state and 'one.txt' in state[0],state
+assert not (trap/'cmd-ran.txt').exists(),'当前目录里的 git.cmd 被执行'
+for bad in (str(trap/'git.cmd'),'git',str(repo/'git.exe')):
+ try: git_program.resolve([str(repo)],bad)
+ except git_program.GitProgramError: pass
+ else: raise AssertionError('本应拒绝：'+bad)
+`);
+});
+
+test("当前目录里的 git.exe 与 git.cmd 不会被选中（Node：服务端解析一次后只用绝对路径启动）", { skip: process.platform !== "win32" }, () => {
+  const trap = join(TMP, "node-trap"); mkdirSync(trap);
+  copyFileSync(join(process.env.SystemRoot, "System32", "hostname.exe"), join(trap, "git.exe"));
+  writeFileSync(join(trap, "git.cmd"), "@echo off\r\necho ran> \"%~dp0cmd-ran.txt\"\r\nexit /b 1\r\n");
+  const script = `import { execFileSync } from "node:child_process"; import { join } from "node:path";
+const m = await import(process.argv[1]), here = process.cwd();
+let byName; try { byName = execFileSync("git", ["--version"], { encoding: "utf8" }); } catch (error) { byName = String(error.stdout || "") + error.message; }
+const resolved = m.resolveGit({ roots: [] });
+console.log(JSON.stringify({ byName, path: resolved.path, out: m.gitRunner(resolved)(["--version"], { encoding: "utf8" }),
+  inside: m.resolveGit({ roots: [here], configured: join(here, "git.exe") }), batch: m.resolveGit({ configured: join(here, "git.cmd") }),
+  relative: m.resolveGit({ configured: "git" }), dotted: m.resolveGit({ env: { PATH: "." } }),
+  child: m.gitEnvironment({ nodefaultcurrentdirectoryinexepath: "0", KEEP: "x" }) }));`;
+  const env = Object.fromEntries(Object.entries(HOST_ENV).filter(([key]) => key.toUpperCase() !== "NODEFAULTCURRENTDIRECTORYINEXEPATH"));
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script, pathToFileURL(join(ROOT, "core", "git-program.mjs")).href],
+    { cwd: trap, env, encoding: "utf8", windowsHide: true, timeout: 30000 });
+  assert.equal(run.status, 0, run.stdout + "\n" + run.stderr);
+  const seen = JSON.parse(run.stdout);
+  assert.doesNotMatch(seen.byName, /^git version/, "对照失效：按名字启动没有选中当前目录里的 git.exe，夹具需要更新");
+  assert.match(seen.out, /^git version/);
+  assert.ok(seen.path && isAbsolute(seen.path) && relative(trap, seen.path).startsWith(".."), seen.path);
+  for (const refused of [seen.inside, seen.batch, seen.relative, seen.dotted]) assert.ok(refused.path === null && refused.reason, JSON.stringify(refused));
+  assert.deepEqual(seen.child, { KEEP: "x", NoDefaultCurrentDirectoryInExePath: "1" });
+  assert.equal(existsSync(join(trap, "cmd-ran.txt")), false, "当前目录里的 git.cmd 被执行");
+});
+
+test("宿主的非测试源码里不再按名字启动 git（Node 与 Python 全扫）", () => {
+  const offenders = [];
+  const node = /\b(?:execFileSync|execFile|spawnSync|spawn|execSync|exec)\(\s*["'`]git\b/;
+  const py = /\[\s*["']git["']\s*,|which\(\s*["']git["']\s*\)|\belse\s+["']git["']/;
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = join(directory, entry.name);
+      if (entry.isDirectory()) { if (!["node_modules", "tests", ".git", "docs", ".data", "__pycache__"].includes(entry.name)) walk(full); continue; }
+      const pattern = /\.(?:mjs|cjs|js)$/.test(entry.name) ? node : entry.name.endsWith(".py") ? py : null;
+      if (!pattern) continue;
+      readFileSync(full, "utf8").split("\n").forEach((line, index) => {
+        if (pattern.test(line) && !/^\s*(?:#|\/\/|\*)/.test(line) && !line.includes("`subprocess.run")) offenders.push(relative(ROOT, full) + ":" + (index + 1));
+      });
+    }
+  };
+  walk(ROOT);
+  assert.deepEqual(offenders, [], "这些位置按名字启动 git；改用 core/git-program.mjs 或 core/git_program.py 的解析结果");
+  const server = readFileSync(join(ROOT, "core", "server.mjs"), "utf8");
+  assert.ok((server.match(/\brunGit\(\[/g) || []).length >= 9 && /const GIT = resolveGit\(/.test(server), "前提：server.mjs 的 Git 调用都走解析结果");
+});
+
 test("fleet 开关默认关闭且只接受显式布尔配置", () => {
   const output = python(`sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'core'))
 import board_env
@@ -350,6 +679,14 @@ for invalid in (1,'1','true'):
  os.environ.pop('WORKER_HOST_COMMIT',None)
  path.write_text(json.dumps({'host_auto_commit':invalid}),encoding='utf-8'); board_env.apply()
  assert 'WORKER_HOST_COMMIT' not in os.environ
+path.write_text(json.dumps({'host_git':git,'host_commit_timeout_sec':900}),encoding='utf-8')
+import git_program
+configured=pathlib.Path(git_program.program())
+assert configured.name.lower().startswith('git') and configured.parent.parent==pathlib.Path(git).resolve().parent.parent,configured
+board_env.apply(); assert os.environ['WORKER_HOST_GIT']==git and os.environ['WORKER_HOST_COMMIT_TIMEOUT_SEC']=='900'
+os.environ['WORKER_HOST_COMMIT_TIMEOUT_SEC']='45'; board_env.apply(); assert os.environ['WORKER_HOST_COMMIT_TIMEOUT_SEC']=='45','环境变量已设时不被配置覆盖'
+import worker_loop as w
+assert w.HOST_COMMIT_TIMEOUT==45
 `);
   assert.equal(output, "");
 });

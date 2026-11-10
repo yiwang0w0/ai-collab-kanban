@@ -28,6 +28,12 @@ import io
 import json
 import os
 import subprocess
+import sys
+
+_CORE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+import git_program     # the one resolved Git program for every host-side call (never launched by name)
 
 # ── exit-code contract ───────────────────────────────────────────────────────
 # "The gate refused to start" is NOT a crash.
@@ -69,9 +75,9 @@ def gated_tree(repo, subtree):
     """
     spec = "" if str(subtree) == "." else subtree
     try:
-        r = subprocess.run(["git", "--no-lazy-fetch", "-C", repo, "rev-parse", f"HEAD:{spec}"],
+        r = subprocess.run([git_program.program(), "--no-lazy-fetch", "-C", repo, "rev-parse", f"HEAD:{spec}"],
                            capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", timeout=30)
+                           errors="replace", timeout=30, env=git_program.environment())
     except Exception as e:
         return None, "%s: %s" % (type(e).__name__, e)
     if r.returncode != 0:
@@ -118,9 +124,14 @@ def source_gate(repo, data_dir, subtree=None, log=print, loaded_tree=_UNSET):
                 "git rev-parse HEAD:%s > %s)" % (rev_file, subtree, rev_file))
 
     def _git(*args):
-        r = subprocess.run(["git", "--no-lazy-fetch", "-C", repo, *args], capture_output=True,
-                           text=True, encoding="utf-8", errors="replace",
-                           timeout=30)
+        # --no-optional-locks: the cleanliness check must not rewrite .git/index as a side
+        # effect — the host's per-card commit pins the index while a card is in flight.
+        try:
+            r = subprocess.run([git_program.program(), "--no-optional-locks", "--no-lazy-fetch", "-C", repo, *args],
+                               capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               timeout=30, env=git_program.environment())
+        except git_program.GitProgramError as e:
+            return 1, "", str(e)       # no safe Git program ⇒ undecidable ⇒ the caller refuses
         return r.returncode, (r.stdout or "").strip(), (r.stderr or "").strip()
 
     cur, tree_err = gated_tree(repo, subtree)

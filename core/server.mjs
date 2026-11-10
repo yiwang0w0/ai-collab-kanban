@@ -23,6 +23,7 @@ import { dirname, join, resolve, relative } from "node:path";
 import { createRequire } from "node:module";
 import { nodeTooOld, backfillEnv, SEAT_KEYS } from "./env.mjs";
 import { buildConfig, writeNewConfig, resolveClaudeCli } from "./config-setup.mjs";
+import { resolveGit, gitRunner } from "./git-program.mjs";
 import {readFleetView,readFleetTask,readFleetEvidencePage} from "./fleet-view.mjs";
 import {readFleetProgress} from "./fleet-progress.mjs";
 import {openFleetActions,loadFleetActionsConfig} from "./fleet-actions.mjs";
@@ -128,6 +129,9 @@ if (existsSync(CONFIG_FILE)) {
     if (!Array.isArray(CFG.routes) || !CFG.routes.length) throw new Error("routes[] must be a non-empty array");
     if (!Array.isArray(CFG.runtimes) || !CFG.runtimes.length) throw new Error("runtimes[] must be a non-empty array");
     if (CFG.host_auto_commit != null && typeof CFG.host_auto_commit !== "boolean") throw new Error("host_auto_commit 必须是布尔值");
+    if (CFG.host_git != null && (typeof CFG.host_git !== "string" || !isAbsolutePath(CFG.host_git))) throw new Error("host_git 必须是 git 可执行文件的绝对路径");
+    if (CFG.host_commit_timeout_sec != null && !(Number.isInteger(CFG.host_commit_timeout_sec) && CFG.host_commit_timeout_sec >= 10 && CFG.host_commit_timeout_sec <= 86400))
+      throw new Error("host_commit_timeout_sec 必须是 10 到 86400 之间的整数(秒)");
   } catch (e) {
     console.error(`拒绝启动:${CONFIG_FILE} 存在但不可用 —— ${e.message}`);
     process.exit(1);
@@ -141,6 +145,14 @@ const BACKFILLED = backfillEnv(CFG, SEAT_KEYS);   // dropped from a respawned su
 // gate and the workers' cwd; the board's own code stays anchored at CODE_ROOT.
 const REPO_ROOT = process.env.BOARD_REPO || (CFG.repo ? resolve(String(CFG.repo)) : CODE_ROOT);
 const CFG_GATED_SUBTREE = process.env.BOARD_GATED_SUBTREE || (CFG.gated_subtree ? String(CFG.gated_subtree) : "");
+// Git is never launched by name — Node looks in the process's current directory before
+// PATH on Windows, and that directory can sit inside the model's write allowance. Resolved
+// ONCE here (host config first: env WORKER_HOST_GIT, then fleet.config host_git; else the
+// absolute directories of PATH), refused when it is a .bat/.cmd or lives inside the work
+// repo / data directory; every call below spawns the absolute path. See core/git-program.mjs.
+const GIT = resolveGit({ roots: [REPO_ROOT, store.DATA_DIR], configured: process.env.WORKER_HOST_GIT || CFG.host_git });
+if (!GIT.path) console.error(`⚠ Git 不可用:${GIT.reason} —— 依赖 Git 的检查(交付闸、版本确认、未提交改动提示)按测不了处理`);
+const runGit = gitRunner(GIT);
 // Snapshot of the deployment keys AS READ AT BOOT — the setup guide compares it
 // against the file on disk to answer "I edited the config, why nothing changed".
 const CFG_AT_BOOT = { port: CFG.port ?? null, repo: CFG.repo ?? null, gated_subtree: CFG.gated_subtree ?? null };
@@ -190,7 +202,7 @@ const DECISION_CTX = { repoRoot: REPO_ROOT, targets: HANDOFF_TARGETS };
 const GATE_OFF = process.env.BOARD_DELIVERABLE_GATE === "off";
 let extractor = null;
 try {
-  const top = execFileSync("git", ["-C", REPO_ROOT, "--no-lazy-fetch", "ls-tree", "-z", "HEAD"],
+  const top = runGit(["-C", REPO_ROOT, "--no-lazy-fetch", "ls-tree", "-z", "HEAD"],
                            { maxBuffer: 8 * 1024 * 1024 }).toString("utf8");
   const prefixes = dgate.topLevelPrefixes(top);
   if (prefixes.length) extractor = dgate.makeExtractor({ prefixes });
@@ -212,7 +224,7 @@ const headFiles = () => {
   let set = null;
   try {
     // ⚠ -z mandatory (same reason as above).
-    const out = execFileSync("git", ["-C", REPO_ROOT, "--no-lazy-fetch", "ls-tree", "-r", "--name-only", "-z", "HEAD"],
+    const out = runGit(["-C", REPO_ROOT, "--no-lazy-fetch", "ls-tree", "-r", "--name-only", "-z", "HEAD"],
                              { maxBuffer: 64 * 1024 * 1024 });
     set = new Set(out.toString("utf8").split("\0").filter(Boolean));
   } catch { set = null; }        // no git / not a repo → the gate is silently off (closures not blocked)
@@ -265,7 +277,9 @@ const absentOf = (t) => {
 const dirtyFiles = () => {
   let out;
   try {
-    out = execFileSync("git", ["-C", REPO_ROOT, "--no-lazy-fetch", "status", "--porcelain", "-z"],
+    // --no-optional-locks: a status read must not rewrite .git/index (the host's per-card
+    // commit pins the index of the work repo while a card is in flight).
+    out = runGit(["-C", REPO_ROOT, "--no-lazy-fetch", "--no-optional-locks", "status", "--porcelain", "-z"],
                        { maxBuffer: 64 * 1024 * 1024 }).toString("utf8");
   } catch { return null; }        // unmeasurable ⇒ null ⇒ callers pass
   const rows = [];
@@ -345,7 +359,7 @@ const STARTED = Date.now();
 // operator find out through a refused line or a missing endpoint.
 const codeRev = () => {
   try {
-    return execFileSync("git", ["-C", CODE_ROOT, "rev-parse", "--short", "HEAD"],
+    return runGit(["-C", CODE_ROOT, "rev-parse", "--short", "HEAD"],
                         { encoding: "utf8", windowsHide: true }).trim();
   } catch { return null; }
 };
@@ -393,7 +407,7 @@ const fpContext = () => {
   if (Date.now() - fpCache.at < FP_TTL_MS) return { treeRev: fpCache.treeRev, extra: fpCache.extra };
   let treeRev = null, extra = null;
   try {
-    treeRev = execFileSync("git", ["-C", REPO_ROOT, "--no-lazy-fetch", "rev-parse", "HEAD:"],
+    treeRev = runGit(["-C", REPO_ROOT, "--no-lazy-fetch", "rev-parse", "HEAD:"],
                            { encoding: "utf8", windowsHide: true }).trim() || null;
   } catch { treeRev = null; }
   const cmd = CFG.fingerprint_extra_cmd;
@@ -733,7 +747,7 @@ function blessStep() {
   let head = null;
   try {
     const spec = CFG_GATED_SUBTREE === "." ? "" : CFG_GATED_SUBTREE;
-    head = execFileSync("git", ["-C", CODE_ROOT, "--no-lazy-fetch", "rev-parse", `HEAD:${spec}`],
+    head = runGit(["-C", CODE_ROOT, "--no-lazy-fetch", "rev-parse", `HEAD:${spec}`],
                         { encoding: "utf8", windowsHide: true }).trim();
   } catch (e) {
     return { state: "unknown", detail: `读不到代码的版本(${String(e.message).slice(0, 60)})`,
@@ -763,7 +777,7 @@ const gatedTree = () => {
   if (!CFG_GATED_SUBTREE) return { err: "还没配置要盯住的代码范围(gated_subtree)" };
   try {
     const spec = CFG_GATED_SUBTREE === "." ? "" : CFG_GATED_SUBTREE;
-    return { tree: execFileSync("git", ["-C", CODE_ROOT, "--no-lazy-fetch", "rev-parse", `HEAD:${spec}`],
+    return { tree: runGit(["-C", CODE_ROOT, "--no-lazy-fetch", "rev-parse", `HEAD:${spec}`],
                                 { encoding: "utf8", windowsHide: true }).trim() };
   } catch (e) { return { err: String(e.message).slice(0, 60) }; }
 };
@@ -776,7 +790,7 @@ function treeStat(prev, tree) {
   if (!statCache.has(k)) {
     let lines;
     try {
-      lines = execFileSync("git", ["-C", CODE_ROOT, "--no-lazy-fetch", "diff", "--stat=90", prev, tree], { encoding: "utf8", windowsHide: true })
+      lines = runGit(["-C", CODE_ROOT, "--no-lazy-fetch", "diff", "--stat=90", prev, tree], { encoding: "utf8", windowsHide: true })
         .split("\n").map((l) => l.trimEnd()).filter(Boolean);
     } catch (e) { lines = [`(git diff --stat 失败:${String(e.message).slice(0, 60)})`]; }
     if (statCache.size > 32) statCache.clear();
@@ -810,7 +824,7 @@ function acceptTree(confirmTree, who) {
   writeFileSync(acceptedFile(), tree + "\n", "utf8");
   let dirty = 0;
   try {
-    dirty = execFileSync("git", ["-C", CODE_ROOT, "--no-lazy-fetch", "status", "--short", "--", CFG_GATED_SUBTREE === "." ? "." : CFG_GATED_SUBTREE],
+    dirty = runGit(["-C", CODE_ROOT, "--no-lazy-fetch", "--no-optional-locks", "status", "--short", "--", CFG_GATED_SUBTREE === "." ? "." : CFG_GATED_SUBTREE],
                          { encoding: "utf8", windowsHide: true }).split("\n").filter((l) => l.trim()).length;
   } catch {}
   console.log(`已确认 ${CFG_GATED_SUBTREE} = ${tree}(${who})` + (prev ? `,上次 ${prev.slice(0, 12)}` : ",首次")
@@ -1837,6 +1851,10 @@ function slotEnv(line, k, ag, isReview) {
            BOARD_REPO: REPO_ROOT,
            // 仅宿主配置显式启用；旧部署与审阅循环始终保持关闭。
            WORKER_HOST_COMMIT: !isReview && CFG.host_auto_commit === true ? "1" : "0",
+           // 宿主提交用的 Git 程序与 commit 上限:环境变量已设者优先(随上面的 ...process.env 下传),否则取配置。
+           ...(!process.env.WORKER_HOST_GIT && CFG.host_git ? { WORKER_HOST_GIT: String(CFG.host_git) } : {}),
+           ...(!process.env.WORKER_HOST_COMMIT_TIMEOUT_SEC && CFG.host_commit_timeout_sec != null
+             ? { WORKER_HOST_COMMIT_TIMEOUT_SEC: String(CFG.host_commit_timeout_sec) } : {}),
            WORKER_PROTECTED_PATHS:JSON.stringify([store.DATA_DIR,CONFIG_FILE,
              process.env.BOARD_VERIFY_REGISTRY||join(CODE_ROOT,"core","verify_registry.json"),
              ...EXECUTION_PROFILES.map(p=>p.auth_home),process.env.BOARD_FLEET_ACTIONS_CONFIG,

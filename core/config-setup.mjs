@@ -13,9 +13,9 @@
 // Still a PURE CREATE: writeNewConfig uses flag "wx", so an existing config — the
 // operator's — is never touched, whoever calls.
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
-import { execFileSync } from "node:child_process";
 import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CODE_ROOT } from "./env.mjs";
+import { resolveGit, gitRunner } from "./git-program.mjs";
 
 const WIN = process.platform === "win32";
 const isFile = (p) => { try { return statSync(p).isFile(); } catch { return false; } };
@@ -120,7 +120,8 @@ export function checkRepo(raw) {
   if (within(path, CODE_ROOT) || within(CODE_ROOT, path))
     return { error: `${path} 是看板自己的目录(或包含它)—— 任务要在另一个项目里执行;把看板放在项目外面` };
   try {
-    const inside = execFileSync("git", ["-C", path, "rev-parse", "--is-inside-work-tree"],
+    // Never "git" by name (the current directory would be searched first) — core/git-program.mjs.
+    const inside = gitRunner(resolveGit({ roots: [path], configured: process.env.WORKER_HOST_GIT }))(["-C", path, "rev-parse", "--is-inside-work-tree"],
                                 { encoding: "utf8", windowsHide: true, timeout: 15000, stdio: ["ignore", "pipe", "ignore"] }).trim();
     if (inside !== "true") throw new Error("not a work tree");
   } catch {
