@@ -13,8 +13,18 @@ _ENVIRONMENT = re.compile(
     r"端口.{0,20}(?:占用|不可用)|登记簿|harness itself|0\s*PASS.{0,100}TypeError)", re.I | re.S)
 _BLOCKED = re.compile(r"(?:我(?:已经|已)?卡住|无法继续|需要人工(?:介入|处理|协助)|需要操作者(?:提供|处理|介入)|"
                       r"I(?:'m| am) blocked|cannot proceed|\bstuck\b)", re.I)
+# 计数前加「前面不是数字」：一长串数字只从串首试一次，不逐位重试(否则是平方级)。
 _TEST_RED = re.compile(r"(?:AssertionError|ERR_ASSERTION|assert(?:ion)?\s+failed|"
-                       r"\bFAIL(?:ED)?\b|\bnot ok\b|[1-9]\d*\s+(?:fail|failed)|断言.{0,20}失败)", re.I)
+                       r"\bFAIL(?:ED)?\b|\bnot ok\b|(?<!\d)[1-9]\d*\s+(?:fail|failed)|断言.{0,20}失败)", re.I)
+_SOME_PASS = re.compile(r"(?<!\d)[1-9]\d*\s+PASS|#\s*pass\s+[1-9]", re.I)
+SCAN_MAX = 200000      # 分类最多扫这么多字符；更长的输出只看首尾各一半，全文仍在验证日志里
+
+
+def _bounded(output):
+    if len(output) <= SCAN_MAX:
+        return output
+    half = SCAN_MAX // 2
+    return output[:half] + "\n" + output[-half:]
 
 
 def classify(rc, tail, verification, evidence=None):
@@ -26,10 +36,10 @@ def classify(rc, tail, verification, evidence=None):
         return "environment"
     if not verification or verification.get("ok"):
         return "passed" if evidence else "environment"
-    output = str(verification.get("full_out", verification.get("out")) or "")
+    output = _bounded(str(verification.get("full_out", verification.get("out")) or ""))
     if verification.get("rc") in (None, -1, -2, -3) or verification.get("code") or _ENVIRONMENT.search(output):
         return "environment"
-    if re.search(r"\bTypeError\b", output) and not re.search(r"[1-9]\d*\s+PASS|#\s*pass\s+[1-9]", output, re.I):
+    if re.search(r"\bTypeError\b", output) and not _SOME_PASS.search(output):
         return "environment"
     return "test_failure" if _TEST_RED.search(output) else "environment"
 

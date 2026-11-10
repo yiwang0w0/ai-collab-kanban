@@ -205,6 +205,22 @@ assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':full,'out':full[-4000
 `);
 });
 
+test("分类耗时有界：超长数字串、大段空白与超大输出都在一秒内返回，首尾特征仍被看到", () => {
+  python(`import time
+import verification_repair as v
+def timed(output):
+ started=time.perf_counter(); reason=v.classify(0,'完成',{'ok':False,'rc':1,'full_out':output},'交付'); return reason,time.perf_counter()-started
+for output in ('9'*20000,'1'+' '*20000+'x','0'+' '*20000+'x',('7 '*10000)+'x'):
+ reason,elapsed=timed(output)
+ assert reason=='environment' and elapsed<1,(output[:12],reason,elapsed)
+# 超过扫描上限的输出只看首尾两段：首部的环境特征与尾部的测试红都不能丢。
+reason,elapsed=timed('ERR_MODULE_NOT_FOUND: fixture'+chr(10)+'x'*600000+chr(10)+'3 failed')
+assert reason=='environment' and elapsed<1,(reason,elapsed)
+reason,elapsed=timed('日志行'+chr(10)+'x'*600000+chr(10)+'3 failed')
+assert reason=='test_failure' and elapsed<1,(reason,elapsed)
+`);
+});
+
 test("一尝试两轮红转绿保持同会话、模型、强度、权限与共享时限，逐轮记账", () => {
   const output = python(WORKER_FIXTURE + `f=exercise([red,green],elapsed=7)
 assert f.result=='done' and len(f.calls)==2,(f.result,f.calls,f.deliveries)

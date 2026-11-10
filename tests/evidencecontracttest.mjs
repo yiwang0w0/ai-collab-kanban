@@ -143,6 +143,63 @@ assert 'cmd -> pass 0 / fail 0' in e.validate(body.replace('fixture-check -> pas
 `);
 });
 
+test("校验耗时有界：超限直接拒收不解析，行内大段空白与超长单行都在一秒内出结果", () => {
+  python(`import time
+import evidence_contract as e
+body=${JSON.stringify(BODY)}
+contract={'version':1,'max_chars':4000}
+check='fixture-check -> pass 2 / fail 0'
+def timed(text):
+ started=time.perf_counter(); result=e.validate(text,contract); return result,time.perf_counter()-started
+# 审阅报告里的那一行：pass 之后只有空白和一个字符，没有 fail。800 个空格走逐行解析，2400 个撞单行上限。
+for spaces in (800,2400):
+ text=body.replace(check,'a -> pass 1'+' '*spaces+'x')
+ assert len(text)<=4000,len(text)
+ result,elapsed=timed(text)
+ assert not result['ok'] and elapsed<1,(spaces,elapsed,result['errors'])
+long_line=timed(body.replace('修复夹具。','长'*e.LINE_MAX))[0]
+assert not long_line['ok'] and '单行' in long_line['errors'][-1],long_line['errors']
+assert e.validate(body.replace('无需人工操作。','长'*(e.LINE_MAX+1)),contract)['ok']
+# 超过上限：只报超限这一条并立即返回，不再逐行解析。
+over=body.replace(check,'a -> pass 1'+' '*20000+'x')
+result,elapsed=timed(over)
+assert not result['ok'] and elapsed<1,(elapsed,result['errors'])
+assert len(result['errors'])==1 and '上限' in result['errors'][0] and result['chars']==len(over),result
+# 改写后合法与非法的写法保持原判。
+for line in (check,'fixture-check->pass:2,fail:0','a -> b -> PASS 2 ； FAIL 0','fixture-check -> pass 2 fail 0',
+  'fixture-check  ->  pass = 12 · fail = 3','cmd -> pass 0 / fail 0（未执行）',
+  'cmd -> pass 0 / fail 0 (未执行)；文件：out/日志 1.log (12 bytes)','cmd -> pass 2 / fail 0，日志: a.log（2048 UTF-8 Bytes）'):
+ assert e.validate(body.replace(check,line),contract)['ok'],line
+for line in ('fixture-check -> pass 2fail 0','fixture-check -> pass / fail 0','-> pass 2 / fail 0',
+  'fixture-check -> pass 2 / fail 0；日志: a.log','fixture-check -> pass 2 / fail 0 以及说明','fixture-check -> pass 2 / fail'):
+ assert not e.validate(body.replace(check,line),contract)['ok'],line
+`);
+});
+
+test("证据文件超过读入上限时不读入：合同卡按拒收走同会话精简，原文保留", () => {
+  python(FIXTURE + `w.EVIDENCE_READ_MAX=2000
+big=folder/'大证据.md'; big.write_bytes(b'x'*2001)
+assert w.read_evidence(str(big)) is None and w.read_evidence(str(big),preserve=True) is None
+assert w.evidence_oversize(str(big))==2001
+small=folder/'小证据.md'; small.write_bytes('甲\\r\\n乙 '.encode('utf-8'))
+assert w.evidence_oversize(str(small)) is None
+assert w.read_evidence(str(small))=='甲\\n乙' and w.read_evidence(str(small),preserve=True)=='甲\\r\\n乙 '
+# 未决节后面拖一长行：字符数在 4000 内，文件却超过读入上限。
+huge=body+'x'*3000
+assert len(huge)<=4000 and len(huge.encode('utf-8'))>w.EVIDENCE_READ_MAX
+f=exercise([huge,body])
+assert f.result=='done' and len(f.calls)==2 and f.verifies==[2] and f.commits==[(2,1)],(f.result,f.verifies,f.commits)
+assert f.rows[0]['reason']=='evidence_contract' and f.rows[1]['reason']=='passed',f.rows
+assert f.rows[0]['evidence_bytes']==len(huge.encode('utf-8')) and f.rows[0]['evidence_chars'] is None,f.rows
+assert pathlib.Path(f.calls[0]['path']).read_text(encoding='utf-8')==huge
+assert '读入上限' in f.calls[1]['prompt'] and f.calls[0]['path'] in f.calls[1]['prompt'],f.calls[1]['prompt']
+plain=exercise([huge],contract=False)
+assert plain.result=='wait' and plain.verifies==[] and plain.commits==[],plain
+report=plain.deliveries[0][0][3]
+assert '读入上限' in report and plain.calls[0]['path'] in report,report
+`);
+});
+
 test("中文与emoji按Unicode码点计数，4000边界与UTF-8字节在JS/Python一致", () => {
   const chars = Array.from(BODY).length;
   const exact = BODY + "🙂".repeat(4000 - chars);

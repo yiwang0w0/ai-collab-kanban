@@ -2320,12 +2320,33 @@ def prompt_measurement(prompt):
     return {"prompt_chars": measured["chars"], "prompt_bytes": measured["bytes"]}
 
 
+# 证据文件的读入上限(字节)。超过就不读入:原文留在原处,由调用方按拒收或等待处理,
+# 宿主不为一份超大文件付出与其大小成比例的内存与解析时间。
+# 看板一次请求的正文上限约 1e6 字符,更大的证据本来也交不上去。
+EVIDENCE_READ_MAX = 1024 * 1024
+
+
+def evidence_oversize(path):
+    """证据文件超过读入上限时返回它的字节数,否则 None。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    return size if size > EVIDENCE_READ_MAX else None
+
+
 def read_evidence(path, *, preserve=False):
     try:
         if os.path.isfile(path):
-            with io.open(path, encoding="utf-8", errors="strict" if preserve else "replace", newline="" if preserve else None) as source:
-                s = source.read()
-            return s if preserve else s.strip() or None
+            with io.open(path, "rb") as source:
+                raw = source.read(EVIDENCE_READ_MAX + 1)      # 多读一个字节只为判断是否超限
+            if len(raw) > EVIDENCE_READ_MAX:
+                log(f"  证据文件超过读入上限 {EVIDENCE_READ_MAX} bytes —— 不读入,原文保留在 {path}")
+                return None
+            if preserve:
+                return raw.decode("utf-8")
+            s = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+            return s.strip() or None
     except Exception as e:
         log(f"  证据读取失败:{e}")
     return None
@@ -2648,9 +2669,15 @@ def handle(t, worker):
             if FORKED_SID:
                 confirm_forked(FORKED_SID)
             evidence = read_evidence(ev_path, preserve=bool(contract))
-            task["_evidence_measurement"] = evidence_contract.measure(evidence) if evidence is not None else None
+            oversize = evidence_oversize(ev_path) if evidence is None else None
+            task["_evidence_measurement"] = (evidence_contract.measure(evidence) if evidence is not None
+                                             else {"chars": None, "bytes": oversize} if oversize else None)
             evidence = lessons.take(evidence)    # 「经验」小节先摘出来,不进四节合同与后面的验证
             body_check = evidence_contract.validate(evidence, contract) if contract and evidence is not None else None
+            if oversize and contract:
+                # 没读入也算拒收:同会话要求精简,不把超大文件当成「没有证据」。
+                body_check = {"ok": False, "chars": None, "bytes": oversize,
+                              "errors": [f"证据文件 {oversize} UTF-8 bytes 超过读入上限 {EVIDENCE_READ_MAX} bytes，未读入"]}
             if host_guard:
                 host_guard.assert_intact()
                 if not body_check or body_check["ok"]:
@@ -2683,8 +2710,10 @@ def handle(t, worker):
             if not API_MODE and all(row.get(k) is not None for k in ("in", "cc", "cr", "out")):
                 gates_lib.append_spend(DATA, f"worker:{worker}", gates_lib.usd_of(row, model) if RUNTIME == "claude" else 0,
                                        card=tid, model=model, note="逐轮用量；其他池不占主座席美元账" if RUNTIME != "claude" else None, log=log)
-            last_result = ("证据正文拒收：" + "；".join(body_check["errors"]) + f"。原文保留：{ev_path}（{body_check['chars']} 字符，{body_check['bytes']} UTF-8 bytes）。"
-                           if body_check and not body_check["ok"] else evidence or str(tail))
+            last_result = ("证据正文拒收：" + "；".join(body_check["errors"]) + f"。原文保留：{ev_path}（{evidence_contract.size_text(body_check)}）。"
+                           if body_check and not body_check["ok"] else
+                           f"证据文件 {oversize} UTF-8 bytes 超过读入上限 {EVIDENCE_READ_MAX} bytes，未读入；原文保留：{ev_path}。\n" + str(tail)
+                           if oversize else evidence or str(tail))
             if reason == "passed":
                 last_result = host_delivery(t, last_result, ev_path, vr, rc)
                 made, memo = ([], "") if PROFILE_MODE else harvest_spawned(task, worker)
