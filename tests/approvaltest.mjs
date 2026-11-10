@@ -234,7 +234,8 @@ test("远程入口:关闭时不监听;打开后只认白名单来源与批准令
     assert.equal((await raw(rport, { token: tok })).status, 401, "吊销后失效");
     const adb = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
     const rows = adb.prepare("SELECT * FROM remote_audit ORDER BY id").all(); adb.close();
-    assert.ok(rows.length >= 18, `每次调用都审计:${rows.length}`);
+    assert.equal(rows.filter((r) => r.token_id === made.body.record.id).length, 12, `已认证的调用每次一行:${rows.length}`);
+    assert.equal(rows.filter((r) => r.token_id == null && r.note === "auth").length, 1, "未认证的拒绝按来源与原因聚合");
     assert.ok(rows.some((r) => r.status === 403 && r.note === "ip" && r.ip === "127.0.0.3"));
     assert.ok(rows.some((r) => r.status === 403 && r.note === "browser"));
     assert.ok(rows.some((r) => r.status === 403 && r.note === "path" && r.path === "/api/tasks"));
@@ -300,5 +301,40 @@ test("流水记下来源与操作者;board.py approvals / approval-token;面板�
       created_at: new Date().toISOString(), expected_version: 1, actions: ["approve", "reject"], labels: { approve: "批准", reject: "拒绝" } }] });
     assert.match(out, /待你批准 1[^]*执行者请求 · 高风险[^]*data-apv="request:9:1" data-apv-decision="approve" data-apv-version="1">批准/);
     assert.ok(!out.includes("<x>"), "标题转义");
+  } finally { await B.stop(); }
+});
+
+const remoteBoard = async (extra = {}) => {
+  const rport = await freePort("127.0.0.2");
+  const B = await board({ config: { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32"] } }, ...extra });
+  for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
+  const audit = () => { const db = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
+    try { return db.prepare("SELECT * FROM remote_audit ORDER BY id").all(); } finally { db.close(); } };
+  return { B, rport, audit };
+};
+
+test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,按来源与原因聚合并有总量上限", { timeout: 120000 }, async () => {
+  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: "3000" } });
+  try {
+    for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/x" + "a".repeat(150), local: "127.0.0.3" })).status, 403);
+    // 已认证的调用照旧一次一行
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body;
+    for (let i = 0; i < 3; i++) assert.equal((await raw(rport, { token: tok.token })).status, 200);
+    for (let i = 0; i < 30; i++) assert.ok([401, 429].includes((await raw(rport, { path: "/y" + i })).status));
+    let rows = audit();
+    assert.ok(rows.filter((r) => r.ip === "127.0.0.3").length <= 2, `白名单外来源 30 次请求不应各写一行:${rows.filter((r) => r.ip === "127.0.0.3").length}`);
+    const anon = rows.filter((r) => r.ip === "127.0.0.2" && r.token_id == null);
+    assert.ok(anon.length <= 2, `无令牌 30 次请求不应各写一行:${anon.length}`);
+    // 很多不同来源:每个窗口合计也有上限
+    for (let i = 4; i < 94; i++) assert.equal((await raw(rport, { path: "/z", local: `127.0.0.${i}` })).status, 403);
+    // 窗口结束后补汇总行:行数有界,次数一次不丢
+    const counted = (list) => list.filter((r) => r.token_id == null)
+      .reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
+    for (let i = 0; i < 60 && counted(rows = audit()) < 150; i++) await delay(250);
+    assert.equal(counted(rows), 150, `汇总后次数应等于请求数:${JSON.stringify(rows.map((r) => [r.ip, r.note]))}`);
+    assert.ok(rows.some((r) => r.ip === "127.0.0.3" && r.note === "ip +29"), "同一来源同一原因:第一条加一行汇总");
+    assert.ok(rows.some((r) => r.ip === "*" && /^denied \+\d+$/.test(r.note)), "来源很多时超出上限的并成一行");
+    assert.ok(rows.filter((r) => r.token_id == null).length < 90, `未认证请求的审计行数有上限:${rows.length}`);
+    assert.equal(rows.filter((r) => r.token_id === tok.record.id && r.status === 200).length, 3, "已认证的调用每次一行");
   } finally { await B.stop(); }
 });

@@ -3093,7 +3093,7 @@ async function approvalTokensRoute(req, res, url, p, m) {
 }
 
 // ── 远程入口(可选,默认关闭)。另起监听,只接受 allow_ips 里的来源和批准令牌,只开放批准接口与只读摘要。
-//    没有 TLS:只在 VPN 或可信局域网里用。浏览器请求一律拒绝;每次调用都写 remote_audit。
+//    没有 TLS:只在 VPN 或可信局域网里用。浏览器请求一律拒绝;已认证的调用每次写 remote_audit,未认证的拒绝聚合后写。
 const remoteServers = [];
 const remoteState = { listening: [], errors: [] };
 const REMOTE_FAIL_WINDOW_MS = 10 * 60000, REMOTE_FAIL_MAX = 10;
@@ -3108,6 +3108,33 @@ const remoteFail = (ip) => {
   if (!f || Date.now() - f.first > REMOTE_FAIL_WINDOW_MS) { if (remoteFails.size > 1000) remoteFails.clear(); remoteFails.set(ip, { n: 1, first: Date.now() }); }
   else f.n++;
 };
+// 没通过认证就被拒的请求(路径无效、来源不在白名单、浏览器、限流、无效令牌)不逐条落库:remote_audit 只追加、删不掉,
+// 不能让未认证的来源决定它长多快。每个(来源,原因)每个窗口只写第一条,其余在内存里计数,窗口结束补一行「原因 +N」;
+// 全部来源合计每个窗口最多 REMOTE_DENY_ROWS_MAX 个(来源,原因),超出的并成一行来源为 * 的「denied +N」。
+const REMOTE_DENY_WINDOW_MS = Number(process.env.BOARD_REMOTE_AUDIT_WINDOW_MS) > 0 ? Number(process.env.BOARD_REMOTE_AUDIT_WINDOW_MS) : 60000;
+const REMOTE_DENY_ROWS_MAX = 20;
+const remoteDenied = new Map();   // "来源 原因" -> { rec, first, more }
+const remoteDenyWindow = { start: 0, rows: 0, dropped: 0 };
+function flushRemoteDenied(now = Date.now(), all = false) {
+  for (const [k, e] of remoteDenied) {
+    if (!all && now - e.first < REMOTE_DENY_WINDOW_MS) continue;
+    remoteDenied.delete(k);
+    if (e.more) approvals.audit(db, { ...e.rec, note: `${e.rec.note} +${e.more}` }, now);
+  }
+  if (all || now - remoteDenyWindow.start >= REMOTE_DENY_WINDOW_MS) {
+    if (remoteDenyWindow.dropped) approvals.audit(db, { ip: "*", method: "*", path: "", status: 0, note: `denied +${remoteDenyWindow.dropped}` }, now);
+    Object.assign(remoteDenyWindow, { start: now, rows: 0, dropped: 0 });
+  }
+}
+function auditRemoteDenied(rec, now = Date.now()) {
+  flushRemoteDenied(now);
+  const k = `${rec.ip} ${rec.note}`, e = remoteDenied.get(k);
+  if (e) { e.more++; return; }
+  if (remoteDenyWindow.rows >= REMOTE_DENY_ROWS_MAX) { remoteDenyWindow.dropped++; return; }
+  remoteDenyWindow.rows++;
+  remoteDenied.set(k, { rec, first: now, more: 0 });
+  approvals.audit(db, rec, now);
+}
 const remoteStatus = () => REMOTE.enabled
   ? { enabled: true, listen: REMOTE.listen.map(approvals.formatListen), allow_ips: REMOTE.allow_ips,
       listening: [...remoteState.listening], errors: [...remoteState.errors] }
@@ -3123,8 +3150,9 @@ async function remoteHandler(req, res) {
   let p = "", status = 0, tokenId = null, note = "";
   const send = (code, body, headers = {}) => {
     status = code;
+    // 没通过认证的来源不留长连接,免得空闲连接占满 maxConnections。
     res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store",
-                          "X-Content-Type-Options": "nosniff", ...headers });
+                          "X-Content-Type-Options": "nosniff", ...(tokenId == null ? { Connection: "close" } : {}), ...headers });
     res.end(JSON.stringify(body));
   };
   try {
@@ -3162,7 +3190,10 @@ async function remoteHandler(req, res) {
     note = note || "error";
     if (!res.headersSent) send(statusFor(e, "remote"), { error: String(e?.message || e) });
   } finally {
-    try { approvals.audit(db, { ip, method: m, path: p, status, tokenId, note }); }
+    try {
+      if (tokenId == null) auditRemoteDenied({ ip, method: m, path: p, status, note });
+      else approvals.audit(db, { ip, method: m, path: p, status, tokenId, note });
+    }
     catch (e) { console.error(`远程入口审计写入失败:${e.message}`); }
   }
 }
@@ -3172,6 +3203,7 @@ function startRemote() {
     const where = approvals.formatListen(l);
     const srv = http.createServer(remoteHandler);
     srv.requestTimeout = 15000; srv.headersTimeout = 10000; srv.keepAliveTimeout = 5000; srv.maxHeadersCount = 50;
+    srv.maxConnections = 256;
     srv.on("error", (e) => {
       remoteState.errors.push(`${where} ${e.code || e.message}`);
       console.error(`⚠ 远程批准入口 ${where} 监听失败:${e.message}`);
@@ -3182,6 +3214,8 @@ function startRemote() {
     });
     remoteServers.push(srv);
   }
+  // 没有新请求时也要把上一个窗口的计数补成汇总行。
+  setInterval(() => { try { flushRemoteDenied(); } catch (e) { console.error(`远程入口审计写入失败:${e.message}`); } }, REMOTE_DENY_WINDOW_MS).unref();
 }
 const closeRemote = () => Promise.all(remoteServers.map((s) => new Promise((r) => {
   if (!s.listening) return r();
