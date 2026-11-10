@@ -8,7 +8,7 @@
 import { statSync } from "node:fs";
 import { localBoard } from "../core/local-board.mjs";
 import { loadHomeModel } from "../core/home-model.mjs";
-import { collapseRepeats, downCause, faultText, isLoopback, logLines, mergeLineFaults, probeBoard, readRunRecord } from "../core/board-run.mjs";
+import { collapseRepeats, downCause, faultReason, faultText, isLoopback, logLines, mergeLineFaults, probeBoard, readRunRecord } from "../core/board-run.mjs";
 import { versionLine } from "../core/cli-versions.mjs";
 
 const USAGE = ["用法: node cli/status.mjs [--log]",
@@ -66,7 +66,10 @@ async function main() {
   if (lines) console.log(`  执行线:${lines}`);
   // 当前 / 最新 / 上次核对 / 是否实测过；没有配置的 CLI 不列，旧版本看板没有这个接口时整行不出。
   for (const text of (ok(versions)?.clis || []).map(versionLine).filter(Boolean)) console.log(`  执行器:${text}`);
-  console.log(`  上次故障:${faultText(readRunRecord(dataDir).last_fault)}`);
+  // 原因另起一行；看板服务退出这一类，退出码或被结束已经写在「上次故障」那一句里，不重复。
+  const fault = readRunRecord(dataDir).last_fault;
+  console.log(`  上次故障:${faultText(fault)}`);
+  if (fault && fault.kind !== "exit") console.log(`    原因:${faultReason(fault)}`);
   console.log(`  ${alerts.length === s.alerts.length ? s.line : alerts.length + " 项需要注意"}`);
   for (const a of alerts) console.log(`  ${a.tone === "bad" ? "✗" : "!"} ${a.where}:${a.what}。下一步:${a.next}`);
   if (showLog) {

@@ -124,10 +124,18 @@ detached 的(Windows 上非 detached 的子进程会随父进程一起被杀,实
 一句原因和恢复命令 `node cli/start.mjs --background`,这条命令重复运行不会产生重复任务;要看日志加 `--log`。
 面板首页的故障提示与它用的是同一套说法。`node cli/stop.mjs`、Ctrl+C、面板「重启看板」「更新到新代码」都记为正常停止
 或重启,不算故障;只有看板没有走完停止收尾就退出(崩溃、进程被结束、关机断电)才记为故障或中断。
+「上次故障」与面板同一说法:一句发生了什么(「看板连续重启，已停止自动重启」「看板运行中断」「看板服务退出，退出码 N」),
+连续重启与运行中断的原因另起一行写在「原因:」后面。面板读的是 `GET /api/setup` 的 `last_fault`
+`{kind, at, exit_code, reason}`(`kind` 为 `exit` / `restart_loop` / `interrupted`,`reason` 与命令行的「原因」同一句),
+来源是同一份运行记录;没有记录时不给这个字段。
 
-执行器 CLI 的版本一行写着「当前 / 最新 / 上次核对 / 是否实测过」。升级用 `node cli/upgrade-cli.mjs claude`:
+执行器 CLI 的版本一行写着「当前 / 最新 / 上次核对 / 是否实测过」;找不到可以直接启动的程序或版本读不出时,
+同一行给出下一步「运行 node cli/doctor.mjs 查看原因」。升级用 `node cli/upgrade-cli.mjs claude`:
 不加 `--yes` 只列出会做什么;加了才执行——没有任务正在执行时停下用到它的执行线,npm 全局安装指定版本,跑体检,
 恢复执行线;任何一步不过就装回原版本。它不打断正在执行的任务。升级这件事由你点头,你的 Claude 不替你加 `--yes`。
+`GET /api/cli-versions` 的每个 CLI 带 `install_source`:看板调用的文件在 npm 全局安装的包里是 `npm-global`,在别处是
+`native`,没找到是 `unknown`;`npm_managed` 与它同义(布尔);`upgrade_hint` 只在 `npm-global` 时给
+`npm install -g <包名>@latest`,其余为 `null`。不是 npm 安装的,按这个 CLI 的官方说明升级,再运行 `node cli/doctor.mjs`。
 
 ## 二点一、面板顶上的上手引导(v0.6)
 

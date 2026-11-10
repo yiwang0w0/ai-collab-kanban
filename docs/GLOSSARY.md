@@ -74,7 +74,7 @@ labels have one source since v0.14.1. Migration is documented in
 | term | layer | meaning |
 |---|---|---|
 | `stop_reason` = `stopped-by-user` / `stopped-with-board` / `crash` / `exit-normal` | machine | recorded by the stop's INITIATOR before the tree kill; only `crash` triggers backoff restart |
-| 用户停止 / 随看板停止 / 崩溃（退出码 N） / 正常结束 / 启动被拒绝（退出码 3） | display | `stopText` 展示词，仍由服务端统一生成；退出码及停止判定不变 |
+| 用户停止 / 随看板停止 / 崩溃 / 正常结束 / 启动被拒绝 / 已停止 | display | `stopText` 展示词，仍由服务端统一生成，只写状态，不带括号补充；退出码照旧在 `/api/workers` 的 `exit_code` 字段里，停止判定不变 |
 | exit code `3` (`REFUSED_EXIT` js / `EXIT_REFUSED` py) | machine | a gate refusal — deterministic, never restarted, **paired across the two languages**: change one alone and refusals silently degrade to crashes |
 | error codes `NOT_FOUND` `CONFLICT` `BAD_INPUT` `INTERNAL` → 404/409/400/500 | machine | the original board error taxonomy; unclassified falls to 400 `typed:false`. Peer/broker protocols have additional typed errors (see their qualified contracts below) |
 

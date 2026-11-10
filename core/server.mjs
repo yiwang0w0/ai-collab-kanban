@@ -33,7 +33,7 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
-import { noteCleanExit } from "./board-run.mjs";
+import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliResult} from "./board-claude-cli.mjs";
 import {coordinatorSystemPrompt,buildTurnContent,coordinatorCliArgs,coordinatorCliEnvironment,argsFingerprint,
@@ -924,8 +924,16 @@ function setupState() {
     { key: "bless", title: "确认当前版本", ...blessStep() },
   ];
   const doneN = steps.filter((s) => s.state === "done").length;
+  const fault = lastFault();
   return { steps, done: doneN, total: steps.length, complete: doneN === steps.length,
-           version: BOOT_REV, sentries: sentries.size, upgrade: upgradeState() };
+           version: BOOT_REV, sentries: sentries.size, upgrade: upgradeState(), ...(fault ? { last_fault: fault } : {}) };
+}
+/** 上次故障:守护写的运行记录(core/board-run.mjs,是否正常停止按干净退出标记判定),每次请求现读。
+ *  kind: exit · restart_loop · interrupted;reason 与 cli/status.mjs 的「原因」同一句。没有记录返回 null(不给字段)。 */
+function lastFault() {
+  let f = null;
+  try { f = readRunRecord(store.DATA_DIR).last_fault; } catch {}
+  return f ? { kind: f.kind, at: f.at, exit_code: f.exit_code, reason: faultReason(f) } : null;
 }
 
 const badLine = (res, line, allowed) => allowed.includes(line) ? false
@@ -1750,16 +1758,16 @@ const validStop = (v) => v && STOP_REASON_SET.has(v.reason) && Number.isFinite(D
   ? { reason: v.reason, at: new Date(Date.parse(v.at)).toISOString() } : null;
 
 /** The one place a reason becomes words. The panel renders this string and maps
- *  nothing itself — two mapping tables would drift. */
+ *  nothing itself — two mapping tables would drift.
+ *  只写状态与时刻(docs/style-guide.md「不写注释性语句」),不带括号补充;退出码在同一条记录的 exit_code 字段。 */
 function stopText(stop, exitCode) {
   const s = validStop(stop);
-  if (!s) return exitCode === REFUSED_EXIT ? `启动被拒绝（退出码 ${REFUSED_EXIT}）`
-                                           : (exitCode == null ? "" : `已停止（退出码 ${exitCode}）`);
+  if (!s) return exitCode === REFUSED_EXIT ? "启动被拒绝" : (exitCode == null ? "" : "已停止");
   const at = s.at.replace("T", " ").replace(/\.\d{3}Z$/, "Z");
   if (s.reason === STOP_REASON.BY_USER) return `用户停止 · ${at}`;
   if (s.reason === STOP_REASON.WITH_BOARD) return `随看板停止 · ${at}`;
   if (s.reason === STOP_REASON.EXIT_NORMAL) return `正常结束 · ${at}`;
-  return `崩溃${exitCode == null ? "" : `（退出码 ${exitCode}）`} · ${at}`;
+  return `崩溃 · ${at}`;
 }
 
 const loopScriptOf = (line) =>
@@ -2670,6 +2678,8 @@ function noteForceRelease(lock) {
   // 理由可以是多行;流水一行一件,所以折成一行再记。
   coord.appendJournal(db, "operator", { kind: "lock.force_release", body: approvals.oneLine(`强制释放 ${lock.resource}:${lock.release_reason}`, 300) });
 }
+/** 释放请求带的 lock_id / holder 与当前记录不一致(409 LOCK_CHANGED)时的一句话。协作接口与批准接口共用。 */
+const lockChangedText = (l) => `锁已变化，没有释放:${l.resource} 现在是 ${l.holder_name} 持有的锁记录 #${l.lock_id}。刷新后再决定`;
 async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();
   if (m === "GET" && p === "/api/coord")
@@ -2721,7 +2731,8 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     if (boardRole !== "operator" && !asExecutor(req, res)) return;
     const b = await readBody(req);
     const actor = boardRole === "operator" ? { role: "operator" } : { role: "executor", id: req.executor.id };
-    const r = coord.release(db, actor, { resource: b.resource, force: b.force, reason: b.reason }, now, COORD_GRACE_MS);
+    const r = coord.release(db, actor, { resource: b.resource, force: b.force, reason: b.reason, lockId: b.lock_id, holder: b.holder }, now, COORD_GRACE_MS);
+    if (!r.ok && r.changed) return json(res, 409, { code: "LOCK_CHANGED", error: lockChangedText(r.lock), lock: r.lock });
     if (!r.ok) return json(res, 403, { error: `只有持有者 ${r.holder.holder_name} 能释放 ${r.holder.resource}`, holder: r.holder });
     if (actor.role === "operator") noteForceRelease(r.lock);
     emit("coord.lock", { resource: r.lock.resource, holder: r.lock.holder, op: actor.role === "operator" ? "force_release" : "release" });
@@ -3035,7 +3046,7 @@ function lockApprovalEntry(l) {
   const end = Date.parse(l.expected_end);
   return { item: { id: approvals.makeId("lock", l.id, end), kind: "lock", title: l.resource,
                    summary: approvals.oneLine(`${l.resource} 已逾期:${l.holder_name} · ${l.purpose}`),
-                   detail_ref: { type: "lock", id: l.id, resource: l.resource, api: "/api/coord/locks" },
+                   detail_ref: { type: "lock", id: l.id, lock_id: l.lock_id, holder: l.holder, resource: l.resource, api: "/api/coord/locks" },
                    created_at: l.overdue_notified_at || new Date(end + COORD_GRACE_MS).toISOString(), expected_version: end,
                    actions: [...APPROVE_REJECT], labels: { approve: "强制释放", reject: "保留" } },
            route: { resource: l.resource, lockId: l.id } };
@@ -3144,7 +3155,10 @@ function decideApproval(rawId, body, who) {
     // note 的上限是 500 字,锁理由是 200 字:理由取 note 折成一行后的前 200 字,全文留在决定记录的 note 里。
     // 没写 note 时不拿一句固定的话冒充理由:写明「未写理由」和是谁、经哪条通道决定的。
     const why = approvals.oneLine(d.note, coord.REASON_MAX) || `经批准接口强制释放(未写理由;${who.actor} 经 ${who.via})`;
-    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: why }, now, COORD_GRACE_MS);
+    // 决定正文可带客户端看到的 lock_id / holder,与事项对应的那次持有比对;不一致 409 LOCK_CHANGED,不释放、不留决定。
+    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: why,
+      lockId: body.lock_id ?? r.lockId, holder: body.holder }, now, COORD_GRACE_MS);
+    if (!rr.ok) throw approvalConflict(lockChangedText(rr.lock), { current, lock_code: "LOCK_CHANGED", lock: rr.lock });
     noteForceRelease(rr.lock);
     emit("coord.lock", { resource: rr.lock.resource, holder: rr.lock.holder, op: "force_release" });
     result = { resource: rr.lock.resource, released_at: rr.lock.released_at };
@@ -3170,6 +3184,7 @@ const decisionErrorBody = (e) => ({ error: String(e?.message || e),
   ...(e?.current !== undefined ? { current: e.current } : {}), ...(e?.decision ? { decision: e.decision } : {}),
   ...(e?.needs_force ? { needs_force: true, in_progress: e.in_progress } : {}),
   ...(e?.needs_confirm_rerun ? { needs_confirm_rerun: true } : {}),
+  ...(e?.lock_code ? { code: e.lock_code, lock: e.lock } : {}),
   ...(Number.isSafeInteger(e?.current_version) ? { expected_version: e.expected_version, current_version: e.current_version } : {}) });
 function sendDecision(res, id, body, who) {
   let out;

@@ -111,7 +111,8 @@ console.log("[⑤ 不动任何东西的拒绝]");
   const sick = world({ doctorFailsOn: [OLD] }), r2 = await sick.run({ yes: true });
   ok("⭐升级前体检就不过：不升级（否则分不清是谁弄坏的）", r2.code === 1 && untouched(sick) && /体检现在就有 FAIL，没有升级/.test(sick.text()));
   const native = world({ npm_managed: false }), r3 = await native.run({ yes: true });
-  ok("看板调用的 CLI 不是 npm 全局安装的：不处理", r3.code === 1 && native.events.length === 0 && /不是 npm 全局安装的/.test(native.text()));
+  ok("⭐看板调用的 CLI 不是 npm 全局安装的：不处理，下一步与面板同一说法", r3.code === 1 && native.events.length === 0 && /不是 npm 全局安装的/.test(native.text())
+     && native.text().includes("下一步:按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs") && !/自己的方式/.test(native.text()), native.text());
   const current = world({ latest: OLD }), r4 = await current.run({ yes: true });
   ok("已经是目标版本：没有要做的（退出码 0）", r4.code === 0 && current.events.length === 0 && /已经是 2\.1\.300/.test(current.text()));
   const unknown = world({ latest: null }), r5 = await unknown.run({ yes: true });

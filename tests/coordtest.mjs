@@ -206,6 +206,37 @@ test("资源锁:占用返回 409 带持有者,只有持有者能释放,操作员
   } finally { await B.stop(); }
 });
 
+test("资源锁:锁表每条带 lock_id;释放带 lock_id / holder 时与当前记录比对,不一致 409 LOCK_CHANGED 且不释放", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const a = await B.register("agent-la"), b = await B.register("agent-lb");
+    const first = (await B.api("POST", "/api/coord/locks", a, { resource: "device:lab-1", minutes: 20, purpose: "跑界面测试" })).body.lock;
+    const listed = (await B.api("GET", "/api/coord/locks", B.operator)).body.locks;
+    assert.deepEqual(listed.map((l) => [l.lock_id, l.id]), [[first.id, first.id]], "锁表每条带 lock_id,就是锁记录编号");
+    const held = async () => (await B.api("GET", "/api/coord/locks", B.operator)).body.locks.find((l) => l.resource === "device:lab-1");
+    // 面板看到的是 agent-la 那一次持有;之后换了人又加了锁:按旧编号或旧持有者强制释放都拒绝。
+    assert.equal((await B.api("POST", "/api/coord/locks/release", a, { resource: "device:lab-1" })).status, 200);
+    const second = (await B.api("POST", "/api/coord/locks", b, { resource: "device:lab-1", minutes: 20, purpose: "改设备配置" })).body.lock;
+    assert.notEqual(second.lock_id, first.lock_id);
+    for (const stale of [{ lock_id: first.lock_id }, { holder: "agent-la" }, { lock_id: second.lock_id, holder: "agent-la" }]) {
+      const r = await B.api("POST", "/api/coord/locks/release", B.operator, { resource: "device:lab-1", force: true, reason: "持有者会话已结束", ...stale });
+      assert.equal(r.status, 409, `${JSON.stringify(stale)} → ${JSON.stringify(r.body)}`);
+      assert.equal(r.body.code, "LOCK_CHANGED");
+      assert.deepEqual([r.body.lock.lock_id, r.body.lock.holder], [second.lock_id, "agent-lb"], "应答带当前那条记录");
+      assert.equal((await held())?.lock_id, second.lock_id, "不一致时不释放");
+    }
+    // 持有者自己释放也认这两个字段。
+    assert.equal((await B.api("POST", "/api/coord/locks/release", b, { resource: "device:lab-1", lock_id: first.lock_id })).body.code, "LOCK_CHANGED");
+    assert.equal((await B.api("POST", "/api/coord/locks/release", B.operator, { resource: "device:lab-1", force: true, reason: "x", lock_id: "abc" })).status, 400, "lock_id 不是正整数");
+    assert.equal((await B.api("POST", "/api/coord/locks/release", B.operator, { resource: "device:lab-1", force: true, reason: "x", holder: 7 })).status, 400, "holder 不是字符串");
+    const ok = await B.api("POST", "/api/coord/locks/release", B.operator,
+      { resource: "device:lab-1", force: true, reason: "持有者会话已结束", lock_id: String(second.lock_id), holder: "agent-lb" });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(ok.body.lock.released_by, "operator");
+    assert.equal(await held(), undefined);
+  } finally { await B.stop(); }
+});
+
 test("资源锁逾期:标出、只发一次通知、不自动释放", { timeout: 60000 }, async () => {
   const B = await board({ BOARD_COORD_OVERDUE_GRACE_MIN: "0", BOARD_REAP_MS: "200" });
   const ctl = new AbortController();

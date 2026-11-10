@@ -233,8 +233,8 @@ try {
     const w = await B.until(LINE, (x) => x.stop_reason?.reason === "crash", 20000);
     ok("B1 ⭐无人预告的非零退出记为 crash + 时刻", !!w && w.stop_reason.reason === "crash",
        JSON.stringify(w?.stop_reason || null));
-    ok("B2 文案带退出码,与人停/正常结束分得开",
-       /^崩溃（退出码 1） · /.test(w?.stop_text || ""), w?.stop_text || "(none)");
+    ok("B2 ⭐文案只写状态与时刻,不带括号补充(退出码在 exit_code 字段),与人停/正常结束分得开",
+       /^崩溃 · /.test(w?.stop_text || "") && !/[（(]/.test(w?.stop_text || ""), w?.stop_text || "(none)");
     ok("B3 ⭐crash 才排退避,且日志说明第几次",
        /crash\(code=1\)/.test(B.out()) && /后第 1 次自动重启/.test(B.out()),
        (B.out().match(/crash\(code=\d+\)[^\n]*/) || ["(no crash line)"])[0].slice(0, 60));
@@ -271,8 +271,8 @@ try {
        (B2.out().match(/拒绝启动[^\n]*/) || ["(no refusal line)"])[0].slice(0, 60));
     ok("C3 拒绝时意图也落下(面板上不留『想跑却跑不起来』的线)",
        w?.desired_running === false, `desired_running=${w?.desired_running}`);
-    ok("C4 ⭐本次拒绝不回退显示磁盘上那条旧的用户停止",
-       w?.stop_reason == null && /启动被拒绝（退出码 3）/.test(w?.stop_text || ""),
+    ok("C4 ⭐本次拒绝不回退显示磁盘上那条旧的用户停止;文案只写「启动被拒绝」,退出码 3 在 exit_code 字段",
+       w?.stop_reason == null && w?.stop_text === "启动被拒绝" && w?.exit_code === 3,
        `stop_reason=${JSON.stringify(w?.stop_reason)} text=${w?.stop_text}`);
   }
 
@@ -1475,6 +1475,18 @@ try {
     ok("S2 未设 gated_subtree → 验收步 blocked 并点名要写哪个键(不是 done)",
        (() => { const b = s0.su.steps.find((x) => x.key === "bless");
                 return b.state === "blocked" && /gated_subtree/.test(b.hint || ""); })(), "");
+    // 上次故障来自守护的运行记录(core/board-run.mjs,含干净退出标记的判定);每次请求现读,没有就不给字段。
+    const runFile = join(B.DATA, "probes", "board_run.json");
+    ok("S2b 没有运行记录:/api/setup 不带 last_fault", !("last_fault" in s0.su), JSON.stringify(s0.su.last_fault));
+    mkdirSync(join(B.DATA, "probes"), { recursive: true });
+    writeFileSync(runFile, JSON.stringify({ current: null, last_fault: { kind: "interrupted", at: "2026-11-10T01:02:00Z", started_at: "2026-11-10T00:00:00Z" } }));
+    const lf = (await B.api("GET", "/api/setup")).body.last_fault;
+    writeFileSync(runFile, JSON.stringify({ current: null, last_fault: { kind: "restart_loop", at: "2026-11-10T01:03:00Z", exit_code: 1 } }));
+    const loop = (await B.api("GET", "/api/setup")).body.last_fault;
+    rmSync(runFile, { force: true });
+    ok("S2c ⭐运行记录里有上次故障:/api/setup 带 last_fault {kind, at, exit_code, reason},原因与命令行同一句",
+       lf?.kind === "interrupted" && lf.at === "2026-11-10T01:02:00.000Z" && lf.exit_code === null && lf.reason === "可能是关机、断电或进程被结束"
+       && loop?.kind === "restart_loop" && loop.exit_code === 1 && loop.reason === "短时间内重启次数超过上限", JSON.stringify([lf, loop]));
     const init1 = await B.api("POST", "/api/setup/init-config");
     const init2 = await B.api("POST", "/api/setup/init-config");
     const afterInit = await stepOf("config");

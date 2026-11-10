@@ -1,4 +1,5 @@
 import conflictGuide from './conflicts.js';
+import store from './store.js';
 import {readFileSync,statSync,realpathSync} from "node:fs";
 import {isAbsolute} from "node:path";
 import {PeerError,uuid,names} from "./federation/protocol.mjs";
@@ -168,19 +169,21 @@ export function openFleetActions(db,{config,fetchImpl=fetch,now=Date.now,sourceG
   const selected=projectId?[projectId]:projects;
   const groups={actions:[],incoming:[],outgoing:[],bindings:[],cancellations:[],results:[],topologies:[],proposals:[]};let truncated=false;
   const collect=(name,rows)=>{const remaining=100-groups[name].length;if(rows.length>remaining)truncated=true;groups[name].push(...rows.slice(0,remaining));};
+  // 「要做什么」:本机有这张卡就用卡片自己的 store.cardBrief(可能是 null = 作者没写);卡在对方电脑上取不到就不给这个字段。
+  const briefOf=uid=>{const t=uid?db.prepare("SELECT summary,description FROM tasks WHERE task_uid=?").get(uid):null;return t?{brief:store.cardBrief(t)}:{};};
   for(const project of selected){
    collect("topologies",[fleetTopology(db,project)]);
    const bindingList=listBindings(db,{projectId:project,limit:101});
    collect("proposals",bindingList.pending_proposals.map(r=>{
     const t=db.prepare("SELECT aggregate_version,subject,description,acceptance FROM tasks WHERE task_uid=?").get(r.relation.target_task_uid);
-    return {...r,project_id:project,task_version:t?.aggregate_version??null,subject:t?.subject??"",description:t?.description??"",acceptance:t?.acceptance??""};
+    return {...r,project_id:project,task_version:t?.aggregate_version??null,subject:t?.subject??"",description:t?.description??"",acceptance:t?.acceptance??"",...briefOf(r.relation.target_task_uid)};
    }));
    for(const direction of ["incoming","outgoing"]){
     const items=listDelegations(db,{direction,projectId:project,limit:100}),remaining=100-groups[direction].length;
     if(items.length>remaining)truncated=true;
     collect(direction,items.slice(0,remaining).map(r=>{
      const v=direction==="incoming"?incomingStatus(db,r.delegation_id):outgoingStatus(db,r.delegation_id);
-     return {project_id:project,direction,delegation_id:r.delegation_id,state:r.state,identity_current:v.identity_current,source_node_id:v.offer.source_node_id,target_node_id:v.offer.target_node_id,source_task_uid:v.offer.source_task_uid,target_task_uid:v.receipt?.target_task_uid??null,version:v.receipt?.version??null,subject:v.offer.task.subject,description:v.offer.task.description,acceptance:v.offer.task.acceptance,...(direction==="outgoing"&&v.identity_current&&v.state==="accepted_unconfirmed"?{binding_draft:fleetBindingDraft(db,r.delegation_id)}:{})};
+     return {project_id:project,direction,delegation_id:r.delegation_id,state:r.state,identity_current:v.identity_current,source_node_id:v.offer.source_node_id,target_node_id:v.offer.target_node_id,source_task_uid:v.offer.source_task_uid,target_task_uid:v.receipt?.target_task_uid??null,version:v.receipt?.version??null,subject:v.offer.task.subject,description:v.offer.task.description,acceptance:v.offer.task.acceptance,...briefOf(direction==="incoming"?v.receipt?.target_task_uid:v.offer.source_task_uid),...(direction==="outgoing"&&v.identity_current&&v.state==="accepted_unconfirmed"?{binding_draft:fleetBindingDraft(db,r.delegation_id)}:{})};
     }));
    }
    collect("bindings",bindingList.bindings.map(r=>{

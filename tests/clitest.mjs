@@ -318,8 +318,8 @@ console.log(NL + "[⑧ start:bg / open / stop]");
     '  if (req.method === "GET" && req.url === "/api/meta") return send(res, 200, { node: { display_name: "台式机 A" } });',
     // One line running and two refused at the gate for the same reason (one fault, not two).
     '  if (req.method === "GET" && req.url === "/api/workers") return send(res, 200, { lines: ["engine", "design", "review"], line_labels: { engine: "引擎", design: "设计", review: "审阅" }, workers: [{ line: "engine", running: true },',
-    '    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },',
-    '    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝（退出码 3）", last_log: [] }] });',
+    '    { line: "design", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝", last_log: ["源码闸拒绝启动", "源码闸拒绝启动"] },',
+    '    { line: "review", running: false, desired_running: false, exit_code: 3, stop_reason: null, stop_text: "启动被拒绝", last_log: [] }] });',
     '  if (req.method === "GET" && req.url === "/api/setup") return send(res, 200, { version: "stub-rev", complete: true, steps: [] });',
     '  if (req.method === "GET" && req.url === "/api/fleet?limit=1") return send(res, 200, { nodes: [{ node_id: "n-a", display_name: "台式机 A", local: true, connection_state: "local" },',
     '    { node_id: "n-b", display_name: "笔记本 B", local: false, connection_state: "failed", projects: [{ project_id: "p", error_code: "PEER_UNREACHABLE" }] }] });',
@@ -376,7 +376,7 @@ console.log(NL + "[⑧ start:bg / open / stop]");
      && st.out.split(NL).filter((l) => l.includes("台式机 A:")).length === 1, st.out.slice(-500));
   ok("⭐two lines refused for the same reason are one fault with one next step; the last fault is named; the log stays folded",
      st.out.split(NL).filter((l) => l.includes("启动被拒绝")).length === 1
-     && /✗ 执行线:设计、审阅 启动被拒绝（退出码 3）。下一步:运行 node cli\/doctor\.mjs/.test(st.out)
+     && /✗ 执行线:设计、审阅 启动被拒绝。下一步:运行 node cli\/doctor\.mjs/.test(st.out)
      && /上次故障:没有记录/.test(st.out) && /3 项需要注意/.test(st.out)
      && /详细日志:node cli\/status\.mjs --log/.test(st.out) && !/源码闸拒绝启动|stub boot/.test(st.out), st.out.slice(-500));
   ok("⭐the executor CLI row: current / latest / last checked / measured or not; a CLI that is not configured is not listed",
@@ -443,6 +443,14 @@ console.log(NL + "[⑧ start:bg / open / stop]");
   const after = cli("status.mjs");
   ok("⭐the usual start brings the board back, and status then names the last fault",
      back.code === 0 && /电脑在线 · 看板服务正常/.test(after.out) && /上次故障:\d\d-\d\d \d\d:\d\d 看板服务退出，退出码 1/.test(after.out), after.out.slice(-400));
+  // 上次故障是一次运行中断：与面板同一说法，一句发生了什么，原因另起一行。
+  const runFile = join(data, "probes", "board_run.json");
+  writeFileSync(runFile, JSON.stringify({ ...JSON.parse(readFileSync(runFile, "utf8")), last_fault: { kind: "interrupted", at: new Date().toISOString() } }));
+  const cutFault = cli("status.mjs"), faultRows = cutFault.out.split(/\r?\n/);
+  const faultAt = faultRows.findIndex((l) => l.includes("上次故障:"));
+  ok("⭐status names an interrupted run the panel's way: what happened on one line, the possible cause on the next",
+     /上次故障:\d\d-\d\d \d\d:\d\d 看板运行中断$/.test(faultRows[faultAt] || "") && /^\s+原因:可能是关机、断电或进程被结束$/.test(faultRows[faultAt + 1] || ""),
+     faultRows.slice(faultAt, faultAt + 2).join(" | "));
   // A wrapper that went away without a stop (power loss, a killed process): the record still says running.
   cli("stop.mjs", ["--force"]);
   const gone = spawnSync(process.execPath, ["-e", ""], { windowsHide: true });
@@ -527,6 +535,14 @@ console.log(NL + "[⑧b 正常停止与中断]");
   ok("⭐记录写着运行中、进程已不在、没有这次运行的标记：status 说中断，下次启动记中断",
      /运行中断/.test(down3.cause) && BR.readRunRecord(d3).last_fault?.kind === "interrupted",
      `${down3.cause} | ${JSON.stringify(BR.readRunRecord(d3).last_fault)}`);
+  // 上次故障的说法与面板（core/panel.html 的 homeLastFault）一致；原因单列，不写「守护停止重起」这类内部词。
+  const f = (kind, extra = {}) => ({ kind, at: "2026-11-10T01:02:00.000Z", ...extra });
+  const said = ["restart_loop", "interrupted", "exit"].map((k) => BR.faultText(f(k)) + " " + (BR.faultReason(f(k)) || "")).join(" | ") + " | " + BR.logHint(["不再重起"]).cause;
+  ok("⭐上次故障：连续重启、运行中断与面板同一说法，原因另给，不出现内部词",
+     / 看板连续重启，已停止自动重启$/.test(BR.faultText(f("restart_loop"))) && / 看板运行中断$/.test(BR.faultText(f("interrupted")))
+     && BR.faultReason(f("interrupted")) === "可能是关机、断电或进程被结束" && BR.faultReason(f("restart_loop")) === "短时间内重启次数超过上限"
+     && BR.faultReason(f("exit", { exit_code: 1 })) === "退出码 1" && BR.faultReason(f("exit")) === "进程被结束" && BR.faultReason(null) === null
+     && BR.logHint(["不再重起"]).cause === "看板连续重启，已停止自动重启" && !/守护|重起/.test(said), said);
 }
 
 // ⑨ doctor says where the model traffic goes: a third-party relay (中转站) receives every
