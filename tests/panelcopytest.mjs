@@ -17,6 +17,10 @@ function panelSection(start, end) {
 }
 const readinessSource = panelSection("// ── runtime-readiness(pure;tests/panelcopytest.mjs) ──", "// ── /runtime-readiness ──");
 const profileSource = panelSection("// ── execution-profile-copy(pure;tests/panelcopytest.mjs) ──", "// ── /execution-profile-copy ──");
+// 设置页协作区的文案表与纯函数:用到 display-copy 的 copyLabel,其余自足。
+const coordSource = panelSection("// ── coord-copy(pure;tests/panelcopytest.mjs)──", "// ── /coord-copy ──");
+const coord = new Function("copyLabel", coordSource +
+  "\nreturn { COORD_COPY, armedLabel, coordExecView, coordLockView, coordLockCheck, coordHandoffView, coordHandoffPack, coordJournalView, approvalRowView, aptRemoteLine, aptTokenView };")(copy.copyLabel);
 const readiness = new Function(readinessSource + "\nreturn { runtimeReadiness, runtimeProbeKey };")();
 const profileCopy = new Function(profileSource + "\nreturn {executionChannelName,executionAuthName,executionBillingName,executionBudgetText,taskExecutionChoices};")();
 
@@ -633,14 +637,110 @@ test("回执区句末与补充指示框按执行结果和服务端去向说：�
   assert.ok(!source.includes("请先填写执行回执,再交回智能体"), "缺回执提示不预设交回原智能体");
 });
 
+test("协作区文案：执行者三态与已停止、锁的逾期与持有中、任务类批准只给「打开任务」、上膛的字、远程入口的句子", () => {
+  const T = Date.parse("2026-11-10T06:00:00.000Z"), ago = (min) => new Date(T - min * 60000).toISOString();
+  const ex = (extra) => ({ id: "a", name: "甲", kind: "external", active: true, last_seen: null, status: { current: "", done: [], next: [] }, ...extra });
+  // 执行者:从未心跳「已登记」;有心跳「活动」;离心跳超时不到四分之一时警示色;停止了「已停止」。
+  const state = (x, stale = 20) => { const v = coord.coordExecView(x, T, stale); return [v.state.label, v.state.tone, v.state.icon, v.seen]; };
+  assert.deepEqual(state(ex()), ["已登记", "quiet", "wait", "还没有心跳"]);
+  assert.deepEqual(state(ex({ last_seen: ago(0.5) })), ["活动", "ok", "success", "最后心跳 刚刚"]);
+  assert.deepEqual(state(ex({ last_seen: ago(14) })), ["活动", "ok", "success", "最后心跳 14 分钟前"]);
+  assert.deepEqual(state(ex({ last_seen: ago(15) })), ["活动", "warn", "warn", "最后心跳 15 分钟前"], "20 分钟超时:15 分钟起算接近");
+  assert.equal(coord.coordExecView(ex({ last_seen: ago(15) }), T, 20).state.title, "超过 20 分钟没有心跳按停止处理");
+  assert.deepEqual(state(ex({ last_seen: ago(30) }), 60), ["活动", "ok", "success", "最后心跳 30 分钟前"], "判定用接口给的 stale_min");
+  assert.deepEqual(state(ex({ last_seen: ago(500) }), null), ["活动", "ok", "success", "最后心跳 8 小时 20 分前"], "没给 stale_min 就不判接近");
+  assert.deepEqual(state(ex({ active: false, last_seen: ago(125) })), ["已停止", "quiet", "stop", "最后心跳 2 小时 5 分前"]);
+  assert.deepEqual(state(ex({ active: false })), ["已停止", "quiet", "stop", "还没有心跳"]);
+  const card = coord.coordExecView(ex({ kind: "line", status: { current: "  回归测试  ", next: ["跑测试", "", "写报告", 7] } }), T, 20);
+  assert.deepEqual([card.name, card.id, card.kind, card.current, card.next, card.nextLabel], ["甲", "a", "执行线", "回归测试", ["跑测试", "写报告"], "下一步 2 项"]);
+  const blank = coord.coordExecView(ex({ kind: "constructor", name: "" }), T, 20);
+  assert.deepEqual([blank.name, blank.kind, blank.current, blank.next, blank.nextLabel], ["a", "待核实", "待核实", [], ""], "未知值写「待核实」,不显示机器字段、不写「–」");
+
+  // 锁:逾期由服务端的 overdue 判;过了预计结束、还在宽限里的仍是「持有中」,只多一个 late。
+  const lock = (extra) => ({ id: 7, resource: "device:test-phone", holder: "a", holder_name: "甲", purpose: "回归", started_at: ago(90), expected_end: ago(60), overdue: true, ...extra });
+  const over = coord.coordLockView(lock(), T);
+  assert.deepEqual([over.state.label, over.state.tone, over.state.icon, over.late], ["逾期", "warn", "warn", false]);
+  assert.deepEqual([over.resource, over.holder, over.holderName, over.purpose, over.release], ["device:test-phone", "a", "甲", "回归", "强制释放"]);
+  assert.equal(over.armed, "再按=确认强制释放 device:test-phone，持有者 甲");
+  const held = coord.coordLockView(lock({ overdue: false, expected_end: new Date(T + 30 * 60000).toISOString() }), T);
+  assert.deepEqual([held.state.label, held.state.tone, held.state.icon, held.late], ["持有中", "run", "wait", false]);
+  assert.equal(coord.coordLockView(lock({ overdue: false, expected_end: ago(10) }), T).late, true, "过了预计结束、还没逾期");
+  assert.deepEqual([coord.coordLockView(lock({ holder_name: "", purpose: " " }), T).holderName, coord.coordLockView(lock({ holder_name: "", holder: "", purpose: " " }), T).purpose], ["a", "待核实"]);
+  // 第二下之前的核对。
+  const locks = [lock()];
+  assert.equal(coord.coordLockCheck(locks, "device:test-phone", "a", "7"), "");
+  assert.equal(coord.coordLockCheck(locks, "device:test-phone", "b", "7"), "这把锁已换人，请重新核对");
+  assert.equal(coord.coordLockCheck(locks, "device:test-phone", "a", "8"), "这把锁已重新加锁，请重新核对");
+  assert.equal(coord.coordLockCheck([], "device:test-phone", "a", "7"), "这把锁已经释放");
+  assert.equal(coord.coordLockCheck(null, "device:test-phone", "a", "7"), "这把锁已经释放");
+
+  // 待你批准:任务类只给「打开任务」;版本确认、逾期锁、执行者请求留按钮。
+  const apv = (kind, extra) => ({ id: kind + ":9:1", kind, title: "标题", summary: "摘要", created_at: ago(1), expected_version: 1,
+    actions: ["approve", "reject"], labels: { approve: "通过", reject: "打回" }, detail_ref: { type: "task", id: 9 }, ...extra });
+  for (const [kind, word] of [["decision", "待裁定"], ["delivery", "待验收"], ["release", "放行确认"]]) {
+    const v = coord.approvalRowView(apv(kind));
+    assert.deepEqual([v.kind, v.open, v.actions, v.note], [word, { type: "task", id: 9, label: "打开任务" }, [], null], kind);
+  }
+  const version = coord.approvalRowView(apv("version", { id: "version:upgrade:r2.0", detail_ref: { type: "setup" }, labels: { approve: "更新并重启", reject: "暂不更新" } }));
+  assert.deepEqual(version.actions, [{ decision: "approve", label: "更新并重启", armed: "再按=确认更新并重启", primary: true, needsNote: false },
+    { decision: "reject", label: "暂不更新", armed: "再按=确认暂不更新", primary: false, needsNote: false }]);
+  assert.deepEqual([version.open, version.key, version.note], [null, "version:upgrade", { required: false, max: 500, label: "备注", placeholder: "备注，可不填" }]);
+  const lk = coord.approvalRowView(apv("lock", { id: "lock:7:1790000000000", title: "device:test-phone", detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, labels: { approve: "强制释放", reject: "保留" } }));
+  assert.deepEqual([lk.kind, lk.open, lk.key], ["逾期锁", { type: "lock", resource: "device:test-phone" }, "lock:7"]);
+  assert.deepEqual(lk.actions.map((x) => [x.label, x.armed, x.needsNote]), [["强制释放", "再按=确认强制释放", true], ["保留", "再按=确认保留", false]]);
+  assert.deepEqual(lk.note, { required: true, max: 200, label: "释放理由", placeholder: "释放理由，必填" }, "理由随备注进流水,上限跟服务端的强制释放理由一致");
+  const req = coord.approvalRowView(apv("request", { risk: "high", detail_ref: { type: "request", id: 9 }, labels: undefined }));
+  assert.deepEqual([req.kind, req.actions.map((x) => x.label)], ["执行者请求 · 高风险", ["批准", "拒绝"]]);
+  const odd = coord.approvalRowView({ id: "future:1:1", kind: "future_kind", risk: "toString", title: "", summary: undefined, actions: ["approve", "escalate"], detail_ref: null });
+  assert.deepEqual([odd.kind, odd.title, odd.summary, odd.blocked, odd.createdAt, odd.actions.map((x) => x.decision)], ["待核实 · 待核实", "待核实", "", "", null, ["approve"]],
+    "未知的种类和风险写「待核实」,认不得的动作不给按钮");
+
+  // 上膛的字:再按=确认 + 原按钮文字。
+  assert.equal(coord.armedLabel("更新并重启"), "再按=确认更新并重启");
+  assert.equal(coord.armedLabel("吊销"), "再按=确认吊销");
+  assert.equal(coord.armedLabel(" 批准 "), "再按=确认批准");
+
+  // 远程入口那一句。
+  assert.equal(coord.aptRemoteLine({ enabled: false, listening: [], allow_ips: [] }), "远程入口已关闭。在配置里打开 remote_access。");
+  assert.equal(coord.aptRemoteLine(null), "远程入口已关闭。在配置里打开 remote_access。");
+  assert.equal(coord.aptRemoteLine({ enabled: true, listening: ["192.168.1.5:47830"], allow_ips: ["192.168.1.20", "192.168.1.21"], errors: [] }),
+    "远程入口：192.168.1.5:47830 · 允许来源 192.168.1.20、192.168.1.21");
+  assert.equal(coord.aptRemoteLine({ enabled: true, listening: [], allow_ips: [], errors: ["0.0.0.0:47830"] }), "远程入口：未在监听 · 允许来源 未设置 · 监听失败 0.0.0.0:47830");
+  const token = coord.aptTokenView({ id: 4, label: "手机", created_at: ago(600), last_used_at: ago(3), active: true }, T);
+  assert.deepEqual([token.no, token.label, token.used, token.revoke], ["#4", "手机", "最近使用 3 分钟前", "吊销"]);
+  assert.equal(coord.aptTokenView({ id: 5, label: "", created_at: ago(1) }, T).used, "未使用");
+
+  // 交接与流水。
+  const hand = { id: 3, executor: "a", reason: "heartbeat_stale", created_at: ago(5), package: { executor: { id: "a", name: "甲" }, goal: "回归首页", done: ["改了状态条"],
+    next: ["跑测试", { omitted: true, see: "full_status.next[1]", chars: 400 }], journal: { recent_ids: [12, 13] }, locks: [{ resource: "device:test-phone", purpose: "回归", overdue: true }, { resource: "repo:main", purpose: "" }] } };
+  const row = coord.coordHandoffView(hand, [{ holder: "a" }, { holder: "b" }]);
+  assert.deepEqual([row.no, row.who, row.reason, row.goal, row.locks, row.state.label, row.state.tone, row.pack], ["#3", "甲", "心跳中断", "回归首页", "仍持有 1 把锁", "待接手", "quiet", "查看交接包"]);
+  assert.equal(coord.coordHandoffView(hand, []).locks, "不持锁", "锁放掉以后不再写仍持有");
+  assert.equal(coord.coordHandoffView(hand).locks, "仍持有 2 把锁", "没给现在的锁表就按交接包里记的算");
+  assert.deepEqual([coord.coordHandoffView({ id: 4, executor: "x", reason: "stop", package: {} }).reason, coord.coordHandoffView({ id: 4, executor: "x", reason: "hasOwnProperty", package: {} }).reason], ["主动停止", "待核实"]);
+  const pack = coord.coordHandoffPack({ ...hand, full_status: { done: ["改了状态条"], next: ["跑测试", "补 390 宽的截图"] } });
+  assert.deepEqual(pack, { sections: [["已完成", ["改了状态条"]], ["下一步", ["跑测试", "补 390 宽的截图"]], ["交接时仍持有的锁", ["device:test-phone · 回归 · 逾期", "repo:main"]]],
+    journal: "最近流水编号 #12 #13", ackLabel: "接手方运行", command: "board.py handoff ack 3" });
+  assert.deepEqual(coord.coordHandoffPack(hand).sections[1], ["下一步", ["跑测试"]], "没有全文时只列交接包里整项保留的");
+  assert.deepEqual(["operator", "system", "ext-a", ""].map((executor) => coord.coordJournalView({ at: ago(1), executor, body: "x" }).who), ["操作员", "看板", "ext-a", "待核实"]);
+  // 文案表:空态与小标题逐句。
+  const C = coord.COORD_COPY;
+  assert.deepEqual([C.empty.journal, C.empty.locks, C.empty.handoffs, C.empty.approvals, C.empty.execs.join("")],
+    ["还没有流水。", "没有被锁的资源。", "没有待接手的交接。", "没有要你批准的事项。", "用 board.py exec register 登记第一个执行者。"]);
+  assert.deepEqual(C.head, { approvals: "待你批准", execs: "执行者", external: "外部执行线", locks: "资源锁", handoffs: "待接手的交接", journal: "最近流水" });
+  assert.equal(C.unknown, "待核实");
+});
+
 // ══ 文案闸(卡 #16):给 docs/style-guide.md「不写注释性语句」装一个机器闸 ══════════════
 //  为什么:卡 #9 清掉了二十多句注释性文案,但规则落地只有纪律 —— 下一个写引导步骤、错误文案或页脚
 //  说明的人(人或模型)照旧能写回「(开始干活前需要)」「—— 其实…」,没有任何机器会出声。文案最容易
 //  悄悄回潮:#9 清掉的那些,有好几句就是历次迭代一层层加上去的。
 //
-//  ⚠ 这个闸**不是全量扫描**,够得到的面只有下面三个;够不到的明说,不假装:
-//   A core/server.mjs 的上手引导四个函数(blessStep / upgradeState / setupState / acceptPreview)里的
-//     字面量 —— 这一面是全量的:那几个函数产出的 title/detail/hint/label/confirm 全从这里来。
+//  ⚠ 这个闸**不是全量扫描**,够得到的面只有下面四个;够不到的明说,不假装:
+//   A core/server.mjs 的上手引导四个函数(blessStep / upgradeState / setupState / acceptPreview)与批准事项
+//     四个函数(taskApprovalEntry / versionApprovalEntry / lockApprovalEntry / requestApprovalEntry)里的
+//     字面量 —— 这一面是全量的:那几个函数产出的 title/detail/hint/label/confirm/summary 全从这里来。
+//   D core/panel.html 的 coord-copy 段(设置页协作区的文案表与纯函数)—— 整段的字面量,全量。
 //   B core/panel.html 的 HTML 文本节点(按 `>…<` 取)—— 属性值永远不在这两个尖括号之间,所以
 //     title= / aria-label / placeholder 结构上就不在扫描里(style-guide 明说悬停说明允许写解释);
 //     SVG 的 <title> 与执行器设置的「说明」折叠区(cfg-about)同理剔除。
@@ -733,11 +833,19 @@ test("文案闸：引导与面板的可见文案里没有注释性语句（规�
     return serverSrc.slice(a, b);
   };
   const found = [];
-  // ── A 面:上手引导的四个函数
+  // ── A 面:上手引导的四个函数,加批准事项的四个函数(待你批准那几行的标题、摘要、按钮字都从这里来)
   for (const head of ["function blessStep() {", "function upgradeState() {", "function setupState() {",
-                      "function acceptPreview(tree, prev) {"])
+                      "function acceptPreview(tree, prev) {", "function taskApprovalEntry(t) {",
+                      "function versionApprovalEntry(op = null) {", "function lockApprovalEntry(l) {",
+                      "function requestApprovalEntry(r) {"])
     for (const lit of literalsOf(fnSlice(head)))
       for (const rule of copyFindings(lit.text)) found.push({ file: "core/server.mjs", ...lit, rule });
+
+  // ── D 面:设置页协作区的文案段(coord-copy),整段字面量
+  const coordLits = literalsOf(coordSource), coordLine = source.slice(0, source.indexOf(coordSource)).split("\n").length - 1;
+  assert.ok(coordLits.length > 60, "coord-copy 段的字面量没扫到");
+  for (const lit of coordLits)
+    for (const rule of copyFindings(lit.text)) found.push({ file: "core/panel.html", ...lit, line: lit.line + coordLine, rule });
 
   // ── B 面:panel.html 的 HTML 文本节点
   const panelText = source

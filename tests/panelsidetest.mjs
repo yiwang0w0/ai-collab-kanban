@@ -583,3 +583,7 @@ test("还没有用量记录的卡写明没有记录；其他电脑的卡不取�
   await far.context.sideUsageLoad(far.context.sideCard(), true);
   assert.equal(asked, 0);
 });
+
+// 设置页协作区的面板测试在 tests/panelcoordtest.mjs,用的是同一种最小节点模拟。它还没单独登记进 package.json 与 CI 的
+// 测试清单,先随这个文件一起跑(同一个进程,用例互不共享状态);以后单独登记时删掉这一行。
+import "./panelcoordtest.mjs";

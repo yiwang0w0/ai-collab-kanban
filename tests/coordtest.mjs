@@ -345,22 +345,22 @@ test("面板协作区:逾期锁与待接手交接标出,外部执行线不出启
   const src = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
   assert.match(src, /data-toc="set-coord"/);
   assert.match(src, /fetch\("\/api\/coord"\)/);
-  const a = src.indexOf("function renderCoord(){"), b = src.indexOf("\n}\n", a) + 3;
+  // 协作区改成用节点拼、字走 textContent(不再整段 innerHTML):这里核对每一行要显示的字,
+  //   节点层面(逾期行的警示色、重画保护、强制释放)在 tests/panelcoordtest.mjs。守的语义不变:逾期锁与待接手的交接标出,执行者名不当 HTML。
+  const a = src.indexOf("// ── coord-copy(pure;tests/panelcopytest.mjs)──"), b = src.indexOf("// ── /coord-copy ──", a);
   assert.ok(a > 0 && b > a);
-  const box = { innerHTML: "" };
-  const env = { document: { getElementById: () => box }, esc: (x) => String(x ?? "").replace(/[&<>"']/g, (c) => "&#" + c.charCodeAt(0) + ";"),
-    icon: (n) => `[${n}]`, localTime: (i) => i.slice(11, 16), ago: () => "刚才", copyLabel: (l, v, f) => Object.hasOwn(l, v) ? l[v] : f,
-    lineLabel: (l) => l, COORD_KIND: { external: "外部执行" }, COORD_REASON: { heartbeat_stale: "心跳中断" } };
-  const render = new Function(...Object.keys(env), "let coordData;" + src.slice(a, b) + ";return (d) => { coordData = d; renderCoord(); return document.getElementById(\"coord\").innerHTML; };")(...Object.values(env));
+  const V = new Function("copyLabel", src.slice(a, b) + ";return { coordExecView, coordLockView, coordHandoffView };")((l, v, f) => Object.hasOwn(l, v) ? l[v] : f);
   const t = new Date().toISOString();
-  const html = render({ executors: [{ id: "a", name: "<甲>", kind: "external", active: false, last_seen: t, status: { current: "回归", next: ["跑测试"] } }],
-    locks: [{ resource: "device:test-phone", holder_name: "甲", purpose: "回归", started_at: t, expected_end: t, overdue: true }],
-    handoffs: [{ id: 3, executor: "a", reason: "heartbeat_stale", created_at: t, package: { goal: "回归", next: ["跑测试"] } }],
-    journal: [], external_lines: ["ext"] });
-  assert.match(html, /data-tone="warn"[^]*逾期/);
-  assert.match(html, /心跳中断[^]*待接手/);
-  assert.match(html, /外部执行线：ext/);
-  assert.ok(!html.includes("<甲>"), "执行者名转义");
+  const lock = V.coordLockView({ resource: "device:test-phone", holder: "a", holder_name: "甲", purpose: "回归", started_at: t, expected_end: t, overdue: true }, Date.now());
+  assert.deepEqual([lock.state.tone, lock.state.label], ["warn", "逾期"]);
+  const hand = V.coordHandoffView({ id: 3, executor: "a", reason: "heartbeat_stale", created_at: t, package: { goal: "回归", next: ["跑测试"] } });
+  assert.deepEqual([hand.reason, hand.state.label], ["心跳中断", "待接手"]);
+  const ex = V.coordExecView({ id: "a", name: "<甲>", kind: "external", active: false, last_seen: t, status: { current: "回归", next: ["跑测试"] } }, Date.now(), 20);
+  assert.deepEqual([ex.name, ex.kind, ex.state.label], ["<甲>", "外部执行", "已停止"]);
+  const draw = src.slice(src.indexOf("function renderCoord(){"), src.indexOf("function renderApprovals(){"));
+  assert.ok(draw.includes('if (l.state.tone === "warn") row.dataset.tone = "warn";'), "逾期的锁行带警示色左边条");
+  assert.ok(draw.includes('C.head.execs + (ext ? " · " + C.head.external + "：" + ext : "")'), "外部执行线写在执行者小标题里");
+  assert.ok(!draw.split("\n").filter((line) => !/^\s*\/\//.test(line)).join("\n").includes("innerHTML"), "执行者名按纯文本放,不拼 HTML");
   const rig = src.slice(src.indexOf("function renderRig(){"), src.indexOf("let MODELS = []"));
   assert.match(rig, /w\.external \? `<span class="wk-acts"><\/span><\/div>`/, "外部执行线不渲染齿轮与启动按钮");
 });

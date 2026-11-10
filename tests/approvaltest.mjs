@@ -289,16 +289,18 @@ test("流水记下来源与操作者;board.py approvals / approval-token;面板�
     const html = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
     assert.ok(html.includes('await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`,'));
     assert.ok(html.includes('source: { client: "panel" }'));
-    const a = html.indexOf("function renderApprovals(){"), z = html.indexOf("\n}\n", a) + 3;
-    const box = { innerHTML: "" };
-    const env = { document: { getElementById: () => box }, esc: (x) => String(x ?? "").replace(/[&<>"']/g, (ch) => "&#" + ch.charCodeAt(0) + ";"),
-      copyLabel: (l, v, f) => Object.hasOwn(l, v) ? l[v] : f, localTime: (i) => i.slice(11, 16),
-      APV_KIND: { request: "执行者请求" }, APV_RISK: { high: "高风险" } };
-    const render = new Function(...Object.keys(env), "let approvalData;" + html.slice(a, z) +
-      ";return (d) => { approvalData = d; renderApprovals(); return document.getElementById(\"approvals\").innerHTML; };")(...Object.values(env));
-    const out = render({ approvals: [{ id: "request:9:1", kind: "request", title: "<x>", summary: "重启共享设备上的应用", risk: "high",
-      created_at: new Date().toISOString(), expected_version: 1, actions: ["approve", "reject"], labels: { approve: "批准", reject: "拒绝" } }] });
-    assert.match(out, /待你批准 1[^]*执行者请求 · 高风险[^]*data-apv="request:9:1" data-apv-decision="approve" data-apv-version="1">批准/);
-    assert.ok(!out.includes("<x>"), "标题转义");
+    // 这一块改成用节点拼、字走 textContent(不再整段 innerHTML):这里核对这一行要显示的字和按钮带的数据,
+    //   节点层面(两押、备注、重画保护)在 tests/panelcoordtest.mjs。守的语义不变:只用事项自带的字段,标题不当 HTML。
+    const a = html.indexOf("// ── coord-copy(pure;tests/panelcopytest.mjs)──"), z = html.indexOf("// ── /coord-copy ──", a);
+    assert.ok(a > 0 && z > a);
+    const view = new Function("copyLabel", html.slice(a, z) + ";return approvalRowView;")((l, v, f) => Object.hasOwn(l, v) ? l[v] : f);
+    const row = view({ id: "request:9:1", kind: "request", title: "<x>", summary: "重启共享设备上的应用", risk: "high",
+      created_at: new Date().toISOString(), expected_version: 1, actions: ["approve", "reject"], labels: { approve: "批准", reject: "拒绝" } });
+    assert.deepEqual([row.id, row.kind, row.title, row.summary, row.version, row.actions.map((x) => [x.decision, x.label])],
+      ["request:9:1", "执行者请求 · 高风险", "<x>", "重启共享设备上的应用", 1, [["approve", "批准"], ["reject", "拒绝"]]]);
+    const draw = html.slice(html.indexOf("function renderApprovals(){"), html.indexOf("function renderApt(){"));
+    assert.ok(draw.includes('C.head.approvals + " " + rows.length'), "小标题带件数");
+    assert.ok(draw.includes("Object.assign(b.dataset, { apv: a.id, apvDecision: x.decision, apvVersion: String(a.version) });"), "按钮带事项 id、决定与版本");
+    assert.ok(!draw.includes("innerHTML"), "标题按纯文本放,不拼 HTML");
   } finally { await B.stop(); }
 });

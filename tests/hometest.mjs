@@ -279,7 +279,8 @@ test("side panel pins: the board's own buttons, the note beside the button, draf
   assert.ok(src.includes('p.set("task", uid)') && src.includes('window.addEventListener("hashchange", sideFromHash)'));
   assert.ok(src.includes("verdictDraft.set(Number(id), e.target.value);" + String.fromCharCode(10) + "  persistDrafts();"));
   assert.ok(src.includes("function loadDrafts(){ try {") && src.includes("sessionStorage.setItem(DRAFTS_KEY"));
-  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #line-add select, #home-new input")'),
+  // 选择器后面加了协作区批准行的备注(#approvals input);守的语义不变:没发出去的新建任务标题拦住自动刷新。
+  assert.ok(src.includes('querySelectorAll("textarea, #line-add input, #line-add select, #home-new input, #approvals input")'),
     "an unsent new-task title holds the page against an automatic reload too");
   // Creating a task is a plain POST /api/tasks through the panel's post(): no release key, no internal id.
   const at = src.indexOf('getElementById("home-new-form").addEventListener("submit"');
@@ -308,13 +309,23 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
     for (const [, s, body] of html.matchAll(/<textarea\b([^>]*)>([\s\S]*?)<\/textarea>/g))
       els.push({ scope, tagName: "TEXTAREA", id: attr(s, "id"), type: "textarea", value: body });
   }
+  // 协作区的三样:批准行的备注(#approvals input)、只显示一次的新令牌(#apt-new 没带 hidden)、展开中的强制释放理由。
+  const coord = { notes: [], tokenShown: false, lockForm: false };
   const document = { querySelectorAll: (sel) => sel.split(",").flatMap((part) => {
     part = part.trim();
     if (part === "textarea") return els.filter((e) => e.tagName === "TEXTAREA");
+    if (part === "#approvals input") return coord.notes;
     const m = part.match(/^#(line-add|home-new) (input|select)$/);
     assert.ok(m, "选择器多了没造过的部分:" + part);
     return els.filter((e) => e.scope === m[1] && e.tagName === m[2].toUpperCase());
-  }) };
+  }), querySelector: (sel) => {
+    const hit = sel.split(",").map((part) => part.trim()).some((part) => {
+      if (part === "#apt-new:not([hidden])") return coord.tokenShown;
+      if (part === "#coord [data-lock-form]") return coord.lockForm;
+      assert.fail("选择器多了没造过的部分:" + part);
+    });
+    return hit ? {} : null;
+  } };
   const hasUnsavedInput = new Function("document", src.slice(a, b) + "\nreturn hasUnsavedInput;")(document);
   const el = (id) => { const e = els.find((x) => x.id === id); assert.ok(e, id); return e; };
   assert.equal(el("line-add-ro").type, "checkbox"); assert.equal(el("line-add-auto").value, "on");
@@ -332,6 +343,21 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
   assert.equal(hasUnsavedInput(), true, "身份改成评审 = 偏离默认");
   el("line-add-kind").selectedIndex = 0; el("home-new-line").selectedIndex = 2;
   assert.equal(hasUnsavedInput(), false, "新建任务的下拉由代码填值,不算");
+  // 协作区:写了一半的批准备注、还开着的新令牌、展开中的强制释放理由,各自都拦。
+  assert.ok(src.slice(a, b).includes('document.querySelector("#apt-new:not([hidden]), #coord [data-lock-form]")'), "选择器含 #apt-new 与展开中的理由");
+  coord.notes = [{ tagName: "INPUT", type: "text", value: "  " }];
+  assert.equal(hasUnsavedInput(), false, "批准备注只有空白不算");
+  coord.notes = [{ tagName: "INPUT", type: "text", value: "持有者已离开" }];
+  assert.equal(hasUnsavedInput(), true, "批准行写了备注");
+  coord.notes = []; coord.tokenShown = true;
+  assert.equal(hasUnsavedInput(), true, "新令牌只显示一次,还开着就不自动刷新");
+  coord.tokenShown = false; coord.lockForm = true;
+  assert.equal(hasUnsavedInput(), true, "强制释放的理由框开着,空着也算");
+  coord.lockForm = false;
+  assert.equal(hasUnsavedInput(), false);
+  // 新令牌显示框是文本块不是输入框:不被 textarea / input 的判定带走,靠 #apt-new 的显隐判。
+  assert.match(src, /<code class="apt-token" id="apt-new-token" tabindex="0" aria-label="新生成的批准令牌"><\/code>/);
+  assert.ok(src.includes('document.getElementById("apt-new-token").textContent = r.token;') && src.includes('document.getElementById("apt-new").hidden = true;'));
 });
 
 test("手机看板一次一栏:默认等待中有卡优先,定位与筛选切到命中卡所在的栏,选择只存本标签页且读写包 try", () => {
