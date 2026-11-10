@@ -532,3 +532,38 @@ test("协作安全:同一棵树再次待确认时是新的事项 id,旧的决定
     assert.equal((await B.decide(v1.id, { decision: "approve", source: src("cli"), expected_version: v1.expected_version })).status, 409, "旧 id 不能重放");
   } finally { await B.stop(); }
 });
+
+test("协作安全:版本确认与更新事项带原确认界面的改动清单;更新事项写明同时确认受闸代码版本", { timeout: 180000 }, async () => {
+  // 上一个提交的树当作「上次确认的版本」;浅克隆里没有上一个提交时退回首次确认。
+  const g = spawnSync("git", ["-C", ROOT, "rev-parse", "HEAD~1^{tree}", "HEAD^{tree}"], { encoding: "utf8", windowsHide: true });
+  const [prev, head] = g.status === 0 ? g.stdout.trim().split(/\s+/) : [null, null];
+  const files = prev && prev !== head ? { accepted_rev: prev + "\n" } : {};
+  const check = (item, what) => {
+    assert.ok(typeof item.confirm === "string" && item.confirm.includes("确认版本"), `${what} 带原确认文本:${JSON.stringify(item)}`);
+    assert.ok(item.changes && Array.isArray(item.changes.stat), `${what} 带改动清单`);
+    if (files.accepted_rev) {
+      assert.equal(item.changes.prev, prev, "写明上次确认的树");
+      assert.ok(item.changes.files > 0 && item.changes.stat.length > 0, `${what} 列出改了哪些文件:${JSON.stringify(item.changes)}`);
+      assert.ok(item.confirm.includes(item.changes.stat[0].trim()), "确认文本里就是这份清单");
+    } else assert.match(item.confirm, /首次确认/);
+  };
+  const bless = await board({ config: { gated_subtree: "." }, files });
+  try {
+    const v = (await bless.list()).find((a) => a.kind === "version");
+    assert.ok(v.id.startsWith("version:bless:"), v.id);
+    check(v, "版本确认");
+    const c = bless.cli("approvals", "ls");
+    assert.ok(c.out.includes("确认之后执行线才会用这个版本起跑"), `命令行列表打出确认文本:${c.out}`);
+  } finally { await bless.stop(); }
+  const up = await board({ config: { gated_subtree: "." }, files, env: { BOARD_TEST_BOOT_REV: "0000000" } });
+  try {
+    const v = (await up.list()).find((a) => a.kind === "version");
+    assert.ok(v.id.startsWith("version:upgrade:"), v.id);
+    assert.match(v.summary, /同时确认受闸代码版本 [0-9a-f]{12}/, `更新事项要写明这一下同时确认版本:${v.summary}`);
+    assert.match(v.accepts_tree, /^[0-9a-f]{40,64}$/);
+    assert.ok(v.summary.includes(v.accepts_tree.slice(0, 12)));
+    check(v, "更新");
+    assert.ok(v.confirm.includes("接着看板会自己重启"), "更新事项的确认文本含重启会打断什么");
+    assert.deepEqual(Object.keys(v.lines).sort(), ["resume", "stop"]);
+  } finally { await up.stop(); }
+});

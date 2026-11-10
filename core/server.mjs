@@ -2890,6 +2890,8 @@ function taskApprovalEntry(t) {
 // 「这棵树待确认」会重复出现(回滚、撤销后重做):版本段带上次确认记录的写入时刻,每确认一次就换一个 id,
 // 旧的决定记录不会把同一棵树的下一次确认滤掉。首次确认(还没有记录)为 0。
 const acceptedStamp = () => { try { return Math.floor(statSync(acceptedFile()).mtimeMs); } catch { return 0; } };
+// 事项要带原确认界面给人看的东西:上次确认的树、git diff --stat 的文件清单(前 14 行)。只有两个短哈希的摘要等于不看 diff 就确认。
+const versionChanges = (pv) => ({ prev: pv.prev, files: pv.files, stat: pv.stat.slice(0, 14), more: Math.max(0, pv.stat.length - 14) });
 /** 版本确认:代码已更新待重启(升级)优先;否则看板版本待确认(bless)。 */
 function versionApprovalEntry(op = null) {
   const up = upgradeState();
@@ -2899,9 +2901,14 @@ function versionApprovalEntry(op = null) {
     // 待重启的更新只属于这个进程(重启后就不再待更新):版本段带进程启动时刻,回退后再次更新到同一提交也是新的 id。
     const version = `${up.on_disk}.${tree ? tree.slice(0, 16) : "0"}.${STARTED}`;
     const id = approvals.makeId("version", "upgrade", version);
-    return { item: { id, kind: "version", title: "更新看板代码", summary: `从 ${up.running} 更新到 ${up.on_disk},随后重启看板`,
+    // tree 非空 = 受闸子树的新树还没确认过:批准更新会先把它写进确认记录(acceptForUpgrade)。这一步要写在摘要里,并带上改动清单。
+    const pv = tree ? acceptPreview(tree, readAccepted()) : null;
+    return { item: { id, kind: "version", title: "更新看板代码",
+                     summary: `从 ${up.running} 更新到 ${up.on_disk},随后重启看板` +
+                       (pv ? `;同时确认受闸代码版本 ${tree.slice(0, 12)}` + (pv.files != null ? `(上次确认后改了 ${pv.files} 个文件)` : "(首次确认)") : ""),
                      detail_ref: { type: "setup", api: "/api/setup" }, created_at: seenAt(id), expected_version: version,
-                     actions: [...APPROVE_REJECT], labels: { approve: "更新并重启", reject: "暂不更新" }, in_progress: up.apply.in_progress },
+                     actions: [...APPROVE_REJECT], labels: { approve: "更新并重启", reject: "暂不更新" }, in_progress: up.apply.in_progress,
+                     confirm: up.apply.confirm, lines: up.apply.lines, ...(pv ? { accepts_tree: tree, changes: versionChanges(pv) } : {}) },
              route: { op: "upgrade", tree } };
   }
   if (op && op !== "bless") return null;
@@ -2913,7 +2920,8 @@ function versionApprovalEntry(op = null) {
   return { item: { id, kind: "version", title: "确认当前版本",
                    summary: `确认版本 ${tree.slice(0, 12)}` + (pv.files != null ? `,上次确认后改了 ${pv.files} 个文件` : ",首次确认"),
                    detail_ref: { type: "setup", api: "/api/setup" }, created_at: seenAt(id), expected_version: version,
-                   actions: [...APPROVE_REJECT], labels: { approve: "确认此版本", reject: "暂不确认" } },
+                   actions: [...APPROVE_REJECT], labels: { approve: "确认此版本", reject: "暂不确认" },
+                   confirm: pv.confirm, changes: versionChanges(pv) },
            route: { op: "bless", tree } };
 }
 /** 逾期的资源锁:问人要不要强制释放。版本段 = 这次持有的预计结束时刻(毫秒)。 */

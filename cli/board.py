@@ -324,6 +324,9 @@ def approvals_cmd(cmd):
                 print(f"  {vis(a['id'])}{vis(risk)}  {vis(a['summary'])}  可选 {'/'.join(a.get('actions') or [])}")
                 # 执行者请求:摘要可能截断,决定是对完整的 action 生效的,所以整段再打一遍。
                 if a.get("action") and a["action"] != a["summary"]: print(f"      完整动作:{vis(a['action'])}")
+                # 版本确认 / 更新:原确认界面的整段文字(改了哪些文件、会停哪些线),看过再批。
+                for line in str(a.get("confirm") or "").split(chr(10)):
+                    if line.strip(): print(f"      {vis(line)}")
         elif sub in ("approve", "reject"):
             aid = pos(3)
             if not aid or aid.count(":") < 2:
