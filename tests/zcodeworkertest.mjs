@@ -192,7 +192,7 @@ test('默认关:两把配置侧钥匙各缺一把,都在任何副作用之前拒
  const plan=zcodeWorkerPlan(f.db,f.config,environment);assert.equal(plan.state,'disabled');assert.deepEqual(plan.switch,{config_enabled:true,environment_released:false,open:false});assert.deepEqual(tables(),before);
 });
 
-test('端到端:假卡经 enqueue 登记后被领取、执行、按四节合同回传,进入待验收;用量记 null,许可只用一次',{skip},async()=>{
+test('端到端:假卡经 enqueue 登记后被领取、执行、按四节合同回传,进入待验收;用量记 null,许可只用一次',{skip},async context=>{
  const f=await fixture();
  // 本机操作者:建目标与卡(route=mcp、line=线名)→ 放行 → enqueue 登记祖先链。
  const goal=store.add(f.db,{subject:'synthetic goal',kind:'goal'}),id=store.add(f.db,{subject:'synthetic task',description:'PRIVATE-TASK-BODY',acceptance:'synthetic receipt only',route:'mcp',line:'zcode',released:0,parentId:goal});
@@ -215,6 +215,8 @@ test('端到端:假卡经 enqueue 登记后被领取、执行、按四节合同�
  assert.equal(line.settled_success,true);assert.equal(line.task_read_observed,true);assert.equal(line.delivered_via,'existing_mcp_report_preserved');assert.equal(line.contract_ok,true);assert.ok(!Object.hasOwn(line,'contract_errors'));
  assert.equal(line.host_verify,'not_applicable');assert.equal(line.host_commit,'not_applicable');assert.equal(line.reason,'SUCCESS');assert.ok(line.note);
  assert.ok(existsSync(join(f.scheduler.root,a.assignment_id,'ACCOUNTED.json')));
+ // 把这次合成运行的关键回执留在测试输出里(只有代码、计数与本次临时库的 ID)。
+ context.diagnostic(JSON.stringify({card:{status:now.status,waiting_for:now.waiting_for,attempts:now.attempts},dispatch:{phase:d.phase,delivery:result.delivery,usage:result.usage,real_model_call_confirmed:result.real_model_call_confirmed,cleanup:o.process.cleanup},quota_used:used(f),ledger_row:line}));
  // 供应商收到的提示:固定安全句在前,四节合同附录居中,运行标识在末行。
  const prompt=readFileSync(f.capture,'utf8');assert.ok(prompt.startsWith(FIXED_PROMPT));assert.ok(prompt.endsWith('\n'+bound(d)));assert.ok(prompt.length<=12000);
  for(const heading of HEADINGS)assert.ok(prompt.split('\n').includes(heading));assert.ok(prompt.includes('report_result'));assert.equal(launch(f).prompt_sha256,sha256(prompt));
@@ -263,6 +265,10 @@ test('两把钥匙:库内预算大于配置声明即拒;角色必须单次尝试
  await assert.rejects(open(wide),{code:'BUDGET_EXCEEDS_DECLARED'});await untouched(wide);
  const twice=await fixture({attempts:2});card(twice);
  await assert.rejects(open(twice),{code:'ROLE_NOT_SINGLE_ATTEMPT'});await untouched(twice);
+ // 执行角色被改成别的类别:不是 zcode / implement / board-tools 就不开。
+ const reviewer=await fixture();card(reviewer);
+ putRole(reviewer.db,{role_id:'zcode',kind:'review',projects:['demo'],capabilities:['board-tools'],runtime:'zcode',model:'GLM-5.3',effort:'low',tools:'read-only',priority:10,enabled:true,limits:LIMITS},1);
+ await assert.rejects(open(reviewer),{code:'ROLE_UNSUPPORTED'});await untouched(reviewer);
  const f=await fixture(),t=card(f),w=await open(f);
  putQuota(f.db,{quota_id:f.q.quota_id,runtime:'zcode',execution_mode:'provider',projects:['demo'],limit_total:2,enabled:true},1);
  await assert.rejects(w.tick(),{code:'BUDGET_EXCEEDS_DECLARED'});assert.equal(used(f),0);assert.equal(launches(f),0);assert.equal(row(f,t.id).status,'not_started');
@@ -301,11 +307,15 @@ test('失败不重试:进程以退出码 7 结束后额度已扣;人工打回并
  assert.equal(used(f),1);assert.equal(launches(f),1);assert.equal(count(f,'broker_assignments'),1);assert.equal(row(f,t.id).attempts,1);
  await w.close();
 });
-test('超时不退额度:无输出时限到点后结算为 timeout,不重启',{skip},async()=>{
- const f=await fixture({mode:'idle',idle:600,limit:2}),t=card(f),w=await open(f),r=await w.tick();assert.equal(r.results[0].phase,'settled',JSON.stringify([r,f.events]));
+test('超时不退额度:无输出时限到点后结算为 timeout,不重启;账本写不进去只报告、不阻塞结算',{skip},async()=>{
+ const f=await fixture({mode:'idle',idle:600,limit:2}),t=card(f);
+ // 账本路径上放一个目录:追加必然失败。
+ mkdirSync(f.config.ledger_file);
+ const w=await open(f),r=await w.tick();assert.equal(r.results[0].phase,'settled',JSON.stringify([r,f.events]));assert.equal(r.accounted,1);
  const o=observation(f);
  assert.equal(o.status,'timeout');assert.equal(o.diagnostic,'IDLE_TIMEOUT');assert.equal(o.process.cleanup,'job_empty');assert.equal(used(f),1);
- assert.equal(row(f,t.id).waiting_for,'decision');assert.equal(ledger(f)[0].reason,'IDLE_TIMEOUT');
+ assert.equal(row(f,t.id).waiting_for,'decision');
+ assert.equal(f.events.filter(e=>e.code==='LEDGER_WRITE_FAILED').length,1);assert.equal(f.events.find(e=>e.kind==='accounted').ledger_written,false);assert.equal(f.events.find(e=>e.kind==='accounted').settled_success,false);
  assert.equal((await w.tick()).status,'idle');assert.equal(launches(f),1);assert.equal(used(f),1);
  await w.close();
 });
