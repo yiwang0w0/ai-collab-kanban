@@ -156,7 +156,7 @@ test("待批准事项:六类都列出来,决定路由回原有逻辑,版本冲�
     // 版本确认 → 原有 bless(写 accepted_rev)
     const bl = await B.decide(by.version.id, { decision: "approve", source: src("panel"), expected_version: by.version.expected_version });
     assert.equal(bl.status, 200, JSON.stringify(bl.body));
-    assert.equal(readFileSync(join(B.dir, "accepted_rev"), "utf8").trim(), by.version.expected_version);
+    assert.equal(readFileSync(join(B.dir, "accepted_rev"), "utf8").trim(), String(by.version.expected_version).split(".")[0]);
     assert.deepEqual(await B.list(), [], "全部决定后列表为空");
     // 决定记录只追加
     const db = new DatabaseSync(join(B.dir, "board.db"));
@@ -506,5 +506,29 @@ test("协作安全:逾期锁经批准接口强制释放时,note 按接口上限 
     assert.match(none.release_reason, /未写理由/, `没写 note 的强制释放要写明未写理由:${none.release_reason}`);
     assert.match(none.release_reason, /operator 经 local/, "并记下是谁、经哪条通道决定的");
     assert.ok((await B.journal()).some((e) => e.kind === "lock.force_release" && e.body.includes("device:no-note") && e.body.includes("未写理由")));
+  } finally { await B.stop(); }
+});
+
+test("协作安全:同一棵树再次待确认时是新的事项 id,旧的决定记录不会把它滤掉", { timeout: 120000 }, async () => {
+  const B = await board({ config: { gated_subtree: "." } });
+  try {
+    const rev = join(B.dir, "accepted_rev");
+    const v1 = (await B.list()).find((a) => a.kind === "version");
+    assert.ok(v1 && v1.id.startsWith("version:bless:"), JSON.stringify(v1));
+    assert.equal((await B.decide(v1.id, { decision: "approve", source: src("panel"), expected_version: v1.expected_version })).status, 200);
+    const tree = readFileSync(rev, "utf8").trim();
+    assert.match(tree, /^[0-9a-f]{40,64}$/);
+    assert.equal((await B.list()).filter((a) => a.kind === "version").length, 0);
+    // 之后确认过别的树,代码又回到这棵树(回滚):确认记录停在另一棵树上,这棵树再次待确认
+    await delay(30);
+    writeFileSync(rev, "f".repeat(40) + "\n");
+    const v2 = (await B.list()).find((a) => a.kind === "version");
+    assert.ok(v2, "同一棵树再次待确认,必须出现在待批准列表里");
+    assert.notEqual(v2.id, v1.id, "是新的事项 id");
+    assert.ok(v2.id.startsWith(`version:bless:${tree}.`), v2.id);
+    const again = await B.decide(v2.id, { decision: "approve", source: src("cli"), expected_version: v2.expected_version });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(readFileSync(rev, "utf8").trim(), tree);
+    assert.equal((await B.decide(v1.id, { decision: "approve", source: src("cli"), expected_version: v1.expected_version })).status, 409, "旧 id 不能重放");
   } finally { await B.stop(); }
 });
