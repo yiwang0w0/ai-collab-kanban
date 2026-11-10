@@ -489,6 +489,31 @@ def confirm(data_dir, ident):
     return path
 
 
+def discard(data_dir, ident):
+    """丢弃一条私有库候选,或 _pending/ 里的一份待整理(给文件名)。不删:移进 _discarded/ 留痕。
+    已确认的条目与公共库条目不收。返回移到的路径。"""
+    folder = private_dir(data_dir)
+    name = ident if ident.endswith(".md") else ident + ".md"
+    if not _ID.match(name[:-3]) or name != os.path.basename(name):
+        raise LessonError([f"{ident} 不是合法的 id 或待整理文件名"])
+    source = os.path.join(folder, name)
+    if os.path.isfile(source):
+        if parse_entry(_read(source)).get("status") != "candidate":
+            raise LessonError([f"{ident} 已确认,不是候选;不经 discard 丢弃"])
+    else:
+        source = os.path.join(folder, "_pending", name)
+        if not os.path.isfile(source):
+            raise LessonError([f"私有库与待整理里都没有 {ident}"])
+    target_dir = os.path.join(folder, "_discarded")
+    os.makedirs(target_dir, exist_ok=True)
+    target, number = os.path.join(target_dir, name), 1
+    while os.path.exists(target):
+        number += 1
+        target = os.path.join(target_dir, f"{name[:-3]}-{number}.md")
+    os.replace(source, target)
+    return target
+
+
 def _slug(text, limit=40):
     words = re.findall(r"[a-z0-9]+", str(text).lower())
     slug = "-".join(words)[:limit].strip("-")

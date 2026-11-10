@@ -10,6 +10,8 @@
          --root-cause <根因> --fix <修法> --verify <怎么确认> [--source <卡号或提交号>] [--scope private|public]
   $P ls [--scope private|public] [--candidates] [--json]
   $P verify <id> [<id>...] [--card <卡号>] [--confirm]   # 记一次命中;--confirm 另把候选转成已确认
+  $P confirm <id> [<id>...]                  # 只把候选转成已确认,不记命中
+  $P discard <id|待整理文件名> [...]          # 候选或 _pending/ 的文件移进 _discarded/,不删
   $P import --from <目录> [--dry-run]         # 带 name / description 的笔记 → 私有库候选;转不了的列出来
 
 写入默认进私有库(<数据目录>/lessons/);公共库是仓库里的 lessons/。超过字数上限的条目被拒绝并说明
@@ -146,6 +148,27 @@ def cmd_verify(args):
     return code
 
 
+def cmd_confirm(args):
+    code = 0
+    for ident in args.ids:
+        try:
+            lib.confirm(args.data, ident)
+            print(f"{ident}:已转为已确认(不记命中)")
+        except lib.LessonError as error:
+            code = _fail(error.errors)
+    return code
+
+
+def cmd_discard(args):
+    code = 0
+    for ident in args.ids:
+        try:
+            print(f"{ident}:已丢弃 → {lib.discard(args.data, ident)}")
+        except lib.LessonError as error:
+            code = _fail(error.errors)
+    return code
+
+
 def cmd_import(args):
     if not os.path.isdir(args.source):
         return _fail([f"目录不存在:{args.source}"])
@@ -199,6 +222,14 @@ def main(argv=None):
     v.add_argument("--card", type=int, help="是哪张卡验证的(可选)")
     v.add_argument("--confirm", action="store_true", help="同时把候选转成已确认")
     v.set_defaults(run=cmd_verify)
+
+    c = sub.add_parser("confirm", help="把候选转成已确认(不记命中)")
+    c.add_argument("ids", nargs="+")
+    c.set_defaults(run=cmd_confirm)
+
+    d = sub.add_parser("discard", help="丢弃候选或待整理文件:移进 _discarded/,不删")
+    d.add_argument("ids", nargs="+", help="候选 id,或 ls 列出的待整理文件名")
+    d.set_defaults(run=cmd_discard)
 
     i = sub.add_parser("import", help="把一批带 name / description 的笔记转成私有库候选")
     i.add_argument("--from", dest="source", required=True, help="笔记所在目录")
