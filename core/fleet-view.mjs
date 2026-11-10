@@ -36,7 +36,7 @@ function data(db,authorizedProjects=null){
  peers=peers.map(({projects_json,...p})=>({...p,projects:JSON.parse(projects_json).filter(id=>!scope||scope.has(id))}));
  return {local,localTasks,remote,sync,peers,syncState:ready?"available":schema===null?"not_configured":"upgrade_required"};
 }
-function summary(t){return {task_uid:t.task_uid,owner_node_id:t.owner_node_id,owner_name:t.owner_name,local_id:t.read_only?null:t.id,project_id:t.project_id,parent_uid:t.parent_uid??null,parent_unavailable:!!t.parent_unavailable,subject:t.subject,status:t.status,waiting_for:t.waiting_for??null,kind:t.kind,aggregate_version:t.aggregate_version,run_id:t.run_id??null,updated_at:t.updated_at,read_only:!!t.read_only,recovery_state:t.recovery_state??null,received_at:t.received_at??null,source_epoch:t.source_epoch??null,last_sync_at:t.last_sync_at??null};}
+function summary(t){return {task_uid:t.task_uid,owner_node_id:t.owner_node_id,owner_name:t.owner_name,local_id:t.read_only?null:t.id,project_id:t.project_id,parent_uid:t.parent_uid??null,parent_unavailable:!!t.parent_unavailable,subject:t.subject,status:t.status,waiting_for:t.waiting_for??null,kind:t.kind,aggregate_version:t.aggregate_version,run_id:t.run_id??null,updated_at:t.updated_at,read_only:!!t.read_only,recovery_state:t.recovery_state??null,received_at:t.received_at??null,source_epoch:t.source_epoch??null,last_sync_at:t.last_sync_at??null,brief:store.cardBrief(t),result_summary:store.resultSummaryOf(t.result)};}
 function freshness(p,now){
  if(p.recovery)return "recovery";if(p.error_code)return "failed";if(p.has_more)return "syncing";if(!p.last_sync_at)return "unknown";
  const at=Date.parse(p.last_sync_at);if(!Number.isFinite(at)||at>now+60000)return "clock_unknown";return now-at>60000?"stale":"recent";
