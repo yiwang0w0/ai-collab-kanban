@@ -169,6 +169,10 @@ test('配置校验是纯函数:键集严格、缺省全在关的一侧、调用�
  refuse(c=>c.ledger_file=join(c.scheduler.root,'usage_ledger.jsonl'),'UNSAFE_RUNTIME_PATH');refuse(c=>c.ledger_file=join(f.authHome,'usage_ledger.jsonl'),'UNSAFE_RUNTIME_PATH');
  const noLedger=ok();noLedger.ledger_file=null;assert.equal(validateZcodeWorkerConfig(noLedger).ledger_file,null);
  const noMcp=ok();noMcp.mcp=null;assert.equal(validateZcodeWorkerConfig(noMcp).mcp,null);
+ // 随仓库发布的样例:形状合法,所有开关都在关的一侧,路径与摘要只有占位。
+ const sample=validateZcodeWorkerConfig(JSON.parse(readFileSync(join(ROOT,'examples','zcode-worker.config.example.json'),'utf8')));
+ assert.deepEqual(sample.launch,{enabled:false,max_launches:1,authorization:{kind:'synthetic'}});assert.equal(sample.intake.auto_enroll,false);assert.equal(sample.ledger_file,null);
+ for(const pin of [sample.scheduler.profiles[0].installation.program,sample.scheduler.profiles[0].installation.bundle,sample.scheduler.profiles[0].python])assert.ok(pin.path.startsWith('<')&&pin.sha256.startsWith('<'));
  await untouched(f);
 });
 test('默认关:两把配置侧钥匙各缺一把,都在任何副作用之前拒绝',{skip},async()=>{

@@ -1,0 +1,67 @@
+{
+  "format": "ai-fleet-zcode-worker/v1",
+  "launch": {
+    "enabled": false,
+    "max_launches": 1,
+    "authorization": {
+      "kind": "synthetic"
+    }
+  },
+  "line": "zcode",
+  "intake": {
+    "coordinator_credential_file": "C:\\fleet-private\\zcode\\zcode-coordinator.json",
+    "auto_enroll": false
+  },
+  "mcp": {
+    "port": 43117,
+    "board_url": null
+  },
+  "evidence": {
+    "max_chars": 4000
+  },
+  "ledger_file": null,
+  "scheduler": {
+    "format": "ai-fleet-scheduler/v1",
+    "node_id": "<本机 node_id,由 setup 填好>",
+    "node_epoch": "<本机当前代次,由 setup 填好>",
+    "root": "C:\\fleet-private\\zcode\\zcode-scheduler-root",
+    "max_active": 1,
+    "poll_ms": 5000,
+    "profiles": [
+      {
+        "project_id": "zcode-local",
+        "role_id": "zcode",
+        "quota_id": "<预算 ID,由 setup 填好>",
+        "installation": {
+          "runtime": "zcode",
+          "version": "0.16.9",
+          "program": {
+            "path": "<Zcode 自带 node.exe 的绝对路径>",
+            "sha256": "<该文件的 SHA256>"
+          },
+          "bundle": {
+            "path": "<Zcode bundle 的绝对路径>",
+            "sha256": "<该文件的 SHA256>"
+          },
+          "builtin_config": {
+            "path": "<Zcode 公开供应商配置的绝对路径>",
+            "sha256": "<该文件的 SHA256>"
+          },
+          "auth_home": "<已登录的 .zcode\\v2 目录的绝对路径>"
+        },
+        "python": {
+          "path": "<python.exe 的绝对路径>",
+          "sha256": "<该文件的 SHA256>"
+        },
+        "node": {
+          "path": "<运行看板的 node.exe 的绝对路径>",
+          "sha256": "<该文件的 SHA256>"
+        },
+        "mcp_url": "http://127.0.0.1:43117",
+        "timeout_ms": 600000,
+        "idle_timeout_ms": 300000,
+        "workspace": null
+      }
+    ]
+  }
+}

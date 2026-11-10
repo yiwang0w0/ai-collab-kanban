@@ -41,4 +41,8 @@ expectedTools 可绑定 fleet 工具集：模型请求的工具数必须匹配�
 
 当前真实调用 Claude/Codex/Zcode 均为 0/1，完整阶段验收 0/12。剩余为真实订阅兼容、授权模型任务、Windows 权限隔离及两台实体机的完整联调；后续仅支持 Windows。
 
+## 独立执行循环
+
+cli/zcode-worker.mjs 在既有调度器外包一层：把合格的卡送到等待执行器、调一轮调度器、结算后记账。领取、一次性许可、预算、Job 托管与失败不重启沿用上述 dispatch 链。只接文字交付卡，带登记验证的卡拒收；开关默认关，调用预算缺省 1 次、代码内硬顶 20 次；账本行的用量键一律为 null。配置字段、三把钥匙、拒收码、账本行与人工恢复步骤见 [Zcode 接入](../Zcode接入.md)。回归只用会说 MCP 的合成供应商；真实调用仍为 0/1。
+
 产品说明见 [账号与模型配置](https://zcode.z.ai/cn/docs/configuration) 和 [MCP 服务](https://zcode.z.ai/cn/docs/mcp-services)。具体 CLI 行为以固定安装包和上述本机测量为依据。
