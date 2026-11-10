@@ -21,7 +21,7 @@ import { closeSync, mkdirSync, openSync, readFileSync, statSync } from "node:fs"
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { boardUp, localBoard, sleep } from "../core/local-board.mjs";
-import { localDataDir, noteRunEnd, noteRunStart } from "../core/board-run.mjs";
+import { cleanExitOf, clearCleanExit, localDataDir, noteRunEnd, noteRunStart } from "../core/board-run.mjs";
 
 const CODE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // BOARD_SERVER_SCRIPT is a test hook (a stub that exits 75 once); production is the board.
@@ -80,6 +80,8 @@ try { recorded = noteRunStart(DATA, { logFrom: process.env.BOARD_RUN_LOG_FROM ? 
 const noteEnd = (kind, code) => { if (recorded) try { noteRunEnd(DATA, { kind, code }); } catch {} };
 
 function launch(from) {
+  // The clean-exit marker speaks for the board process started next, never for an earlier one.
+  if (recorded) try { clearCleanExit(DATA); } catch {}
   child = spawn(process.execPath, [...process.execArgv, SCRIPT, ...process.argv.slice(2)], {
     stdio: "inherit", windowsHide: true,
     // BOARD_RESTART_MODE pinned to exit: under this wrapper a self-respawn would fight it for the port.
@@ -87,7 +89,12 @@ function launch(from) {
   });
   child.on("exit", (code, signal) => {
     if (stopping) { noteEnd("stopped", code); process.exit(code ?? 0); }
-    if (code === RESTART_CODE) {
+    // The board finished its own stop or restart (core/server.mjs left the clean-exit marker): that
+    // decides, not the exit code — on Windows libuv may abort after process.exit(). A restart
+    // marker relaunches like exit 75; a stop marker is an orderly stop.
+    let clean = null;
+    if (recorded) try { clean = cleanExitOf(DATA, child.pid); } catch {}
+    if (code === RESTART_CODE || clean?.kind === "restart") {
       restarts += 1;
       recent.push(Date.now());
       while (recent.length && Date.now() - recent[0] > RESTART_WINDOW_MS) recent.shift();
@@ -101,6 +108,11 @@ function launch(from) {
       // racing it. Successive requests are not throttled: each one was a human's button.
       setTimeout(() => launch("supervised"), 300);
       return;
+    }
+    if (clean) {
+      console.log(`[start] 看板已正常停止${code ? `，退出码 ${code}` : ""}。再启动:node cli/start.mjs --background`);
+      noteEnd("stopped", code);
+      process.exit(code ?? 0);
     }
     if (signal) console.log(`[start] 看板被 ${signal} 结束`);
     else if (code) console.log(`[start] 看板服务退出，退出码 ${code}`);
