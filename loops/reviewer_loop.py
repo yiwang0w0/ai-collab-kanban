@@ -602,6 +602,49 @@ def _resolve_claude_cli():
     return [p]
 
 
+LEDGER = os.path.join(DATA, "usage_ledger.jsonl")
+_ACCT_LOCK = threading.Lock()      # 判读是并行的;账本一次只写一行
+
+
+def claude_result_usage(stdout):
+    """从 `--output-format json` 的结果行取用量。取不到的项是 None,不记 0。"""
+    try:
+        j = json.loads((stdout or "").strip().splitlines()[-1])
+    except Exception:
+        j = None
+    j = j if isinstance(j, dict) else {}
+    u = j.get("usage") if isinstance(j.get("usage"), dict) else {}
+    def n(v):
+        return v if isinstance(v, (int, float)) and not isinstance(v, bool) and v >= 0 else None
+    return {"usage": {"calls": n(j.get("num_turns")), "in": n(u.get("input_tokens")),
+                      "cc": n(u.get("cache_creation_input_tokens")), "cr": n(u.get("cache_read_input_tokens")),
+                      "out": n(u.get("output_tokens"))},
+            "cost_usd": n(j.get("total_cost_usd")),
+            "sid": j.get("session_id") if isinstance(j.get("session_id"), str) else None}
+
+
+def acct_review(t, usage, *, sid=None, duration_ms=None, cost_usd=None, note=None):
+    """一次审阅记一行账,记到**被审的卡**上(phase=review)。
+    用量读不到也写一行(各项 None):审阅跑过这件事本身要数得出来。"""
+    u = dict(usage or {"calls": None, "in": None, "cc": None, "cr": None, "out": None})
+    u.pop("note", None)
+    row = {"ts": datetime.datetime.now().isoformat(timespec="seconds"),
+           "card": t["id"], "attempt": None, "worker": "reviewer", "line": "review",
+           "model": MODEL, "effort": EFFORT,
+           "sid": str(sid or "")[:8], "session_id": sid or None, **u,
+           "phase": "review", "reviewed_line": t.get("line"),
+           "duration_ms": duration_ms if isinstance(duration_ms, int) and duration_ms >= 0 else None,
+           "cost_usd": cost_usd, "cost_source": "reported" if cost_usd is not None else "unknown",
+           "cli_version": None, "note": note}
+    try:
+        os.makedirs(DATA, exist_ok=True)
+        with _ACCT_LOCK:
+            io.open(LEDGER, "a", encoding="utf-8").write(json.dumps(row, ensure_ascii=False) + chr(10))
+    except Exception as e:
+        log(f"  审阅用量记账失败({e})—— 不阻塞本轮")
+    return row
+
+
 def review_one(t, vr=None):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, f"verdict-{t['id']}.json")
@@ -638,6 +681,10 @@ def review_one(t, vr=None):
     if ctx:
         prompt = chr(10).join(ctx + ["", prompt])
     env = dict(os.environ); env["PYTHONIOENCODING"] = "utf-8"
+    started = None                 # 模型进程真的起跑之后才有值;超时被杀时据此记一行「用量未知」
+    def timed_out(e):
+        if started is not None and isinstance(e, subprocess.TimeoutExpired):
+            acct_review(t, None, duration_ms=int((time.monotonic() - started) * 1000), note="审阅超时被终止,用量未知")
     if RUNTIME == "codex":
         try:
             env = codex_runtime.subscription_environment(env)
@@ -646,12 +693,15 @@ def review_one(t, vr=None):
                 return None, login_error
             argv = codex_runtime.argv(CODEX_CLI, MODEL, EFFORT, out, REPO,
                                        mode="read-only", schema=CODEX_SCHEMA)
+            started = time.monotonic()
             r = subprocess.run(argv, input=prompt, capture_output=True, text=True, encoding="utf-8",
                                errors="replace", env=env, timeout=900, cwd=REPO)
         except Exception as e:
+            timed_out(e)
             return None, f"(Codex 审阅进程失败:{e})"
         cv = codex_runtime.judge(r.returncode, r.stdout, out)
-        codex_runtime.append_usage(DATA, "reviewer", MODEL, EFFORT, cv, card=t["id"], log=log)
+        acct_review(t, cv.get("usage"), sid=cv.get("thread"), duration_ms=int((time.monotonic() - started) * 1000),
+                    note=None if cv.get("usage") else "未见 turn.completed usage")
         tail = (cv["tail"] + ("\nstderr 尾: " + (r.stderr or "")[-300:] if r.stderr else ""))[-1200:]
         if r.returncode != 0 and report_exhausted(call, "codex", tail, log=log):
             return None, f"(Codex 服务限流,已上报全局池状态)rc={r.returncode}\n{tail}"
@@ -689,11 +739,17 @@ def review_one(t, vr=None):
             log(f"  ⚠审阅提示词 argv 超 Windows 预算(30000/32767)—— 拒发;调小 REVIEWER_VERBATIM 后重试")
             return None, "(审阅提示词 argv 超过 Windows 30000 字符预算,spawn 前拒发)"
         try:
+            started = time.monotonic()
             r = subprocess.run(argv, capture_output=True, text=True, encoding="utf-8",
                                errors="replace", env=env, timeout=900, cwd=REPO)
             tail = ((r.stdout or "") + (r.stderr or ""))[-600:]
         except Exception as e:
+            timed_out(e)
             return None, f"(审阅进程失败:{e})"
+        seen = claude_result_usage(r.stdout)
+        acct_review(t, seen["usage"], sid=seen["sid"], duration_ms=int((time.monotonic() - started) * 1000),
+                    cost_usd=seen["cost_usd"],
+                    note=None if seen["usage"]["in"] is not None else "结果行里没有用量")
         if r.returncode != 0 and report_exhausted(call, "claude", tail, log=log):
             return None, f"(Claude 额度耗尽,已上报全局池状态)rc={r.returncode}\n{tail}"
         if str(REVIEWER_BUDGET) not in ("0", ""):

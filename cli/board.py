@@ -45,6 +45,13 @@
   $P approval-token create (--label <名称> | --file label.txt) [--save 令牌文件]   # 操作员;明文只显示一次
   $P approval-token revoke <id> | approval-token ls
 
+用量结算(docs/用量结算.md):
+  $P usage ls [--by card|line|model|phase] [--from 2026-11-01] [--to 2026-11-10]   # 分组汇总;未知显示为「未知」,不当 0
+  $P usage card <id>                         # 一张卡的结算:阶段 × 模型、失败尝试单列、已写下的结算事件
+  $P usage csv [--by …] [--from …] [--to …] [--card <id>] [--out 文件]             # 导出 CSV;不给 --out 打到标准输出
+  done / wait 可带 --usage <json文件>:外部执行者随交付自报用量(一个对象或数组;键 model、calls、in、cc、cr、out、
+                                             #   duration_ms、cost_usd、cli_version、phase;不知道的项不写)。费用来源记为 external-reported
+
 Task control writes (take/edit/approve/reject/reopen/release/hold/archive) require
 --version <aggregate_version from show>; a JSON edit payload may carry expected_version.
 
@@ -361,6 +368,79 @@ def approvals_cmd(cmd):
         else:
             sys.exit("approval-token create|revoke|ls")
 
+def call_text(path):
+    """GET 一段不是 JSON 的应答(CSV)。出错时应答仍是 JSON,交给 die 打印。"""
+    req = urllib.request.Request(BASE + path, method="GET", headers={"X-Board-Token": _board_token()})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as r:
+            return r.status, r.read().decode("utf-8")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode("utf-8")
+        try: die(e.code, json.loads(raw))
+        except ValueError: sys.exit(f"{e.code} {raw[:200]}")
+    except urllib.error.URLError as e:
+        sys.exit(f"看板不可达({BASE}):{e.reason}")
+
+def usage_cmd():
+    sub = pos(2) or "ls"
+    qs = [f"{k}={urllib.parse.quote(arg('--' + k), safe='')}" for k in ("by", "from", "to") if arg("--" + k)]
+    def shown(x, key):
+        """未知不当 0:整项未知写「未知」;只知道一部分写「≥已知部分」。"""
+        v = x.get(key)
+        if v is None:
+            k = (x.get("known") or {}).get(key)
+            v, lead = (k, "≥") if k is not None else (None, "")
+            if v is None: return "未知"
+        else:
+            lead = ""
+        if key == "duration_ms":
+            sec = v / 1000
+            return lead + (f"{sec:.1f}s" if sec < 60 else f"{int(sec // 60)}m{int(sec % 60):02d}s")
+        if key == "cost_usd":
+            tag = {"reported": "回报", "estimated": "估算", "external-reported": "自报", "mixed": "混合"}.get(x.get("cost_source"), "")
+            return lead + f"${v:.4f}" + (f"({tag})" if tag else "")
+        return lead + f"{v:,}"
+    cols = (("rows", "轮数"), ("attempts", "尝试"), ("calls", "调用"), ("in", "输入"), ("cc", "缓存写"),
+            ("cr", "缓存读"), ("out", "输出"), ("duration_ms", "耗时"), ("cost_usd", "费用"))
+    def line(name, x):
+        return f"  {name:<28} " + "  ".join(f"{label} {shown(x, key)}" for key, label in cols)
+    if sub == "ls":
+        if not arg("--by"): qs.append("by=card")
+        s, d = call("GET", "/api/usage?" + "&".join(qs))
+        if s >= 400: die(s, d)
+        if not d["groups"]: print("这个范围内没有用量记录")
+        for g in d["groups"]:
+            print(line(("#" if d["by"] == "card" and g["key"] != "?" else "") + str(g["key"]), g))
+        print(line(f"合计(按 {d['by']},{len(d['groups'])} 组)", d["total"]))
+    elif sub == "card":
+        cid = pos(3)
+        if not cid or not cid.isascii() or not cid.isdigit(): sys.exit("usage card <id>")
+        s, d = call("GET", f"/api/usage/card/{cid}")
+        if s >= 400: die(s, d)
+        if not d["totals"]["rows"]:
+            print(f"#{cid} 没有用量记录(没有记录不等于用量为零)")
+        for x in d["by"]:
+            print(line(f"{x['phase']} · {x['model']}", x))
+        print(line(f"失败尝试 {d['failed']['attempts']} 次", d["failed"]))
+        print(line(f"#{cid} 合计", d["totals"]))
+        for ev in d["settlements"]:
+            print(f"  结算 第 {ev['seq']} 次 · 写于 {ev['ts']} · 完成于 {ev.get('resolved_at') or '-'}({ev.get('resolved_by') or '-'})· 计到第 {ev['rows_through']} 行")
+        if not d["settlements"]:
+            print("  还没有结算事件(卡完成时写入;上面是按当前账本重算的数字)")
+    elif sub == "csv":
+        cid = arg("--card")
+        if cid is not None and (not cid.isascii() or not cid.isdigit()): sys.exit("--card 后面要跟卡号")
+        qs.append("format=csv")
+        s, text = call_text((f"/api/usage/card/{cid}?" if cid else "/api/usage?") + "&".join(qs))
+        out = arg("--out")
+        if out:
+            with io.open(out, "w", encoding="utf-8", newline="") as f: f.write(text)
+            print(f"已导出 {max(0, len(text.splitlines()) - 1)} 行到 {out}")
+        else:
+            sys.stdout.write(text)
+    else:
+        sys.exit("usage ls [--by card|line|model|phase] [--from …] [--to …] | usage card <id> | usage csv [--card <id>] [--out 文件]")
+
 _META = None
 def meta():
     """GET /api/meta, once per process. The display labels for status / waiting_for have
@@ -388,6 +468,9 @@ def main():
 
     elif cmd in ("approvals", "approval-token"):
         approvals_cmd(cmd)
+
+    elif cmd == "usage":
+        usage_cmd()
 
     elif cmd == "ls":
         qs = []
@@ -470,11 +553,17 @@ def main():
         if not tid or not (who or arg("--token-file")): sys.exit(f"{cmd} <id> --as <线名> --file <证据/原因>")
         ev = readfile(fp)
         if not ev.strip(): sys.exit("必须用 --file 附证据(改了什么/跑了什么/输出是什么)")
-        s, d = call("POST", f"/api/tasks/{tid}/report",
-                    as_worker({"run_id": run_id, "outcome": cmd, "evidence": ev}, who))
+        body = {"run_id": run_id, "outcome": cmd, "evidence": ev}
+        up = arg("--usage")
+        if up:
+            # 外部执行者自报用量:随交付一起送,服务端校验后记到这张卡上(来源 external-reported)。
+            try: body["usage"] = json.loads(readfile(up))
+            except Exception as e: sys.exit(f"--usage {up} 读不出 JSON:{e}")
+        s, d = call("POST", f"/api/tasks/{tid}/report", as_worker(body, who))
         if s >= 400: die(s, d)
         t = d["task"]
-        print(f"#{tid} → {LABEL_of(t['status'])}/{WF_of(t['waiting_for'])}")
+        print(f"#{tid} → {LABEL_of(t['status'])}/{WF_of(t['waiting_for'])}"
+              + (f"(已自报用量 {len(body['usage']) if isinstance(body['usage'], list) else 1} 条)" if up else ""))
 
     elif cmd in ("approve", "reject"):
         if not tid: sys.exit(f"{cmd} <id> [--file note.md]")
