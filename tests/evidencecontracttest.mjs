@@ -191,6 +191,23 @@ assert not r.machine_evidence(card(prose,'claude'))['ok']
 `);
 });
 
+test("审阅闸扫描卡面证据的耗时有界：超长数字串与大段空白在一秒内返回，原有命中不变", () => {
+  python(`import time
+import reviewer_loop as r
+def seen(text): return r.machine_evidence({'id':7,'last_runtime':'codex','result':text})
+for text in ('9'*20000,'1'+' '*20000+'x',('1 '*10000)+'x','PASS'+' '*20000+'x','rc'+' '*20000+'x','exit'+' '*20000+'x','——'+' '*20000+'x','9'*20000+' PASS'):
+ started=time.perf_counter(); seen(text); elapsed=time.perf_counter()-started
+ assert elapsed<1,(text[:8],elapsed)
+assert seen('9'*20000+' PASS')['ok'] and not seen('9'*20000)['ok']
+# 改写后原有写法照旧命中，原来不命中的仍不命中。
+for text in ('12 PASS','3 项 PASS','共 5 个合格','7件不合格','12'+chr(10)+'PASS','PASS 12','FAIL 0','[OK]','[FAIL]','rc=0','rc = -1','exit code: 0','exit=3',
+  'HTTP/1.1 200','← 204','Traceback (most recent call last)','AssertionError'):
+ assert seen(text)['ok'],text
+for text in ('PASS','合格','rc','12 项','exit code','没有数字'):
+ assert not seen(text)['ok'],text
+`);
+});
+
 test("校验耗时有界：超限直接拒收不解析，行内大段空白与超长单行都在一秒内出结果", () => {
   python(`import time
 import evidence_contract as e

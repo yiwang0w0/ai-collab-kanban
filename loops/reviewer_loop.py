@@ -152,9 +152,12 @@ _DEMAND = [
                  r"|decisiontest|gatetest|decomposetest|pytest|unittest"),
 ]
 # 机器产出的形状。**loop 产出**(前段)与**散文产出**(其余)分开持有。
+# ⚠这些模式扫的是卡面证据全文(执行者写的,长度不由审阅控制),必须线性:
+#   计数从数字串串首起(前面不是数字),不逐位重试;量词之间不留两个相邻都能吃空白的位置。
+#   认的写法与原来相同,只是失败时不再平方级回溯(2 万位数字曾要十几秒,期间心跳都跳不动)。
 _EV_LOOP  = r"——\s*验证\(由循环执行"
 _EV_PROSE = [
-    ("PASS/FAIL 计数", r"\d+\s*(?:项|個|个|件)?\s*(?:PASS|FAIL|合格|不合格)|(?:PASS|FAIL)\s*\d+|\[OK\]|\[FAIL\]"),
+    ("PASS/FAIL 计数", r"(?<!\d)\d+\s*(?:(?:项|個|个|件)\s*)?(?:PASS|FAIL|合格|不合格)|(?:PASS|FAIL)\s*\d+|\[OK\]|\[FAIL\]"),
     ("退出码",         r"\brc\s*=\s*-?\d+|exit(?:\s+code)?\s*[=:]\s*\d+"),
     ("报错原文",       r"Traceback \(most recent call last\)|at Object\.<anonymous>|SyntaxError:|AssertionError"),
     ("HTTP 实测码",    r"HTTP/1\.[01]\s+\d{3}|←\s*\d{3}\b"),
