@@ -324,6 +324,12 @@ def approvals_cmd(cmd):
                 print(f"  {vis(a['id'])}{vis(risk)}  {vis(a['summary'])}  可选 {'/'.join(a.get('actions') or [])}")
                 # 执行者请求:摘要可能截断,决定是对完整的 action 生效的,所以整段再打一遍。
                 if a.get("action") and a["action"] != a["summary"]: print(f"      完整动作:{vis(a['action'])}")
+                # 放行确认:被摘要绑定的工作目录、权限、预算;跑过又被收回放行的卡另打收回原因。
+                ep = a.get("execution_profile")
+                if ep:
+                    print(f"      工作目录 {vis(ep.get('workspace_path') or '待核实')} · 权限 {vis(ep.get('tools') or '待核实')} · 预算 "
+                          + vis(json.dumps(ep.get("budget"), ensure_ascii=False)) + (" · 配置已变化" if ep.get("configuration_changed") else ""))
+                if a.get("rerun"): print(f"      再次放行:{vis(a.get('held_note') or '此前已运行过')}")
                 # 版本确认 / 更新:原确认界面的整段文字(改了哪些文件、会停哪些线),看过再批。
                 for line in str(a.get("confirm") or "").split(chr(10)):
                     if line.strip(): print(f"      {vis(line)}")

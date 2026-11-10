@@ -2878,10 +2878,20 @@ function taskApprovalEntry(t) {
     const rp = taskRepairPreview(t);
     // 放行确认绑定本人看到的执行配置摘要:配置变了版本段就变,旧 id 批不下去。
     const version = `${t.aggregate_version}.${pv.profile_digest.slice(0, 16)}.${rp.digest ? rp.digest.slice(0, 16) : "0"}`;
+    // 摘要绑定的是工作目录、权限与预算,所以事项要把它们给批准者看(远程入口读不到卡片详情)。
+    // 跑过又被收回放行的卡(租约到期、执行线停下、打回、重开)再次等放行时,带上收回时写进 result 的说明,摘要加标记:
+    // 上一轮的结果未知,再放行可能重复计费或重复副作用,不能和首次放行长得一样。
+    const rerun = Number(t.attempts) > 0 || !!t.result;
+    const held = String(t.result || "").split("—— 当前运行状态 ——").pop();
     return { item: { id: approvals.makeId("release", t.id, version), kind: "release", title,
-                     summary: approvals.oneLine(`${pv.label || pv.execution_profile_id} · ${pv.model} · ${pv.effort}:${t.summary || t.subject}`),
+                     summary: approvals.oneLine((rerun ? "【再次放行】" : "") + (pv.configuration_changed ? "【配置已变化】" : "") +
+                       `${pv.label || pv.execution_profile_id} · ${pv.model} · ${pv.effort}:${t.summary || t.subject}`),
                      detail_ref: ref, created_at: t.created_at, expected_version: version,
                      actions: pv.ready ? [...APPROVE_REJECT] : ["reject"], labels: { approve: "按此配置放行", reject: "暂不放行" },
+                     execution_profile: { id: pv.execution_profile_id, label: pv.label ?? null, channel: pv.channel ?? null, model: pv.model, effort: pv.effort,
+                                          workspace_path: pv.workspace?.path ?? null, tools: pv.tools ?? null, budget: pv.budget ?? null,
+                                          budget_enforcement: pv.budget_enforcement ?? null, configuration_changed: !!pv.configuration_changed },
+                     ...(rerun ? { rerun: true, held_note: approvals.oneLine(held, 300) } : {}),
                      ...(pv.ready ? {} : { blocked: pv.reason }) },
              route: { taskId: t.id, version: t.aggregate_version, profileDigest: pv.profile_digest, repairDigest: rp.digest } };
   }

@@ -567,3 +567,37 @@ test("协作安全:版本确认与更新事项带原确认界面的改动清单;
     assert.deepEqual(Object.keys(v.lines).sort(), ["resume", "stop"]);
   } finally { await up.stop(); }
 });
+
+test("协作安全:放行确认事项带工作目录、权限与预算;中断后收回放行的卡再次出现时写明原因", { timeout: 120000 }, async () => {
+  const B = await board(PROFILE);
+  try {
+    const held = await B.card({ subject: "按配置放行的卡", line: "alpha", execution_profile_id: "claude-api", model: "claude-haiku-4-5", effort: "high" });
+    const first = (await B.list()).find((a) => a.kind === "release");
+    const local = (await B.api("GET", `/api/tasks/${held.id}`, B.operator)).body;
+    const p = first.execution_profile;
+    assert.ok(p, `放行确认事项要带被摘要绑定的执行配置:${JSON.stringify(first)}`);
+    assert.ok(typeof p.workspace_path === "string" && p.workspace_path.length > 0, "工作目录");
+    assert.ok(["write", "read-only"].includes(p.tools), "权限");
+    assert.deepEqual(p.budget, { timeout_sec: 120, max_turns: 4, max_cost_usd: 0.5 }, "预算");
+    assert.equal(p.configuration_changed, false);
+    assert.ok(!first.rerun && !first.held_note, "首次放行没有再次放行的标记");
+    assert.ok(JSON.stringify(local).includes(JSON.stringify(p.workspace_path).slice(1, -1)), "与本机详情里的工作目录是同一个");
+    const c = B.cli("approvals", "ls");
+    assert.ok(c.out.includes("工作目录") && c.out.includes("预算"), `命令行列表打出工作目录与预算:${c.out}`);
+    assert.equal((await B.decide(first.id, { decision: "approve", source: src("panel"), expected_version: first.expected_version })).status, 200);
+    // 执行中租约到期:回收巡检把卡退回未开始、取消放行,并把「结果未知」写进 result(store.holdExplicitProfileRecovery)。
+    // 显式配置的卡只有绑定座位能领,测试里不起模型进程,所以直接把回收后的那一行状态写进库。
+    const db = new DatabaseSync(join(B.dir, "board.db")); db.exec("PRAGMA busy_timeout=5000");
+    const u = db.prepare("UPDATE tasks SET released=0, attempts=1, result=? WHERE id=? AND status='not_started' AND released=1")
+      .run("本轮执行已中断，结果未知。已取消放行，请本人核对后重新放行。", held.id);
+    db.close();
+    assert.equal(u.changes, 1);
+    const again = (await B.list()).find((a) => a.kind === "release") || null;
+    assert.ok(again, "放行被收回后,事项再次出现");
+    assert.notEqual(again.id, first.id);
+    assert.equal(again.rerun, true, `再次放行要有标记:${JSON.stringify(again)}`);
+    assert.match(again.held_note, /结果未知/, "带上收回放行的原因");
+    assert.match(again.summary, /^【再次放行】/, "只看摘要的客户端也分得出这不是首次放行");
+    assert.ok(again.execution_profile.workspace_path === p.workspace_path);
+  } finally { await B.stop(); }
+});
