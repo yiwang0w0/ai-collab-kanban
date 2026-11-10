@@ -141,8 +141,8 @@ console.log("[⑥ 找到看板实际调用的那个文件]");
      && locateCli("codex", { BOARD_CODEX_CMD: join(TMP, "missing.exe") }).state === "not_found");
   const cmd = join(TMP, "codex.cmd"); writeFileSync(cmd, "@echo off\n");
   ok("包装器脚本不当作被巡检的 CLI", locateCli("codex", { BOARD_CODEX_CMD: cmd }).state === "wrapper");
-  ok("是不是 npm 全局安装的包里的文件", npmManaged("claude", "C:\\Users\\u\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe")
-     && npmManaged("codex", "/usr/lib/node_modules/@openai/codex/bin/codex") && !npmManaged("claude", "C:\\Users\\u\\.local\\bin\\claude.exe"));
+  ok("是不是 npm 全局安装的包里的文件", npmManaged("claude", "C:\\Users\\you\\AppData\\Roaming\\npm\\node_modules\\@anthropic-ai\\claude-code\\bin\\claude.exe")
+     && npmManaged("codex", "/usr/lib/node_modules/@openai/codex/bin/codex") && !npmManaged("claude", "C:\\Users\\you\\.local\\bin\\claude.exe"));
   const real = await readCliVersions({ dataDir: fresh("realrun"), settings: { checkHours: 0, registry: SET.registry }, locate: both });
   ok("真的运行一次 --version（用 node 自己当替身）读出版本号", claudeOf(real).current === process.version.slice(1), JSON.stringify(claudeOf(real)));
   const lost = versionLine({ ...claudeOf(real), state: "wrapper", path: null });
