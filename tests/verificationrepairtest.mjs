@@ -135,6 +135,61 @@ assert '省略 1 个完整选项块' in out and '任务 #7 的 verdict_note' in 
 `);
 });
 
+test("选项块按结构取舍：面板操作说明不送给执行者，超预算时选定方案的正文仍在", () => {
+  python(`import worker_loop as w
+import reviewer_loop as r
+def escalation(reason,a='把迁移回滚到上一版再重跑',b='保留迁移只补索引',summary='两条路都能走，需要你定。'):
+ # 备注用审阅线的真实组装函数生成，不手抄格式。
+ return r.fmt_escalation({'id':7},{'summary':summary,'reason':reason,'recommend':'A','checked':['读过迁移脚本','核过索引定义'],
+  'options':[{'key':'A','title':'回滚迁移','detail':a,'cost':'多一轮执行'},{'key':'B','title':'只补索引','detail':b,'cost':'旧数据不回填'}]})
+def card(note,said='A',choice='A',**extra):
+ head='—— 你的决定(2026-11-04T00:00:00.000Z · 通过 · 回原线继续)——'
+ return {'id':7,'last_verdict':'approve','last_note':said,'decision_choice':choice,'verdict_note':note+chr(10)*2+head+chr(10)*2+said,
+  'history_refs':{'decisions':{'seq':9,'source':'resolve','has_note':True}},**extra}
+def block(*args,**kwargs): return chr(10).join(w.verdict_block(card(*args,**kwargs)))
+# 不超预算：方案与依据都在，面板操作说明不在。
+short=escalation('依据：'+'短理由。'*20)
+assert len(short)<w.OPT_BUDGET and '下面的输入框里' in short and '这不是最终裁定' in short
+out=block(short)
+assert '下面的输入框里' not in out and '这不是最终裁定' not in out and '就此了结' not in out,out
+for kept in ('把迁移回滚到上一版再重跑','保留迁移只补索引','读过迁移脚本','短理由。','两条路都能走'):
+ assert kept in out,(kept,out)
+# 超预算：判断依据整节省略并点名，选定方案的正文、摘要与另一方案仍在。
+long=escalation('依据：'+'很长的理由。'*500)
+assert len(long)>w.OPT_BUDGET
+out=block(long)
+assert '把迁移回滚到上一版再重跑' in out and '保留迁移只补索引' in out and '两条路都能走' in out,out
+assert '很长的理由。' not in out and '下面的输入框里' not in out,out
+assert '判断依据' in out and '省略 1 个完整项' in out and '任务 #7 的 verdict_note' in out and '协调者' in out,out
+# 两个方案放不下：留人选定的那个，另一个整项省略并点名；摘要仍在。
+both=escalation('依据。',a='甲方案正文。'*250,b='乙方案正文。'*250)
+out=block(both,said='B',choice='B')
+assert '乙方案正文。'*250 in out and '甲方案正文。' not in out and '方案 A' in out and '两条路都能走' in out,out
+out=block(both,said='A',choice='方案 A')
+assert '甲方案正文。'*250 in out and '乙方案正文。' not in out and '方案 B' in out,out
+# 没有结构化选择、人只写了一个字母：按它指向的方案优先保留。
+out=block(both,said='B',choice=None)
+assert '乙方案正文。'*250 in out and '甲方案正文。' not in out,out
+# 选定方案自己就超过选项预算：放宽到裁定正文的预算，仍整项保留。
+big=escalation('依据。',a='很大的甲方案。'*400)
+assert w.OPT_BUDGET<len('很大的甲方案。'*400)<w.DEC_BUDGET
+out=block(big)
+assert '很大的甲方案。'*400 in out and '保留迁移只补索引' not in out,out
+# 备注里读不出选定方案时，从卡上的裁定包取它的标题、做法与代价。
+plain='审阅写了很长的散文，没有分节。'*200
+out=block(plain,decision_package={'options':[{'key':'A','title':'包里的甲方案','detail':'按包里的做法执行','cost':'包里的代价'}]})
+assert '包里的甲方案' in out and '按包里的做法执行' in out and '包里的代价' in out and '没有分节' not in out,out
+# 更早各轮裁定不并进选项块：选项按结构保留，更早的裁定另列，放不下的只报条数。
+earlier=long+chr(10)*2+'—— 你的决定(2026-11-01T00:00:00.000Z · 打回 · 回原线继续)——'+chr(10)*2+'先按 A 做，别动索引'
+out=block(earlier,said='【自动审阅】索引没建',choice=None)
+assert '把迁移回滚到上一版再重跑' in out and '先按 A 做，别动索引' in out and '【自动审阅】索引没建' in out,out
+assert out.index('把迁移回滚到上一版再重跑')<out.index('先按 A 做，别动索引')<out.index('【自动审阅】索引没建'),out
+rounds=chr(10)*2+(chr(10)*2).join('—— 自动审阅(2026-11-0%dT00:00:00.000Z · 打回 · 回原线继续)——'%day+chr(10)*2+('第%d轮理由。'%day)*120 for day in (1,2,3))
+out=block(short+rounds,said='最后一轮',choice=None)
+assert '第3轮理由。' in out and '第1轮理由。' not in out and '省略 2 条更早的完整裁定' in out and '把迁移回滚到上一版再重跑' in out,out
+`);
+});
+
 test("完整人工备注里的引用抬头不能把本轮裁定拆半", () => {
   python(`import worker_loop as w
 fence=chr(96)*3

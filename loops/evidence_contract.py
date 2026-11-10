@@ -30,7 +30,7 @@ _LOG_HEAD = re.compile(r" ?[;；,，] ?(?:日志|文件)[:：] ?")
 _LOG_SIZE = re.compile(r"(?<!\d)\d+ ?(?:UTF-8 ?)?bytes[）)]?$", re.I)
 
 
-def _heading(line):
+def heading_title(line):
     """行首 1 至 6 个 # 后跟空白的标题名；不是标题返回 None。纯字符串切分。"""
     title = line.lstrip("#")
     hashes = len(line) - len(title)
@@ -43,7 +43,7 @@ def _split(text):
     """按标题切节：返回 (各节的非空行, 标题出现顺序, 首个标题前是否有正文)。"""
     sections, current, seen, stray = {}, None, [], False
     for line in text.splitlines():
-        heading = _heading(line)
+        heading = heading_title(line)
         if heading is not None:
             current = heading
             seen.append(current); sections.setdefault(current, [])
@@ -60,7 +60,7 @@ def sections(text):
     第四节之后再出现的标题不属于正文（宿主附录、日志摘录），到那里为止。"""
     found, current = {}, None
     for line in str(text or "").splitlines():
-        heading = _heading(line)
+        heading = heading_title(line)
         if heading is not None:
             if len(found) == len(HEADINGS):
                 break

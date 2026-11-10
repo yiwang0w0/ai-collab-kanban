@@ -698,11 +698,124 @@ VERDICT_HEAD = re.compile(
 
 OPT_BUDGET = 2600   # 选项块允许的字数(提示词经 argv 传递,Windows 的 32767 是天花板)
 DEC_BUDGET = 4000   # 人写的裁定正文允许的字数
+EARLIER_BUDGET = 1200   # 更早各轮裁定允许的字数(完整条目,新的优先)
+_OPT_ITEM = re.compile(r"\*\*([A-Za-z0-9?]{1,3})\.\s")   # 「### 方案」下一个方案的首行:**A. 标题**
+
+
+def _plain_lines(text):
+    """逐行给出 (起始偏移, 行, 是否在代码围栏外)。围栏里的标题、抬头只是示例正文,不算结构。"""
+    rows, position, fence = [], 0, None
+    for line in text.split("\n"):
+        mark = re.match(r"\s*(`{3,}|~{3,})", line)
+        plain = fence is None and not mark
+        if mark:
+            token = mark.group(1)
+            if fence is None:
+                fence = (token[0], len(token))
+            elif token[0] == fence[0] and len(token) >= fence[1] and not line[mark.end():].strip():
+                fence = None
+        rows.append((position, line, plain))
+        position += len(line) + 1
+    return rows
+
+
+def _option_parts(text):
+    """把审阅备注切成完整项:开头说明、各小节、「### 方案」下的每个方案。"""
+    parts, in_options = [], False
+    current = {"kind": "section", "name": "开头说明", "key": None, "lines": []}
+    for _, line, plain in _plain_lines(text):
+        title = evidence_contract.heading_title(line) if plain else None
+        item = _OPT_ITEM.match(line) if plain and in_options and title is None else None
+        if title is not None:
+            parts.append(current)
+            in_options = title == "方案"
+            current = {"kind": "options_head" if in_options else "section", "name": title, "key": None, "lines": [line]}
+        elif item:
+            parts.append(current)
+            key = item.group(1).upper()
+            current = {"kind": "option", "name": "方案 " + key, "key": key, "lines": [line]}
+        else:
+            current["lines"].append(line)
+    parts.append(current)
+    for part in parts:
+        part["text"] = "\n".join(part["lines"]).strip()
+    return [part for part in parts if part["text"]]
+
+
+def _chosen_key(card, keys):
+    """人选定的方案键。先认卡上的字段;没有字段时,人的话里只点到一个方案字母也算指向,点到多个就不猜。"""
+    card = card or {}
+    raw = str(card.get("decision_choice") or "").strip().upper()
+    if raw:
+        tokens = re.findall(r"[A-Z0-9?]+", raw)
+        return raw if raw in keys else tokens[-1] if tokens and tokens[-1] in keys else None
+    said = str(card.get("last_note") or "").upper()
+    named = [key for key in keys if re.search(r"(?<![A-Z0-9])" + re.escape(key) + r"(?![A-Z0-9])", said)]
+    return named[0] if len(named) == 1 else None
 
 
 def _trim_options(s, card=None):
-    """选项块完整留或舍；标题也可能是围栏示例正文，不能据它预剪裁。"""
-    return whole_text(s, OPT_BUDGET, retrieval_hint(card, field="verdict_note（本轮选项）"), unit="选项块", mode="item")
+    """审阅摆出的选项块,送给执行者之前整理:
+      ① 末尾「—— 自动审阅(…)· 这不是最终裁定 ——」及其后是给面板操作者看的说明,一律去掉
+         (执行者读到会以为还没裁定);
+      ② 不超预算就原样保留;
+      ③ 超预算按完整项取舍,**方案留到最后**:人选定的方案 → 开头摘要 → 其余方案 → 其余小节。
+         选定方案自己超预算时放宽到裁定正文的预算。省略的项逐个点名并给取回指引,不截半项;
+      ④ 分不出结构(只有一整块)时整块留或舍。"""
+    rows = _plain_lines(s)
+    trailer = next((position for position, line, plain in reversed(rows)
+                    if plain and line.startswith("—— 自动审阅(") and "这不是最终裁定" in line), None)
+    if trailer is not None:
+        s = s[:trailer].rstrip()
+    if len(s) <= OPT_BUDGET:
+        return s
+    hint = retrieval_hint(card, field="verdict_note（本轮选项）")
+    parts = _option_parts(s)
+    keys = [part["key"] for part in parts if part["kind"] == "option"]
+    package = [o for o in ((card or {}).get("decision_package") or {}).get("options") or [] if isinstance(o, dict)]
+    chosen = _chosen_key(card, list(dict.fromkeys(keys + [str(o.get("key") or "").upper() for o in package])))
+    if chosen and chosen not in keys:
+        # 备注里读不出这个方案(审阅写的是散文),从卡上的裁定包取它的标题、做法与代价。
+        option = next(o for o in package if str(o.get("key") or "").upper() == chosen)
+        text = "\n".join(["**%s. %s**" % (chosen, option.get("title") or "")]
+                         + ["- 做什么:" + str(option["detail"])] * bool(option.get("detail"))
+                         + ["- 代价:" + str(option["cost"])] * bool(option.get("cost")))
+        parts.append({"kind": "option", "name": "方案 " + chosen, "key": chosen, "text": text})
+    if len(parts) < 2:
+        return whole_text(s, OPT_BUDGET, hint, unit="选项块", mode="item")
+    head = next((i for i, part in enumerate(parts) if part["kind"] == "options_head"), len(parts))
+    def rank(i):
+        part = parts[i]
+        return (0 if part["kind"] == "option" and part["key"] == chosen else
+                1 if i < head else 2 if part["kind"] == "option" else 3, i)
+    kept, used = set(), 0
+    for i in sorted((i for i in range(len(parts)) if parts[i]["kind"] != "options_head"), key=rank):
+        size = len(parts[i]["text"]) + 2
+        if used + size <= (DEC_BUDGET if rank(i)[0] == 0 else OPT_BUDGET):
+            kept.add(i); used += size
+    if not kept:
+        return whole_text(s, OPT_BUDGET, hint, unit="选项块", mode="item")
+    if head < len(parts) and any(parts[i]["kind"] == "option" for i in kept):
+        kept.add(head)      # 「### 方案」这行标题跟着方案走
+    omitted = [part["name"] for i, part in enumerate(parts) if i not in kept and part["kind"] != "options_head"]
+    body = "\n\n".join(parts[i]["text"] for i in sorted(kept))
+    if omitted:
+        body += "\n\n[省略 %d 个完整项：%s；未截取任何半项。%s]" % (len(omitted), "、".join(omitted), hint)
+    return body
+
+
+def _earlier_rounds(text):
+    """选项块之后、本轮抬头之前的更早各轮裁定:按完整条目取舍,从最新的往回留,
+    放不下就到此为止(中间跳着留的裁定史比少几条更误导)。返回 (保留的原文, 省略条数)。"""
+    starts = [position for position, line, plain in _plain_lines(text)
+              if plain and VERDICT_HEAD.match(line) and "这不是最终裁定" not in line]
+    blocks = [text[a:b].strip() for a, b in zip(starts, starts[1:] + [len(text)])]
+    kept, used = [], 0
+    for item in reversed(blocks):
+        if used + len(item) + 2 > EARLIER_BUDGET:
+            break
+        kept.append(item); used += len(item) + 2
+    return "\n\n".join(reversed(kept)), len(blocks) - len(kept)
 
 
 def verdict_tail(note, card=None):
@@ -720,10 +833,16 @@ def verdict_tail(note, card=None):
     # 正文里的引用抬头没有结构身份；只认完整备注前、紧邻它的服务端抬头。
     boundary = next((head for head in reversed(list(VERDICT_HEAD.finditer(prefix))) if head.end() == len(prefix)), None)
     dec = s[boundary.start():] if boundary else s
-    options = _trim_options(prefix[:boundary.start()].strip(), card) if boundary else ""
+    # 本轮抬头之前:第一个裁定抬头前面是审阅摆出的选项(审阅转人工时整段覆盖旧备注,所以它总在最前);
+    # 其后到本轮抬头之间是更早各轮裁定,另算,不并进选项块(并进去只会让选项块更容易超预算)。
+    before = prefix[:boundary.start()].strip() if boundary else ""
+    first = next((position for position, line, plain in _plain_lines(before)
+                  if plain and VERDICT_HEAD.match(line) and "这不是最终裁定" not in line), len(before))
+    options = _trim_options(before[:first].strip(), card) if before[:first].strip() else ""
+    earlier, skipped = _earlier_rounds(before[first:]) if first < len(before) else ("", 0)
     numbered = ref.get("source") in ("legacy", "cascade", "autoreview") or (boundary is not None and ref.get("source") == "resolve" and ref.get("has_note") is True)
     dec = whole_text(dec, DEC_BUDGET, retrieval_hint(card, "decisions" if numbered else None, "verdict_note"), unit="裁定", mode="item")
-    return {"options": options, "decision": dec, "skipped": 0}
+    return {"options": options, "earlier": earlier, "decision": dec, "skipped": skipped}
 
 
 def verdict_block(t):
@@ -755,7 +874,9 @@ def verdict_block(t):
               "——已经定了的不要再猜,已经答过的不要再问一遍。",
               "(本轮备注有完整边界时优先保留；旧文无法辨认边界时整块保留或给出原字段取回指引。)"]
         if tail["options"]:
-            L += ["", "--- 本轮裁定前的原文(选项及已有记录，整块取舍) ---", tail["options"]]
+            L += ["", "--- 本轮裁定前的审阅原文(按完整方案与小节取舍) ---", tail["options"]]
+        if tail["earlier"]:
+            L += ["", "--- 更早的裁定(完整条目,新的在后) ---", tail["earlier"]]
         if tail["skipped"]:
             L += ["", "(省略 %d 条更早的完整裁定；这些旧文本的历史编号未知。%s)" % (tail["skipped"], retrieval_hint(t, field="verdict_note"))]
         L += ["", "--- 最近一次裁定(完整保留或整条取回指引)---", tail["decision"]]
