@@ -4,10 +4,10 @@ const HOST_ENV = harnessEnvironment();
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { copyFileSync, mkdtempSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative, isAbsolute } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const TMP = realpathSync.native(mkdtempSync(join(tmpdir(), "kanban-host-commit-")));
@@ -591,6 +591,81 @@ time.sleep(max(0,9-elapsed))
 assert not marker.exists(),'超时之后钩子仍然跑完了：只终止了直接子进程（handle 用时 %.1f 秒）'%elapsed
 task['_host_commit_guard'].release()
 `);
+});
+
+test("当前目录里的 git.exe 与 git.cmd 不会被选中（Python：源码闸、只读规则、工作区状态共用一个解析结果）", { skip: process.platform !== "win32" }, () => {
+  python(`repo=setup(); trap=folder/'trap'; trap.mkdir()
+shutil.copyfile(os.path.join(os.environ['SystemRoot'],'System32','hostname.exe'),trap/'git.exe')
+(trap/'git.cmd').write_text('@echo off\\r\\necho ran> "%~dp0cmd-ran.txt"\\r\\nexit /b 1\\r\\n',encoding='ascii',newline='')
+os.environ.pop('NoDefaultCurrentDirectoryInExePath',None); os.chdir(trap)
+by_name=subprocess.run(['git','--version'],capture_output=True)
+assert b'git version' not in by_name.stdout,'对照失效：按名字启动没有选中当前目录里的 git.exe，夹具需要更新'
+sys.path.insert(0,str(pathlib.Path(sys.argv[1])/'gates')); import gates_lib
+tree,error=gates_lib.gated_tree(str(repo),'.')
+assert tree==g(repo,'rev-parse','HEAD:') and error is None,(tree,error)
+import git_program,verify_lib
+program=pathlib.Path(git_program.program())
+assert program.name.lower()=='git.exe' and trap.resolve() not in program.resolve().parents,program
+assert git_program.environment({'nodefaultcurrentdirectoryinexepath':'0'})=={'NODEFAULTCURRENTDIRECTORYINEXEPATH':'1'}
+data=repo/'sub'/'data'; (repo/'sub').mkdir(); (repo/'sub'/'kept.txt').write_text('已入库',encoding='utf-8')
+g(repo,'add','--','sub/kept.txt'); g(repo,'commit','-m','只读规则夹具')
+rules=verify_lib.readonly_edit_rules(str(repo),str(data)); assert rules and any('one.txt' in rule for rule in rules),rules
+` + WORKER + `
+os.environ['WORKER_HOST_COMMIT']='0'; w.HOST_GIT=None
+(repo/'one.txt').write_text('未提交',encoding='utf-8'); state=w.worktree_state()
+assert state and 'one.txt' in state[0],state
+assert not (trap/'cmd-ran.txt').exists(),'当前目录里的 git.cmd 被执行'
+for bad in (str(trap/'git.cmd'),'git',str(repo/'git.exe')):
+ try: git_program.resolve([str(repo)],bad)
+ except git_program.GitProgramError: pass
+ else: raise AssertionError('本应拒绝：'+bad)
+`);
+});
+
+test("当前目录里的 git.exe 与 git.cmd 不会被选中（Node：服务端解析一次后只用绝对路径启动）", { skip: process.platform !== "win32" }, () => {
+  const trap = join(TMP, "node-trap"); mkdirSync(trap);
+  copyFileSync(join(process.env.SystemRoot, "System32", "hostname.exe"), join(trap, "git.exe"));
+  writeFileSync(join(trap, "git.cmd"), "@echo off\r\necho ran> \"%~dp0cmd-ran.txt\"\r\nexit /b 1\r\n");
+  const script = `import { execFileSync } from "node:child_process"; import { join } from "node:path";
+const m = await import(process.argv[1]), here = process.cwd();
+let byName; try { byName = execFileSync("git", ["--version"], { encoding: "utf8" }); } catch (error) { byName = String(error.stdout || "") + error.message; }
+const resolved = m.resolveGit({ roots: [] });
+console.log(JSON.stringify({ byName, path: resolved.path, out: m.gitRunner(resolved)(["--version"], { encoding: "utf8" }),
+  inside: m.resolveGit({ roots: [here], configured: join(here, "git.exe") }), batch: m.resolveGit({ configured: join(here, "git.cmd") }),
+  relative: m.resolveGit({ configured: "git" }), dotted: m.resolveGit({ env: { PATH: "." } }),
+  child: m.gitEnvironment({ nodefaultcurrentdirectoryinexepath: "0", KEEP: "x" }) }));`;
+  const env = Object.fromEntries(Object.entries(HOST_ENV).filter(([key]) => key.toUpperCase() !== "NODEFAULTCURRENTDIRECTORYINEXEPATH"));
+  const run = spawnSync(process.execPath, ["--input-type=module", "-e", script, pathToFileURL(join(ROOT, "core", "git-program.mjs")).href],
+    { cwd: trap, env, encoding: "utf8", windowsHide: true, timeout: 30000 });
+  assert.equal(run.status, 0, run.stdout + "\n" + run.stderr);
+  const seen = JSON.parse(run.stdout);
+  assert.doesNotMatch(seen.byName, /^git version/, "对照失效：按名字启动没有选中当前目录里的 git.exe，夹具需要更新");
+  assert.match(seen.out, /^git version/);
+  assert.ok(seen.path && isAbsolute(seen.path) && relative(trap, seen.path).startsWith(".."), seen.path);
+  for (const refused of [seen.inside, seen.batch, seen.relative, seen.dotted]) assert.ok(refused.path === null && refused.reason, JSON.stringify(refused));
+  assert.deepEqual(seen.child, { KEEP: "x", NoDefaultCurrentDirectoryInExePath: "1" });
+  assert.equal(existsSync(join(trap, "cmd-ran.txt")), false, "当前目录里的 git.cmd 被执行");
+});
+
+test("宿主的非测试源码里不再按名字启动 git（Node 与 Python 全扫）", () => {
+  const offenders = [];
+  const node = /\b(?:execFileSync|execFile|spawnSync|spawn|execSync|exec)\(\s*["'`]git\b/;
+  const py = /\[\s*["']git["']\s*,|which\(\s*["']git["']\s*\)|\belse\s+["']git["']/;
+  const walk = (directory) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const full = join(directory, entry.name);
+      if (entry.isDirectory()) { if (!["node_modules", "tests", ".git", "docs", ".data", "__pycache__"].includes(entry.name)) walk(full); continue; }
+      const pattern = /\.(?:mjs|cjs|js)$/.test(entry.name) ? node : entry.name.endsWith(".py") ? py : null;
+      if (!pattern) continue;
+      readFileSync(full, "utf8").split("\n").forEach((line, index) => {
+        if (pattern.test(line) && !/^\s*(?:#|\/\/|\*)/.test(line) && !line.includes("`subprocess.run")) offenders.push(relative(ROOT, full) + ":" + (index + 1));
+      });
+    }
+  };
+  walk(ROOT);
+  assert.deepEqual(offenders, [], "这些位置按名字启动 git；改用 core/git-program.mjs 或 core/git_program.py 的解析结果");
+  const server = readFileSync(join(ROOT, "core", "server.mjs"), "utf8");
+  assert.ok((server.match(/\brunGit\(\[/g) || []).length >= 9 && /const GIT = resolveGit\(/.test(server), "前提：server.mjs 的 Git 调用都走解析结果");
 });
 
 test("fleet 开关默认关闭且只接受显式布尔配置", () => {

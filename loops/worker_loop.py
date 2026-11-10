@@ -51,6 +51,7 @@ import verification_repair
 import evidence_contract
 import lessons_lib        # 经验库(docs/经验库.md):开场 / 出错 / 收尾 / 命中即验证,全由宿主脚本完成
 from host_git_commit import HostCommitGuard, HostCommitError, resolve_git, within
+import git_program    # 宿主侧唯一的 Git 程序解析(core/)；任何地方都不按名字启动 git
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
@@ -609,11 +610,11 @@ def worktree_state():
       · status 靠 --no-optional-locks;
       · diff **不认** --no-optional-locks(Git 2.54 实测照写),要 diff.autoRefreshIndex=false。
         关掉以后只有 stat 变了、内容没变的文件也不会出现在 --stat 里,输出不变。
-    宿主提交开着时用启动时固定的那份 Git 程序,不再按名字另找一次。"""
-    program = HOST_GIT[0] if HOST_GIT else "git"
-    quiet = dict(os.environ, GIT_OPTIONAL_LOCKS="0")
+    Git 程序不按名字启动:宿主提交开着时用启动时固定的那份,否则用全宿主共用的解析结果(core/git_program.py)。"""
+    quiet = dict(git_program.environment(), GIT_OPTIONAL_LOCKS="0")
     def git(*a):
         try:
+            program = HOST_GIT[0] if HOST_GIT else git_program.program()
             w = subprocess.run([program, "--no-optional-locks", "--no-lazy-fetch", "-c", "diff.autoRefreshIndex=false", *a],
                                cwd=REPO, env=quiet, capture_output=True, text=True,
                                encoding="utf-8", errors="replace", timeout=20)

@@ -7,6 +7,11 @@ import json, os, re, subprocess, sys, io, datetime, hashlib, time
 from types import MappingProxyType
 from prompt_items import whole_text
 
+_CORE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+import git_program     # 宿主侧唯一的 Git 程序解析；不按名字启动
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 # ⭐两个「仓」要分开(与 worker_loop.py / reviewer_loop.py 同一约定):
 #   CODE_ROOT = 看板自己的代码在哪(本文件的上一级)。登记簿是运营者的档,住这里 ——
@@ -242,8 +247,9 @@ def readonly_edit_rules(repo, data_dir):
     rules, prefix = [], ""
     for depth, ancestor in enumerate(parts):
         try:
-            r = subprocess.run(["git", "--no-lazy-fetch", "-C", repo_abs, "ls-tree", "-z", "HEAD"] + ([prefix] if prefix else []),
-                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30)
+            r = subprocess.run([git_program.program(), "--no-lazy-fetch", "-C", repo_abs, "ls-tree", "-z", "HEAD"] + ([prefix] if prefix else []),
+                               capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+                               env=git_program.environment())
         except Exception:
             return None
         if r.returncode != 0:

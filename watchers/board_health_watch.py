@@ -43,6 +43,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # 让本哨的受闸子树检查与 server/loop 读同一处真相。
 sys.path.insert(0, os.path.join(os.path.dirname(HERE), "core"))
 import board_env
+import git_program     # the one resolved Git program for every host-side call (never launched by name)
 board_env.apply()
 # ⚠ The tree check and the data dir anchor the BOARD'S OWN tree (CODE_ROOT) —
 #   NOT BOARD_REPO. The claims-refuse gate measures the board's gated subtree,
@@ -70,8 +71,8 @@ def tok():
 def _code_rev():
     """Which code THIS process runs (git short HEAD of the board checkout); "" when unmeasurable."""
     try:
-        return subprocess.run(["git", "-C", CODE_ROOT, "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, timeout=10).stdout.strip()
+        return subprocess.run([git_program.program(), "-C", CODE_ROOT, "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=10, env=git_program.environment()).stdout.strip()
     except Exception:
         return ""
 
@@ -399,9 +400,9 @@ def main():
 
         if SUBTREE:
             try:
-                r = subprocess.run(["git", "--no-optional-locks", "--no-lazy-fetch", "status", "--short", "--", SUBTREE],
+                r = subprocess.run([git_program.program(), "--no-optional-locks", "--no-lazy-fetch", "status", "--short", "--", SUBTREE],
                                    cwd=CODE_ROOT, capture_output=True, text=True,
-                                   encoding="utf-8", timeout=30)
+                                   encoding="utf-8", timeout=30, env=git_program.environment())
                 dirty = [l for l in (r.stdout or "").splitlines() if l.strip()]
                 if dirty:
                     problems.append(f"受闸子树脏 {len(dirty)} 文件(claims 将被拒): "

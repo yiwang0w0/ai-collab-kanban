@@ -56,9 +56,10 @@ def _code_rev():
     which lands on the not-yet-upgraded side. Unknown is never "current"."""
     try:
         import subprocess
+        import git_program     # the one resolved Git program for every host-side call (never launched by name)
         here = os.path.dirname(os.path.abspath(__file__))
-        return subprocess.run(["git", "-C", os.path.dirname(here), "rev-parse", "--short", "HEAD"],
-                              capture_output=True, text=True, timeout=10).stdout.strip()
+        return subprocess.run([git_program.program(), "-C", os.path.dirname(here), "rev-parse", "--short", "HEAD"],
+                              capture_output=True, text=True, timeout=10, env=git_program.environment()).stdout.strip()
     except Exception:
         return ""
 

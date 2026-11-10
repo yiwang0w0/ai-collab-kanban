@@ -17,6 +17,7 @@ import { join, dirname, isAbsolute, resolve, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import {inspectSeatCLI} from "../core/seat-cli-evidence.mjs";
 import { MIN_GIT_VERSION, probeGitVersion } from "../core/git-version.mjs";
+import { resolveGit, gitRunner, gitEnvironment } from "../core/git-program.mjs";
 import { applyConfigDefaults, nodeTooOld } from "../core/env.mjs";
 import { detectCodex } from "../core/config-setup.mjs";
 import { readCliVersions, recordTestedVersion, versionLine } from "../core/cli-versions.mjs";
@@ -79,9 +80,13 @@ if (process.platform === "win32" && process.env.PYTHONUTF8 !== "1")
 
 // ── ③ git — the revision gate's ground ──────────────────────────────────────
 try {
-  const gitVersion = probeGitVersion("git");
+  // The same resolution the server and the loops use — never "git" by name (core/git-program.mjs).
+  const GIT = resolveGit({ roots: [resolve(process.env.BOARD_REPO || ROOT), resolve(process.env.BOARD_DATA_DIR || join(ROOT, "core", ".data"))],
+                           configured: process.env.WORKER_HOST_GIT || CFG0.host_git });
+  if (!GIT.path) throw Object.assign(new Error(GIT.reason), { code: "GIT_UNAVAILABLE" });
+  const gitVersion = probeGitVersion(GIT.path, { env: gitEnvironment() });
   try {
-    execFileSync("git", ["-C", ROOT, "rev-parse", "HEAD"], { stdio: "ignore", windowsHide: true, timeout: 15000 });
+    gitRunner(GIT)(["-C", ROOT, "rev-parse", "HEAD"], { stdio: "ignore", windowsHide: true, timeout: 15000 });
     ok("Git " + gitVersion + " 可用（最低 " + MIN_GIT_VERSION + "），且本目录是 git 仓库");
   } catch {
     wr("git 可用,但本目录不是 git 仓库", "revision 闸(accepted_rev)需要 git 历史;git init 或从 clone 运行");

@@ -6,8 +6,15 @@ import os
 import re
 import stat
 import subprocess
+import sys
 import unicodedata
 import uuid
+
+_CORE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "core")
+if _CORE not in sys.path:
+    sys.path.insert(0, _CORE)
+import git_program
+from git_program import is_batch, within
 
 
 class HostCommitError(RuntimeError):
@@ -174,67 +181,20 @@ def _kill(process):
         pass
 
 
-def is_batch(path):
-    """.bat/.cmd 经 cmd.exe 启动，参数会被当作命令行解释；判据与 worker 的 cli_is_batch 相同。"""
-    return os.path.splitext(str(path or ""))[1].lower() in (".bat", ".cmd")
-
-
-def within(path, root):
-    """path 是否落在 root 之内；字面路径与解析后的实际路径各比一次。"""
-    for inner in {os.path.abspath(path), os.path.realpath(path)}:
-        for outer in {os.path.abspath(root), os.path.realpath(root)}:
-            try:
-                if os.path.commonpath([os.path.normcase(outer), os.path.normcase(inner)]) == os.path.normcase(outer):
-                    return True
-            except ValueError:
-                pass
-    return False
-
-
-def _search_path(name, environ):
-    """只在 PATH 的绝对目录里找。空条目与相对条目都指当前目录，一律不搜。
-    不用 shutil.which：Windows 上它把进程当前目录排在 PATH 之前，
-    循环的当前目录可能在模型的写放行范围内。"""
-    names = [name]
-    if os.name == "nt":
-        names = [name + ext for ext in (environ.get("PATHEXT") or ".COM;.EXE;.BAT;.CMD").split(os.pathsep) if ext]
-    for folder in (environ.get("PATH") or "").split(os.pathsep):
-        folder = folder.strip().strip('"')
-        if not os.path.isabs(folder) or (os.name == "nt" and not os.path.splitdrive(folder)[0]):
-            continue
-        for candidate in names:
-            target = os.path.join(folder, candidate)
-            if os.path.isfile(target) and (os.name == "nt" or os.access(target, os.X_OK)):
-                return target
-    return None
-
-
 def _check_program(program, roots, batch):
-    """批处理包装器、落在工作仓或数据目录内的程序都不执行。"""
-    if batch(program):
-        _fail("Git 程序是 .bat/.cmd 包装器，参数会经 cmd.exe 解释；请把 WORKER_HOST_GIT 设为 git 可执行文件的绝对路径：" + program)
-    for root in roots:
-        if root and within(program, root):
-            _fail("Git 程序位于工作仓或数据目录内，模型可以改写它；请改用其外的 Git：" + program)
+    try:
+        git_program.check(program, roots, batch)
+    except git_program.GitProgramError as error:
+        _fail(str(error))
 
 
 def resolve_git(roots=(), configured=None, environ=None, batch=is_batch):
-    """解析并固定宿主用的 Git 程序，返回 (绝对路径, 字节钉)。循环启动时调用一次，之后不再搜索。
-    configured 是宿主配置的绝对路径；未配置时只搜 PATH 的绝对目录。"""
-    environ = os.environ if environ is None else environ
-    if configured:
-        if not os.path.isabs(configured):
-            _fail("配置的 Git 程序必须是绝对路径：" + str(configured))
-        found = configured
-    else:
-        found = _search_path("git", environ)
-        if not found:
-            _fail("PATH 的绝对目录里找不到 Git 程序；请安装 Git 或把 WORKER_HOST_GIT 设为 git 可执行文件的绝对路径")
-    _check_program(found, roots, batch)
-    program = os.path.realpath(found)
-    if os.name == "nt" and os.path.basename(os.path.dirname(program)).lower() == "cmd":
-        program = os.path.realpath(os.path.join(os.path.dirname(os.path.dirname(program)), "bin", "git.exe"))
-    _check_program(program, roots, batch)
+    """解析并固定宿主提交用的 Git 程序，返回 (绝对路径, 字节钉)。循环启动时调用一次，之后不再搜索。
+    解析规则是全宿主共用的那一份(core/git_program.py)；这里只多一步按字节钉住。"""
+    try:
+        program = git_program.resolve(roots, configured, environ, batch)
+    except git_program.GitProgramError as error:
+        _fail(str(error))
     pin = _file(program)
     if pin is None:
         _fail("Git 实际程序不可用：" + program)

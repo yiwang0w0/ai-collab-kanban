@@ -123,6 +123,19 @@ from a named incident (see `docs/INCIDENTS.md`):
   current directory — and a `.bat/.cmd` result, or a program inside the work
   repo or the data directory, refuses to start. The commit message is passed on
   stdin (`git commit -F -`), so a card title never reaches a command line.
+  Every other host-side Git call (server, source gate, read-only rules, watchers,
+  `board.py`, `doctor`, `setup`) uses the same resolution — `core/git_program.py`
+  and `core/git-program.mjs`, resolved once per process, `host_git` in
+  fleet.config or `WORKER_HOST_GIT` first — and never launches `git` by name,
+  because a by-name launch looks in the process's current directory first.
+  Two accepted limits of the per-card commit, both failing closed: refs other
+  than the checked-out branch are no longer watched (the ref store is shared by
+  every checkout of the repository; a reftable store is still pinned whole), so
+  the gate binds this checkout's HEAD, index and branch value, not the rest of
+  the ref namespace; and on Windows the Git process tree is confined by a job
+  object that is released with `NtResumeProcess` (ntdll, not a documented API) —
+  if the job cannot be set up or the process cannot be released, no Git command
+  runs and the card is refused.
 - **Legacy loop tool profile.** The intended profile exposes no Bash or push tool; card-named
   verification runs through a key registry (`verify_registry.json`) — cards
   carry **keys**, never command strings, so a worker that can write files still
