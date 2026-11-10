@@ -241,6 +241,53 @@ assert next(e for e in L.load_all(D)[0] if e['id'] == 'zeta').get('status') is N
   assert.equal(cli(directory, ["query", "没有任何条目会命中的句子"]).stdout.trim(), "无命中。");
 });
 
+test("候选:开场不附;confirm 只确认不记命中,之后才附", () => {
+  const directory = python(String.raw`import lessons_lib as L
+D = str(folder/'data')
+L.add(dict(id='cand-one', title='候选夹具', trigger=['kw:CAND_TOKEN'], root_cause='根因', fix='修法', verify='验证',
+           source='夹具', status='candidate'), D)
+assert L.session({'id': 1, 'run_id': 'c-1'}, D).opening_block({'subject': 'CAND_TOKEN'}) == []
+`);
+  const confirmed = cli(directory, ["confirm", "cand-one"]);
+  assert.equal(confirmed.status, 0, confirmed.stdout + confirmed.stderr);
+  assert.equal(existsSync(join(directory, "data", "lessons", "hits.jsonl")), false);
+  const listed = JSON.parse(cli(directory, ["ls", "--scope", "private", "--json"]).stdout);
+  assert.deepEqual(listed.entries.map((e) => [e.id, e.hits, e.status ?? null]), [["cand-one", 0, null]]);
+  assert.equal(cli(directory, ["confirm", "missing"]).status, 2);
+  const again = spawnSync(PY, ["-I", "-B", "-X", "utf8", "-", ROOT, join(directory, "data")], {
+    cwd: ROOT, windowsHide: true, encoding: "utf8", timeout: 60000,
+    env: { ...CLEAN, BOARD_CONFIG: join(directory, "missing-config.json") },
+    input: "import sys,pathlib\nsys.path.insert(0,str(pathlib.Path(sys.argv[1])/'loops'))\nimport lessons_lib as L\n" +
+      "lines = L.session({'id': 2, 'run_id': 'c-2'}, sys.argv[2]).opening_block({'subject': 'CAND_TOKEN'})\n" +
+      "assert any('cand-one' in line for line in lines), lines\n",
+  });
+  assert.equal(again.status, 0, again.stdout + again.stderr);
+});
+
+test("候选:discard 把候选与待整理移进 _discarded/,ls --candidates 不再出现;已确认的不让丢", () => {
+  const directory = python(String.raw`import lessons_lib as L
+D = str(folder/'data')
+L.add(dict(id='cand-two', title='候选夹具', trigger=['kw:CAND_TOKEN'], root_cause='根因', fix='修法', verify='验证',
+           source='夹具', status='candidate'), D)
+L.add(dict(id='kept-one', title='已确认夹具', trigger=['kw:KEPT_TOKEN'], root_cause='根因', fix='修法', verify='验证',
+           source='夹具'), D)
+L.save_pending(D, 7, 'title: 只有标题', ['缺修法'])
+`);
+  const before = JSON.parse(cli(directory, ["ls", "--candidates", "--json"]).stdout);
+  assert.deepEqual(before.entries.map((e) => e.id), ["cand-two"]);
+  assert.equal(before.pending.length, 1);
+  for (const ident of ["cand-two", before.pending[0]]) {
+    const dropped = cli(directory, ["discard", ident]);
+    assert.equal(dropped.status, 0, dropped.stdout + dropped.stderr);
+  }
+  const after = JSON.parse(cli(directory, ["ls", "--candidates", "--json"]).stdout);
+  assert.deepEqual([after.entries, after.pending], [[], []]);
+  assert.deepEqual(readdirSync(join(directory, "data", "lessons", "_discarded")).sort(), ["cand-two.md", before.pending[0]].sort());
+  assert.equal(cli(directory, ["discard", "kept-one"]).status, 2);
+  assert.equal(cli(directory, ["discard", "../kept-one"]).status, 2);
+  assert.deepEqual(JSON.parse(cli(directory, ["ls", "--scope", "private", "--json"]).stdout).entries.map((e) => e.id), ["kept-one"]);
+});
+
 test("执行线四个接点:开场附入、出错附入、收尾入库、通过后记命中;开关可关", () => {
   const directory = python(String.raw`import worker_loop as w
 import lessons_lib as L
