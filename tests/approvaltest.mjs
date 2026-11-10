@@ -340,7 +340,7 @@ test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,
     // 一段时间最多碰到几个窗口(窗口不与测试对齐,两头各算一个)
     const t0 = Date.now(), windowsSince = (t) => Math.floor((Date.now() - t) / WINDOW) + 2;
     for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/x" + "a".repeat(150), local: "127.0.0.3" })).status, 403);
-    // 已认证的调用照旧一次一行
+    // 已认证的列表查询另行按令牌聚合(见下面的轮询用例),不算在未认证的次数里
     const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body;
     for (let i = 0; i < 3; i++) assert.equal((await raw(rport, { token: tok.token })).status, 200);
     for (let i = 0; i < 30; i++) assert.equal((await raw(rport, { path: "/y" + i })).status, 401);
@@ -365,14 +365,54 @@ test("协作安全:远程入口对未认证就被拒的请求不逐条写审计,
     const windows = windowsSince(t0);
     assert.ok(anonOf(rows).length <= 41 * windows, `未认证请求的审计行数按窗口有界(${windows} 个窗口):${anonOf(rows).length}`);
     assert.ok(anonOf(rows).length < 150, "行数少于请求数");
-    assert.equal(rows.filter((r) => r.token_id === tok.record.id && r.status === 200).length, 3, "已认证的调用每次一行");
+    for (let i = 0; i < 40 && counted(rows.filter((r) => r.token_id === tok.record.id)) < 3; i++) { await delay(250); rows = audit(); }
+    assert.equal(counted(rows.filter((r) => r.token_id === tok.record.id && r.status === 200)), 3, "已认证的列表查询次数守恒");
+  } finally { await B.stop(); }
+});
+
+test("协作安全:已认证的远程列表轮询按令牌按窗口聚合审计;只读摘要、单项查询与决定仍一次一行", { timeout: 120000 }, async () => {
+  const WINDOW = 3000;
+  const { B, rport, audit } = await remoteBoard({ env: { BOARD_REMOTE_AUDIT_WINDOW_MS: String(WINDOW) } });
+  try {
+    const ex = await B.register("agent-p");
+    const t1 = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body, id1 = t1.record.id;
+    const t2 = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "tablet" })).body, id2 = t2.record.id;
+    const rq = (await B.api("POST", "/api/approvals/request", ex, { action: "改共享端口", risk: "medium" })).body.request;
+    const one = `/api/approvals/${encodeURIComponent(rq.approval_id)}`;
+    const counted = (list) => list.reduce((n, r) => n + (/ \+(\d+)$/.test(r.note) ? Number(/ \+(\d+)$/.exec(r.note)[1]) : 1), 0);
+    const polls = (list, id) => list.filter((r) => r.token_id === id && r.method === "GET" && r.path === "/api/approvals");
+    const t0 = Date.now(), windowsSince = (t) => Math.floor((Date.now() - t) / WINDOW) + 2;
+    // 客户端轮询待批准列表:40 次
+    for (let i = 0; i < 40; i++) assert.equal((await raw(rport, { token: t1.token })).status, 200);
+    for (let i = 0; i < 5; i++) assert.equal((await raw(rport, { token: t2.token })).status, 200);
+    let rows = audit();
+    assert.ok(polls(rows, id1).length <= 2 * windowsSince(t0), `40 次列表轮询不应各写一行:${polls(rows, id1).length} 行`);
+    // 其余已认证的调用照旧一次一行:只读摘要、单项查询、越权路径、每一次决定
+    for (let i = 0; i < 3; i++) assert.equal((await raw(rport, { token: t1.token, path: "/api/summary" })).status, 200);
+    for (let i = 0; i < 2; i++) assert.equal((await raw(rport, { token: t1.token, path: one })).status, 200);
+    for (let i = 0; i < 2; i++) assert.equal((await raw(rport, { token: t1.token, path: "/api/tasks" })).status, 403);
+    const decide = (expected_version) => raw(rport, { token: t1.token, method: "POST", path: one + "/decide", body: { decision: "approve", source: { client: "phone-app" }, expected_version } });
+    assert.deepEqual([(await decide(2)).status, (await decide(1)).status, (await decide(1)).status], [409, 200, 409]);
+    // 窗口结束后补一行「poll +N」:次数不丢,每个令牌各算各的
+    for (let i = 0; i < 80 && counted(polls(rows = audit(), id1)) + counted(polls(rows, id2)) < 45; i++) await delay(250);
+    const dump = JSON.stringify(rows.filter((r) => r.token_id != null).map((r) => [r.token_id, r.method, r.path, r.status, r.note]));
+    assert.equal(counted(polls(rows, id1)), 40, `第一枚令牌的轮询次数守恒:${dump}`);
+    assert.equal(counted(polls(rows, id2)), 5, `第二枚令牌的轮询次数守恒:${dump}`);
+    assert.ok(polls(rows, id1).length <= 2 * windowsSince(t0) && polls(rows, id1).length < 40, `每个窗口每枚令牌最多两行(首条与汇总):${dump}`);
+    assert.ok(polls(rows, id1).some((r) => /^poll \+\d+$/.test(r.note)), `汇总行记次数:${dump}`);
+    assert.ok(polls(rows, id1).every((r) => r.status === 200 && r.ip === "127.0.0.2"), "汇总行带令牌编号、来源与状态");
+    const mine = rows.filter((r) => r.token_id === id1);
+    assert.equal(mine.filter((r) => r.path === "/api/summary").length, 3, "只读摘要一次一行");
+    assert.equal(mine.filter((r) => r.method === "GET" && r.path === one).length, 2, "单项查询一次一行");
+    assert.equal(mine.filter((r) => r.path === "/api/tasks" && r.status === 403).length, 2, "越权路径一次一行");
+    assert.deepEqual(mine.filter((r) => r.method === "POST").map((r) => r.status), [409, 200, 409], "每一次决定一行");
   } finally { await B.stop(); }
 });
 
 /** 等看板进程自己退出,再读它留下的审计行。 */
 const anonAfterExit = async (B, audit, ip) => { await Promise.race([B.closed, delay(20000, null, { ref: false })]); return audit().filter((r) => r.ip === ip).map((r) => r.note); };
 
-test("协作安全:重启、停止、经批准接口更新重启之前,未认证拒绝在当前窗口里的计数先落成汇总行", { timeout: 180000 }, async () => {
+test("协作安全:重启、停止、经批准接口更新重启之前,当前窗口里的拒绝计数与轮询计数先落成汇总行", { timeout: 180000 }, async () => {
   // 窗口设成 10 分钟:汇总行只可能来自关停路径,不会是窗口自然结束补的。
   const env = { BOARD_REMOTE_AUDIT_WINDOW_MS: "600000" };
   const ways = [
@@ -389,9 +429,12 @@ test("协作安全:重启、停止、经批准接口更新重启之前,未认证
     try {
       for (let i = 0; i < 50; i++) assert.equal((await raw(rport, { path: "/x", local: "127.0.0.3" })).status, 403);
       assert.deepEqual(audit().filter((r) => r.ip === "127.0.0.3").map((r) => r.note), ["ip"], `${what}:窗口没结束时库里只有第一条`);
+      const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body;
+      for (let i = 0; i < 10; i++) assert.equal((await raw(rport, { token: tok.token })).status, 200);
       const r = await trigger(B);
       assert.equal(r.status, 202, `${what}:${JSON.stringify(r.body)}`);
       assert.deepEqual(await anonAfterExit(B, audit, "127.0.0.3"), ["ip", "ip +49"], `${what}:退出前把当前窗口的 49 次补成汇总行`);
+      assert.deepEqual(audit().filter((x) => x.token_id === tok.record.id).map((x) => x.note), ["", "poll +9"], `${what}:带令牌的列表轮询同样在退出前补汇总行`);
       assert.equal(await B.closed, code, `${what} 的退出码`);
     } finally { await B.stop(); }
   }
