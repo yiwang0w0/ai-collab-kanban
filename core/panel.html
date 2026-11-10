@@ -5989,7 +5989,8 @@ function chatToolsLine(tools) {
 const CHAT_MESSAGE_MAX = 4000;   // 一条消息的字数上限(服务端同值)
 const chatLength = (text) => [...String(text ?? "").trim()].length;
 /** 输入框上方的那一行:没发出去 > 正在回复 > 这条太长 > 协调线不可用 > 上一轮没有完成。null = 不显示。
- *  协调线不可用的原因照服务端给的原样写(未找到 Claude CLI、源码未确认、CLI 登录已过期…)。
+ *  协调线不可用的原因照服务端给的原样写(GET /api/coordinator 只在两种情况给 available:false:Claude CLI 找不到
+ *  或不能直接启动、当前版本还没确认;CLI 登录失效不在这里,表现为那一轮 failed + error)。
  *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。 */
 function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "" } = {}) {
   if (fail) return { tone: "bad", icon: "warn", text: "没有发出去：" + fail, act: "resend", label: "重试" };
