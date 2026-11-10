@@ -134,6 +134,42 @@ test("旧行照常可读;按卡、线、模型、阶段分组,支持时间范围
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+test("用量汇总:since/until 与 from/to 同义;by=card 每组给失败尝试数与是否已结算,另给已结算卡的合计", () => {
+  const dir = mkdtempSync(join(tmpdir(), "usagetest-range-")), file = join(dir, "usage_ledger.jsonl");
+  const row = (ts, card, attempt, worker, model, inTok, ok) => line({ ts, card, attempt, run_id: `r${card}-${attempt}`, worker, model, phase: "implement",
+    calls: 1, in: inTok, cc: 0, cr: 0, out: inTok / 10, ok });
+  try {
+    writeFileSync(file,
+      row("2026-11-01T09:00:00", 1, 1, "alpha", "m1", 100, false)        // 卡 1:第一次没通过
+      + row("2026-11-01T10:00:00", 1, 2, "alpha", "m1", 200, true)       //       第二次通过,随后结算
+      + line({ ts: "2026-11-01T11:00:00", event: "settlement", settled_card: 1, seq: 1, resolved_at: "2026-11-01T11:00:00", rows_through: 2 })
+      + row("2026-11-03T09:00:00", 2, 1, "beta", "m2", 50, false),       // 卡 2:一次没通过,未结算
+      "utf8");
+    const L = openLedger(file);
+    const get = (q) => { const r = usageHttp(L, "/api/usage", new URLSearchParams(q)); return { status: r.status, body: JSON.parse(r.body) }; };
+    const all = get("by=card").body, g = Object.fromEntries(all.groups.map((x) => [x.key, x]));
+    assert.deepEqual([g["1"].attempts_failed, g["1"].settled, g["2"].attempts_failed, g["2"].settled], [1, true, 1, false]);
+    assert.equal(all.total.attempts_failed, 2);
+    assert.deepEqual([all.settled.cards, all.settled.rows, all.settled.in, all.settled.out], [1, 2, 300, 30], "已结算卡的合计只算卡 1");
+    // since / until 与 from / to 同义;两种写法同时给且不一致时拒绝
+    assert.deepEqual(get("by=card&since=2026-11-02").body, get("by=card&from=2026-11-02").body);
+    assert.deepEqual(get("by=card&since=2026-11-02").body.groups.map((x) => x.key), ["2"]);
+    assert.deepEqual(get("by=card&until=2026-11-01").body.groups.map((x) => x.key), ["1"]);
+    assert.equal(get("by=card&since=2026-11-02&from=2026-11-01").status, 400);
+    assert.equal(get("since=昨天").status, 400);
+    // 时间范围内才计:卡 1 没通过的那一次在 09:00,从 09:30 起看就不算
+    const later = get("by=card&since=2026-11-01T09:30:00&until=2026-11-01T23:59:59").body;
+    assert.deepEqual([later.groups[0].key, later.groups[0].attempts_failed, later.settled.in], ["1", 0, 200]);
+    // 按线 / 模型 / 阶段同样认 since/until;失败尝试与结算只在 by=card 里
+    const byLine = get("by=line&since=2026-11-01&until=2026-11-01").body;
+    assert.deepEqual(byLine.groups.map((x) => [x.key, x.rows]), [["alpha", 2]]);
+    assert.equal("attempts_failed" in byLine.groups[0] || "settled" in byLine, false);
+    assert.deepEqual(get("by=model&since=2026-11-02").body.groups.map((x) => x.key), ["m2"]);
+    assert.deepEqual(get("by=phase&until=2026-11-01").body.groups.map((x) => [x.key, x.attempts]), [["implement", 2]]);
+    assert.deepEqual(Object.keys(get("").body), ["cards"], "不带参数仍是旧形状");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test("卡完成时写一条结算事件:同一次完成只写一次、只追加;重开后再完成带序号", { timeout: 90000 }, async () => {
   const B = await board();
   try {

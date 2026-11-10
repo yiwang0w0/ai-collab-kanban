@@ -316,36 +316,48 @@ export function openLedger(file, { makeDefault = false } = {}) {
   function cards() { refresh(); return Object.fromEntries(legacy); }
 
   /** 按 card | line | model | phase 分组;from / to 是毫秒(含两端)。带时间范围时,
-   *  时刻读不出来的行不计入。 */
+   *  时刻读不出来的行不计入。
+   *  by=card 时每组另有 attempts_failed(范围内有行的失败尝试数,判据同 settlementOf;卡号未知为 null)
+   *  与 settled(这张卡有没有结算事件,不看范围),total 另有 attempts_failed,顶层另有 settled(已结算卡在范围内的合计)。 */
   function group(by, { from = null, to = null } = {}) {
     if (!GROUP_KEYS.includes(by)) throw badInput(`by 只能是 ${GROUP_KEYS.join(" | ")}`);
     refresh();
-    const map = new Map(), total = new Sum(), ranged = from !== null || to !== null;
+    const map = new Map(), total = new Sum(), ranged = from !== null || to !== null, perCard = by === "card";
+    // 失败尝试按整张卡的历史判(与单卡结算一致),再看它的行有没有落在范围内:行号 → 这次尝试的编号。
+    const failedRow = new Map(), failedBy = new Map(), settledSum = new Sum(), settledCards = new Set();
+    if (perCard) {
+      const mineBy = new Map();
+      rows.forEach((r, index) => { if (r.card !== null) { if (!mineBy.has(r.card)) mineBy.set(r.card, []); mineBy.get(r.card).push([r, index]); } });
+      for (const [id, mine] of mineBy)
+        attemptRuns(id, mine).forEach((a, n) => { if (a.failed) for (const [, index] of a.rows) failedRow.set(index, n); });
+    }
     rows.forEach((r, index) => {
       if (ranged && (r.at === null || (from !== null && r.at < from) || (to !== null && r.at > to))) return;
-      const key = by === "card" ? (r.card === null ? "?" : String(r.card)) : r[by] ?? "?";
+      const key = perCard ? (r.card === null ? "?" : String(r.card)) : r[by] ?? "?";
       if (!map.has(key)) map.set(key, new Sum());
       map.get(key).add(r, index); total.add(r, index);
+      if (!perCard || r.card === null) return;
+      if (failedRow.has(index)) { if (!failedBy.has(key)) failedBy.set(key, new Set()); failedBy.get(key).add(failedRow.get(index)); }
+      if (settled.has(r.card)) { settledSum.add(r, index); settledCards.add(r.card); }
     });
-    const order = by === "card"
+    const order = perCard
       ? (a, b) => (a === "?") - (b === "?") || Number(a) - Number(b)
       : (a, b) => (a < b ? -1 : a > b ? 1 : 0);
-    const groups = [...map.keys()].sort(order).map((key) => ({ key, ...map.get(key).out() }));
-    return { by, from, to, groups, total: total.out() };
+    const cardFields = (key) => (key === "?" ? { attempts_failed: null, settled: false }
+      : { attempts_failed: failedBy.get(key)?.size || 0, settled: settled.has(Number(key)) });
+    const groups = [...map.keys()].sort(order).map((key) => ({ key, ...map.get(key).out(), ...(perCard ? cardFields(key) : {}) }));
+    if (!perCard) return { by, from, to, groups, total: total.out() };
+    const failedAll = groups.reduce((n, g) => n + (g.attempts_failed || 0), 0);
+    return { by, from, to, groups, total: { ...total.out(), attempts_failed: failedAll },
+             settled: { cards: settledCards.size, ...settledSum.out() } };
   }
 
-  /** 某张卡到此刻为止的结算:合计、「阶段 × 模型」明细、失败尝试单列。
+  /** 一张卡的各次尝试,按出现顺序,每次带 failed。mine = 这张卡的 [行, 行号],按账本顺序。
    *  失败尝试 = 最后一轮明确没通过的尝试;旧行不带结果时,后面又开了新尝试的那一次算失败
    *  (上一次结算之前的最后一次尝试除外:那一次把卡送到了完成)。 */
-  function settlementOf(id) {
-    const mine = [];
-    rows.forEach((r, index) => { if (r.card === id) mine.push([r, index]); });
-    const totals = new Sum(), failed = new Sum(), by = new Map(), attempts = [], seen = new Map();
+  function attemptRuns(id, mine) {
+    const attempts = [], seen = new Map();
     mine.forEach(([r, index], n) => {
-      totals.add(r, index);
-      const gk = JSON.stringify([r.phase, r.model]);
-      if (!by.has(gk)) by.set(gk, { phase: r.phase, model: r.model, sum: new Sum() });
-      by.get(gk).sum.add(r, index);
       if (!isAttempt(r.phase)) return;
       const key = attemptKey(r, index);
       if (!seen.has(key)) { seen.set(key, { first: n, last: n, ok: null, rows: [] }); attempts.push(seen.get(key)); }
@@ -356,8 +368,23 @@ export function openLedger(file, { makeDefault = false } = {}) {
     attempts.forEach((a, n) => {
       const next = attempts[n + 1];
       const superseded = !!next && !cuts.some((c) => a.last < c && c <= next.first);
-      if (a.ok === false || (a.ok === null && superseded)) for (const [r, index] of a.rows) failed.add(r, index);
+      a.failed = a.ok === false || (a.ok === null && superseded);
     });
+    return attempts;
+  }
+
+  /** 某张卡到此刻为止的结算:合计、「阶段 × 模型」明细、失败尝试单列(判据见 attemptRuns)。 */
+  function settlementOf(id) {
+    const mine = [];
+    rows.forEach((r, index) => { if (r.card === id) mine.push([r, index]); });
+    const totals = new Sum(), failed = new Sum(), by = new Map();
+    mine.forEach(([r, index]) => {
+      totals.add(r, index);
+      const gk = JSON.stringify([r.phase, r.model]);
+      if (!by.has(gk)) by.set(gk, { phase: r.phase, model: r.model, sum: new Sum() });
+      by.get(gk).sum.add(r, index);
+    });
+    for (const a of attemptRuns(id, mine)) if (a.failed) for (const [r, index] of a.rows) failed.add(r, index);
     const rank = (p) => { const i = PHASES.indexOf(p); return i < 0 ? PHASES.length : i; };
     return {
       card: id, rows_through: mine.length,
@@ -433,10 +460,14 @@ export function usageHttp(ledger, pathname, query) {
     return format === "csv" ? csv(settlementCsv(s)) : reply(200, s);
   }
   if (pathname !== "/api/usage") return reply(404, { error: "没有这个用量接口" });
-  if (!["by", "from", "to", "format"].some((k) => query.has(k))) return reply(200, { cards: ledger.cards() });
+  if (!["by", "from", "to", "since", "until", "format"].some((k) => query.has(k))) return reply(200, { cards: ledger.cards() });
   const by = query.get("by") || "card";
   if (!GROUP_KEYS.includes(by)) return reply(400, { error: `by 只能是 ${GROUP_KEYS.join(" | ")}` });
-  const from = parseTime(query.get("from")), to = parseTime(query.get("to"), true);
+  // since / until 与 from / to 同义;两种写法同时给且不一致时不猜哪个算数。
+  const end = (a, b) => (query.has(a) && query.has(b) && query.get(a) !== query.get(b) ? undefined : query.has(a) ? query.get(a) : query.get(b));
+  const fromRaw = end("from", "since"), toRaw = end("to", "until");
+  if (fromRaw === undefined || toRaw === undefined) return reply(400, { error: "from 与 since、to 与 until 是同一个意思,只写一个,或写成一样的值" });
+  const from = parseTime(fromRaw), to = parseTime(toRaw, true);
   if (Number.isNaN(from) || Number.isNaN(to))
     return reply(400, { error: "from / to 要写成 2026-11-10 或 2026-11-10T08:30:00 这样的时刻" });
   const g = ledger.group(by, { from, to });
