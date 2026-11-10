@@ -56,7 +56,8 @@ from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
 from prompt_items import whole_text, retrieval_hint
 from verify_lib import (run_verify, fmt_verify, save_verify_log, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules,  # noqa: F401
-                        deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules)
+                        deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules, cli_denied_tools,
+                        git_dir_deny_rules)
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
 # clash, and ignoring it here would aim this client at the DEFAULT port's board.
@@ -1002,15 +1003,59 @@ def prompt_selftest():
     # 宿主验证日志可读以供原会话续修，但不能被模型改写；它与数据、认证拒绝规则同时生效。
     verify_log_rule = f"Edit({deny_path(os.path.join(EVID, 'verify_runs'))}/**)"
     deny_values = _vals(av, "--disallowedTools")
-    ok("⭐主座席 argv 带 --disallowedTools 且紧跟全部规则",
+    # 显式工具名段(白名单之外的纵深):拆解器同一份清单去掉本档白名单里的工具,排在路径规则之前。
+    from verify_lib import DENIED_TOOLS
+    deny_names = cli_denied_tools(WORKER_TOOLS)
+    ok("⭐主座席 argv 带 --disallowedTools:开头是显式工具名段,其后紧跟全部路径规则",
        "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:]
-       == rules + [verify_log_rule] + auth_home_deny_rules())
+       == deny_names + rules + [verify_log_rule] + auth_home_deny_rules() + git_dir_deny_rules(REPO),
+       str(av[av.index("--disallowedTools") + 1:][:4]) if "--disallowedTools" in av else "(无)")
+    ok("⭐显式工具名段 = DENIED_TOOLS 去掉 write 档白名单:Bash/PowerShell/联网/子代理在内,Write/Edit 不在",
+       deny_names == [n for n in DENIED_TOOLS if n not in WORKER_TOOLS]
+       and all(n in deny_names for n in ("Bash", "PowerShell", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Skill"))
+       and not set(deny_names) & set(WORKER_TOOLS) and len(deny_names) == len(DENIED_TOOLS) - 2, str(deny_names[:6]))
+    ok("⭐不接浏览器集成(--no-chrome:它带进来的工具不在 --tools 管辖内)", "--no-chrome" in av)
+    # ── 工作仓 git 元数据只读不写(外部审核 2026-11-10):write 档的 Edit(<工作仓>/**) 放行盖住了
+    #    .git/config 与 .git/hooks,写进去不进 git status,而别人跑 git 时会被执行。
+    import tempfile as _tg
+    git_rules = git_dir_deny_rules(REPO)
+    repo_fwd = deny_path(REPO).rstrip("/")
+    ok("⭐工作仓 .git 进 Edit 拒绝(.git 本身 + .git/**);只挡写,不挡读",
+       git_rules[:2] == [f"Edit({repo_fwd}/.git)", f"Edit({repo_fwd}/.git/**)"]
+       and all(r.startswith("Edit(") for r in git_rules), str(git_rules[:2]))
+    ok("⭐write 档:.git 的拒绝与工作仓的写放行在同一条 argv 里(拒绝胜过放行)",
+       all(r in deny_values for r in git_rules) and f"Edit({repo_fwd}/**)" in _vals(av, "--allowedTools"))
+    _g = _tg.mkdtemp(prefix="gitdeny-")
+    _main, _wt, _plain = os.path.join(_g, "main"), os.path.join(_g, "wt"), os.path.join(_g, "plain")
+    _real = os.path.join(_main, ".git", "worktrees", "wt")
+    for _d in (_real, _wt, _plain): os.makedirs(_d)
+    with io.open(os.path.join(_real, "commondir"), "w", encoding="utf-8") as _f: _f.write("../.." + chr(10))
+    with io.open(os.path.join(_wt, ".git"), "w", encoding="utf-8") as _f: _f.write("gitdir: " + _real.replace("\\", "/") + chr(10))
+    wt_want = [f"Edit({deny_path(_wt)}/.git)", f"Edit({deny_path(_wt)}/.git/**)",
+               f"Edit({deny_path(_real)}/**)", f"Edit({deny_path(os.path.join(_main, '.git'))}/**)"]
+    wt_rules = git_dir_deny_rules(_wt)
+    ok("⭐worktree 形(.git 是文件):工作仓的 .git、主仓里的真实目录、公共目录(hooks 与 config 所在)都挡",
+       wt_rules == wt_want, str(wt_rules))
+    with io.open(os.path.join(_wt, ".git"), "w", encoding="utf-8") as _f: _f.write("gitdir: ../main/.git/worktrees/wt" + chr(10))
+    ok("worktree 形:gitdir 写成相对路径时按工作仓解析,结果相同", git_dir_deny_rules(_wt) == wt_want, str(git_dir_deny_rules(_wt)))
+    ok("(对照)不是 git 仓:仍产 .git 两条(模型也不该在里面新建一个 .git)",
+       git_dir_deny_rules(_plain) == [f"Edit({deny_path(_plain)}/.git)", f"Edit({deny_path(_plain)}/.git/**)"])
+    with io.open(os.path.join(_plain, ".git"), "w", encoding="utf-8") as _f: _f.write("不是指针" + chr(10))
+    _refused = []
+    for _bad in (_plain, "相对/路径", ""):
+        try:
+            git_dir_deny_rules(_bad); _refused.append(False)
+        except ValueError:
+            _refused.append(True)
+    ok("⭐.git 是文件却读不出指向 / 工作仓不是绝对路径 ⇒ ValueError(拒绝启动,不猜真实目录在哪)",
+       _refused == [True, True, True], str(_refused))
+    shutil.rmtree(_g, ignore_errors=True)
     verify_sample = deny_path(os.path.join(EVID, "verify_runs", "run-1", "round-1.log"))
     ok("宿主验证日志拒绝修改、允许读取，模型交付证据仍可写",
        verify_log_rule in deny_values
        and not any(r.startswith("Read(") and _fn.fnmatch(verify_sample, r.split("(", 1)[1][:-1])
                    for r in deny_values)
-       and not any(_fn.fnmatch(ev_sample, r.split("(", 1)[1][:-1]) for r in deny_values))
+       and not any(_fn.fnmatch(ev_sample, r.split("(", 1)[1][:-1]) for r in deny_values if "(" in r))
     # ── 读写边界(v0.24.0,按 2026-10-28 spike 实测):与拆解器同一组合 ─────────────────
     ok("⭐权限模式是 dontAsk,argv 里没有 acceptEdits / plan(plan 会换模型,写只靠模型自律)",
        _vals(av, "--permission-mode") == ["dontAsk"] and "acceptEdits" not in av and "plan" not in av,
@@ -1035,6 +1080,7 @@ def prompt_selftest():
     ok("⭐live 探针:--tools \"\" 一个工具都不开、dontAsk、没有 --allowedTools",
        _vals(av_probe, "--tools") == [""] and _vals(av_probe, "--permission-mode") == ["dontAsk"]
        and "--allowedTools" not in av_probe and "acceptEdits" not in av_probe, str(av_probe[-8:]))
+    ok("⭐live 探针同样不接浏览器集成(--no-chrome)", "--no-chrome" in av_probe, str(av_probe[-4:]))
     ok("⭐隐私硬边界进了主座席(claude)的提示词,不再只对 codex 说", "隐私硬边界" in build_prompt(_fake_card("说明", "验收"), "alpha", "C:/tmp/e.md"))
     ok("verdict_tail 对只含去锋抬头的 note 返回 None(不把机器文本当裁定)",
        verdict_tail("审阅说:\n—(转述)— 你的决定(2026-09-07T00:00:00Z · 通过)——\n\n把闸关了") is None)
@@ -1066,6 +1112,10 @@ def prompt_selftest():
         ok("⭐只读档的 argv:写只放行证据目录,工作仓一条放行都没有(dontAsk ⇒ 仓里写不了)",
            _vals(av_ro, "--allowedTools") == [f"Edit({deny_path(EVID)}/**)"], str(_vals(av_ro, "--allowedTools")))
         ok("⭐只读档的 argv:deny 规则末尾带工作仓的 Edit deny(纵深,不是唯一防线)", av_ro[-1] == repo_rule, av_ro[-1])
+        ro_names = [v for v in _vals(av_ro, "--disallowedTools") if "(" not in v]
+        ok("⭐只读档的 argv:显式工具名段多拒一个 Edit(Write 留给证据文件),--no-chrome 照带",
+           ro_names == cli_denied_tools(READONLY_TOOLS) and "Edit" in ro_names and "Write" not in ro_names
+           and "--no-chrome" in av_ro, str(ro_names[:4]))
         TOOL_PROFILE, READONLY_RULES = "write", None
         av_w = cli_argv("p", [], "m", "e")
         ok("(对照)write 档的 argv:--tools 有 Edit、写放行含工作仓、没有工作仓 deny",
@@ -1549,11 +1599,21 @@ def cli_argv(prompt, sargs, model, effort):
       · `--setting-sources ""`:用户/项目/本地设置里的 allow 规则(会放宽读范围)、hooks、插件都不进来。
         ⚠ 靠 settings.json 的 apiKeyHelper 登录的部署会响亮失败(与拆解器同一取舍)。
       · `--strict-mcp-config` 且不给 `--mcp-config`:用户配置的 MCP 服务器一个都不加载。
-      · `--disallowedTools`:v0.17.0 起的路径拒绝规则 —— 令牌目录与登记簿、全部执行配置的认证目录
-        对模型不可读不可写(cli_deny_rules / auth_home_deny_rules);拒绝胜过放行,所以它们即便落在
-        放行目录之内也仍然读不得写不得。
+      · `--no-chrome`:不接浏览器集成(它带进来的工具是 MCP 形的,不在 `--tools` 管辖内)。
+      · `--disallowedTools` 分两段,同一个 flag:
+        开头是**工具名**(verify_lib.cli_denied_tools:拆解器同一份 DENIED_TOOLS 去掉本档白名单里的
+        那几个)—— 白名单之外的纵深,Bash / 联网 / 派生子代理等即便在某个 CLI 版本里绕过白名单出现
+        也仍被拒;
+        其后是 v0.17.0 起的**路径规则** —— 令牌目录与登记簿、全部执行配置的认证目录对模型不可读
+        不可写(cli_deny_rules / auth_home_deny_rules);拒绝胜过放行,所以它们即便落在放行目录之内
+        也仍然读不得写不得。
+        再其后是工作仓 git 元数据的 Edit 拒绝(verify_lib.git_dir_deny_rules):write 档的写放行
+        `Edit(<工作仓>/**)` 盖住了 `.git/config` 与 `.git/hooks`,往那里写不进 git status,而协调者
+        或 loop 下一次跑 git 时会被执行 —— 所以 `.git`(worktree 形还有主仓里的真实目录与公共目录)
+        只读不写。
     ⚠ 证据目录要**单独** `--add-dir`:split 部署里 <data> 在工作仓之外(acceptEdits 时代靠「写哪都
       放行」蒙过去了),dontAsk 下不挂就连证据文件都交不出来。"""
+    tools = READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS
     return CLAUDE + [
         "-p", prompt,
         *sargs,
@@ -1569,17 +1629,21 @@ def cli_argv(prompt, sargs, model, effort):
         "--permission-mode", "dontAsk",
         "--setting-sources", "",
         "--strict-mcp-config",
+        "--no-chrome",
         # ⭐ 工具档(v0.22.0):只读身份 = 没有 Edit,且工作仓整个进 Edit deny(readonly_edit_rules,
         #   main() 算好放在 READONLY_RULES)。这是身份里唯一被机器强制的部分。
-        "--tools", *(READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS),
+        "--tools", *tools,
         "--add-dir", REPO, "--add-dir", EVID,
         "--allowedTools", *cli_write_allow_rules([EVID] if TOOL_PROFILE == "read-only" else [REPO, EVID]),
-        "--disallowedTools", *cli_deny_rules(DATA),
+        # 工具名段在前、路径规则在后(与拆解器同一顺序);两段共用这一个 flag。
+        "--disallowedTools", *cli_denied_tools(tools), *cli_deny_rules(DATA),
         # 验证原文由宿主写，模型可读用于续修，但不能修改既有日志。
         f"Edit({deny_path(os.path.join(EVID, 'verify_runs'))}/**)",
         # 全部执行配置的认证目录(可自定义到数据目录之外,不在 PROTECTED 的 auth/** 里):旧线与显式配置
         #   一样,文件工具对每个目录都不读不写(verify_lib.auth_home_deny_rules)。
         *auth_home_deny_rules(),
+        # 工作仓的 git 元数据只读不写(拒绝胜过上面 `Edit(<工作仓>/**)` 的放行)。
+        *git_dir_deny_rules(REPO),
         *((READONLY_RULES or []) if TOOL_PROFILE == "read-only" else []),
     ]
 
@@ -1588,11 +1652,12 @@ def probe_live_argv():
     """额度复查的最小实调用(`--probe-runtime --live`)。只要模型回一行字,一个工具都不需要
     ⇒ `--tools ""` 关掉全部内置工具,顺带与 cli_argv 同一立场:不给不带路径的 `--allowedTools Read`
     (那等于放行任意路径的读取,2026-10-28 spike P1 实测)。抽成函数是为了能从自测断言它的形状 ——
-    这是唯一一处 loop 自己打真实调用的地方,桩看不到它。"""
+    这是唯一一处 loop 自己打真实调用的地方,桩看不到它。`--no-chrome` 同 cli_argv:浏览器集成的
+    工具不在 `--tools` 管辖内。"""
     return CLAUDE + ["-p", "Reply with exactly: PROBE-OK",
                      "--model", MODEL, "--effort", EFFORT,
                      "--permission-mode", "dontAsk", "--tools", "",
-                     "--setting-sources", "", "--strict-mcp-config"]
+                     "--setting-sources", "", "--strict-mcp-config", "--no-chrome"]
 
 
 def record_process_started(t, worker, attempt, runtime, model, effort, pid, *, _call=None, _log=None):
@@ -2788,6 +2853,13 @@ def main():
             cli_write_allow_rules([REPO, EVID])
         except ValueError as e:
             print(f"[worker] ⛔ {e} —— 写放行规则组不出来(查 BOARD_REPO / BOARD_DATA_DIR),拒绝启动", flush=True)
+            sys.exit(gates_lib.EXIT_REFUSED)
+        # 工作仓 git 元数据的写拒绝(git_dir_deny_rules)。`.git` 是文件却读不出指向 = 不知道真实目录
+        #   在哪 ⇒ 挡不全,不许起跑。
+        try:
+            git_dir_deny_rules(REPO)
+        except ValueError as e:
+            print(f"[worker] ⛔ {e} —— 工作仓 git 元数据的写拒绝规则组不出来,拒绝启动", flush=True)
             sys.exit(gates_lib.EXIT_REFUSED)
     global READONLY_RULES
     if TOOL_PROFILE == "read-only" and RUNTIME == "claude" and not API_MODE:

@@ -17,13 +17,13 @@ import { fixtureVersion } from "./http-version-fixture.mjs";
 //   worker_loop.py honours BOARD_DATA_DIR (otherwise the evidence dir and the token
 //   file are fixed paths and the test would DELETE real evidence files).
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
   mkdtempSync, rmSync, readFileSync, writeFileSync, chmodSync, existsSync, mkdirSync,
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -862,7 +862,10 @@ process.stdin.on("end", () => {
     createFixtureTask({ subject: "argv-dump", line: LINE, maxAttempts: 1, description: "只为抓 argv" });
     await runLoopOnce({ WORKER_CLAUDE_CLI: "", WORKER_ALLOW_BATCH_CLI: "", WORKER_CLI_ARGV: JSON.stringify([PY, dump]) }, 60000);
     let argv = []; try { argv = JSON.parse(readFileSync(argvFile, "utf8")); } catch {}
-    const i = argv.indexOf("--disallowedTools"); const rules = i >= 0 ? argv.slice(i + 1) : [];
+    // --disallowedTools carries two segments under ONE flag: explicit tool names first (defence in
+    // depth behind the --tools whitelist), then the path rules. `rules` below = the path rules only.
+    const i = argv.indexOf("--disallowedTools"); const denied = i >= 0 ? argv.slice(i + 1) : [];
+    const names = denied.filter((r) => !r.includes("(")), rules = denied.filter((r) => r.includes("("));
     // v0.21.2: the data dir is spelled the way Claude Code reads an ABSOLUTE path — `//…`
     // on POSIX (a single slash is project-root-relative and matched nothing, measured
     // 2026-09-28 on Claude Code 2.1.283), the drive-letter form on Windows.
@@ -880,6 +883,50 @@ process.stdin.on("end", () => {
        && rules.every((r) => r===verifyLogDeny || !r.includes(`${dataFwd}/evidence/`) && !r.endsWith(`${dataFwd}/evidence)`)
                           && !r.endsWith(`${dataFwd}/**)`) && !r.endsWith(`${dataFwd}/*)`)));
     ok("规则里没有反斜杠(正斜杠绝对路径,两平台一致)", rules.length > 0 && rules.every((r) => !r.includes("\\")));
+    // ── 显式拒绝清单与 --no-chrome(外部审核 2026-11-10):白名单之外再拒一遍,清单与拆解器同一份。
+    //    Python 侧的清单(loops/verify_lib.py DENIED_TOOLS)与 JS 侧(core/board-claude-cli.mjs)逐项对照:
+    //    两处各写一份,改一处就静默分叉。
+    const { DENIED_TOOLS } = await import("../core/board-claude-cli.mjs");
+    const pyDenied = (() => {
+      const r = spawnSync(PY, ["-c", "import json, verify_lib; print(json.dumps(list(verify_lib.DENIED_TOOLS)))"],
+        { cwd: join(ROOT, "loops"), env: { ...HOST_ENV, PYTHONUTF8: "1", PYTHONDONTWRITEBYTECODE: "1" },
+          encoding: "utf8", windowsHide: true, timeout: 30000 });
+      try { return JSON.parse(r.stdout.trim()); } catch { return [(r.stderr || "").slice(-200)]; }
+    })();
+    ok("⑭ ⭐Python↔JS 对照:verify_lib.DENIED_TOOLS 与拆解器的 DENIED_TOOLS 逐项相同、顺序相同",
+       JSON.stringify(pyDenied) === JSON.stringify([...DENIED_TOOLS]), JSON.stringify(pyDenied).slice(0, 120));
+    const wantNames = DENIED_TOOLS.filter((t) => !["Read", "Write", "Edit", "Glob", "Grep"].includes(t));
+    ok("⑭ ⭐真 argv 的 --disallowedTools 以显式工具名段开头 = 拆解器清单去掉本档白名单(Bash/联网/子代理在内,Write/Edit 不在)",
+       JSON.stringify(names) === JSON.stringify(wantNames) && JSON.stringify(denied.slice(0, names.length)) === JSON.stringify(names)
+       && names.includes("Bash") && names.includes("WebFetch") && names.includes("Task") && !names.includes("Write") && !names.includes("Edit"),
+       JSON.stringify(denied.slice(0, 6)));
+    ok("⑭ ⭐不接浏览器集成(--no-chrome:它带进来的工具不在 --tools 管辖内)", argv.includes("--no-chrome"));
+    // ── 工作仓 git 元数据只读不写:写放行 Edit(<工作仓>/**) 盖住了 .git/config 与 .git/hooks ——
+    //    写进去不进 git status,协调者或 loop 下一次跑 git 时会被执行。拒绝胜过放行。
+    //    工作仓是 git worktree 时 .git 是文件,真实目录在主仓 .git/worktrees/<名>,公共目录(hooks、
+    //    config 所在)是主仓 .git:三处都要在拒绝规则里。
+    const hasRule = (r) => rules.some((x) => WIN ? x.toLowerCase() === r.toLowerCase() : x === r);
+    const asRule = (p) => (WIN ? "" : "/") + p.replace(/\\/g, "/");   // 与 verify_lib.deny_path 同一写法
+    ok("⑭ ⭐工作仓 .git 进 Edit 拒绝(.git 本身 + .git/**),与工作仓的写放行同在一条 argv;没有对应的 Read 拒绝(只挡写)",
+       hasRule(`Edit(${asRule(ROOT)}/.git)`) && hasRule(`Edit(${asRule(ROOT)}/.git/**)`)
+       && !rules.some((r) => /^Read\(/.test(r) && /\/\.git[/)]/.test(r)),
+       rules.filter((r) => /\/\.git[/)]/.test(r)).join(" ") || "(没有 .git 规则)");
+    {
+      const dot = join(ROOT, ".git");
+      let pointer = null;
+      try { pointer = (readFileSync(dot, "utf8").match(/^gitdir:[ \t]*(\S.*?)\s*$/) || [])[1] || null; } catch {}
+      if (pointer) {      // 本检出是 worktree / 子模块:.git 是文件
+        const gitdir = resolve(ROOT, pointer);
+        let common = gitdir;
+        try { common = resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim()); } catch {}
+        ok("⑭ ⭐worktree 形:真实 git 目录与公共目录(hooks、config 所在)也在 Edit 拒绝里",
+           hasRule(`Edit(${asRule(gitdir)}/**)`) && hasRule(`Edit(${asRule(common)}/**)`),
+           rules.filter((r) => /\/\.git[/)]/.test(r)).join(" "));
+      } else {
+        ok("⑭ 普通克隆形:.git 是目录,两条规则即全部(worktree 形由 --prompt-selftest 用临时目录量)",
+           rules.filter((r) => /\/\.git[/)]/.test(r)).length === 2, rules.filter((r) => /\/\.git[/)]/.test(r)).join(" "));
+      }
+    }
     // ── v0.24.0:读写边界的 argv 形状(2026-10-28 spike 实测:不带路径的 `--allowedTools Read`
     //    等于放行任意路径的读取;dontAsk 下 cwd 与 --add-dir 内的读不需要放行规则)。
     const evid = join(TMP, "evidence");
@@ -923,6 +970,10 @@ process.stdin.on("end", () => {
     const evidFwd = (WIN ? "" : "/") + join(TMP, "evidence").replace(/\\/g, "/");
     ok("⑮ ⭐只读档:--tools 没有 Edit(Write 留给证据文件)",
        argv.length > 0 && !tools.includes("Edit") && tools.includes("Write"), tools.join(",") || "(argv 未落盘)");
+    const roNames = valuesOf(argv, "--disallowedTools").filter((r) => !r.includes("("));
+    ok("⑮ ⭐只读档:显式工具名段多拒一个 Edit(Write 仍不拒),--no-chrome 照带",
+       roNames.includes("Edit") && roNames.includes("Bash") && !roNames.includes("Write") && argv.includes("--no-chrome"),
+       roNames.slice(0, 4).join(","));
     // v0.24.0:dontAsk 下写要显式放行 ⇒ 只读档「写不了工作仓」先由「没有放行规则」挡住,
     //          下一条的 Edit deny 是纵深。此前只有 deny 一道。
     ok("⑮ ⭐只读档:写放行只有证据目录一条,工作仓一条都没有(dontAsk ⇒ 仓里写不了)",

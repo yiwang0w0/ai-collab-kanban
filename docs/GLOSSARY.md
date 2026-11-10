@@ -225,11 +225,15 @@ spelled as `claude --help` spells it. Values likewise: `--effort` takes
 takes `json` for the reviewer. `--model` receives a full model id, not an alias.
 `--tools` is the tool **whitelist** (the set that exists at all); `--allowedTools`
 carries only *path-scoped* write rules (`Edit(<abs>/**)`) — a tool name without a
-path there would allow that tool on any path, measured.
+path there would allow that tool on any path, measured. `--disallowedTools` carries
+two segments under the one flag: bare tool names first (the same list the board's
+own decomposer denies, minus the line's whitelist — depth behind `--tools`), then
+the path rules. `--no-chrome` keeps the browser integration out: its tools are
+MCP-shaped and not governed by `--tools`.
 
 ```
 -p/--print  --model  --effort  --permission-mode  --tools  --allowedTools
---disallowedTools  --add-dir  --setting-sources  --strict-mcp-config
+--disallowedTools  --add-dir  --setting-sources  --strict-mcp-config  --no-chrome
 --output-format  --resume  --session-id  --fork-session  --max-budget-usd
 ```
 

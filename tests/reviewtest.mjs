@@ -218,6 +218,23 @@ try {
     ok("R4j ⭐不读用户/项目/本地设置(--setting-sources \"\"),不加载任何 MCP(--strict-mcp-config 且无 --mcp-config)",
        sameList(valuesOf(av, "--setting-sources"), [""]) && av.includes("--strict-mcp-config") && !av.includes("--mcp-config"),
        JSON.stringify(valuesOf(av, "--setting-sources")));
+    // ── 显式拒绝清单与 --no-chrome(外部审核 2026-11-10):--disallowedTools 开头是工具名段
+    //    (拆解器 core/board-claude-cli.mjs 的同一份清单去掉审阅白名单),其后才是路径规则。
+    const { DENIED_TOOLS } = await import("../core/board-claude-cli.mjs");
+    const names = rules.filter((r) => !r.includes("("));
+    const wantNames = DENIED_TOOLS.filter((t) => !["Read", "Glob", "Grep", "Write"].includes(t));
+    ok("R4k ⭐--disallowedTools 以显式工具名段开头 = 拆解器清单去掉审阅白名单(Bash/Edit/联网/子代理在内,Write 不在)",
+       JSON.stringify(names) === JSON.stringify(wantNames) && JSON.stringify(rules.slice(0, names.length)) === JSON.stringify(names)
+       && names.includes("Bash") && names.includes("Edit") && names.includes("WebFetch") && !names.includes("Write"),
+       JSON.stringify(rules.slice(0, 6)));
+    ok("R4l ⭐不接浏览器集成(--no-chrome:它带进来的工具不在 --tools 管辖内)", av.includes("--no-chrome"));
+    // 工作仓 git 元数据只读不写(与执行线同一份规则;审阅线的写放行只有判决目录,这里是纵深)。
+    const rootFwd = (WINP ? "" : "/") + ROOT.replace(/\\/g, "/");
+    const hasRule = (r) => rules.some((x) => WINP ? x.toLowerCase() === r.toLowerCase() : x === r);
+    ok("R4m ⭐工作仓 .git 进 Edit 拒绝(.git 本身 + .git/**);没有对应的 Read 拒绝(只挡写)",
+       hasRule(`Edit(${rootFwd}/.git)`) && hasRule(`Edit(${rootFwd}/.git/**)`)
+       && !rules.some((r) => /^Read\(/.test(r) && /\/\.git[/)]/.test(r)),
+       rules.filter((r) => /\/\.git[/)]/.test(r)).join(" ") || "(没有 .git 规则)");
   }
 
   console.log(NL + "[§3 机器产出闸:验收要机器、证据纯散文、模型说 approve → 机械降 escalate]");

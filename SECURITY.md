@@ -98,6 +98,21 @@ from a named incident (see `docs/INCIDENTS.md`):
   `Edit(<目录>/**)`（`verify_lib.cli_write_allow_rules`）：执行线 = 工作仓 + 证据目录，只读档只有证据目录
   （所以写不了工作仓），审阅线只有判决目录（「只写判决文件」从提示词约束变成结构约束）。argv 形状由
   looptest ⑭⑮、reviewtest §2b 与 `--prompt-selftest` 钉住；真实 CLI 的越界读/越界写实测见本次交付的证据。
+  工作仓的 git 元数据只读不写（`verify_lib.git_dir_deny_rules`）：执行线的写放行 `Edit(<工作仓>/**)` 盖住了
+  `.git/config` 与 `.git/hooks`，往那里写不进 `git status`，而协调者或循环下一次在该仓里运行 git 时会执行其中的内容
+  （hooks、`core.fsmonitor` 等）。两条线的拒绝规则因此包含 `Edit(<工作仓>/.git)` 与 `Edit(<工作仓>/.git/**)`；工作仓是
+  git worktree 或子模块时 `.git` 是文件，另加它指向的真实目录与公共目录（主仓 `.git`，hooks 与 config 实际所在）。
+  拒绝胜过放行；读取不受影响。`.git` 是文件却读不出指向时两条线拒绝启动。两条线另带 `--no-chrome`（浏览器集成的工具
+  不在 `--tools` 管辖内），`--disallowedTools` 开头另有一段显式工具名（与拆解器同一份清单，去掉本线白名单）。
+  2026-11-10 在 Windows 上用 Claude Code 2.1.312 的可执行文件复测（`tests/cli-boundary-probe.mjs --scripted`，假数据）：
+  参数由 `cli_argv`／`review_cli_argv` 直接生成，工具调用由本机脚本化端点逐步发出，不经模型——本机 CLI 的订阅登录当时
+  已过期，真模型那一遍没有做成。结果：init 里的工具恰好是 `--tools` 白名单，没有 MCP 服务器；越界的 Read、Glob、Grep 被
+  dontAsk 拒绝；仓内的令牌、登记簿、认证目录被路径规则拒绝，大小写变体（`BOARD_TOKEN`、`.GIT`）同样被拒；工作仓与证据
+  目录可写，只读档与审阅线写不进工作仓但写得出证据与判决（工具名段拒绝 `Edit` 不连累 `Write`）；`.git/hooks`、
+  `.git/config`、worktree 形的 `.git` 文件、主仓 `.git/worktrees/<名>` 与公共目录的 hooks、config 都写不进去。对照：多挂
+  仓外目录后同一文件读得到；拿掉 `.git` 规则后 2.1.312 仍拒绝写 `.git/hooks` 与 `.git/config`（该版本对 git 元数据自带
+  保护，带路径的放行规则盖不过它），所以这段规则在 2.1.312 上是纵深，更早的版本没有量过。与 2.1.234 不同的一点：路径规则
+  命中的拒绝现在也出现在结果的 `permission_denials` 里。
 - **Card text is never a command line.** The worker refuses `.bat/.cmd` CLIs
   (CVE-2024-24576, "BatBadBut": cmd.exe re-parses arguments, so a card body
   could become an executable command line). The gate judges by extension on
