@@ -121,6 +121,19 @@ export function dispatchStatus(db,id){
  return {...d,execution:execution?{launch_digest:execution.launch_digest,launch:JSON.parse(execution.launch_json),observation_digest:execution.observation_digest,observation:execution.observation_json?JSON.parse(execution.observation_json):null}:null,source:JSON.parse(d.source_json),result:d.result_json?JSON.parse(d.result_json):null,run,
   resolution:executionResolution(db,id),launch_permit:false,real_model_call_confirmed:false};
 }
+/**
+ * 本机受信调用方撤回一个还没被领取的请求。与 request_assignment 取代旧请求是同一个状态迁移
+ * (waiting_executor → cancelled),只是原因由调用方给出。不动任务、不动预算、不发凭据。
+ */
+export function withdrawAssignment(db,{assignmentId,reason}){
+ uuid(assignmentId,"assignment_id");
+ if(typeof reason!=="string"||!reason.trim()||reason.length>200||/[\x00-\x1f\x7f]/.test(reason))fail("BAD_INPUT","需要简短撤回原因",400);
+ return atomic(db,()=>{
+  const done=db.prepare("UPDATE broker_assignments SET state='cancelled',reason=? WHERE assignment_id=? AND state='waiting_executor'").run(reason,assignmentId);
+  if(!done.changes)fail("NOT_READY","路由请求未处于等待执行器状态");
+  return {assignment_id:assignmentId,state:"cancelled",reason};
+ });
+}
 /** Atomically reserves budget, claims through native gates and issues a run-bound MCP credential. Does not spawn. */
 export function prepareDispatch(db,{assignmentId,quotaId,executionMode,credentialFile,sourceGate}){
  if(db.isTransaction)fail("TRANSACTION_CONTEXT","领取必须自行提交事务后才能交付运行凭据");

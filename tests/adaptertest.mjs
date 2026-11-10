@@ -1,6 +1,6 @@
 import test,{after} from "node:test";
 import assert from "node:assert/strict";
-import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync} from "node:fs";
+import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,readdirSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {randomUUID} from "node:crypto";
@@ -173,6 +173,7 @@ test("missing or malformed workspace bindings and board profile upgrades fail be
 
 function zFixture(){
  const f=fixture("zcode"),auth=join(f.dirs.auth,".zcode","v2");mkdirSync(auth,{recursive:true});f.input.installation.auth_home=auth;f.input.role.model="GLM-5.3";
+ f.input.environment.BOARD_ZCODE_RELEASED="1";
  const helper=join(f.dirs.root,"core","execution");mkdirSync(helper,{recursive:true});
  for(const name of ["zcode-launch.mjs","zcode-profile.mjs","supervisor.mjs"])writeFileSync(join(helper,name),"// config fixture only\n");
  const bundle=join(f.base,"zcode.cjs"),builtin=join(f.base,"builtin.json");writeFileSync(bundle,"// never executed fixture bundle\n");
@@ -181,6 +182,15 @@ function zFixture(){
 }
 const zRead=(p,name)=>JSON.parse(readFileSync(join(p.plan.privateDirectory,name),"utf8"));
 
+test("Zcode plans require the release key before any launch file is prepared; the key is not passed to the executor",{skip:process.platform!=="win32"},()=>{
+ for(const value of [undefined,"0","true",""]){
+  const f=zFixture();if(value===undefined)delete f.input.environment.BOARD_ZCODE_RELEASED;else f.input.environment.BOARD_ZCODE_RELEASED=value;
+  assert.throws(()=>prepareAdapter(f.input),{code:"ZCODE_LAUNCH_DISABLED"});assert.deepEqual(readdirSync(f.dirs.private).filter(name=>name.startsWith("zcode")),[]);
+ }
+ const p=prepareAdapter(zFixture().input);assert.equal(p.plan.env.BOARD_ZCODE_RELEASED,undefined);
+ // Other runtimes do not consult this key.
+ const g=fixture();assert.equal(g.input.environment.BOARD_ZCODE_RELEASED,undefined);assert.equal(validatePreparedAdapter(prepareAdapter(g.input)),true);
+});
 test("Windows Zcode plan fixes one Chinese subscription model and reasoning level without a fallback",{skip:process.platform!=="win32"},()=>{
  const f=zFixture(),p=prepareAdapter(f.input);assert.equal(validatePreparedAdapter(p),true);
  assert.equal(p.plan.env.ZCODE_DATA_BASE_DIR,f.dirs.auth);assert.notEqual(p.plan.env.HOME,f.input.installation.auth_home);assert.equal(p.plan.env.HOME,p.plan.env.USERPROFILE);

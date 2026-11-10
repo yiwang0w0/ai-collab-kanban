@@ -8,6 +8,15 @@ import {uuid} from "../federation/protocol.mjs";
 import {canonical} from "../federation/sync-store.mjs";
 
 export const ADAPTER_CONTRACTS=Object.freeze({claude:"2.1.284",codex:"0.149.1",zcode:"0.16.9"});
+/**
+ * Zcode 的环境钥匙，与 BOARD_CODEX_RELEASED 同形：只在要启动 Zcode 的那个终端里设为 1。
+ * 门在 dispatch 链里：prepareAdapter 是准备 Zcode 启动的唯一入口，调度器、cli/dispatch.mjs execute 都经过它。
+ */
+export const ZCODE_RELEASE_VARIABLE="BOARD_ZCODE_RELEASED";
+export const zcodeReleased=environment=>environment?.[ZCODE_RELEASE_VARIABLE]==="1";
+export function requireZcodeReleased(environment){
+ if(!zcodeReleased(environment))fail("ZCODE_LAUNCH_DISABLED","Zcode 启动未放行：需要环境变量 "+ZCODE_RELEASE_VARIABLE+"=1");
+}
 const BASE_ENV=new Set(["systemroot","windir","appdata","localappdata","userprofile","home","homedrive","homepath","temp","tmp","path","pathext","lang","lc_all","http_proxy","https_proxy","all_proxy","no_proxy","ssl_cert_file","node_extra_ca_certs"]);
 const EFFORTS={claude:["low","medium","high","xhigh","max"],codex:["none","minimal","low","medium","high","xhigh","max"],zcode:ZCODE_EFFORTS};
 const configString=s=>JSON.stringify(s);
@@ -70,6 +79,8 @@ export function prepareAdapter({installation,role,dispatch,codeRoot,workspace,pr
  const runtime=installation.runtime;
  if(!Object.hasOwn(ADAPTER_CONTRACTS,runtime))fail("ADAPTER_UNAVAILABLE","此运行时尚无已接通的供应商启动合同");
  if(installation.version!==ADAPTER_CONTRACTS[runtime])fail("ADAPTER_VERSION_UNVERIFIED","当前运行时版本尚未核验");
+ // 先于任何目录与文件：没有环境钥匙就不为 Zcode 准备启动配置。
+ if(runtime==="zcode")requireZcodeReleased(environment);
  if(role.runtime!==runtime||!["implement","review"].includes(role.kind)||!EFFORTS[runtime].includes(role.effort))fail("POLICY_MISMATCH","角色与运行时或推理档位不匹配");
  if(typeof role.model!=="string"||role.model.length>120||!/^[A-Za-z0-9][A-Za-z0-9._:/[\]-]+$/.test(role.model)||runtime==="claude"&&!role.model.startsWith("claude-"))fail("MODEL_UNRESOLVED","需要显式的具体模型标识");
  if(!["read-only","write"].includes(role.tools)||role.kind==="review"&&role.tools!=="read-only")fail("POLICY_MISMATCH","角色工具策略无效");
