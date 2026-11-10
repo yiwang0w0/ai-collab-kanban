@@ -912,11 +912,11 @@
   /* ══ 对话式首页(docs/style-guide.md §五 对话与计划卡):首页占满页头以下的整屏,三栏各自滚动,页面本身不滚。
      左 对话列表 / 中 对话 / 右 待我处理与正在执行。只用既有令牌;强调色仍只给「轮到你」。 ══ */
   #board-shell:has(> #home-view:not([hidden])){display:flex;flex-direction:column;height:100vh;height:100dvh;overflow:auto}
-  #board-shell:has(> #home-view:not([hidden])) > *{flex:none}
+  #board-shell:has(> #home-view:not([hidden])) > :not(#home-view){flex:none}
   /* 横幅和告警占得多时对话区不被压没:低于 400px 就让整页滚。 */
-  #board-shell > #home-view{display:flex;flex-direction:column;flex:1 1 0;min-height:400px;max-width:none;margin:0;padding:0}
+  #home-view{display:flex;flex-direction:column;flex:1 1 0;min-height:400px;max-width:none;margin:0;padding:0}
   #home-view > .home-status{flex:none;margin:var(--sp-2) var(--sp-4) 0;max-height:32vh;overflow:auto}
-  .chat-shell{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:248px minmax(0,1fr) 336px;
+  .chat-shell{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:248px minmax(0,1fr) 336px;grid-template-rows:minmax(0,1fr);
               margin-top:var(--sp-2);border-top:1px solid var(--line)}
   .chat-list{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--line);background:var(--bg)}
   .cl-head{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-3) var(--sp-3) var(--sp-2)}
@@ -1013,6 +1013,72 @@
     .msg[data-role="user"] .msg-text{max-width:92%}
   }
   @media (prefers-reduced-motion: reduce){ .chat-list,.work-toggle .fold-ic,.chat-box{transition:none} }
+  /* ── 计划卡(在消息流里):目标、子任务表、合计与「按计划建卡」。强调色只给还没建卡的最新一版。
+     子任务一行的摆法跟着对话栏的宽度走:够宽是五列的表;窄了执行线、依赖、确认换到第二行;手机上折成一行,点开才展开。 */
+  .chat-flow{container-type:inline-size}
+  .plan{min-width:0;border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel)}
+  .plan[data-state="open"]{border-color:color-mix(in srgb,var(--accent) 45%,var(--line))}
+  .plan-h{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3);border-bottom:1px solid var(--line)}
+  .plan-h b{font-size:var(--fs-sm);font-weight:600;letter-spacing:.04em}
+  .plan-by{margin-left:auto;color:var(--dim);font-size:var(--fs-sm)}
+  .plan-goal{padding:var(--sp-3);border-bottom:1px solid var(--line)}
+  .plan-k{color:var(--dim);font-size:var(--fs-xs);letter-spacing:.06em}
+  .plan-goal h3{margin:2px 0 0;font-size:var(--fs-lg);font-weight:600;line-height:1.45;overflow-wrap:anywhere}
+  .plan-goal p{margin:var(--sp-1) 0 0;color:var(--dim);font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere}
+  .plan-rows{list-style:none;margin:0;padding:0}
+  .pl-head{display:none}
+  .pl-row{display:grid;grid-template-columns:28px minmax(0,1fr);gap:var(--sp-1) var(--sp-2);align-items:start;padding:var(--sp-2) var(--sp-3);
+          border-bottom:1px solid var(--line)}
+  .pl-row[data-dirty]{box-shadow:inset 3px 0 0 var(--cc)}
+  .pl-ck{display:grid;place-items:center;min-height:22px;cursor:pointer}
+  .pl-sub{min-width:0}
+  .pl-sub b{display:block;font-weight:500;line-height:1.5;overflow-wrap:anywhere}
+  .pl-sum{display:block;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .pl-mark{display:inline-block;margin-top:2px;padding:0 var(--sp-1);border:1px dashed var(--dim2);border-radius:var(--r-sm);color:var(--dim);font-size:var(--fs-xs)}
+  .pl-row[data-dirty] .pl-mark{border-color:var(--cc);color:var(--cc)}
+  .pl-row[data-off] .pl-sub b,.pl-row[data-off] .pl-sum{color:var(--dim2)}
+  .pl-meta{grid-column:2;display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-4);min-width:0}
+  .pl-cell{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-2);min-width:0;font-size:var(--fs-sm)}
+  .pl-cell::before{content:attr(data-k);color:var(--dim)}
+  .pl-cell select{width:auto;min-width:120px}
+  .pl-dim{color:var(--dim)}
+  .pl-warn{color:var(--warn)}
+  .pl-more{display:none}
+  .plan-f{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-3);padding:var(--sp-2) var(--sp-3);background:var(--panel2);
+          border-radius:0 0 var(--r-md) var(--r-md)}
+  .plan-rows > .pl-row:last-child{border-bottom:0}
+  .plan-f{border-top:1px solid var(--line)}
+  .plan-sum{flex:1 1 180px;min-width:0;color:var(--dim);font-size:var(--fs-sm)}
+  .plan-note{flex-basis:100%;margin:0;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .plan-note[data-tone="warn"]{color:var(--warn)}
+  .plan-note[data-tone="bad"]{color:var(--bad)}
+  .plan-links{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1)}
+  .plan-id{font-family:var(--mono)}
+  .plan-old > summary{padding:var(--sp-2) var(--sp-3);cursor:pointer;color:var(--dim);font-size:var(--fs-sm);border-radius:var(--r-md)}
+  .plan-old[open] > summary{border-bottom:1px solid var(--line);border-radius:var(--r-md) var(--r-md) 0 0}
+  @container (min-width:640px){
+    .pl-head,.pl-row{grid-template-columns:28px minmax(0,1fr) 150px 112px 96px;align-items:center}
+    .pl-head{display:grid;gap:var(--sp-2);padding:6px var(--sp-3);border-bottom:1px solid var(--line);color:var(--dim);font-size:var(--fs-xs);letter-spacing:.06em}
+    .pl-meta{display:contents}
+    .pl-cell::before{content:none}
+    .pl-cell select{width:100%;min-width:0}
+  }
+  @media (max-width:620px){
+    .pl-row{grid-template-columns:40px minmax(0,1fr) 40px;align-items:center;padding:var(--sp-1) var(--sp-2)}
+    .pl-ck{min-height:40px}
+    .pl-ck{grid-area:1 / 1}
+    .pl-sub{grid-area:1 / 2}
+    .pl-more{display:inline-flex;grid-area:1 / 3}
+    .pl-row[data-open]{align-items:start}
+    .pl-row[data-open] .pl-sub{padding-top:var(--sp-2)}
+    .pl-row[data-open] .pl-more .ic{transform:rotate(180deg)}
+    .pl-row:not([data-open]) .pl-sub b{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .pl-row:not([data-open]) :is(.pl-sum,.pl-mark,.pl-meta){display:none}
+    .pl-row[data-open] .pl-meta{grid-area:2 / 2 / auto / -1;flex-direction:column;align-items:stretch;gap:var(--sp-2);padding-bottom:var(--sp-2)}
+    .pl-cell select{flex:1}
+    .plan-f .pri{flex:1 1 100%}
+  }
+  @media (pointer:coarse){ .pl-ck{min-height:40px} }
 
   /* ── 手机看板选栏(docs/style-guide.md §五 全部任务):≤620px 五栏只显示一栏,栏上方的分段控件选栏;桌面不出现。
      只在脚本选定了栏(#cols 带 data-col)后才藏别的栏,脚本没跑到时照旧五栏堆叠。 */
@@ -4793,6 +4859,76 @@ function chatStateLine({ coordinator = null, conversation = null, sending = fals
 function chatCanSend({ coordinator = null, conversation = null, sending = false, text = "" } = {}) {
   return !!(coordinator && coordinator.available) && !sending && !(conversation && conversation.status === "running") && !!String(text).trim();
 }
+/** 消息流的顺序:消息照原序;带 plan_rev 的消息后面跟它那一版计划;人改出的版本没有对应消息,
+ *  按时间插到它之后的第一条消息前面,排不进去就放最后。latest = 最新一版;appliedRev = 已建卡的那一版。 */
+function chatTimeline(messages = [], plans = []) {
+  const byRev = new Map(plans.map((p) => [p.rev, p])), used = new Set(), out = [];
+  const latest = plans.reduce((max, p) => Math.max(max, p.rev), 0), done = plans.find((p) => p.applied), appliedRev = done ? done.rev : null;
+  const card = (p) => ({ kind: "plan", plan: p, latest: p.rev === latest, appliedRev });
+  for (const m of messages) {
+    out.push({ kind: "message", message: m });
+    if (m.plan_rev != null && byRev.has(m.plan_rev) && !used.has(m.plan_rev)) { used.add(m.plan_rev); out.push(card(byRev.get(m.plan_rev))); }
+  }
+  for (const p of plans) {
+    if (used.has(p.rev)) continue;
+    const at = out.findIndex((x) => x.kind === "message" && String(x.message.created_at || "") > String(p.created_at || ""));
+    if (at < 0) out.push(card(p)); else out.splice(at, 0, card(p));
+  }
+  return out;
+}
+/** 计划卡里还没提交的本地改动:{ rev, tasks: { [n]: { enabled?, line? } } }。改回和已存版本一样的值就不留;null = 没有改动。 */
+function planEdit(plan, draft, n, patch) {
+  const base = draft && draft.rev === plan.rev ? draft : { rev: plan.rev, tasks: {} };
+  const t = (plan.tasks || []).find((x) => x.n === n);
+  if (!t) return Object.keys(base.tasks).length ? base : null;
+  const mine = { ...(base.tasks[n] || {}), ...patch };
+  if ("enabled" in mine && !!mine.enabled === (t.enabled !== false)) delete mine.enabled;
+  if ("line" in mine && (mine.line || null) === (t.line ?? null)) delete mine.line;
+  const tasks = { ...base.tasks };
+  if (Object.keys(mine).length) tasks[n] = mine; else delete tasks[n];
+  return Object.keys(tasks).length ? { rev: plan.rev, tasks } : null;
+}
+/** 把本地改动存成新版本的请求体(PUT …/plans/:rev);没有改动 = null。只带改了的字段。 */
+function planPutBody(plan, draft) {
+  if (!draft || draft.rev !== plan.rev) return null;
+  const tasks = [];
+  for (const t of plan.tasks || []) {
+    const mine = (draft.tasks || {})[t.n];
+    if (!mine) continue;
+    const row = { n: t.n };
+    if ("enabled" in mine && !!mine.enabled !== (t.enabled !== false)) row.enabled = !!mine.enabled;
+    if ("line" in mine && (mine.line || null) !== (t.line ?? null)) row.line = mine.line || null;
+    if (Object.keys(row).length > 1) tasks.push(row);
+  }
+  return tasks.length ? { expected_rev: plan.rev, tasks } : null;
+}
+/** 一版计划怎么显示。state: open 最新、还没建卡 / applied 已建卡 / old 已有新版本 / locked 这个对话已按别的版本建过卡。
+ *  只有 open 能改能建;本地改动(draft)只叠在 open 上。合计与每一行的字都在这里定,页面只管摆。 */
+function planView(plan, { lines = [], lineName = (l) => l, draft = null, latest = true, appliedRev = null } = {}) {
+  const applied = plan.applied || null;
+  const state = applied ? "applied" : !latest ? "old" : appliedRev != null ? "locked" : "open", editable = state === "open";
+  const local = editable && draft && draft.rev === plan.rev ? draft.tasks || {} : {};
+  const tasks = (plan.tasks || []).map((t) => {
+    const mine = local[t.n] || {}, was = t.enabled !== false, wasLine = t.line ?? null;
+    const enabled = "enabled" in mine ? !!mine.enabled : was, line = "line" in mine ? mine.line || null : wasLine;
+    return { n: t.n, subject: String(t.subject || ""), summary: String(t.summary || ""), enabled, line,
+      lineName: line ? lineName(line) : "不指定线", lineKnown: !line || lines.includes(line),
+      after: Array.isArray(t.after) ? t.after.filter(Number.isInteger) : [], needsConfirm: !!t.needs_confirm, needsBash: !!t.needs_bash,
+      edited: Array.isArray(t.edited) ? t.edited : [],
+      changed: [...(enabled !== was ? ["enabled"] : []), ...(line !== wasLine ? ["line"] : [])] };
+  });
+  const off = new Set(tasks.filter((t) => !t.enabled).map((t) => t.n));
+  for (const t of tasks) t.afterOff = t.enabled ? t.after.filter((n) => off.has(n)) : [];
+  const on = tasks.filter((t) => t.enabled), confirm = on.filter((t) => t.needsConfirm).length;
+  const total = applied ? "已建 1 张目标卡、" + (Array.isArray(applied.task_ids) ? applied.task_ids.length : 0) + " 张子任务卡"
+    : state === "locked" ? "这个对话已按第 " + appliedRev + " 版建过卡"
+    : !on.length ? "至少勾选 1 项才能建卡"
+    : "将建 1 张目标卡、" + on.length + " 张子任务卡" + (confirm ? "，其中 " + confirm + " 张要你确认" : "") + (off.size ? "；" + off.size + " 项不建" : "");
+  return { rev: plan.rev, author: plan.author === "human" ? "human" : "coordinator", state, editable,
+    goal: { subject: String(plan.goal?.subject || ""), description: String(plan.goal?.description || "") },
+    tasks, dirty: tasks.reduce((sum, t) => sum + t.changed.length, 0), total, canApply: editable && on.length > 0,
+    applied: applied ? { goalId: applied.goal_id ?? null, taskIds: Array.isArray(applied.task_ids) ? applied.task_ids : [] } : null };
+}
 // ── /chat-model ──
 
 let lastSetup = null;            // /api/setup as refresh() last saw it (the guide's data)
@@ -5511,11 +5647,11 @@ async function chatLoad(force = false){
   }
   renderChat();
 }
-function chatChanged(){ clearTimeout(chatTimer); chatTimer = setTimeout(() => chatLoad(true), 150); }
+function chatChanged(){ if (homeView !== "home") return; clearTimeout(chatTimer); chatTimer = setTimeout(() => chatLoad(true), 150); }   // 不在首页时不读,回到首页会整拉
 /** 换到一个对话(null = 新对话):各对话的输入草稿分开记。 */
 function chatOpen(id){
   chatDraftSave();
-  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatStick = true;
+  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatPlanNote = null; chatStick = true;
   chatSave({ cur: chatId });
   chatInput.value = (chatStore().input || {})[chatKey()] || "";
   chatGrow(); chatDrawer(false); renderChat();
@@ -5554,8 +5690,8 @@ async function chatSend(text){
     renderChat();
   }
 }
-/** 发消息前要先做完的事(计划卡的本地改动存成新版本)。 */
-async function chatBeforeSend(){}
+/** 发消息前要先做完的事:计划卡的本地改动存成新版本,协调线读到的才是你改过的那一版。 */
+async function chatBeforeSend(){ await chatPlanFlush(); }
 async function chatStop(){
   try { await chatApi("POST", chatPath("/stop"), {}); } catch (e) { chatFail = { why: chatErrorText(e), text: undefined }; }
   await chatLoad(true);
@@ -5576,7 +5712,165 @@ function chatMessage(m){
   return box;
 }
 /** 对话区里的一段段内容:消息,以及跟在消息后面的计划卡。 */
-function chatFlowItems(){ return (chatData.messages || []).map(chatMessage); }
+function chatFlowItems(){
+  return chatTimeline(chatData.messages || [], chatData.plans || []).map((x) => x.kind === "plan" ? chatPlan(x.plan, x.latest, x.appliedRev) : chatMessage(x.message));
+}
+// ── 计划卡 ──────────────────────────────────────────────────────────────
+// 勾选和执行线的改动先留在本地(sessionStorage)并标出;发消息或建卡前先 PUT 成新版本。建卡只发生在「按计划建卡」。
+let chatPlanBusy = false, chatPlanNote = null;          // 正在存 / 建卡;上一次存或建卡的结果 { tone, text, issues }
+const chatPlanOpen = new Set();                         // 手机上展开的子任务行 "版本:序号"
+const chatLines = () => LINES.filter((l) => !REVIEW_LINES.includes(l));
+const chatLatestPlan = () => (chatData?.plans || []).reduce((best, p) => !best || p.rev > best.rev ? p : best, null);
+const chatPlanDraft = () => (chatStore().plan || {})[chatKey()] || null;
+function chatPlanDraftSet(draft){
+  const plan = { ...(chatStore().plan || {}) };
+  if (draft) plan[chatKey()] = draft; else delete plan[chatKey()];
+  chatSave({ plan });
+}
+function chatPlanChange(plan, n, patch){
+  chatPlanDraftSet(planEdit(plan, chatPlanDraft(), n, patch));
+  chatPlanNote = null; renderChat();
+}
+/** 本地有改动就存成新版本(作者是人),返回建卡该用的那一版;没有改动原样返回最新一版。 */
+async function chatPlanFlush(){
+  const plan = chatLatestPlan();
+  if (!plan || plan.applied) return plan;
+  const body = planPutBody(plan, chatPlanDraft());
+  if (!body) return plan;
+  const v = await chatApi("PUT", chatPath("/plans/" + plan.rev), body);
+  chatPlanDraftSet(null);
+  if (chatData && v.plan) chatData = { ...chatData, plans: [...chatData.plans.filter((p) => p.rev !== v.plan.rev), v.plan] };
+  return v.plan || plan;
+}
+async function chatPlanApply(){
+  if (chatPlanBusy || chatId == null) return;
+  chatPlanBusy = true; chatPlanNote = null; renderChat();
+  try {
+    const plan = await chatPlanFlush();
+    const v = await chatApi("POST", chatPath("/plans/" + plan.rev + "/apply"), { expected_rev: plan.rev });
+    const demoted = Array.isArray(v.demoted) ? v.demoted : [];
+    if (demoted.length) chatPlanNote = { tone: "warn", text: demoted.length + " 项的执行线不在可用范围，已改成不指定线：" + demoted.map((d) => String(d.subject || "第 " + d.n + " 项")).join("、"), issues: null };
+    await Promise.allSettled([chatLoad(true), refresh()]);
+  } catch (e) {
+    chatPlanNote = { tone: "bad", text: chatErrorText(e), issues: Array.isArray(e.issues) ? e.issues : null };
+    await chatLoad(true);
+  } finally { chatPlanBusy = false; renderChat(); }
+}
+function chatBadge(text, tone, ic){
+  const b = homeEl("span", text, "badge"); b.dataset.tone = tone; b.prepend(chatIcon(ic));
+  return b;
+}
+function chatPlan(plan, latest, appliedRev){
+  const lines = chatLines();
+  const v = planView(plan, { lines, lineName: lineLabel, draft: latest ? chatPlanDraft() : null, latest, appliedRev });
+  const goal = homeEl("div", undefined, "plan-goal");
+  goal.append(homeEl("span", "目标", "plan-k"), homeEl("h3", v.goal.subject));
+  if (v.goal.description) goal.append(homeEl("p", v.goal.description));
+  const rows = chatPlanRows(plan, v, lines);
+  // 旧版本:折成一行,点开只读。
+  if (v.state === "old") {
+    const fold = homeEl("details", undefined, "plan plan-old");
+    fold.append(homeEl("summary", "计划第 " + v.rev + " 版 · 已有新版本"), goal, rows);
+    return fold;
+  }
+  const card = homeEl("section", undefined, "plan"); card.dataset.state = v.state;
+  card.setAttribute("aria-label", "计划第 " + v.rev + " 版");
+  const head = homeEl("div", undefined, "plan-h");
+  head.append(homeEl("b", "计划 · 第 " + v.rev + " 版"),
+    v.state === "applied" ? chatBadge("已建卡", "ok", "success") : v.state === "open" ? chatBadge("待建卡", "need", "wait") : chatBadge("不再建卡", "quiet", "wait"),
+    homeEl("span", v.author === "human" ? "你改过的版本" : "协调线拟定", "plan-by"));
+  card.append(head, goal, rows, chatPlanFoot(v, latest));
+  return card;
+}
+function chatPlanRows(plan, v, lines){
+  const list = homeEl("ul", undefined, "plan-rows");
+  const head = homeEl("li", undefined, "pl-head"); head.setAttribute("aria-hidden", "true");
+  for (const k of ["建", "子任务", "执行线", "依赖", "要你确认"]) head.append(homeEl("span", k));
+  list.append(head);
+  for (const t of v.tasks) {
+    const key = v.rev + ":" + t.n, row = homeEl("li", undefined, "pl-row");
+    if (!t.enabled) row.dataset.off = "";
+    if (t.changed.length) row.dataset.dirty = "";
+    if (chatPlanOpen.has(key)) row.dataset.open = "";
+    const ck = homeEl("label", undefined, "pl-ck"), box = homeEl("input");
+    box.type = "checkbox"; box.checked = t.enabled; box.disabled = !v.editable || chatPlanBusy; box.dataset.fk = "ck:" + key;
+    box.setAttribute("aria-label", "建第 " + t.n + " 项：" + t.subject);
+    box.addEventListener("change", () => chatPlanChange(plan, t.n, { enabled: box.checked }));
+    ck.append(box);
+    const sub = homeEl("div", undefined, "pl-sub");
+    sub.append(homeEl("b", t.n + ". " + t.subject));
+    if (t.summary) sub.append(homeEl("span", t.summary, "pl-sum"));
+    if (t.changed.length) sub.append(homeEl("span", "已改，未提交", "pl-mark"));
+    else if (t.edited.length) sub.append(homeEl("span", "你改过", "pl-mark"));
+    const meta = homeEl("div", undefined, "pl-meta");
+    const cell = (k) => { const c = homeEl("div", undefined, "pl-cell"); c.dataset.k = k; return c; };
+    const lineCell = cell("执行线");
+    if (v.editable) {
+      const sel = homeEl("select"); sel.dataset.fk = "line:" + key; sel.disabled = chatPlanBusy;
+      sel.setAttribute("aria-label", "第 " + t.n + " 项的执行线");
+      const option = (value, text) => { const o = homeEl("option", text); o.value = value; return o; };
+      sel.append(option("", "不指定线"), ...lines.map((l) => option(l, lineLabel(l))));
+      if (!t.lineKnown) sel.append(option(t.line, t.lineName));
+      sel.value = t.line || "";
+      sel.addEventListener("change", () => chatPlanChange(plan, t.n, { line: sel.value || null }));
+      lineCell.append(sel);
+    } else lineCell.append(homeEl("span", t.lineName));
+    if (!t.lineKnown) lineCell.append(homeEl("span", "这条线不在可用范围", "pl-warn"));
+    const dep = cell("依赖");
+    dep.append(homeEl("span", t.after.length ? "第 " + t.after.join("、") + " 项之后" : "无", t.after.length ? "" : "pl-dim"));
+    if (t.afterOff.length) dep.append(homeEl("span", "第 " + t.afterOff.join("、") + " 项没有勾选", "pl-warn"));
+    const confirm = cell("要你确认");
+    confirm.append(t.needsConfirm ? chatBadge("要你确认", "quiet", "wait") : homeEl("span", "不用", "pl-dim"));
+    if (t.needsBash) confirm.append(homeEl("span", "要跑命令", "pl-dim"));
+    meta.append(lineCell, dep, confirm);
+    const more = homeEl("button", undefined, "pl-more icon-btn ghost"); more.type = "button"; more.dataset.fk = "more:" + key;
+    more.setAttribute("aria-expanded", String(chatPlanOpen.has(key)));
+    more.setAttribute("aria-label", "第 " + t.n + " 项的执行线、依赖和确认"); more.append(chatIcon("chevron"));
+    more.addEventListener("click", () => { if (chatPlanOpen.has(key)) chatPlanOpen.delete(key); else chatPlanOpen.add(key); renderChat(); });
+    row.append(ck, sub, meta, more);
+    list.append(row);
+  }
+  return list;
+}
+function chatPlanFoot(v, latest){
+  const foot = homeEl("div", undefined, "plan-f");
+  if (v.applied) {
+    const links = homeEl("span", undefined, "plan-links");
+    const link = (id, text) => {
+      const b = homeEl("button", text, "plan-id"); b.type = "button"; b.dataset.fk = "card:" + id; b.title = "打开这张卡";
+      b.addEventListener("click", () => openSide({ id, uid: byId.get(Number(id))?.task_uid || null, item: null }));
+      return b;
+    };
+    if (v.applied.goalId != null) links.append(link(v.applied.goalId, "目标 #" + v.applied.goalId));
+    for (const id of v.applied.taskIds) links.append(link(id, "#" + id));
+    foot.append(homeEl("span", v.total, "plan-sum"), links);
+  } else {
+    foot.append(homeEl("span", v.total, "plan-sum"));
+    if (v.editable) {
+      if (v.dirty) {
+        const undo = homeEl("button", "撤销改动", "ghost"); undo.type = "button"; undo.dataset.fk = "undo"; undo.disabled = chatPlanBusy;
+        undo.addEventListener("click", () => { chatPlanDraftSet(null); chatPlanNote = null; renderChat(); });
+        foot.append(undo);
+      }
+      const running = chatData?.conversation?.status === "running";
+      const go = homeEl("button", chatPlanBusy ? "正在建卡" : "按计划建卡", "pri"); go.type = "button"; go.dataset.fk = "apply";
+      go.disabled = !v.canApply || chatPlanBusy || running;
+      if (running) go.title = "协调线回复完再建卡";
+      go.addEventListener("click", chatPlanApply);
+      foot.append(go);
+      if (v.dirty) foot.append(homeEl("p", v.dirty + " 处改动还没提交。发消息或建卡时先存成新版本。", "plan-note"));
+    }
+  }
+  if (chatPlanNote && latest) {
+    const note = homeEl("p", chatPlanNote.text, "plan-note"); note.dataset.tone = chatPlanNote.tone;
+    foot.append(note);
+    for (const i of chatPlanNote.issues || []) {
+      const line = homeEl("p", (Number.isInteger(i.n) ? "第 " + i.n + " 项：" : "") + String(i.message || ""), "plan-note"); line.dataset.tone = "bad";
+      foot.append(line);
+    }
+  }
+  return foot;
+}
 function chatEmpty(){
   const box = homeEl("div", undefined, "chat-empty");
   box.append(chatIcon("chat"), homeEl("h3", "要做什么"), homeEl("p", "写下要做的事。协调线先回一份计划，你点「按计划建卡」才建卡。"));
@@ -5648,7 +5942,7 @@ function renderChat(){
   chatSync();
 }
 /** 消息流里除了对话数据之外、变了也要重画的东西(计划卡的本地改动等)。 */
-function chatFlowSig(){ return null; }
+function chatFlowSig(){ return [chatPlanDraft(), chatPlanBusy, chatPlanNote, [...chatPlanOpen], chatLines(), LINE_LABELS]; }
 // 离底部不远才跟着新内容滚到底:往上翻看旧消息时不被拽回去。
 document.getElementById("chat-flow").addEventListener("scroll", (e) => {
   const el = e.currentTarget; chatStick = el.scrollHeight - el.scrollTop - el.clientHeight < 80;

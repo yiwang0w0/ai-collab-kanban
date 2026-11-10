@@ -532,3 +532,60 @@ test("手动建卡：原表单、编号和处理器都在，入口是输入框�
   assert.deepEqual(M.newTaskBody({ title: " 手动建的卡 ", line: "engine" }, { lines: ["engine", "review"], reviewLines: ["review"] }),
     { body: { subject: "手动建的卡", description: "", line: "engine" } });
 });
+
+test("计划卡：夹具进去，勾选、合计、已建卡三态和要提交的改动都由纯函数算出", () => {
+  const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
+  assert.ok(c0 > 0 && c1 > c0, "chat-model block not found in core/panel.html");
+  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {planView,planEdit,planPutBody,chatTimeline};")();
+  const task = (n, extra) => ({ n, subject: "第 " + n + " 步", summary: "摘要 " + n, description: "", acceptance: "", line: "engine", after: [],
+    needs_confirm: false, needs_bash: false, enabled: true, edited: [], ...extra });
+  const plan = { rev: 2, author: "coordinator", base_rev: 1, created_at: at(3), goal: { subject: "<b>目标</b>", description: "说明" }, applied: null,
+    tasks: [task(1), task(2, { after: [1], line: "design", needs_confirm: true }), task(3, { after: [1, 2], line: "ghost", enabled: false, edited: ["enabled"] })] };
+  const opts = { lines: ["engine", "design"], lineName: (l) => ({ engine: "引擎", design: "设计" })[l] || l };
+
+  // 勾选态:显示已存版本的勾选、执行线、依赖和确认;不在可用范围的线标出来
+  const open = C.planView(plan, opts);
+  assert.deepEqual([open.state, open.editable, open.canApply, open.dirty], ["open", true, true, 0]);
+  assert.deepEqual(open.tasks.map((t) => [t.n, t.enabled, t.lineName, t.lineKnown, t.after, t.needsConfirm]),
+    [[1, true, "引擎", true, [], false], [2, true, "设计", true, [1], true], [3, false, "ghost", false, [1, 2], false]]);
+  assert.equal(open.total, "将建 1 张目标卡、2 张子任务卡，其中 1 张要你确认；1 项不建");
+  assert.equal(open.goal.subject, "<b>目标</b>", "协调线写的字原样带出，页面按纯文本放");
+
+  // 本地改动:逐行标出,合计跟着变;发消息或建卡前要 PUT 的只有改了的字段
+  const draft = C.planEdit(plan, C.planEdit(plan, null, 1, { enabled: false }), 2, { line: null });
+  const edited = C.planView(plan, { ...opts, draft });
+  assert.deepEqual(edited.tasks.map((t) => [t.enabled, t.line, t.changed, t.afterOff]),
+    [[false, "engine", ["enabled"], []], [true, null, ["line"], [1]], [false, "ghost", [], []]]);
+  assert.deepEqual([edited.dirty, edited.tasks[1].lineName, edited.total], [2, "不指定线", "将建 1 张目标卡、1 张子任务卡，其中 1 张要你确认；2 项不建"]);
+  assert.deepEqual(C.planPutBody(plan, draft), { expected_rev: 2, tasks: [{ n: 1, enabled: false }, { n: 2, line: null }] });
+  const none = C.planView(plan, { ...opts, draft: C.planEdit(plan, draft, 2, { enabled: false }) });
+  assert.deepEqual([none.canApply, none.total], [false, "至少勾选 1 项才能建卡"]);
+  assert.equal(C.planEdit(plan, C.planEdit(plan, null, 1, { enabled: false }), 1, { enabled: true }), null, "改回原值 = 没有改动");
+  const stale = { rev: 1, tasks: { 1: { enabled: false } } };
+  assert.deepEqual([C.planPutBody(plan, stale), C.planView(plan, { ...opts, draft: stale }).dirty], [null, 0], "别的版本上的改动不显示也不提交");
+
+  // 已建卡态:只读,给出目标卡号和子任务卡号;本地改动不再叠上去
+  const applied = C.planView({ ...plan, applied: { at: at(4), by: "panel", goal_id: 12, task_ids: [13, 14] } }, { ...opts, draft });
+  assert.deepEqual([applied.state, applied.editable, applied.canApply, applied.dirty, applied.total, applied.applied],
+    ["applied", false, false, 0, "已建 1 张目标卡、2 张子任务卡", { goalId: 12, taskIds: [13, 14] }]);
+  // 旧版本、这个对话已按别的版本建过卡:都不能改也不能建
+  const old = C.planView(plan, { ...opts, latest: false, draft }), locked = C.planView(plan, { ...opts, appliedRev: 1 });
+  assert.deepEqual([old.state, old.editable, old.canApply, old.dirty], ["old", false, false, 0]);
+  assert.deepEqual([locked.state, locked.canApply, locked.total], ["locked", false, "这个对话已按第 1 版建过卡"]);
+
+  // 消息流:带 plan_rev 的消息后面跟那一版;人改出的版本没有消息,按时间插入;只有最新一版可以操作
+  const messages = [{ id: 1, role: "user", text: "做", created_at: at(1) }, { id: 2, role: "coordinator", text: "好", created_at: at(2), plan_rev: 1 },
+    { id: 3, role: "user", text: "再改", created_at: at(5) }];
+  const plans = [{ ...plan, rev: 1, created_at: at(2) }, { ...plan, rev: 2, author: "human", created_at: at(4) }];
+  assert.deepEqual(C.chatTimeline(messages, plans).map((x) => x.kind === "plan" ? "计划" + x.plan.rev + (x.latest ? "*" : "") : "消息" + x.message.id),
+    ["消息1", "消息2", "计划1", "计划2*", "消息3"]);
+
+  // 页面只用 textContent 放协调线的字:消息与计划卡这一段不拼 HTML
+  const dom = src.slice(src.indexOf("function chatMessage(m){"), src.indexOf("function chatSync(){"));
+  assert.ok(dom.length > 0 && !dom.includes("innerHTML") && !dom.includes("insertAdjacentHTML"), "消息与计划卡不拼 HTML");
+  assert.ok(dom.includes('homeEl("p", String(m.text), "msg-text")') && dom.includes('homeEl("h3", v.goal.subject)') && dom.includes('homeEl("b", t.n + ". " + t.subject)'));
+  // 建卡只走 apply;本地改动先 PUT 成新版本
+  const apply = src.slice(src.indexOf("async function chatPlanApply(){"), src.indexOf("function chatBadge("));
+  assert.ok(apply.indexOf("await chatPlanFlush()") > 0 && apply.indexOf("await chatPlanFlush()") < apply.indexOf('"/apply"'), "建卡前先把本地改动存成新版本");
+  assert.ok(src.includes("async function chatBeforeSend(){ await chatPlanFlush(); }"), "发消息前也先存");
+});
