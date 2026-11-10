@@ -19,7 +19,7 @@
   "evidence": {
     "max_chars": 4000
   },
-  "ledger_file": null,
+  "ledger_file": "C:\\board-data\\usage_ledger.jsonl",
   "scheduler": {
     "format": "ai-fleet-scheduler/v1",
     "node_id": "<本机 node_id,由 setup 填好>",

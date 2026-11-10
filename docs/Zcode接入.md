@@ -19,7 +19,7 @@
 3. 清扫:本项目、本角色下所有等待执行器的分派请求(不管是谁建的)都按接卡规则过一遍,不合格的撤回并写上拒收码。
 4. 接卡:挑出合格的卡,以协调身份建一个分派请求(每轮最多一个)。
 5. 调一轮既有调度器:领取 → 准备 → 一次性许可 → 在 Windows Job 里执行 → 结算回写卡片。领取前调度器会就每个请求再问一次同一套接卡规则。
-6. 记账:核对四节证据合同,往账本追加一行。
+6. 记账:核对四节证据合同,往账本追加一行;不合格时在卡上留一条说明。
 
 领取、许可、预算扣减、进程托管都是既有 dispatch 链做的,循环本身不复制这些逻辑。
 
@@ -47,7 +47,7 @@
 node cli/zcode-worker.mjs setup --db <看板DB> --line zcode --project zcode-local --out-dir <仓库外的已有目录>
 ```
 
-它登记协调角色 `zcode-intake` 和执行角色 `zcode`(GLM-5.3、low、单次尝试),发一份协调凭据,登记一份 `limit_total=1` 且**未启用**的预算,并在输出目录写出 `zcode-worker.config.json`。写出的骨架里 `launch.enabled=false`、`authorization.kind=synthetic`。它不启动任何东西;同名角色或文件已存在时拒绝,不覆盖。
+它登记协调角色 `zcode-intake` 和执行角色 `zcode`(GLM-5.3、low、单次尝试),发一份协调凭据,登记一份 `limit_total=1` 且**未启用**的预算,并在输出目录写出 `zcode-worker.config.json`。写出的骨架里 `launch.enabled=false`、`authorization.kind=synthetic`,`ledger_file` 已填为看板 DB 所在目录下的 `usage_ledger.jsonl`。它不启动任何东西;同名角色或文件已存在时拒绝,不覆盖。
 
 配置样例见 `examples/zcode-worker.config.example.json`。配置的键集是严格的,多一个键就拒绝。
 
@@ -63,7 +63,7 @@ node cli/zcode-worker.mjs setup --db <看板DB> --line zcode --project zcode-loc
 | `installation.auth_home` | 已登录的 `.zcode\v2` 目录 |
 | `python`、`node` | 监管用的 `python.exe`、运行桥接的 `node.exe` 的 `{path, sha256}` |
 | `mcp.port` 与 `mcp_url` | 同一个空闲回环端口,两处必须一致 |
-| `ledger_file` | 推荐 `<看板数据目录>\usage_ledger.jsonl`,面板从这里读用量(数据目录默认是看板仓里的 `core\.data`);暂时不记就留 `null`。不能放在调度根或认证目录里 |
+| `ledger_file` | setup 已按看板 DB 所在目录填好 `usage_ledger.jsonl`(缺省布局下那就是看板数据目录,面板从这里读用量)。看板若用 `BOARD_DATA_DIR` 另指了数据目录,改成那个目录。不能放在调度根或认证目录里。写成 `null` 表示暂时不记:欠的账本行不会丢,见「账本」 |
 
 摘要要小写:
 
@@ -217,7 +217,12 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 ## 账本
 
-每次结算往 `ledger_file` 追加一行,同一分派最多记一次(调度根里对应目录下的 `ACCOUNTED.json` 是标记)。
+每次结算往 `ledger_file` 追加一行,同一分派至多一行。调度根里对应目录下有两个标记:
+
+- `ACCOUNTING.json`:记账已经开始。
+- `ACCOUNTED.json`:账本行已经落地。
+
+顺序是先落第一个标记、写账本行、再落第二个。只有第一个而没有第二个,说明这次运行还欠一行账:账本写不进去(`LEDGER_WRITE_FAILED`)、`ledger_file` 是 `null`(`LEDGER_NOT_CONFIGURED`),或者中途退出。欠的那一行用 `reconcile --assignment <请求ID>` 补;补之前会先在账本里按分派查一遍,已经有就只补标记,不会写出第二行。
 
 - `calls`、`in`、`cc`、`cr`、`out` 五个用量键恒为 `null`。
 - 四个结论各记各的,不合并成一个「成功」:
@@ -227,14 +232,22 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
   - `contract_ok`:交付的正文是否符合四节合同。没有成功交付、或卡已不在这次运行手里时记 `null`。
 - `host_verify`、`host_commit` 恒为 `not_applicable`。
 
-证据不合格时卡照样进待验收,账本记 `contract_ok=false` 并带错误列表,由验收的人决定。
+### 证据不合格时
+
+这条线没有「拒收后让模型重写」的回合,也没有宿主验证,给模型的提示里也不这么说。证据不合四节合同时卡照样进待验收,由验收的人决定。为了让验收的人看得见:
+
+- 卡的「裁定记录」栏末尾多一条 `—— Zcode 证据合同(时间)——` 说明,写明不合格的条数和合同脚本给出的原因(固定措辞,不含模型正文);
+- 卡的历史里多一条 `zcode.evidence_contract` 事件;
+- 账本行记 `contract_ok=false` 并带错误列表。
+
+每个分派只留一次。说明写在裁定记录栏里,之后自动审阅或人工裁定写入各自的记录时可能把这一栏换掉;历史事件和账本行不受影响。
 
 ## 出问题时
 
 | 现象 | 做什么 |
 |---|---|
 | `status` / `plan` 显示 `needs_attention`,或 `once` / `watch` 以退出码 2 结束 | 有分派没结清,整条线被扣住。这个状态排在「开关没开」「预算用尽」之前,不会被它们遮住。`unsettled` 里每条带一个 `reason`,见下表。先 `node cli/zcode-worker.mjs reconcile --assignment <请求ID>`。 |
-| 开关已经关掉,但要补回执 | `node cli/scheduler.mjs reconcile` 只补回执,它的配置文件就是本配置里 `scheduler` 那一块原样另存。账本行等开关再打开后用上一条命令补,不会重复。 |
+| 要补回执或补账本行 | 同一条 `reconcile`。它只补交回执并补记账,从不启动,所以**不需要**启动开关、有效授权、协调凭据,也不监听端口;授权过期之后照样能补。可重复执行。 |
 | 领取后还没启动就中断 | `node cli/dispatch.mjs abandon`。许可没有消费,保留的那一次额度随之释放。 |
 | 结果不明的运行 | `node cli/dispatch.mjs prepare-uncertain`,核对后 `record-uncertain`。注意下面的说明。 |
 | 异常退出留下调度锁 | `node cli/runtime-lock.mjs prepare`,核对后 `apply`。不按心跳超时自动接管。 |

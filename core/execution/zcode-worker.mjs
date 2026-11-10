@@ -5,7 +5,7 @@
 //   dispatch 链(任何入口都要过):环境钥匙 BOARD_ZCODE_RELEASED、库内预算的启用与余量、一次性许可。
 //   本模块(只有经 cli/zcode-worker.mjs 才过):launch.enabled、authorization 时间窗、max_launches 与库内上限的
 //   交叉校验、拒收规则、四节提示附录。把 scheduler 配置块直接交给 cli/scheduler.mjs 时不经过这一层。
-import {existsSync,readdirSync,realpathSync,statSync,openSync,writeFileSync,fsyncSync,closeSync,appendFileSync,unlinkSync} from 'node:fs';
+import {existsSync,readdirSync,realpathSync,statSync,openSync,writeFileSync,fsyncSync,closeSync,appendFileSync,unlinkSync,readFileSync} from 'node:fs';
 import {join,dirname,basename,resolve,relative,isAbsolute,sep} from 'node:path';
 import {spawnSync} from 'node:child_process';
 import {randomUUID} from 'node:crypto';
@@ -272,13 +272,44 @@ function buildAppendix(c,sourceGate){
 }
 
 // ── 记账 ──────────────────────────────────────────────────────────────────
-/** 结算后记一次账:四个布尔各自独立,不合并成一个「成功」。 */
+const ACCOUNTING='ACCOUNTING.json',ACCOUNTED='ACCOUNTED.json';
+/** 排他创建一个标记文件;已存在返回 false。 */
+function mark(file,value){
+ let fd;try{fd=openSync(file,'wx',0o600);}catch(e){if(e.code==='EEXIST')return false;throw e;}
+ try{writeFileSync(fd,JSON.stringify(value)+'\n');fsyncSync(fd);}finally{closeSync(fd);}
+ return true;
+}
+function ledgerHas(file,dispatchId){
+ let text;try{text=readFileSync(file,'utf8');}catch(e){if(e.code==='ENOENT')return false;throw e;}
+ return text.split('\n').some(line=>{if(!line.includes(dispatchId))return false;try{const row=JSON.parse(line);return row.dispatch_id===dispatchId&&row.runtime==='zcode';}catch{return false;}});
+}
+/**
+ * 四节合同不合格时在卡上留痕,每个分派只留一次,不新增字段、不动状态、不改证据:
+ * task_events 里一条记录(dispatch 链既有的写法),再在裁定记录栏末尾盖一条说明(与 store 的「—— 联动提示 ——」同形,面板显示这一栏)。
+ * errors 是合同脚本自己的固定措辞,不含模型正文。
+ */
+function contractNote(db,d,errors){
+ return atomic(db,()=>{
+  if(db.prepare("SELECT 1 FROM task_events WHERE task_id=? AND kind='zcode.evidence_contract' AND json_extract(detail,'$.dispatch_id')=?").get(d.task_id,d.dispatch_id))return false;
+  const at=new Date().toISOString();
+  db.prepare("INSERT INTO task_events(at,task_id,kind,actor,detail) VALUES(?,?,'zcode.evidence_contract','zcode-worker',?)").run(at,d.task_id,canonical({dispatch_id:d.dispatch_id,run_id:d.run_id,contract_ok:false,errors:errors.length}));
+  const note=['—— Zcode 证据合同('+at+')——','交付正文不符合四节合同('+errors.length+' 处)。本线没有要求重写,按原样进入待验收,请验收时自行判断。',...errors.slice(0,3).map(e=>'· '+e.slice(0,160))].join('\n');
+  // 只在这张卡仍停在这次运行的交付上时写。
+  db.prepare("UPDATE tasks SET verdict_note=CASE WHEN trim(coalesce(verdict_note,''))='' THEN ? ELSE verdict_note||char(10)||char(10)||? END,updated_at=? WHERE id=? AND run_id=? AND status='waiting' AND archived_at IS NULL").run(note,note,at,d.task_id,d.run_id);
+  return true;
+ });
+}
+/**
+ * 结算后记账:四个布尔各自独立,不合并成一个「成功」。
+ * 顺序是 记账中标记 → 账本行 → 已记账标记。账本行按 dispatch_id 至多一行:写之前先查账本里有没有。
+ * 写不进去、没配账本或中途退出都停在「记账中」,之后任何一次调用(reconcile 会调)接着补,不会丢也不会重。
+ * 返回账本行;账本里还没有这一行时返回 null。
+ */
 function account({db,c,sourceGate,root,emit},dispatchId){
  const d=dispatchStatus(db,dispatchId);if(d.phase!=='settled')return null;
  const directory=join(root,d.assignment_id);if(!existsSync(directory))return null;
- // 排他创建的标记保证同一分派最多记一次;已存在即已记过。
- let fd;try{fd=openSync(join(directory,'ACCOUNTED.json'),'wx',0o600);}catch(e){if(e.code==='EEXIST')return null;throw e;}
- try{writeFileSync(fd,JSON.stringify({format:'ai-fleet-zcode-accounted/v1',dispatch_id:d.dispatch_id,at:new Date().toISOString()})+'\n');fsyncSync(fd);}finally{closeSync(fd);}
+ if(existsSync(join(directory,ACCOUNTED)))return null;
+ mark(join(directory,ACCOUNTING),{format:'ai-fleet-zcode-accounting/v1',dispatch_id:d.dispatch_id,at:new Date().toISOString()});
  const t=db.prepare('SELECT * FROM tasks WHERE id=?').get(d.task_id),run=db.prepare('SELECT * FROM task_runs WHERE run_id=?').get(d.run_id),context=run?JSON.parse(run.policy_json).context:{};
  const settled_success=d.result?.status==='success',delivered_via=d.result?.delivery??null;
  const task_read_observed=!!db.prepare("SELECT 1 FROM broker_audit WHERE principal_id=? AND tool_name='get_task' AND outcome='succeeded' LIMIT 1").get(d.principal_id);
@@ -288,16 +319,22 @@ function account({db,c,sourceGate,root,emit},dispatchId){
   try{const v=evidenceTool(c,sourceGate,['validate','--max-chars',String(c.evidence.max_chars)],String(t.result??''));contract_ok=v.ok===true;contract_errors=contract_ok?null:(Array.isArray(v.errors)?v.errors.map(String):[]);}
   catch(e){emit({kind:'attention',code:code(e),dispatch_id:d.dispatch_id});}
  }
+ // 不合格不拦截,但验收的人要在卡上看得见;提示事件与卡上的说明同一次发出,补记时不重复。
+ if(contract_ok===false){
+  try{if(contractNote(db,d,contract_errors))emit({kind:'attention',code:'EVIDENCE_CONTRACT',task_id:d.task_id,task_uid:d.task_uid,dispatch_id:d.dispatch_id,errors:contract_errors.length});}
+  catch(e){emit({kind:'attention',code:code(e),dispatch_id:d.dispatch_id});}
+ }
  // 供应商没有给用量:五个键一律 null。看板归并遇 null 显示「待核实」,不会记成 0。
  const row={ts:stamp(),card:d.task_id,attempt:run?.last_attempt??null,worker:d.worker,run_id:d.run_id,agent_instance_id:d.agent_instance_id,model:context.model??null,effort:context.effort??null,runtime:'zcode',
   calls:null,in:null,cc:null,cr:null,out:null,note:'供应商未提供用量',round:1,phase:'initial',reason:d.execution?.observation?.diagnostic??d.result?.status??null,
   dispatch_id:d.dispatch_id,delivered_via,contract_ok,...(contract_errors?{contract_errors}:{}),task_read_observed,settled_success,host_verify:'not_applicable',host_commit:'not_applicable'};
- // 一次写入一整行。写不进去只报告,不阻塞结算;标记已落,不会补写出第二行。
+ // 一次写入一整行。写不进去只报告,不阻塞结算。
  let written=false;
- if(c.ledger_file!==null)try{appendFileSync(c.ledger_file,JSON.stringify(row)+'\n');written=true;}catch{emit({kind:'attention',code:'LEDGER_WRITE_FAILED',dispatch_id:d.dispatch_id});}
+ if(c.ledger_file===null)emit({kind:'attention',code:'LEDGER_NOT_CONFIGURED',dispatch_id:d.dispatch_id});
+ else try{if(!ledgerHas(c.ledger_file,d.dispatch_id))appendFileSync(c.ledger_file,JSON.stringify(row)+'\n');written=true;}catch{emit({kind:'attention',code:'LEDGER_WRITE_FAILED',dispatch_id:d.dispatch_id});}
+ if(written)mark(join(directory,ACCOUNTED),{format:'ai-fleet-zcode-accounted/v1',dispatch_id:d.dispatch_id,at:new Date().toISOString()});
  emit({kind:'accounted',task_id:d.task_id,task_uid:d.task_uid,dispatch_id:d.dispatch_id,settled_success,delivered_via,task_read_observed,contract_ok,ledger_written:written});
- if(contract_ok===false)emit({kind:'attention',code:'EVIDENCE_CONTRACT',task_id:d.task_id,task_uid:d.task_uid,dispatch_id:d.dispatch_id,errors:contract_errors.length});
- return row;
+ return written?row:null;
 }
 
 async function closeServer(server){if(!server?.listening)return;await new Promise((done,failed)=>{server.close(e=>e?failed(e):done());server.closeAllConnections();});}
@@ -427,6 +464,23 @@ export async function openZcodeWorker(db,{dbPath,sourceGate,config,environment=p
 }
 
 /**
+ * 只补交回执并补记账,从不启动,所以不要求启动开关、有效授权、协调凭据,也不监听端口。
+ * 仍要过治理闸与调度器自己的开门检查(固定摘要、调度根身份、调度锁)。可重复执行。
+ */
+export function reconcileZcodeAssignment(db,{dbPath,sourceGate,config,assignmentId,environment=process.env,onEvent=()=>{}}){
+ const c=validateZcodeWorkerConfig(config);
+ prerequisites(sourceGate);ledgerGate(c);
+ migratePeers(db);migrateDispatch(db);
+ const scheduler=openScheduler(db,{dbPath,sourceGate,config:c.scheduler,environment,onEvent:e=>{try{onEvent(e);}catch{}}});
+ let errorCode=null;
+ try{
+  const r=scheduler.reconcile(assignmentId);
+  return {...r,accounted:!!account({db,c,sourceGate,root:realpathSync(c.scheduler.root),emit:emitter(onEvent)},r.dispatch_id)};
+ }catch(e){errorCode=code(e);throw e;}
+ finally{scheduler.close({errorCode});}
+}
+
+/**
  * 首次登记一条 Zcode 线:协调角色、执行角色、协调凭据、limit_total=1 且未启用的预算,
  * 并写出开关全关的配置骨架。不启动任何东西;已有同名角色或文件时拒绝,不覆盖。
  */
@@ -437,6 +491,9 @@ export function setupZcodeLine(db,{line,projectId,outDir,codeRoot}){
  if(within(realpathSync(codeRoot),directory))fail('UNSAFE_RUNTIME_PATH','配置与凭据必须放在治理仓之外');
  const credentialFile=join(directory,line+'-coordinator.json'),configFile=join(directory,line+'-worker.config.json');
  if(existsSync(credentialFile)||existsSync(configFile))fail('CONFLICT','输出目录里已有同名配置或凭据,未覆盖');
+ // 账本缺省放在看板 DB 所在目录:缺省布局下那就是看板数据目录,面板从那里读用量。
+ const database=db.prepare('PRAGMA database_list').all().find(x=>x.name==='main')?.file;
+ let ledgerFile=null;try{if(database)ledgerFile=join(dirname(realpathSync(database)),'usage_ledger.jsonl');}catch{/* 取不到就留 null,由操作者填。 */}
  migrateDispatch(db);
  const limits={max_task_attempts:1,max_open_tasks:100,requests_per_minute:60},node=localIdentity(db),pin=what=>({path:'<填:'+what+' 的绝对路径>',sha256:'<填:该文件的 SHA256>'});
  let issued=false,wrote=false;
@@ -447,12 +504,12 @@ export function setupZcodeLine(db,{line,projectId,outDir,codeRoot}){
   const quota=putQuota(db,{quota_id:randomUUID(),runtime:'zcode',execution_mode:'provider',projects:[projectId],limit_total:DEFAULT_MAX_LAUNCHES,enabled:false});
   issuePrincipal(db,{roleId:intakeRole,projects:[projectId],credentialFile});issued=true;
   const config={format:ZCODE_WORKER_FORMAT,launch:{enabled:false,max_launches:DEFAULT_MAX_LAUNCHES,authorization:{kind:'synthetic'}},line,
-   intake:{coordinator_credential_file:credentialFile,auto_enroll:false},mcp:{port:43117,board_url:null},evidence:{max_chars:4000},ledger_file:null,
+   intake:{coordinator_credential_file:credentialFile,auto_enroll:false},mcp:{port:43117,board_url:null},evidence:{max_chars:4000},ledger_file:ledgerFile,
    scheduler:{format:'ai-fleet-scheduler/v1',node_id:node.node_id,node_epoch:node.sync_epoch,root:join(directory,line+'-scheduler-root'),max_active:1,poll_ms:5000,
     profiles:[{project_id:projectId,role_id:line,quota_id:quota.quota_id,installation:{runtime:'zcode',version:'0.16.9',program:pin('Zcode 自带 node.exe'),bundle:pin('Zcode bundle'),builtin_config:pin('Zcode 公开供应商配置'),auth_home:'<填:已登录的 .zcode\\v2 目录的绝对路径>'},
      python:pin('python.exe'),node:pin('运行看板的 node.exe'),mcp_url:'http://127.0.0.1:43117',timeout_ms:600000,idle_timeout_ms:300000,workspace:null}]}};
   const fd=openSync(configFile,'wx',0o600);wrote=true;try{writeFileSync(fd,JSON.stringify(config,null,2)+'\n');fsyncSync(fd);}finally{closeSync(fd);}
-  return {format:'ai-fleet-zcode-setup/v1',line,project_id:projectId,intake_role:intakeRole,quota_id:quota.quota_id,quota_enabled:false,limit_total:DEFAULT_MAX_LAUNCHES,launch_enabled:false,config_file:configFile,coordinator_credential_file:credentialFile,started:false};
+  return {format:'ai-fleet-zcode-setup/v1',line,project_id:projectId,intake_role:intakeRole,quota_id:quota.quota_id,quota_enabled:false,limit_total:DEFAULT_MAX_LAUNCHES,launch_enabled:false,config_file:configFile,coordinator_credential_file:credentialFile,ledger_file:ledgerFile,started:false};
  });}catch(e){
   // 事务回滚后,只删本次新建的文件:凭据在库里已不存在,骨架也没有对应的预算。
   for(const file of [...(issued?[credentialFile]:[]),...(wrote?[configFile]:[])])try{unlinkSync(file);}catch{}
