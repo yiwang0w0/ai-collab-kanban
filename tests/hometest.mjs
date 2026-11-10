@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels,homeLineFaults,homeLogLines,homeLastFault};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels,homeLineFaults,homeLogLines,homeLastFault,homeLastFaultTip};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -461,6 +461,7 @@ test("未开始的卡为什么没被领：服务端原因、无进展、线未�
   // 目标卡:状态写子任务完成数。
   const goal = { id: 3, kind: "goal", status: "not_started", released: true };
   assert.deepEqual(M.sideFallback(goal, { children: { done: 1, total: 3 } }), { state: "子任务 1/3 完成", next: "推进未完成的子任务" });
+  assert.deepEqual(M.sideFallback(goal, { children: { done: 3, total: 3 } }), { state: "子任务 3/3 完成", next: "无需操作" }, "全部完成后由看板收尾，不写内部用语");
   assert.equal(M.sideFallback(goal, { children: { done: 0, total: 0 } }).state, "还没有子任务");
   // 调用处用执行线接口算出线的状态再传入。
   const step = src.slice(src.indexOf("function sideLineState(line){"), src.indexOf("/** 进行中的卡:最近一次心跳"));
@@ -648,14 +649,81 @@ test("执行线故障按原因合并：同因的线一条，外部线与运行�
   assert.ok(model.includes("return { homeStatus, homeName, homeLineFaults, homeLogLines };"));
 });
 
-test("上次故障一句话：字段不合格不出，说法与命令行 status 相同", () => {
+test("订阅额度用完被看板停下的线：单列一种原因，不建议重启，首页这一条不给去设置的按钮", () => {
+  // 服务端在池不可用时带着运行意图把线停下:desired_running 仍为真,停止原因是随看板停止,另给 pool_blocked。
+  const stopped = { reason: "stopped-with-board", at: "2026-11-10T05:00:00.000Z" };
+  const workers = [
+    { line: "engine", running: false, desired_running: true, pool_blocked: true, exit_code: null, stop_reason: stopped, stop_text: "随看板停止 · 2026-11-10 05:00:00Z", last_log: [] },
+    { line: "design", running: false, desired_running: true, pool_blocked: true, exit_code: null, stop_reason: stopped, stop_text: "随看板停止 · 2026-11-10 05:00:00Z", last_log: [] },
+    { line: "ops", running: false, desired_running: true, pool_blocked: false, exit_code: null, stop_reason: null, stop_text: "", last_log: [] },
+    // 没想跑的线:池不可用也不算故障。在跑的线(切到另一个池)不算。
+    { line: "idle", running: false, desired_running: false, pool_blocked: true, exit_code: 0, stop_reason: { reason: "stopped-by-user", at: "2026-11-10T04:00:00.000Z" }, stop_text: "用户停止" },
+    { line: "moved", running: true, desired_running: true, pool_blocked: false, exit_code: null, stop_reason: null, stop_text: "" },
+  ];
+  const faults = M.homeLineFaults(workers, { engine: "引擎", design: "设计" });
+  assert.deepEqual(faults, [
+    { tone: "warn", where: "执行线", what: "引擎、设计 订阅额度用完，已暂停", next: "无需操作，额度恢复后看板自动启动", lines: ["engine", "design"], log: [], go: null },
+    { tone: "warn", where: "执行线", what: "ops 已请求启动，待核实", next: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线", lines: ["ops"], log: [] },
+  ]);
+  assert.doesNotMatch(faults[0].next, /重新启动|重启/, "池没恢复前重启不起作用,不建议");
+  // 崩溃和启动被拒绝优先于池:那是要人处理的故障。
+  assert.equal(M.homeLineFaults([{ line: "x", running: false, desired_running: true, pool_blocked: true, exit_code: 1, stop_reason: { reason: "crash", at: "2026-11-10T05:00:00.000Z" }, stop_text: "崩溃（退出码 1）" }])[0].tone, "bad");
+  const local = { node_id: "a", display_name: "台式机 A", local: true, connection_state: "local" };
+  const s = M.homeStatus({ localName: "台式机 A", nodes: [local], workers, lineLabels: {} });
+  assert.deepEqual(s.alerts.map((a) => [a.what, a.go]), [["engine、design 订阅额度用完，已暂停", null], ["ops 已请求启动，待核实", "lines"]]);
+  // 设置页那一行的状态词和告警说同一件事。
+  assert.ok(src.includes('!w.desired_running ? "已停止" : w.pool_blocked === true ? "额度用完，已暂停" : "已请求启动，待核实"'));
+});
+
+test("上次故障一句话：字段不合格不出，只写发生了什么，可能的原因进悬停说明", () => {
   assert.equal(M.homeLastFault({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: 3 }), "看板服务退出，退出码 3");
   assert.equal(M.homeLastFault({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: null }), "看板服务被结束");
-  assert.equal(M.homeLastFault({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z" }), "看板连续请求重启，守护停止重起");
-  assert.equal(M.homeLastFault({ kind: "interrupted", at: "2026-11-10T05:00:00.000Z" }), "看板运行中断，可能是关机、断电或进程被结束");
+  assert.equal(M.homeLastFault({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z" }), "看板连续重启，已停止自动重启");
+  assert.equal(M.homeLastFault({ kind: "interrupted", at: "2026-11-10T05:00:00.000Z" }), "看板运行中断");
   for (const bad of [null, undefined, "x", {}, { kind: "exit" }, { at: "2026-11-10T05:00:00.000Z" }]) assert.equal(M.homeLastFault(bad), null);
+  // 正文不写内部说法和猜测的原因:可能的原因只进这一行的 title。
+  for (const kind of ["exit", "restart_loop", "interrupted"])
+    assert.doesNotMatch(M.homeLastFault({ kind, at: "2026-11-10T05:00:00.000Z", exit_code: 1 }), /守护|重起|可能/);
+  assert.equal(M.homeLastFaultTip({ kind: "interrupted", at: "2026-11-10T05:00:00.000Z" }), "可能是关机、断电或进程被结束");
+  assert.equal(M.homeLastFaultTip({ kind: "restart_loop", at: "2026-11-10T05:00:00.000Z" }), "");
+  assert.equal(M.homeLastFaultTip({ kind: "exit", at: "2026-11-10T05:00:00.000Z", exit_code: 3 }), "");
+  for (const bad of [null, {}, { kind: "interrupted" }]) assert.equal(M.homeLastFaultTip(bad), "");
+  assert.ok(src.includes('tip = homeLastFaultTip(fault);'), "原因放在这一行的 title");
   assert.ok(src.includes('const fault = boardDown ? null : lastSetup?.last_fault || meta.last_fault, faultText = homeLastFault(fault);'), "断开时不出这一行");
-  assert.ok(src.includes('last.dataset.tone = "quiet"; rows.push(last);'));
+  assert.ok(src.includes('last.dataset.tone = "quiet"; if (tip) last.title = tip;'));
+});
+
+test("结构钉：触摸目标、手机任务面板的焦点、核对弹窗的主按钮、日志一层滚动、未保存的编辑浮层", () => {
+  const style = src.slice(src.indexOf("<style>"), src.indexOf("</style>"));
+  // 触摸:折叠标题至少 40px。计划旧版、技术信息、最近流水三处补进最后那一块触摸规则。
+  const touch = style.slice(style.lastIndexOf("@media (max-width:620px),(pointer:coarse){"));
+  assert.ok(touch.includes(".coord-fold > summary,.fleet-tech > summary{padding:11px 0}"), "技术信息的折叠标题");
+  assert.ok(touch.includes(".plan-old > summary{padding-block:11px}"), "计划旧版的折叠条只加上下，左右内边距照旧");
+  assert.ok(touch.includes(".coord-fold.coord-sec > summary{padding:13px 0}"), "最近流水字号小，多垫才到 40");
+  // 没有悬停可看全文的地方不截断。
+  assert.ok(touch.includes(".coord-ex .ex-now{display:block;-webkit-line-clamp:none;line-clamp:none;overflow:visible}"));
+  assert.ok(touch.includes(".hand-row .cr-sum{white-space:normal}"));
+  // 手机上任务面板打开:被盖住的对话区和输入区不在 Tab 顺序和读屏里;焦点进面板,收起回到开关。
+  const phone = style.slice(style.indexOf("  @media (max-width:620px){\n    #home-view > .home-status{"), style.indexOf("  @media (prefers-reduced-motion: reduce){ .chat-list"));
+  assert.ok(phone.includes(".chat-shell.work-open :is(.chat-flow,.chat-compose){visibility:hidden}"));
+  const work = src.slice(src.indexOf("function chatWork(open){"), src.indexOf("/** 发一条消息。"));
+  assert.ok(work.includes("if (!toggle.offsetParent || open === was) return;"), "桌面宽度开关不显示，不挪焦点");
+  assert.ok(work.includes('if (open) (work.querySelector("button:not([disabled]), [tabindex]:not([tabindex=\'-1\'])") || toggle).focus({ preventScroll: true });'));
+  assert.ok(work.includes("else if (inside || !document.activeElement || document.activeElement === document.body) toggle.focus({ preventScroll: true });"));
+  // 核对弹窗里真正提交的那一个是主按钮;关闭不是。
+  assert.ok(src.includes('<button type="submit" id="fleet-action-submit" class="pri">确认提交</button>'));
+  assert.ok(src.includes('<button type="button" id="fleet-action-close">关闭</button>'));
+  // 首页状态条里展开日志:只留日志自己那一层滚动。
+  assert.ok(style.includes("#home-view > .home-status:has(.hs-log[open]){max-height:none}"));
+  // 批准行的按钮式标题与同列文字标题同一行高。
+  assert.match(style, /button\.cr-link\{[^}]*line-height:1\.5\}/);
+  // 浅色对比度:对话列表悬停时第二行小字用墨色。
+  assert.ok(style.includes('.cl-item:hover:not([aria-current="true"]) .cl-s{color:var(--fg)}'));
+  // 编辑浮层里说明或验收条件改了没保存:再点「编辑」「改执行线」不重填。
+  const edit = src.slice(src.indexOf("function openEdit(anchor, taskId){"), src.indexOf("/** 编辑浮层里有没有改了还没保存的说明或验收条件。 */"));
+  const guard = edit.indexOf('if (epop.classList.contains("show") && editDirty()) {'), fill = edit.indexOf("epop.innerHTML = `");
+  assert.ok(guard > 0 && fill > guard, "先判未保存，再重填");
+  assert.ok(edit.slice(guard, fill).includes('if (n) n.textContent = "先保存或关闭";') && edit.slice(guard, fill).includes("return;"));
 });
 
 test("告警行组件：首页与设置页共用，日志走 textContent，展开状态按原因记住；接口缺席的两类读取不进 refresh 的并行读取", () => {
@@ -891,12 +959,20 @@ test("等对端的五种状态：写明等哪台电脑的什么，进「正在�
   assert.equal(M.fleetLinks({ enabled: false, outgoing: [sent("pending")] }, "u1").any, false);
 });
 
-test("轮到本机：primary 是唯一下一步，命令和版本号取自对应记录；旧节点代次的记录不给 primary", () => {
+test("轮到本机：primary 是唯一下一步，命令和版本号取自对应记录；重新登记前的旧记录不给 primary", () => {
   const cmd = (s) => s.primary && [s.primary.command, s.primary.args];
   // 来源卡
   assert.deepEqual(cmd(fleet({ outgoing: [sent("accepted_unconfirmed", { binding_draft: { ready: true, review_digest: "g", target_node_id: NODE_B, target_task_uid: "t9", source_topology_revision: 1, target_topology_revision: 2 } })] })),
     ["propose_binding", { delegation_id: "d1", review_digest: "g" }]);
   assert.deepEqual(cmd(fleet({ bindings: [bound({ state: "prepared", source_approved: false })] })), ["approve_binding", { id: "r1" }]);
+  // 按钮写动作,核对正文写按下去会发生什么;协议规则本身不进正文。
+  const resume = fleet({ bindings: [bound({ state: "prepared", source_approved: false })] });
+  assert.deepEqual([resume.state, resume.next, resume.primary.label], ["绑定待本机确认", "确认绑定", "确认绑定"]);
+  assert.equal(resume.primary.review.split("\n").pop(), "重新提交本机对这次绑定的确认；对方电脑仍须独立确认。");
+  assert.deepEqual(resume.others.map((a) => [a.label, a.command, a.review.split("\n").pop()]), [["撤回未确认绑定", "cancel_binding", "撤回这次绑定申请，对方电脑不再需要确认。"]]);
+  const pending = fleet({ bindings: [bound({ side: "target", source_node_id: NODE_B, target_node_id: NODE_A, state: "prepared" })] });
+  assert.deepEqual(pending.others.map((a) => [a.label, a.command]), [["重新提交本机确认", "approve_binding"], ["撤回未确认绑定", "cancel_binding"]]);
+  assert.ok(![resume.primary, ...resume.others, ...pending.others].some((a) => /恢复|未知结果/.test(a.label + a.review)), "不写「恢复」「未知结果」这类协议内的说法");
   const grant = fleet({ bindings: [bound()], results: [back()], delivery: delivery({ receivers: [{ project_id: "demo", mapping_id: "m1", repo_id: "repo", base_commit: "abc" }] }) });
   assert.deepEqual([grant.lane, grant.state, grant.primary.label, cmd(grant)], ["mine", "交付已回传", "授权接收文件 · repo", ["register_artifact_target", { result_id: "x1", mapping_id: "m1" }]]);
   const reject = grant.more.find((a) => a.command === "reject_result");
@@ -919,6 +995,7 @@ test("轮到本机：primary 是唯一下一步，命令和版本号取自对应
   const target = (extra) => bound({ side: "target", source_node_id: NODE_B, target_node_id: NODE_A, task_status: "not_started", released: false, ...extra });
   const held = fleet({ bindings: [target()] }), free = fleet({ bindings: [target({ execution_authorized: true })] });
   assert.deepEqual([held.lane, held.state, held.primary.command, held.primary.disabled], ["running", "待放行 · 等待双方就绪", "release_delegation", true], "放行条件没满足时按钮禁用");
+  assert.deepEqual([held.next, held.why, free.why], ["无需操作", "双方就绪、当前权限或本地结构尚未满足放行条件", undefined], "没满足的原因随状态走，写在「现在」那一行");
   assert.deepEqual([free.lane, cmd(free), free.primary.disabled, free.role], ["mine", ["release_delegation", { relation_id: "r1", expected_version: 5 }], false, "target"]);
   assert.deepEqual(cmd(fleet({ bindings: [target({ task_status: "waiting", released: true })] })), ["prepare_result", { relation_id: "r1", expected_version: 5 }]);
   // 首页点开、本机没有对应卡的一件事
@@ -927,10 +1004,15 @@ test("轮到本机：primary 是唯一下一步，命令和版本号取自对应
     ["收到委派 · 来自「笔记本 B」", "接收任务", { delegation_id: "d7", expected_version: 3, decision: "accept" }, "拒绝", "reject"]);
   assert.ok(inbox.primary.review.includes("来源电脑：笔记本 B") && !UUID.test(inbox.primary.review), "核对正文写电脑名");
   assert.deepEqual(inbox.primary.tech, [["委派", "d7"], ["来源终端", NODE_B]], "编号在 tech 里");
-  // 旧节点代次:只读
+  // 这台电脑重新登记前的旧记录:只读
   const old = fleet({ proposals: [{ ...proposal, identity_current: false }], bindings: [target({ execution_authorized: true, identity_current: 0 })] });
   assert.deepEqual([old.lane, old.primary, old.more, old.others, old.readonly], [null, null, [], [], true]);
   assert.equal(M.fleetInbox("proposal", { ...proposal, identity_current: false }, PCS).primary, null);
+  // 状态写给人看的说法;「节点代次」只留在技术信息里。
+  assert.deepEqual([old.state, old.next], ["这台电脑重新登记前的旧记录", "无需操作"]);
+  assert.deepEqual([M.fleetInbox("proposal", { ...proposal, identity_current: false }, PCS).state, M.fleetInbox("proposal", { ...proposal, identity_current: false }, PCS).next],
+    ["这台电脑重新登记前的旧记录", "无需操作"]);
+  assert.ok(!src.includes("旧节点代次"), "面板正文里不出现「节点代次」");
   assert.deepEqual(M.homeNodeLabels([["a", "笔记本"], ["b", "笔记本"], ["c", NODE_B]]), { a: "笔记本", b: "笔记本 2", c: "另一台电脑" }, "下拉里只写电脑名，重名才加序号");
 });
 

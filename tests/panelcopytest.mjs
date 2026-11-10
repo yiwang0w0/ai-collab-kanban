@@ -103,7 +103,7 @@ test("用量的数：未知不当 0，有已知部分写「不少于」，费用
   assert.deepEqual(copy.usageTop([]), { rows: [], unknown: 0, loose: null });
 });
 
-test("执行器 CLI 四格：说法与命令行一致，判断不了新旧就不写，没配置的整行不出", () => {
+test("执行器 CLI 四格：格子只写短状态、口径进 title，警示态都带下一步，判断不了新旧就不写，没配置的整行不出", () => {
   const when = (iso) => "T" + iso.slice(5, 10);
   const base = { id: "claude", name: "Claude CLI", state: "found", path: "C:/secret/path/claude.exe", current: "2.1.290", latest: "2.1.300", latest_state: "ok",
     latest_checked_at: "2026-11-10T00:00:00.000Z", update_available: true, tested: { state: "boundary", at: "2026-11-09T00:00:00.000Z" } };
@@ -112,8 +112,8 @@ test("执行器 CLI 四格：说法与命令行一致，判断不了新旧就不
   const up = copy.cliVersionCells(base, when);
   assert.equal(up.cells[1].badge, "可升级");
   assert.equal(up.next, "运行 node cli/upgrade-cli.mjs claude 查看会做什么，加 --yes 才执行");
-  assert.equal(up.cells[3].title, "实测于 T11-09");
-  assert.equal(copy.cliVersionCells({ ...base, npm_managed: false }, when).next, "用它自己的方式升级，再运行 node cli/doctor.mjs");
+  assert.equal(up.cells[3].title, "参数与读写权限范围都已实测；实测于 T11-09");
+  assert.equal(copy.cliVersionCells({ ...base, npm_managed: false }, when).next, "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs", "不是 npm 装的：写得出动作");
   assert.equal(copy.cliVersionCells({ ...base, npm_managed: true }, when).next, up.next);
   assert.ok(!JSON.stringify(up).includes("secret"), "可执行文件的路径不进正文");
   // 已是最新 / 判断不了。
@@ -129,13 +129,22 @@ test("执行器 CLI 四格：说法与命令行一致，判断不了新旧就不
   assert.deepEqual(cells({ ...base, latest: null, latest_state: "not_checked", latest_checked_at: null, update_available: null }).slice(1, 3),
     [["最新", "未查询", "unknown"], ["上次核对", "无", "unknown"]]);
   // 当前格读不到。
-  assert.deepEqual(cells({ ...base, state: "wrapper", current: null, update_available: null })[0], ["当前", "没有找到原生可执行文件", "warn"]);
-  assert.deepEqual(cells({ ...base, state: "not_found", current: null, update_available: null })[0], ["当前", "没有找到原生可执行文件", "warn"]);
+  assert.deepEqual(cells({ ...base, state: "wrapper", current: null, update_available: null })[0], ["当前", "未找到", "warn"]);
+  assert.deepEqual(cells({ ...base, state: "not_found", current: null, update_available: null })[0], ["当前", "未找到", "warn"]);
   assert.deepEqual(cells({ ...base, current: null, update_available: null })[0], ["当前", "版本读不出", "warn"]);
-  // 实测格。
-  assert.deepEqual(cells({ ...base, tested: { state: "contract", at: "2026-11-09T00:00:00.000Z" } })[3], ["实测", "参数已核对 · 读写边界未实测", "unknown"]);
+  // 警示态不能只有一个三角:这两种情况行下都有一句下一步,即使查得到更新的版本也先说这一句。
+  for (const broken of [{ state: "wrapper", current: null }, { state: "not_found", current: null }, { current: null }, { current: null, update_available: null }])
+    assert.equal(copy.cliVersionCells({ ...base, ...broken }, when).next, "运行 node cli/doctor.mjs 查看原因", JSON.stringify(broken));
+  assert.equal(copy.cliVersionCells({ ...base, state: "not_found", current: null }, when).cells[0].title, "没有找到可以直接启动的 CLI 程序");
+  // 实测格:正文三态短词,口径说明在 title,三种状态都有。
+  assert.deepEqual(cells({ ...base, tested: { state: "contract", at: "2026-11-09T00:00:00.000Z" } })[3], ["实测", "部分实测", "unknown"]);
+  assert.equal(copy.cliVersionCells({ ...base, tested: { state: "contract", at: "2026-11-09T00:00:00.000Z" } }, when).cells[3].title, "参数已核对，读写权限范围未实测；实测于 T11-09");
   assert.deepEqual(cells({ ...base, tested: { state: "none", at: null } })[3], ["实测", "未实测", "unknown"]);
-  assert.equal(copy.cliVersionCells({ ...base, tested: { state: "none", at: null } }, when).cells[3].title, undefined);
+  assert.equal(copy.cliVersionCells({ ...base, tested: { state: "none", at: null } }, when).cells[3].title, "这个版本没有实测记录");
+  for (const tested of [{ state: "boundary", at: null }, { state: "contract", at: null }, undefined])
+    assert.ok(copy.cliVersionCells({ ...base, tested }, when).cells[3].title, "实测格总有悬停说明");
+  const allCells = JSON.stringify(["wrapper", "not_found", "found"].flatMap((state) => ["boundary", "contract", "none"].map((t) => copy.cliVersionCells({ ...base, state, tested: { state: t, at: null } }, when).cells.map((x) => x.v))));
+  assert.ok(!/原生可执行文件|读写边界/.test(allCells), "格子正文不写内部说法");
   assert.equal(copy.cliVersionCells({ ...base, state: "not_configured" }, when), null, "没有配置的 CLI 整行不出");
   assert.equal(copy.cliVersionCells(null), null);
   // 版本块不放升级按钮:只有「重新核对」。

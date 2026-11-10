@@ -41,7 +41,9 @@ function fixture(extra = {}) {
     // 用量一节是读数到了以后才插进来的:在某个节点后面放一个兄弟节点、把自己拿掉。
     after(node) { const list = this.parent.children; list.splice(list.indexOf(this) + 1, 0, node); node.parent = this.parent; }
     remove() { const list = this.parent?.children; if (list) list.splice(list.indexOf(this), 1); this.parent = null; }
-    addEventListener() {}
+    // 只记下监听器;用例要按一下、开合一下时自己调 fire。
+    addEventListener(type, fn) { (this.listeners ||= {})[type] = fn; }
+    fire(type) { return this.listeners?.[type]?.({ target: this }); }
     setAttribute(name, value) {
       if (name === "id") this.id = String(value);
       else if (name.startsWith("data-")) this.dataset[name.slice(5).replace(/-([a-z])/g, (_, c) => c.toUpperCase())] = String(value);
@@ -362,7 +364,7 @@ function fleetFixture(extra, actions) {
 }
 const pri = (f) => f.body.querySelectorAll("button").filter((b) => b.classList.contains("pri"));
 
-test("首页点开「收到委派」：侧栏写说明和来源电脑，只有一个主按钮「接收任务」，次按钮「拒绝」，验收条件折叠", () => {
+test("首页点开「收到委派」：侧栏写状态和来源电脑，只有一个主按钮「接收任务」，次按钮「拒绝」；任务说明全文与验收条件只在折叠区", () => {
   const incoming = { project_id: "demo", delegation_id: "d1", state: "received", identity_current: true, source_node_id: PC_B, version: 3,
     subject: "跑一次压测", description: "在 B 机上跑回放压测", acceptance: "错误率低于千分之一" };
   const f = fleetFixture({}, { incoming: [incoming] });
@@ -370,12 +372,20 @@ test("首页点开「收到委派」：侧栏写说明和来源电脑，只有�
   f.context.renderSide();
   assert.equal(f.document.getElementById("task-side-title").textContent, "跑一次压测");
   assert.equal(f.state().textContent, "收到委派 · 来自「笔记本 B」");
-  assert.match(f.body.children[0].textContent, /^要做什么在 B 机上跑回放压测现在收到委派 · 来自「笔记本 B」下一步：接收或拒绝要你做什么接收任务拒绝$/);
+  // 记录没带 brief:不出「要做什么」这一行,不拿任务说明全文充数(与本机卡同一条规矩)。
+  assert.equal(f.body.children[0].textContent, "现在收到委派 · 来自「笔记本 B」下一步：接收或拒绝要你做什么接收任务拒绝");
+  assert.ok(!f.body.children[0].textContent.includes("在 B 机上跑回放压测"), "任务说明全文不进给人看的小块");
   assert.deepEqual(pri(f).map((b) => b.textContent), ["接收任务"], "只有一个主按钮");
   assert.deepEqual(f.body.querySelectorAll("button").map((b) => [b.textContent, b.dataset.fleetCommand, b.disabled]), [["接收任务", "decide_delegation", false], ["拒绝", "decide_delegation", false]]);
   assert.equal(f.body.querySelectorAll('[data-tone="need"]').length, 1);
   const detail = f.document.getElementById("task-side-detail");
-  assert.ok(detail && !detail.open && /验收条件错误率低于千分之一/.test(detail.textContent), "验收条件在默认折叠的详细说明里");
+  assert.ok(detail && !detail.open && /任务说明在 B 机上跑回放压测验收条件错误率低于千分之一/.test(detail.textContent), "任务说明和验收条件在默认折叠的详细说明里");
+  // 记录带了 brief(服务端给的一句话):这一行只写它。
+  const brief = fleetFixture({}, { incoming: [{ ...incoming, brief: "跑一小时回放压测" }] });
+  brief.context.sideRef = { action: { kind: "incoming", id: "d1" }, id: null, uid: null, item: { title: "跑一次压测" } };
+  brief.context.renderSide();
+  assert.match(brief.body.children[0].textContent, /^要做什么跑一小时回放压测现在收到委派 · 来自「笔记本 B」/);
+  assert.equal(brief.body.children[0].textContent.split("在 B 机上跑回放压测").length, 1, "说明全文仍只在折叠区");
   // 记录的版本或状态变了才重建;处理完(记录不再待接收)按钮收走。
   let changes = f.body.replacements; f.context.renderSide();
   assert.equal(f.body.replacements, changes);
@@ -427,18 +437,29 @@ test("协议持有的待验收卡：主按钮是协议动作，「通过」收�
   assert.equal(w.document.getElementById("task-side-protocol"), section); assert.match(section.textContent, /查询委派回执 · 协议回执已核验/);
 });
 
-test("委派来的执行卡：放行只有协议那一个按钮，条件没满足时禁用", () => {
+test("委派来的执行卡：放行只有协议那一个按钮，条件没满足时禁用，这一行不叫「要你做什么」，原因写在「现在」里", () => {
   const binding = { relation_id: "r1", delegation_id: "d1", side: "target", state: "confirmed", task_uid: "u7", identity_current: 1, project_id: "demo", task_version: 3,
     task_status: "not_started", released: false, subject: "侧栏任务", execution_authorized: false, source_node_id: PC_B, target_node_id: PC_A, cancellation_state: null };
   const f = fleetFixture({ status: "not_started", released: false, task_uid: "u7", verification_repair_digest: "d".repeat(64),
     progress_blockers: [{ code: "NOT_RELEASED", message: "任务尚未放行", next_action: "核对任务后显式放行" }] }, { bindings: [binding] });
   f.context.renderSide();
   assert.equal(f.body.querySelector('[data-a="release"]'), null, "不再出本机的「放行此任务」");
-  assert.deepEqual(pri(f).map((b) => [b.textContent, b.dataset.fleetCommand, b.disabled]), [["放行此任务", "release_delegation", true]]);
+  const gate = () => f.body.querySelectorAll("button").filter((b) => b.dataset.fleetCommand === "release_delegation");
+  assert.deepEqual(gate().map((b) => [b.textContent, b.disabled, b.classList.contains("pri")]), [["放行此任务", true, false]], "禁用时不是主按钮的样子");
+  assert.equal(pri(f).length, 0, "没轮到人：整栏没有主按钮");
   assert.equal(f.body.querySelectorAll('[data-tone="need"]').length, 0, "按钮禁用时不标强调色");
+  // 「下一步：无需操作」下面不能紧跟一行「要你做什么」:这一行叫「放行」,没满足的原因在「现在」那一行。
+  assert.equal(f.document.getElementById("task-side-next").textContent, "下一步：无需操作");
+  assert.ok(!f.body.textContent.includes("要你做什么"), "没轮到人时不出现「要你做什么」");
+  assert.deepEqual(gate()[0].parent.parent.children.map((n) => n.textContent), ["放行", "放行此任务"]);
+  const why = f.document.getElementById("task-side-why");
+  assert.deepEqual([why.textContent, why.hidden], ["双方就绪、当前权限或本地结构尚未满足放行条件", false]);
+  assert.match(f.body.children[0].textContent, /^现在本机 · 待放行 · 等待双方就绪双方就绪、当前权限或本地结构尚未满足放行条件下一步：无需操作放行放行此任务$/);
   binding.execution_authorized = true; f.context.renderSide();
   assert.deepEqual(pri(f).map((b) => [b.textContent, b.disabled]), [["放行此任务", false]]);
   assert.equal(f.body.querySelectorAll('[data-tone="need"]').length, 1);
+  assert.deepEqual(gate()[0].parent.parent.children.map((n) => n.textContent), ["要你做什么", "放行此任务"]);
+  assert.equal(f.document.getElementById("task-side-why").hidden, true, "条件满足后原因那一句收起");
 });
 
 test("其他电脑的卡：按任务编号从多机列表取当前行，行变了就重建；有「要做什么」「结果」，详细说明默认折叠", async () => {
@@ -582,6 +603,144 @@ test("还没有用量记录的卡写明没有记录；其他电脑的卡不取�
   far.context.tasks = []; far.context.byId = new Map(); far.context.sideRef = { id: null, uid: "remote-1", item: null };
   await far.context.sideUsageLoad(far.context.sideCard(), true);
   assert.equal(asked, 0);
+});
+
+// ── 审阅后补的用例:整栏重建与局部刷新同一个判断;读失败能重读;跨机事项记进地址栏 ──
+test("未放行的来源卡轮到跨机这一步：放行核对区在整栏重建和局部刷新后都不是「要你做什么」，上膛的放行按钮不被换掉", () => {
+  const sent = { project_id: "demo", direction: "outgoing", delegation_id: "d2", state: "accepted_unconfirmed", identity_current: true, source_node_id: PC_A, target_node_id: PC_B,
+    source_task_uid: "u8", subject: "侧栏任务", description: "说明", acceptance: "验收",
+    binding_draft: { ready: true, review_digest: "g", target_node_id: PC_B, target_task_uid: "t9", source_topology_revision: 1, target_topology_revision: 2 } };
+  const f = fleetFixture({ status: "not_started", released: false, task_uid: "u8", verification_repair_digest: "d".repeat(64),
+    progress_blockers: [{ code: "NOT_RELEASED", message: "任务尚未放行", next_action: "核对任务后显式放行" }] }, { outgoing: [sent], actions: [] });
+  const look = () => {
+    const execution = f.document.getElementById("task-side-execution"), release = execution.querySelector('[data-a="release"]');
+    return { execution, release, tone: execution.dataset.tone, head: execution.children[0].textContent, pri: pri(f).map((b) => b.textContent),
+      need: f.body.querySelectorAll('[data-tone="need"]').length, signature: execution.dataset.signature, swaps: execution.replacements };
+  };
+  f.context.renderSide();
+  const first = look();
+  assert.equal(f.state().textContent, "本机 · 对方已接收"); assert.equal(f.document.getElementById("task-side-next").textContent, "下一步：准备绑定");
+  assert.deepEqual([first.tone, first.head, first.pri, first.need], [undefined, "放行前核对执行配置", ["准备绑定"], 1], "这一屏只有一处强调色、一个主按钮");
+  assert.equal(first.release.classList.contains("pri"), false, "放行不是这张卡的下一步：普通按钮");
+  // 操作者在放行按钮上按了第一下;接着来了一次刷新(数据没变,走局部刷新)。
+  first.release.dataset.armed = "1"; first.release.classList.add("armed");
+  f.context.renderSide(); f.context.renderSide();
+  const again = look();
+  assert.deepEqual([again.tone, again.head, again.pri, again.need], [undefined, "放行前核对执行配置", ["准备绑定"], 1], "刷新后判断不变");
+  assert.equal(again.signature, first.signature); assert.equal(again.swaps, first.swaps, "签名没变：这一节不重画");
+  assert.equal(again.release, first.release); assert.equal(again.release.dataset.armed, "1", "上膛的按钮还在");
+  assert.equal(f.context.sideReleaseNeed(f.task), false);
+  // 对照:同一张卡没有委派记录时,只差放行就是「要你做什么」,两条路径同样一致。
+  const plain = fleetFixture({ status: "not_started", released: false, task_uid: "u8", verification_repair_digest: "d".repeat(64),
+    progress_blockers: [{ code: "NOT_RELEASED", message: "任务尚未放行", next_action: "核对任务后显式放行" }] }, { actions: [] });
+  plain.context.renderSide(); plain.context.renderSide();
+  const p = plain.document.getElementById("task-side-execution");
+  assert.deepEqual([p.dataset.tone, p.children[0].textContent, p.querySelector('[data-a="release"]').classList.contains("pri"), plain.context.sideReleaseNeed(plain.task)],
+    ["need", "要你做什么", true, true]);
+  assert.equal(p.replacements, 0, "局部刷新没有改动这一节");
+});
+
+test("放行核对区只写动作，不写两押的机理", () => {
+  const f = fixture({ status: "not_started", released: false, verification_repair_digest: "d".repeat(64),
+    progress_blockers: [{ code: "NOT_RELEASED", message: "任务尚未放行", next_action: "核对任务后显式放行" }] });
+  f.context.renderSide();
+  assert.match(f.document.getElementById("task-side-execution").textContent, /先核对以上目录、通道、权限与预算。放行此任务$/);
+  const goal = fixture({ kind: "goal", status: "not_started", released: false, verification_repair_digest: "d".repeat(64), line: null });
+  goal.context.renderSide();
+  assert.match(goal.document.getElementById("task-side-execution").textContent, /先核对子任务。放行这个目标$/);
+  assert.ok(!source.includes("按两次后才会放行"));
+  // 目标卡上膛的字照按钮写:它没有执行配置。
+  assert.ok(source.includes('a === "release" ? (byId.get(Number(id))?.kind === "goal" ? armedLabel(b.dataset.orig) : "再按=确认按此配置放行")'));
+});
+
+test("其他电脑的卡详细说明读失败：不自己反复重读，给「重试」，按了再读一次", async () => {
+  const f = fleetFixture({}, null), row = { read_only: true, task_uid: "remote-1", owner_name: "笔记本 B", subject: "远端卡", status: "in_progress",
+    waiting_for: null, aggregate_version: 1, brief: null, result_summary: null };
+  let asked = 0, fail = true;
+  f.context.homeGet = async () => { asked++; if (fail) throw new Error("读取失败(503)"); return { ...row, description: "完整说明", acceptance: null, result: null, verdict_note: null }; };
+  f.context.homeFleet = { ...fleetNodes, tasks: [row] };
+  f.context.sideRef = { uid: "remote-1", id: null, item: null }; f.context.sideSig = "";
+  f.context.renderSide();
+  await new Promise((r) => setTimeout(r, 0));
+  const detail = () => f.document.getElementById("task-side-detail");
+  assert.match(detail().textContent, /详细说明读取失败重试$/);
+  f.context.renderSide(); f.context.renderSide();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(asked, 1, "读失败后刷新不自己重读");
+  const retry = detail().querySelectorAll("button").find((b) => b.dataset.sideDetailRetry === "1");
+  assert.equal(retry.textContent, "重试");
+  fail = false; retry.fire("click");
+  assert.match(detail().textContent, /正在读取$/);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(asked, 2);
+  assert.match(detail().textContent, /任务说明完整说明$/);
+  assert.equal(detail().querySelectorAll("button").length, 0, "读到了：重试收走");
+});
+
+test("来源卡的「证据」读失败：下次展开再读；读成功后不重读", async () => {
+  const binding = { relation_id: "r1", delegation_id: "d1", side: "source", state: "confirmed", task_uid: "u8", identity_current: 1, project_id: "demo", task_version: 3,
+    task_status: "waiting", released: true, subject: "侧栏任务", source_node_id: PC_A, target_node_id: PC_B, cancellation_state: null };
+  const result = { result_id: "x1", relation_id: "r1", side: "source", state: "received", identity_current: 1, project_id: "demo", source_task_version: 3 };
+  const f = fleetFixture({ status: "waiting", waiting_for: "review", result: "证据", task_uid: "u8" }, { bindings: [binding], results: [result], actions: [] });
+  const reads = []; let ok = false;
+  f.context.fleetApi.evidence = async (uid, box) => { reads.push(uid); box.textContent = ok ? "证据分页" : "读取失败(503)"; return ok; };
+  f.context.renderSide();
+  const fold = f.document.getElementById("task-side-evidence"), inner = fold.querySelector("div.side-evidence");
+  assert.ok(fold && !fold.open, "证据默认折叠，折叠着不读");
+  assert.equal(reads.length, 0);
+  fold.open = true; await fold.fire("toggle");
+  assert.deepEqual([reads, inner.textContent, inner.dataset.loaded], [["u8"], "读取失败(503)", undefined], "读失败：标记清掉");
+  fold.open = false; await fold.fire("toggle");
+  assert.equal(reads.length, 1, "收起不读");
+  ok = true; fold.open = true; await fold.fire("toggle");
+  assert.deepEqual([reads.length, inner.textContent, inner.dataset.loaded], [2, "证据分页", "1"], "再展开：重读");
+  fold.open = false; await fold.fire("toggle"); fold.open = true; await fold.fire("toggle");
+  assert.equal(reads.length, 2, "读成功后再开合不重读");
+});
+
+test("首页点开的跨机事项记进地址栏：刷新后按 种类:编号 重开，不清掉也不冒用 task；关掉侧栏两段都去掉", () => {
+  const incoming = { project_id: "demo", delegation_id: "d1", state: "received", identity_current: true, source_node_id: PC_B, version: 3,
+    subject: "跑一次压测", description: "说明", acceptance: "验收" };
+  const boot = (hash) => {
+    const f = fleetFixture({}, { incoming: [incoming], bindings: [{ relation_id: "r1", subject: "回传的那件事" }],
+      results: [{ result_id: "x1", relation_id: "r1", side: "source", state: "received", identity_current: 1 }] });
+    f.context.location.hash = hash;
+    // 侧栏写地址栏只走 history.replaceState:这里把写进去的 # 段接回 location.hash。
+    f.context.history.replaceState = (_s, _t, url) => { f.context.location.hash = url.includes("#") ? url.slice(url.indexOf("#")) : ""; };
+    vm.runInContext(declaration("sideFromHash"), f.context);
+    return f;
+  };
+  const params = (f) => Object.fromEntries(new URLSearchParams(f.context.location.hash.slice(1)));
+  // 从首页点开:地址栏写 action,不留 task。
+  const f = boot("");
+  f.context.openSide({ action: { kind: "incoming", id: "d1" }, id: null, uid: null, item: { title: "跑一次压测" } });
+  assert.deepEqual(params(f), { action: "incoming:d1" });
+  // 页面刷新后:按地址栏重开同一件事,没有首页那一条(item)也写得出标题和按钮。
+  const reloaded = boot(f.context.location.hash);
+  reloaded.context.sideRef = null; reloaded.context.sideSig = "";
+  reloaded.context.sideFromHash();
+  assert.deepEqual(JSON.parse(JSON.stringify(reloaded.context.sideRef.action)), { kind: "incoming", id: "d1" });
+  assert.equal(reloaded.document.getElementById("task-side-title").textContent, "跑一次压测");
+  assert.deepEqual(pri(reloaded).map((b) => b.textContent), ["接收任务"]);
+  const before = reloaded.body.replacements; reloaded.context.sideFromHash();
+  assert.equal(reloaded.body.replacements, before, "已经开着同一件事：不重开");
+  // 交付记录只带编号:标题取绑定上的。
+  const back = boot("#action=result%3Ax1"); back.context.sideRef = null; back.context.sideFromHash();
+  assert.equal(back.document.getElementById("task-side-title").textContent, "回传的那件事");
+  // 这件事已经处理完:照样打开,写「这件事已处理」。
+  const gone = boot("#action=incoming%3Ad9"); gone.context.sideRef = null; gone.context.sideFromHash();
+  assert.equal(gone.state().textContent, "这件事已处理"); assert.equal(gone.body.querySelectorAll("button").length, 0);
+  // 不认识的种类不打开;task 在时按 task 走。
+  const odd = boot("#action=other%3A1"); odd.context.sideRef = null; odd.context.sideFromHash();
+  assert.equal(odd.context.sideRef, null);
+  const card = boot("#task=7&action=incoming%3Ad1"); card.context.sideRef = null; card.context.sideFromHash();
+  assert.equal(card.context.sideRef.id, 7); assert.deepEqual(params(card), { task: "fixture-node/task-7" }, "开的是卡：action 段去掉");
+  // 开卡再关:两段都去掉,别的段留着。
+  const mixed = boot("#fleet-task=abc");
+  mixed.context.openSide({ action: { kind: "proposal", id: "r2" }, id: null, uid: null, item: null });
+  assert.deepEqual(params(mixed), { "fleet-task": "abc", action: "proposal:r2" });
+  mixed.context.closeSide();
+  assert.deepEqual(params(mixed), { "fleet-task": "abc" });
 });
 
 // 设置页协作区的面板测试在 tests/panelcoordtest.mjs,用的是同一种最小节点模拟。它还没单独登记进 package.json 与 CI 的

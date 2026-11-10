@@ -711,7 +711,8 @@
     padding:var(--sp-2) var(--sp-3);min-width:0;font-size:var(--fs-sm)}
   .coord-ex .hd{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);font-size:var(--fs-md);font-weight:500;min-width:0}
   .coord-ex .hd > span:first-child{min-width:0;overflow-wrap:anywhere}
-  .coord-ex .hd .badge{flex:none}
+  /* 卡底是 --panel2:徽标用 --panel 做底,浅色下 12px 的静色与警示色字才够 4.5:1。 */
+  .coord-ex .hd .badge{flex:none;background:var(--panel)}
   .coord-ex .hd .mono{font-size:var(--fs-sm);font-weight:400}
   .coord-ex p{margin:0;min-width:0;overflow-wrap:anywhere}
   .coord-ex .ex-meta{color:var(--dim)}
@@ -738,7 +739,7 @@
   .cr-title{font-size:var(--fs-md);font-weight:500}
   .cr-acts{display:flex;gap:var(--sp-2);flex-wrap:wrap;justify-content:flex-end;align-items:center}
   button.cr-link{justify-content:flex-start;text-align:left;height:auto;min-height:0;padding:0;border-color:transparent;background:transparent;white-space:normal;
-    font-size:var(--fs-md);font-weight:500}
+    font-size:var(--fs-md);font-weight:500;line-height:1.5}
   button.cr-link:hover{background:transparent;border-color:transparent;text-decoration:underline}
   /* 批准行:左 种类与时间,中 标题、摘要、备注上下叠放,右 按钮。强调色左边条只给这一块。 */
   .apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:"lead title acts" "when sum acts" ". note acts";align-items:start}
@@ -1069,6 +1070,8 @@
   /* 横幅和告警占得多时对话区不被压没:低于 400px 就让整页滚。 */
   #home-view{display:flex;flex-direction:column;flex:1 1 0;min-height:400px;max-width:none;margin:0;padding:0}
   #home-view > .home-status{flex:none;margin:var(--sp-2) var(--sp-4) 0;max-height:32vh;overflow:auto}
+  /* 日志展开时状态条不限高:日志自己滚(240px),不叠两层滚动;挤得对话区低于 400px 就整页滚。 */
+  #home-view > .home-status:has(.hs-log[open]){max-height:none}
   /* 一切正常时设备摘要只是一行灰字,紧贴三栏;有告警才出底和框。 */
   #home-view > .home-status:not(:has(.hs-alert)){margin-top:var(--sp-1);border:0;border-radius:0;background:transparent;color:var(--dim);font-size:var(--fs-sm)}
   #home-view > .home-status:not(:has(.hs-alert)) .hs-line{padding:0}
@@ -1094,6 +1097,8 @@
   .cl-item[data-st="running"] .cl-s{color:var(--cc)}
   .cl-item[data-st="failed"] .cl-s{color:var(--bad)}
   .cl-item[data-need] .cl-s{color:var(--accent)}
+  /* 悬停底比 --bg2 深,第二行的小字用 --fg 才够 4.5:1;当前对话是 --panel 底,不在此列。 */
+  .cl-item:hover:not([aria-current="true"]) .cl-s{color:var(--fg)}
   .cl-empty{margin:0;padding:var(--sp-2) var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
   .chat-scrim{display:none}
   .chat-main{display:flex;flex-direction:column;min-width:0;min-height:0}
@@ -1197,6 +1202,8 @@
     /* 手机:顶部导航不带框;任务面板盖到底。 */
     .views{padding:0;border:0;background:transparent}
     .home-work{bottom:0;max-height:none;border-bottom:0;box-shadow:none}
+    /* 面板打开后对话区和输入区整块被盖住:不留在 Tab 顺序和读屏里(焦点的去回在 chatWork)。 */
+    .chat-shell.work-open :is(.chat-flow,.chat-compose){visibility:hidden}
   }
   @media (prefers-reduced-motion: reduce){ .chat-list,.work-toggle .fold-ic,.chat-box{transition:none} }
   /* ── 计划卡(在消息流里):目标、子任务表、合计与「按计划建卡」。强调色只给还没建卡的最新一版。
@@ -1294,8 +1301,13 @@
     body{--ctl-h:40px}
     .views button{min-height:40px}
     .card-more > summary{min-height:40px}
-    .side-rec > summary,.side-sec > summary,.cfg-about > summary,.hs-log > summary,.usage-top > summary,.coord-fold > summary{padding:11px 0}
+    .side-rec > summary,.side-sec > summary,.cfg-about > summary,.hs-log > summary,.usage-top > summary,.coord-fold > summary,.fleet-tech > summary{padding:11px 0}
+    .plan-old > summary{padding-block:11px}
+    .coord-fold.coord-sec > summary{padding:13px 0}   /* 眉标签字号小,多垫 2px 才到 40 */
     button.cr-link{min-height:40px}
+    /* 没有悬停可看全文:执行者卡的「当前」和交接的目标不截断。 */
+    .coord-ex .ex-now{display:block;-webkit-line-clamp:none;line-clamp:none;overflow:visible}
+    .hand-row .cr-sum{white-space:normal}
     label.chk{min-height:40px}
   }
 </style>
@@ -1379,7 +1391,7 @@
   <div class="fleet-top"><h2 id="fleet-action-title">核对操作</h2><button type="button" id="fleet-action-close">关闭</button></div>
   <div id="fleet-action-body"></div>
   <p id="fleet-action-status" class="fleet-note" role="status" aria-live="polite"></p>
-  <button type="submit" id="fleet-action-submit">确认提交</button>
+  <button type="submit" id="fleet-action-submit" class="pri">确认提交</button>
  </form>
 </dialog>
 
@@ -1705,12 +1717,13 @@ function usageTop(groups, limit = 10){
   const priced = cards.filter((g) => cost(g) !== null).sort((a, b) => cost(b) - cost(a) || Number(a.key) - Number(b.key));
   return { rows: priced.slice(0, limit), unknown: cards.length - priced.length, loose: (groups || []).find((g) => g && g.key === "?") || null };
 }
-/** 执行器 CLI 的四格：当前、最新、上次核对、实测。说法与命令行 status 的那一行相同；没有配置的返回 null。
- *  update_available 为 null 时不判断新旧。when 把时刻写成本地时间。 */
+/** 执行器 CLI 的四格：当前、最新、上次核对、实测。格子里只写短状态，口径说明进 title；没有配置的返回 null。
+ *  update_available 为 null 时不判断新旧。when 把时刻写成本地时间。
+ *  next = 行下的一句下一步：「当前」读不到（警示态）或能判断有新版本时才有。 */
 function cliVersionCells(c, when = (iso) => String(iso)){
   if (!c || c.state === "not_configured") return null;
   const newer = c.state === "found" && c.current && c.latest_state === "ok" && typeof c.update_available === "boolean" ? c.update_available : null;
-  const current = c.state !== "found" ? { k: "当前", v: "没有找到原生可执行文件", st: "warn" }
+  const current = c.state !== "found" ? { k: "当前", v: "未找到", st: "warn", title: "没有找到可以直接启动的 CLI 程序" }
     : !c.current ? { k: "当前", v: "版本读不出", st: "warn" } : { k: "当前", v: String(c.current), st: "ok" };
   const latest = c.latest_state === "ok"
     ? { k: "最新", v: String(c.latest), st: newer === true ? "warn" : newer === false ? "ok" : "unknown",
@@ -1720,10 +1733,13 @@ function cliVersionCells(c, when = (iso) => String(iso)){
   const checked = { k: "上次核对", v: c.latest_checked_at ? when(c.latest_checked_at) : "无",
                     st: c.latest_checked_at && c.latest_state === "ok" ? "ok" : "unknown" };
   const state = c.tested?.state;
-  const tested = { k: "实测", v: state === "boundary" ? "已实测" : state === "contract" ? "参数已核对 · 读写边界未实测" : "未实测",
-                   st: state === "boundary" ? "ok" : "unknown", ...(c.tested?.at ? { title: "实测于 " + when(c.tested.at) } : {}) };
-  const next = newer !== true ? null
-    : c.npm_managed === false ? "用它自己的方式升级，再运行 node cli/doctor.mjs"
+  const tested = { k: "实测", v: state === "boundary" ? "已实测" : state === "contract" ? "部分实测" : "未实测",
+                   st: state === "boundary" ? "ok" : "unknown",
+                   title: (state === "boundary" ? "参数与读写权限范围都已实测" : state === "contract" ? "参数已核对，读写权限范围未实测" : "这个版本没有实测记录") +
+                          (c.tested?.at ? "；实测于 " + when(c.tested.at) : "") };
+  const next = current.st === "warn" ? "运行 node cli/doctor.mjs 查看原因"
+    : newer !== true ? null
+    : c.npm_managed === false ? "按这个 CLI 的官方说明升级，再运行 node cli/doctor.mjs"
     : "运行 node cli/upgrade-cli.mjs " + c.id + " 查看会做什么，加 --yes 才执行";
   return { id: String(c.id ?? ""), name: String(c.name || c.id || "执行器"), cells: [current, latest, checked, tested], next };
 }
@@ -3493,7 +3509,7 @@ function renderRig(){
     const slots = (w.slots || []).filter((sl) => sl.running);
     const xN = slots.length > 1 ? `×${slots.length}` : "";
     const open = cfg.classList.contains("show") && cfgLine === w.line;
-    const state = w.external ? "外部执行" : w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止";
+    const state = w.external ? "外部执行" : w.running ? "运行中" : !w.desired_running ? "已停止" : w.pool_blocked === true ? "额度用完，已暂停" : "已请求启动，待核实";
     // ⭐ 面板不从退出码猜停止原因(一个码有三种含义)。停止的线只写服务端记下的停止时间;
     //   原因的原文(stop_text)放悬停说明,旧版服务端不给 stop_text 时才用退出码那一句。
     const stopped = !w.external && !w.running;
@@ -3929,19 +3945,27 @@ function coordLockClose(b){
   coordFlush();
   [...document.querySelectorAll("#coord [data-lock-release]")].find((x) => x.dataset.lockRelease === resource)?.focus();
 }
-/** 强制释放的确认钮:两押。第二下提交前核对这把锁现在的持有者(重画被这一行的输入挡着,行里的字可能已经过时),
- *  换人了就中止、不发请求,把原因写在锁表上方。 */
+/** 强制释放的确认钮:两押。第二下提交前重读一次锁表,按现在的持有者核对(面板手上那份在实时连接断开时可能旧十几秒,
+ *  重画又被这一行的输入挡着):换人了就中止、不发请求,把原因写在锁表上方;锁表读不到也不发。
+ *  释放接口只认资源名,所以核对和提交之间仍隔着一次往返。 */
 async function coordLockPress(b){
   const form = b.closest("[data-lock-form]"), input = form ? form.querySelector("[data-lock-reason]") : null;
   const reason = input ? String(input.value || "").trim() : "", resource = b.dataset.lockConfirm, C = COORD_COPY.lock;
-  if (!form || !reason) return;
+  if (!form || !reason || b.disabled) return;
   if (b.dataset.armed !== "1"){ coordArm(b, armedLabel(C.release + " " + resource + "，" + C.holder + " " + b.dataset.lockHolderName)); return; }
-  coordDisarm(b);
-  const stale = coordLockCheck(coordData?.locks, resource, b.dataset.lockHolder, b.dataset.lockId);
+  coordDisarm(b); b.disabled = true;
+  const fail = (err) => { b.disabled = false; const note = form.querySelector(".coord-note"); if (note) note.textContent = C.failed + copyError(err); };
+  let locks;
+  try {
+    locks = (await homeGet("/api/coord/locks")).locks;
+    if (!Array.isArray(locks)) throw Error("锁表读不到");
+  } catch (err){ fail(err); return; }
+  if (!form.isConnected) return;                      // 读的这一下里理由框被收起了:不发
+  if (coordData) coordData = { ...coordData, locks };
+  const stale = coordLockCheck(locks, resource, b.dataset.lockHolder, b.dataset.lockId);
   if (stale){ form.remove(); coordSettle(document.getElementById("coord")); coordLockNote = resource + "：" + stale; renderCoord(); return; }
-  b.disabled = true;
   try { await post("/api/coord/locks/release", { resource, force: true, reason }); }
-  catch (err){ b.disabled = false; const note = form.querySelector(".coord-note"); if (note) note.textContent = C.failed + copyError(err); return; }
+  catch (err){ fail(err); return; }
   form.remove(); coordLockNote = ""; coordSettle(document.getElementById("coord")); refresh();
 }
 // ── /coord-view ──
@@ -4122,7 +4146,7 @@ function renderCfg(){
   }).join("");
   // 保存状态挂在 cfg 元素本身(saveAgents 写入),即改即存:保存中 / 已保存 / 保存失败(原因) / 版本冲突(可重新载入)。
   const save = cfgSaveHtml(cfg.saveState || null);
-  const lineState = w.running ? "运行中" : w.desired_running ? "已请求启动，待核实" : "已停止";
+  const lineState = w.running ? "运行中" : !w.desired_running ? "已停止" : w.pool_blocked === true ? "额度用完，已暂停" : "已请求启动，待核实";
   cfg.innerHTML = `
     <div class="cfg-head"><h4><span style="color:${lineColor(cfgLine)}">${esc(lineLabel(cfgLine))}</span> · 执行器设置</h4>
       <span class="badge" data-tone="${w.running ? "run" : "quiet"}" title="执行器启用与执行线启动分开记录">${ic(w.running ? "play" : "stop")}执行线：${lineState}</span>
@@ -4307,6 +4331,13 @@ const epop = document.getElementById("edit");
 function openEdit(anchor, taskId){
   const t = byId.get(Number(taskId));
   if (!t) return;
+  // 说明或验收条件改了还没保存:再点「编辑」「改执行线」不重填浮层,写一句下一步,焦点回到改过的那一框。
+  if (epop.classList.contains("show") && editDirty()) {
+    const n = document.getElementById("edit-note");
+    if (n) n.textContent = "先保存或关闭";
+    [...epop.querySelectorAll("textarea")].find((box) => box.value !== box.dataset.orig)?.focus();
+    return;
+  }
   epop.dataset.version=String(t.aggregate_version);
   const ma = Number(t.max_attempts) || 3;
   // 未开始的卡还能改说明和验收条件:两个多行框,按「保存」才提交(不即改即存)。文字用 .value 填,不进 innerHTML。
@@ -4808,7 +4839,8 @@ ${r.memo}`);
     b.classList.add("armed");
     const hasNote = ((noteBox(id, b) || {}).value || "").trim();
     const q = b.dataset.kind === "decide";
-    armSwap(b, a === "release" ? "再按=确认按此配置放行" : a === "archive" ? "再按=确认归档"
+    // 目标卡没有执行配置,这一下放开的是它下面的子任务:上膛的字照按钮写(「再按=确认放行这个目标」)。
+    armSwap(b, a === "release" ? (byId.get(Number(id))?.kind === "goal" ? armedLabel(b.dataset.orig) : "再按=确认按此配置放行") : a === "archive" ? "再按=确认归档"
               : a === "reject" ? "再按=确认否决"
               : hasNote ? (q ? "再按=同意并交回" : "再按=确认打回") : (q ? "再按=确认同意" : "再按=确认通过"));
     setTimeout(() => { if (b.dataset.armed === "1") {
@@ -5074,11 +5106,11 @@ document.addEventListener("input", (e) => {
   if (e.target.matches?.("[data-apv-note]")) approvalNoteInput(e.target);
   else if (e.target.matches?.("[data-lock-reason]")) coordLockReasonInput(e.target);
 });
-// 理由框里按回车 = 按确认钮(第一下上膛,第二下提交);Esc 收起。
+// 理由框里按回车 = 按确认钮(第一下上膛,第二下提交);Esc 收起。按住回车的连发不算:一次长按不能走完两押。
 document.addEventListener("keydown", (e) => {
   if (!e.target.matches?.("[data-lock-reason]") || e.isComposing || e.keyCode === 229) return;
   const form = e.target.closest("[data-lock-form]");
-  if (e.key === "Enter"){ e.preventDefault(); const ok = form.querySelector("[data-lock-confirm]"); if (!ok.disabled) coordLockPress(ok); }
+  if (e.key === "Enter"){ e.preventDefault(); if (e.repeat) return; const ok = form.querySelector("[data-lock-confirm]"); if (!ok.disabled) coordLockPress(ok); }
   else if (e.key === "Escape"){ e.stopImmediatePropagation(); coordLockClose(e.target); }
 });
 // 焦点离开协作区的一块:把挡着没画的那一次补上。
@@ -5315,6 +5347,7 @@ function homeLogLines(lines) {
 }
 /** 执行线故障按原因合并：同一原因的多条线只出一条，各带一句下一步。输入是 /api/workers 的 workers[]。
  *  外部线和运行中的线不算。原因文字取服务端的 stop_text，这里不另译退出码。
+ *  想跑却没在跑的线分两种：订阅额度用完被看板停下的（pool_blocked，额度恢复后看板自己拉起，不给去设置的按钮）、其余待核实的。
  *  命令行 status 读的也是这一份（core/home-model.mjs）。 */
 function homeLineFaults(workers, lineLabels = {}) {
   const label = (line) => (lineLabels && Object.hasOwn(lineLabels, line) && lineLabels[line]) || line;
@@ -5322,9 +5355,11 @@ function homeLineFaults(workers, lineLabels = {}) {
   for (const w of Array.isArray(workers) ? workers : []) {
     if (!w || typeof w.line !== "string" || w.external || w.running) continue;
     const text = typeof w.stop_text === "string" ? w.stop_text.split(" · ")[0].trim() : "";
-    const kind = !w.stop_reason && w.exit_code === 3 ? "refused" : w.stop_reason?.reason === "crash" ? "crash" : w.desired_running ? "pending" : null;
+    const kind = !w.stop_reason && w.exit_code === 3 ? "refused" : w.stop_reason?.reason === "crash" ? "crash"
+      : !w.desired_running ? null : w.pool_blocked === true ? "pool" : "pending";
     if (!kind) continue;
-    const what = kind === "pending" ? "已请求启动，待核实" : text || (kind === "refused" ? "启动被拒绝" : "崩溃"), key = kind + "|" + what;
+    const what = kind === "pending" ? "已请求启动，待核实" : kind === "pool" ? "订阅额度用完，已暂停"
+      : text || (kind === "refused" ? "启动被拒绝" : "崩溃"), key = kind + "|" + what;
     if (!groups.has(key)) groups.set(key, { kind, what, lines: [], log: [] });
     const group = groups.get(key);
     group.lines.push(w.line);
@@ -5333,15 +5368,20 @@ function homeLineFaults(workers, lineLabels = {}) {
   }
   const NEXT = { refused: "运行 node cli/doctor.mjs 找出原因，修好后在面板启动执行线",
                  crash: "运行 node cli/status.mjs --log 查看最近日志，修好后在面板启动执行线",
-                 pending: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线" };
-  return [...groups.values()].map((g) => ({ tone: g.kind === "pending" ? "warn" : "bad", where: "执行线",
-    what: g.lines.map(label).join("、") + " " + g.what, next: NEXT[g.kind], lines: g.lines, log: g.log }));
+                 pending: "稍后再运行 node cli/status.mjs；仍未运行就在面板重新启动执行线",
+                 pool: "无需操作，额度恢复后看板自动启动" };
+  return [...groups.values()].map((g) => ({ tone: g.kind === "pending" || g.kind === "pool" ? "warn" : "bad", where: "执行线",
+    what: g.lines.map(label).join("、") + " " + g.what, next: NEXT[g.kind], lines: g.lines, log: g.log, ...(g.kind === "pool" ? { go: null } : {}) }));
 }
-/** 上次故障的一句话，不含时刻；字段不合格返回 null。说法与命令行 status 的「上次故障」相同。 */
+/** 上次故障的一句话，不含时刻；字段不合格返回 null。只写发生了什么，可能的原因在 homeLastFaultTip。 */
 function homeLastFault(f) {
   if (!f || typeof f !== "object" || typeof f.kind !== "string" || !f.at) return null;
   return f.kind === "exit" ? (f.exit_code == null ? "看板服务被结束" : "看板服务退出，退出码 " + f.exit_code)
-    : f.kind === "restart_loop" ? "看板连续请求重启，守护停止重起" : "看板运行中断，可能是关机、断电或进程被结束";
+    : f.kind === "restart_loop" ? "看板连续重启，已停止自动重启" : "看板运行中断";
+}
+/** 上次故障那一行的悬停说明：运行中断时写可能的原因；其余没有。 */
+function homeLastFaultTip(f) {
+  return homeLastFault(f) && f.kind !== "exit" && f.kind !== "restart_loop" ? "可能是关机、断电或进程被结束" : "";
 }
 /** Where one task stands for the person looking: which list, its state, the next step.
  *  `t.hb` is hbClass(t) for this board's cards; `t.progress_blockers` is the server's own
@@ -5503,8 +5543,8 @@ function homeStatus({ localName = "本机", nodes = null, fleetError = null, hea
                     action: { path: act.path, body: act.body || {}, confirm: act.confirm || "", label: act.label || "执行" } });
     else alerts.push({ tone: "warn", where: "看板设置", what, next: "到「设置」页完成上手引导", go: "settings" });
   }
-  // 执行线故障接在其余告警之后；go = 首页这一条右边的次按钮去设置页的执行线。
-  for (const fault of homeLineFaults(workers, lineLabels)) alerts.push({ ...fault, go: "lines" });
+  // 执行线故障接在其余告警之后；go = 首页这一条右边的次按钮去设置页的执行线（故障自己写了 go 的照它的）。
+  for (const fault of homeLineFaults(workers, lineLabels)) alerts.push({ go: "lines", ...fault });
   const count = 1 + remotes.length;
   const tone = alerts.some((a) => a.tone === "bad") ? "bad" : alerts.length ? "warn" : "ok";
   const names = ["本机 " + here, ...remotes.map((n) => homeName(n.display_name) + " " + (HOME_SYNC[n.connection_state] || ["", "状态未知"])[1])];
@@ -5535,7 +5575,8 @@ function sideFallback(t, { lineName = (l) => l, wfLabels = {}, lineState = null,
   if (t.status === "done") return { state: "已完成", next: "无需操作" };
   if (t.kind === "goal" && children) {
     if (!children.total) return { state: "还没有子任务", next: "重新拆解" };
-    return { state: "子任务 " + children.done + "/" + children.total + " 完成", next: children.done < children.total ? "推进未完成的子任务" : "等待目标结算" };
+    // 子任务全部完成后目标由看板自己收尾,不用人动手。
+    return { state: "子任务 " + children.done + "/" + children.total + " 完成", next: children.done < children.total ? "推进未完成的子任务" : "无需操作" };
   }
   if (t.status === "not_started") {
     const held = (Array.isArray(t.progress_blockers) ? t.progress_blockers : [])
@@ -5677,6 +5718,10 @@ function fleetAct(label, projectId, command, args, review, tech, extra) {
     note: false, required: false, disabled: false, ...extra };
 }
 const fleetTask = (r) => ["任务说明：" + (r.description || "未填写"), "验收条件：" + (r.acceptance || "未填写")];
+/** 这台电脑的身份换过之后留下的旧记录:只读。代次本身只在「技术信息」里。 */
+const FLEET_STALE = "这台电脑重新登记前的旧记录";
+/** 绑定还没双方确认时的两步:核对弹窗里写按下去会发生什么。 */
+const FLEET_REAPPROVE = "重新提交本机对这次绑定的确认；对方电脑仍须独立确认。", FLEET_WITHDRAW = "撤回这次绑定申请，对方电脑不再需要确认。";
 /** 收到的委派:接收、拒绝。参数同全局视图「待接收委派」。 */
 function fleetDelegationActs(r, name) {
   const make = (label, decision, hint) => fleetAct(label, r.project_id, "decide_delegation", { delegation_id: r.delegation_id, expected_version: r.version, decision },
@@ -5698,7 +5743,7 @@ function fleetInbox(kind, r, nodeNames = {}) {
   const name = (id) => homeName(nodeNames[id]), from = (id) => " · 来自「" + name(id) + "」";
   const done = (state) => ({ state, next: "无需操作", primary: null, secondary: null });
   if (!r) return done("这件事已处理");
-  if (!r.identity_current) return done("旧节点代次的记录");
+  if (!r.identity_current) return done(FLEET_STALE);
   if (kind === "incoming") {
     if (r.state !== "received") return done("这件事已处理");
     const [accept, reject] = fleetDelegationActs(r, name);
@@ -5720,7 +5765,7 @@ function fleetStep(links, nodeNames = {}) {
   const cur = (rows) => rows.filter((r) => r.identity_current);
   const outgoing = cur(links.outgoing), incoming = cur(links.incoming), proposals = cur(links.proposals), bindings = cur(links.bindings), results = cur(links.results);
   if (!outgoing.length && !incoming.length && !proposals.length && !bindings.length)
-    return { ...out, state: "旧节点代次的记录", next: "无需操作", readonly: true };
+    return { ...out, state: FLEET_STALE, next: "无需操作", readonly: true };
   const name = (id) => homeName(nodeNames[id]), who = (id) => "「" + name(id) + "」";
   const others = [], more = [];
   const wait = (id, what) => ({ lane: "running", state: "等待" + who(id) + what, next: "无需操作" });
@@ -5780,9 +5825,9 @@ function fleetStep(links, nodeNames = {}) {
         [["关系", binding.relation_id], ["来源终端", binding.source_node_id], ["目标终端", binding.target_node_id]], extra);
       if (binding.state === "prepared") {
         const proposal = rel("发送绑定提案", "send_binding_proposal", "交给对方电脑独立核对任务合同。");
-        if (!binding.source_approved) step = turn("绑定待本机确认", rel("恢复本方确认", "approve_binding", "未知结果须先恢复原确认请求。"));
+        if (!binding.source_approved) step = turn("绑定待本机确认", rel("确认绑定", "approve_binding", FLEET_REAPPROVE));
         else { step = wait(peer, "确认绑定"); more.push(rel("查询对端回执", "poll_binding", "读取双方确认的状态。"), { ...proposal, label: "重发" }); }
-        others.push(rel("撤回未确认绑定", "cancel_binding", "未知结果须先恢复原确认请求。"));
+        others.push(rel("撤回未确认绑定", "cancel_binding", FLEET_WITHDRAW));
       } else if (binding.state === "confirmed" && binding.cancellation_state && binding.cancellation_state !== "stopped") {
         step = wait(peer, "停止回执");
         more.push(rel("查询对端回执", "poll_cancellation", "读取对方电脑的停止回执。"), rel("重发", "resend_cancellation", "按原内容重发取消请求。"));
@@ -5872,7 +5917,7 @@ function fleetStep(links, nodeNames = {}) {
     if (binding.state === "prepared") {
       step = wait(source, "确认绑定");
       more.push(rel("查询对端回执", "poll_binding", "读取双方确认的状态。"));
-      others.push(rel("恢复本方确认", "approve_binding", "未知结果须先恢复原确认请求。"), rel("撤回未确认绑定", "cancel_binding", "未知结果须先恢复原确认请求。"));
+      others.push(rel("重新提交本机确认", "approve_binding", FLEET_REAPPROVE), rel("撤回未确认绑定", "cancel_binding", FLEET_WITHDRAW));
     } else if (binding.cancellation_state && binding.cancellation_state !== "stopped")
       step = turn("来源电脑请求取消", rel("核对本机停止证明", "progress_cancellation", "核对进程和下游回执；收到请求不等于已停止。", { relation_id: binding.relation_id }));
     else if (binding.cancellation_state === "stopped") step = quiet("委派已停止");
@@ -5882,7 +5927,7 @@ function fleetStep(links, nodeNames = {}) {
       const release = rel("放行此任务", "release_delegation", "放行后，本机调度器可按角色和预算领取。", { relation_id: binding.relation_id, expected_version: binding.task_version },
         { disabled: !binding.execution_authorized });
       step = binding.execution_authorized ? turn("待放行", release, "核对后放行")
-        : { lane: "running", state: "待放行 · 等待双方就绪", next: "无需操作", primary: release };
+        : { lane: "running", state: "待放行 · 等待双方就绪", why: "双方就绪、当前权限或本地结构尚未满足放行条件", next: "无需操作", primary: release };
     } else if (binding.task_status === "waiting" || binding.task_status === "done") {
       const res = results.find((r) => r.side === "target") || null;
       const seal = rel("封存并回传候选", "prepare_result", "封存当前任务版本与实际运行证据；来源电脑仍须验证和验收。", { relation_id: binding.relation_id, expected_version: binding.task_version });
@@ -6157,10 +6202,12 @@ function sideCard(){
   if (sideRef.uid) for (const t of tasks) if (t.task_uid === sideRef.uid) return t;
   return null;
 }
-function sideHash(uid){
+/** 地址栏记住侧栏开着什么:task = 一张卡;action = 首页点开的一件跨机事项(种类:编号),本机没有对应的卡。 */
+function sideHash(uid, action = null){
   try {
     const p = new URLSearchParams(location.hash.slice(1));
     if (uid) p.set("task", uid); else p.delete("task");
+    if (action) p.set("action", action.kind + ":" + action.id); else p.delete("action");
     const rest = p.toString();
     history.replaceState(null, "", location.pathname + location.search + (rest ? "#" + rest : ""));
   } catch {}
@@ -6168,7 +6215,7 @@ function sideHash(uid){
 function openSide(ref){
   sideRef = ref; sideSig = ""; sideDetail = null;
   document.getElementById("task-side").hidden = false;
-  sideHash(sideCard()?.task_uid || ref.uid || null);
+  sideHash(sideCard()?.task_uid || ref.uid || null, ref.action || null);
   renderSide();
   sideUsageLoad(sideCard(), true);   // 用量:打开时取一次
   document.getElementById("task-side-close").focus({ preventScroll: true });
@@ -6242,15 +6289,15 @@ function sideBrief(t, step, item, ctlBox, ctl, { row = null, fleet = null } = {}
     box.append(line);
   }
   // 轮到本机的跨机步骤:就这一个主按钮;返工、拒绝这类次按钮排在它后面。
-  const fs = fleet?.step, beside = fs && fs.lane === "mine" ? fs.more : [];
+  // 没轮到本机而这一步有按钮,只有委派来的卡条件没满足时那个禁用的放行:这一行不叫「要你做什么」,
+  // 不标强调色、不作主按钮;没满足的原因在「现在」那一行(step.why)。
+  const fs = fleet?.step, turn = fs?.lane === "mine", beside = turn ? fs.more : [];
   if (fs && (fs.primary || beside.length)) {
     const line = homeEl("div", undefined, "side-brief-row"), acts = homeEl("div", undefined, "side-acts");
-    if (!fs.primary?.disabled) line.dataset.tone = "need";
-    if (fs.primary) acts.append(sideActButton(fs.primary, "pri"));
+    if (turn) line.dataset.tone = "need";
+    if (fs.primary) acts.append(sideActButton(fs.primary, turn ? "pri" : ""));
     for (const a of beside) acts.append(sideActButton(a));
-    const stack = homeEl("div", undefined, "side-brief-stack"); stack.append(acts);
-    if (fs.primary?.disabled) stack.append(homeEl("p", "双方就绪、当前权限或本地结构尚未满足放行条件", "side-brief-v side-brief-next"));
-    line.append(homeEl("span", "要你做什么", "side-brief-k"), stack);
+    line.append(homeEl("span", turn ? "要你做什么" : "放行", "side-brief-k"), acts);
     box.append(line);
   } else if (t && ctlBox && ctl?.primary) {
     const line = homeEl("div", undefined, "side-brief-row");
@@ -6346,7 +6393,7 @@ function sideTaskStep(t, item){
     if (!f) return base;
     // 有委派记录:跨机流程说话时用它的状态与下一步;hold = 协议持有,「通过」不作主按钮。
     const hold = !!(base.hold || f.hold);
-    return f.lane ? { lane: f.lane, state: f.state, next: f.next, tone: "", rank: base.rank, hold, ...(f.go ? { go: f.go } : {}) } : { ...base, hold };
+    return f.lane ? { lane: f.lane, state: f.state, next: f.next, tone: "", rank: base.rank, hold, ...(f.go ? { go: f.go } : {}), ...(f.why ? { why: f.why } : {}) } : { ...base, hold };
   }
   // 目标卡:状态写子任务完成数,下面列还没完成的子卡(与「关联任务」同一份子任务组)。
   const kids = sideRelations(t, tasks).find((g) => g.label === "子任务")?.items || [];
@@ -6407,10 +6454,16 @@ function updateSideLive(){
   sideNowFill({ state: el("task-side-state"), why: el("task-side-why"), next: el("task-side-next"), go: el("task-side-go"),
                 beat: el("task-side-beat"), related: el("task-side-related") }, t, item, sideTaskStep(t, item));
 }
+/** 侧栏给这张卡哪些控件、是不是主按钮。协议持有这张卡,或跨机流程有自己的这一步:卡自己的「通过」「放行」不作主按钮。
+ *  整栏重建(renderSide)和局部刷新(sideReleaseNeed)都用这一个判断,两处不各算各的。 */
+function sideOwnControls(t, step, fs){
+  const own = sideControls(t, { remote: !t, mine: step?.lane === "mine" });
+  return step?.hold || fs?.primary ? { ...own, primary: false } : own;
+}
 /** 放行核对区是不是「要你做什么」:这张卡只差放行(首页同一个判断),按钮就是核对区里原有的那个。 */
 function sideReleaseNeed(t){
-  if (sideProtocolRelease(t)) return false;
-  const step = sideTaskStep(t, null), ctl = sideControls(t, { mine: step?.lane === "mine" });
+  if (!t || sideProtocolRelease(t)) return false;
+  const ctl = sideOwnControls(t, sideTaskStep(t, null), sideFleet(t)?.step || null);
   return ctl.kind === "release" && ctl.primary;
 }
 /** 派发步骤条这一节:常显,在给人看的小块下面。节首写交给哪条线,下面五步条;逐项记录折叠,
@@ -6423,8 +6476,9 @@ function sideExecution(t, need = false, protocol = false){
   const checking = t.status === "not_started" && !t.released, goal = t.kind === "goal";
   if (need) { section.dataset.tone = "need"; section.append(homeEl("p", "要你做什么", "side-brief-k")); }
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
+  // 主按钮的样子只在这一节是「要你做什么」时给;还有别的阻塞或跨机流程有自己的这一步时,它是普通按钮。
   const releaseButton = (label) => {
-    const release = homeEl("button", label, "pri"); release.type = "button";
+    const release = homeEl("button", label, need ? "pri" : ""); release.type = "button";
     release.dataset.a = "release"; release.dataset.id = String(t.id); release.dataset.version = String(t.aggregate_version);
     release.dataset.executionProfileDigest = t.execution_profile?.profile_digest || "";
     release.dataset.verificationRepairDigest = t.verification_repair_digest || "";
@@ -6433,7 +6487,7 @@ function sideExecution(t, need = false, protocol = false){
   };
   if (goal) {
     section.append(homeEl("h3", checking ? "放行前核对子任务" : "放行记录"));
-    if (checking) section.append(homeEl("p", "先核对子任务；按两次后才会放行。", "side-state"), releaseButton("放行这个目标"));
+    if (checking) section.append(homeEl("p", "先核对子任务。", "side-state"), releaseButton("放行这个目标"));
     else section.append(homeEl("p", !t.released ? "尚未放行" : trace.released_at ? "最近放行 " + localTime(trace.released_at) : "已放行，时间未记录", "side-state"));
     return section;
   }
@@ -6474,7 +6528,7 @@ function sideExecution(t, need = false, protocol = false){
   }
   if (checking && protocol) section.append(homeEl("p", "这张卡由委派放行，按钮在上面。", "side-state"));
   else if (checking) {
-    section.append(homeEl("p", "先核对以上目录、通道、权限与预算；按两次后才会放行。", "side-state"), releaseButton("放行此任务"));
+    section.append(homeEl("p", "先核对以上目录、通道、权限与预算。", "side-state"), releaseButton("放行此任务"));
     if (t.execution_profile?.configuration_changed) section.append(homeEl("p", "执行配置已变化，请重新核对以上配置后再放行；第二次确认不会自动接受另一份配置。", "side-state"));
     if (t.execution_profile?.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
   }
@@ -6554,7 +6608,7 @@ function sideProtocol(t){
   }
   for (const a of receipts) box.append(homeEl("p", word(names.commands, a.command, "其他操作") + " · " + word(names.actions, a.state, "状态待核实") +
     (a.last_error_code ? " · 错误码 " + a.last_error_code : ""), "side-state"));
-  if (stale) box.append(homeEl("p", stale + " 条旧节点代次的记录，仅供查看", "side-state"));
+  if (stale) box.append(homeEl("p", stale + " 条" + FLEET_STALE + "，仅供查看", "side-state"));
   if (!others.length && !receipts.length && !stale) box.append(homeEl("p", "还没有协议记录", "side-state"));
   return box;
 }
@@ -6642,9 +6696,8 @@ function renderSide(){
   if (!t && sideRef.uid) sideLoadDetail(sideRef.uid);
   const detail = !t && sideDetail?.uid === sideRef.uid ? sideDetail : null;
   const fleet = sideFleet(t), fs = fleet?.step || null;
-  const step = sideTaskStep(t, item), own = sideControls(t, { remote: !t, mine: step?.lane === "mine" });
-  // 协议持有这张卡,或跨机流程有自己的下一步:「通过」不作主按钮,收进「仍要手动处理」。
-  const ctl = step?.hold || fs?.primary ? { ...own, primary: false } : own;
+  // 协议持有这张卡,或跨机流程有自己的下一步:「通过」不作主按钮,收进「仍要手动处理」(sideOwnControls)。
+  const step = sideTaskStep(t, item), ctl = sideOwnControls(t, step, fs);
   const goal = t?.kind === "goal" ? [tasks.some((x) => x.parent_id === t.id), REVIEW_LINES.length] : null;
   const act = (a) => a && [a.command, a.args, a.disabled];
   const sig = JSON.stringify(t ? [t.id, t.status, t.waiting_for, t.aggregate_version, t.human_gate, t.result,
@@ -6670,7 +6723,7 @@ function renderSide(){
   if (ctlBox && (step?.hold || fs?.primary)) for (const b of ctlBox.querySelectorAll("button")) b.classList.remove("pri");
   out.push(sideBrief(t, step, item, ctlBox, ctl, { row, fleet }));
   if (t) {
-    out.push(sideExecution(t, ctl.kind === "release" && ctl.primary && !sideProtocolRelease(t), sideProtocolRelease(t)));
+    out.push(sideExecution(t, sideReleaseNeed(t), sideProtocolRelease(t)));
     // 用量:有读数才有这一节。它不在 sideSig 里,读数到了由 sideUsagePlace 局部放进来。
     const usage = sideUsageSection(t);
     if (usage) out.push(usage);
@@ -6715,7 +6768,12 @@ function renderSide(){
         const ev = homeEl("details", undefined, "side-sec"), inner = homeEl("div", undefined, "side-evidence");
         ev.id = "task-side-evidence";
         ev.append(homeEl("summary", "证据"), inner);
-        ev.addEventListener("toggle", () => { if (ev.open && !inner.dataset.loaded) { inner.dataset.loaded = "1"; fleetApi.evidence(t.task_uid, inner); } });
+        // 展开时才读;读失败把标记清掉,下次展开再读。
+        ev.addEventListener("toggle", async () => {
+          if (!ev.open || inner.dataset.loaded) return;
+          inner.dataset.loaded = "1";
+          if (await fleetApi.evidence(t.task_uid, inner) === false) delete inner.dataset.loaded;
+        });
         out.push(ev);
       }
       out.push(sideProtocol(t));
@@ -6727,8 +6785,15 @@ function renderSide(){
     far.id = "task-side-detail";
     far.append(homeEl("summary", "给执行者看的详细说明"));
     const v = detail?.value;
-    if (!v) far.append(homeEl("p", detail?.error ? "详细说明读取失败" : "正在读取", "side-state"));
-    else {
+    if (!v) {
+      far.append(homeEl("p", detail?.error ? "详细说明读取失败" : "正在读取", "side-state"));
+      // 读失败不自己反复重读:给一个「重试」,按了再读一次。
+      if (detail?.error) {
+        const again = homeEl("button", "重试"); again.type = "button"; again.dataset.sideDetailRetry = "1";
+        again.addEventListener("click", () => { sideDetail = null; sideSig = ""; renderSide(); });
+        far.append(again);
+      }
+    } else {
       let n = 0;
       for (const [title, text] of [["任务说明", v.description], ["验收条件", v.acceptance], ["执行结果", v.result], ["裁定记录", v.verdict_note]]) {
         const sec = sideSection(title, text); if (sec) { far.append(sec); n++; }
@@ -6766,10 +6831,13 @@ function renderSideAction(){
   if (sig === sideSig) return;
   sideSig = sig;
   const body = document.getElementById("task-side-body"), out = [];
-  document.getElementById("task-side-title").textContent = r?.subject || item?.title || "跨机任务";
+  // 交付记录只带编号,标题在绑定上;刷新后从地址栏重开时没有首页那一条(item),照样取得到。
+  const bound = r && a.kind === "result" ? (homeActions?.bindings || []).find((x) => x.relation_id === r.relation_id) : null;
+  document.getElementById("task-side-title").textContent = r?.subject || bound?.subject || item?.title || "跨机任务";
   const box = homeEl("section", undefined, "side-brief");
   const line = (label, ...nodes) => { const row = homeEl("div", undefined, "side-brief-row"); row.append(homeEl("span", label, "side-brief-k"), ...nodes); return row; };
-  if (r?.description) box.append(line("要做什么", homeEl("p", r.description, "side-brief-v")));
+  // 「要做什么」与本机卡同一条规矩:只用记录带的 brief,没有就不出这一行;任务说明全文只在下面的折叠区。
+  if (r?.brief) box.append(line("要做什么", homeEl("p", r.brief, "side-brief-v")));
   const state = homeEl("p", inbox.state, "side-brief-v"); state.id = "task-side-state";
   const next = homeEl("p", "下一步：" + inbox.next, "side-brief-v side-brief-next"); next.id = "task-side-next";
   const stack = homeEl("div", undefined, "side-brief-stack"); stack.append(state, next);
@@ -6831,8 +6899,13 @@ async function sideDispatch(t, box){
   box.replaceChildren(...out);
 }
 function sideFromHash(){
-  const ref = new URLSearchParams(location.hash.slice(1)).get("task");
-  if (!ref) return;
+  const hash = new URLSearchParams(location.hash.slice(1)), ref = hash.get("task");
+  if (!ref) {
+    // 首页点开的跨机事项:按 种类:编号 重开;这件事已经处理完的,侧栏写「这件事已处理」。
+    const m = /^(incoming|proposal|result):(.+)$/.exec(hash.get("action") || "");
+    if (m && !(sideRef?.action?.kind === m[1] && sideRef.action.id === m[2])) openSide({ action: { kind: m[1], id: m[2] }, id: null, uid: null, item: null });
+    return;
+  }
   // 纯数字 = 卡号(批准接口给的 /#task=卡号 链接);其余 = 任务的长编号。
   if (/^\d+$/.test(ref)) {
     const id = Number(ref);
@@ -7085,8 +7158,9 @@ function renderHomeViews(){
                   homeEl("span", known ? s.line : "正在读取设备状态…", "hs-text"));
       const rows = [line, ...(known ? s.alerts : []).map((a) => homeAlertRow(a))];
       if (known && faultText) {
-        const last = homeEl("div", "上次故障：" + localTime(fault.at) + " " + faultText, "hs-fault");
-        last.dataset.tone = "quiet"; rows.push(last);
+        const last = homeEl("div", "上次故障：" + localTime(fault.at) + " " + faultText, "hs-fault"), tip = homeLastFaultTip(fault);
+        last.dataset.tone = "quiet"; if (tip) last.title = tip;
+        rows.push(last);
       }
       return rows;
     });
@@ -7431,9 +7505,16 @@ function chatDrawer(open){
   opener.setAttribute("aria-expanded", String(open));
   if (!open && inside && opener.offsetParent) opener.focus({ preventScroll: true });   // 抽屉收起后焦点回到打开它的按钮
 }
+/** 手机上的任务面板(≤620px 盖满顶栏以下):打开时被盖住的对话区和输入区退出 Tab 顺序与读屏(CSS visibility),
+ *  焦点进面板的第一个可点处;收起时焦点回到开关。桌面宽度开关不显示,这里什么都不挪。 */
 function chatWork(open){
+  const toggle = document.getElementById("home-work-toggle"), work = document.getElementById("home-work");
+  const was = chatShell.classList.contains("work-open"), inside = work.contains(document.activeElement);
   chatShell.classList.toggle("work-open", open);
-  document.getElementById("home-work-toggle").setAttribute("aria-expanded", String(open));
+  toggle.setAttribute("aria-expanded", String(open));
+  if (!toggle.offsetParent || open === was) return;
+  if (open) (work.querySelector("button:not([disabled]), [tabindex]:not([tabindex='-1'])") || toggle).focus({ preventScroll: true });
+  else if (inside || !document.activeElement || document.activeElement === document.body) toggle.focus({ preventScroll: true });
 }
 /** 发一条消息。新对话 = 建对话并带上第一条;text 给了就发它(重试上一轮),不动输入框里正在写的字。 */
 async function chatSend(text){
@@ -7844,7 +7925,7 @@ setInterval(refresh, 15000);    // fallback poll: a dead SSE never leaves a stal
 
  const actionDialog=$("fleet-action-dialog"),actionBody=$("fleet-action-body"),actionSubmit=$("fleet-action-submit"),actionStatus=$("fleet-action-status");
  const actionStates={pending:"已保存 · 待处理",applied:"本机已记录",acknowledged:"协议回执已核验",retry_pending:"等待重连重发",blocked:"请求受阻"};
- const commandNames={prepare_integration:"准备来源合并",apply_integration:"合并到来源引用",reconcile_integration:"核对合并结果",check_integration:"复核来源提交",prepare_completion:"确认候选验收",send_completion:"发送验收决定",register_completion:"提交本端结案确认",poll_completion:"查询双端结案",settle_completion:"完成本端结案",resume_delivery:"恢复原交付操作",register_artifact_target:"授权文件接收",prepare_artifact:"准备实际文件包",send_artifact:"发送或续传文件",verify_artifact:"核验接收内容",prepare_verification:"准备独立检查",run_verification:"执行独立检查",reconcile_verification:"恢复检查回执",create_delegation:"发起委派",decide_delegation:"处理接收委派",resend_delegation:"重发委派",poll_delegation:"查询委派回执",request_cancellation:"请求取消",progress_cancellation:"核对本机停止",resend_cancellation:"重发取消",poll_cancellation:"查询停止回执",prepare_result:"封存并回传候选",reject_result:"要求返工",resend_result:"重传候选",poll_result:"查询验收决定",release_delegation:"放行本机任务",publish_topology:"登记当前结构",refresh_registration:"刷新登记状态",resend_topology:"恢复原结构提交",cancel_topology:"取消结构提交",propose_binding:"准备来源绑定",accept_binding_proposal:"接受绑定提案",decline_binding_proposal:"拒绝绑定提案",approve_binding:"恢复本方确认",poll_binding:"查询双方确认",withdraw_binding:"撤回绑定",cancel_binding:"撤回未确认绑定",send_binding_proposal:"发送绑定提案",send_source_ready:"发送来源就绪证明"};
+ const commandNames={prepare_integration:"准备来源合并",apply_integration:"合并到来源引用",reconcile_integration:"核对合并结果",check_integration:"复核来源提交",prepare_completion:"确认候选验收",send_completion:"发送验收决定",register_completion:"提交本端结案确认",poll_completion:"查询双端结案",settle_completion:"完成本端结案",resume_delivery:"恢复原交付操作",register_artifact_target:"授权文件接收",prepare_artifact:"准备实际文件包",send_artifact:"发送或续传文件",verify_artifact:"核验接收内容",prepare_verification:"准备独立检查",run_verification:"执行独立检查",reconcile_verification:"恢复检查回执",create_delegation:"发起委派",decide_delegation:"处理接收委派",resend_delegation:"重发委派",poll_delegation:"查询委派回执",request_cancellation:"请求取消",progress_cancellation:"核对本机停止",resend_cancellation:"重发取消",poll_cancellation:"查询停止回执",prepare_result:"封存并回传候选",reject_result:"要求返工",resend_result:"重传候选",poll_result:"查询验收决定",release_delegation:"放行本机任务",publish_topology:"登记当前结构",refresh_registration:"刷新登记状态",resend_topology:"恢复原结构提交",cancel_topology:"取消结构提交",propose_binding:"准备来源绑定",accept_binding_proposal:"接受绑定提案",decline_binding_proposal:"拒绝绑定提案",approve_binding:"提交本机确认",poll_binding:"查询双方确认",withdraw_binding:"撤回绑定",cancel_binding:"撤回未确认绑定",send_binding_proposal:"发送绑定提案",send_source_ready:"发送来源就绪证明"};
  let actionDraft=null,actionBusy=false;const actionFolds=new Map();
  function actionButton(label,projectId,command,args,review,{note=false,required=false,tech=null}={}){
   const b=el("button",label);b.type="button";b.addEventListener("click",()=>openAction(label,projectId,command,args,review,{note,required,tech}));return b;
@@ -8000,7 +8081,7 @@ setInterval(refresh, 15000);    // fallback poll: a dead SSE never leaves a stal
     const subject=r.subject||(label==="交付候选"?v.bindings.find(b=>b.relation_id===r.relation_id)?.subject:"")||"";
     card.append(el("p",subject||r.result_id||r.relation_id,"fleet-task-title"),el("p",r.project_id+" · "+(label==="待确认绑定"&&r.state==="pending"?"待本方确认":copyLabel({...historyStates,accepted:"已验收",delivered:"已送达 · 待决定"},r.state)),"fleet-note"));
     const review=subject||"跨机任务",tech=[["委派",r.delegation_id],["关系",r.relation_id],["候选",r.result_id]].filter(x=>x[1]);
-    if(!r.identity_current){card.append(el("p","旧节点代次，仅供查看。","fleet-note fleet-warning"));}
+    if(!r.identity_current){card.append(el("p",FLEET_STALE+"，仅供查看。","fleet-note fleet-warning"));}
     else if(label==="待接收委派"){
      tech.push(["来源终端",r.source_node_id]);
      if(r.state==="received")for(const[decision,text]of [["accept","接收为待确认任务"],["reject","拒绝委派"]])bar.append(actionButton(text,r.project_id,"decide_delegation",{delegation_id:r.delegation_id,expected_version:r.version,decision},review+"\n来源电脑："+pcName(r.source_node_id)+"\n任务说明："+r.description+"\n验收条件："+r.acceptance,{note:true,tech}));
@@ -8018,7 +8099,7 @@ setInterval(refresh, 15000);    // fallback poll: a dead SSE never leaves a stal
      tech.push(["来源终端",r.source_node_id],["目标终端",r.target_node_id]);
      const relationReview=review+"\n来源电脑："+pcName(r.source_node_id)+"\n执行电脑："+pcName(r.target_node_id);
      if(r.state==="prepared"){
-      for(const[command,text]of [["approve_binding","恢复本方确认"],["poll_binding","查询双方确认"],["cancel_binding","撤回未确认绑定"]])bar.append(actionButton(text,r.project_id,command,{id:r.relation_id},relationReview+"\n未知结果须先恢复原确认请求。",{tech}));
+      for(const[command,text,hint]of [["approve_binding","重新提交本机确认",FLEET_REAPPROVE],["poll_binding","查询双方确认","读取双方确认的状态。"],["cancel_binding","撤回未确认绑定",FLEET_WITHDRAW]])bar.append(actionButton(text,r.project_id,command,{id:r.relation_id},relationReview+"\n"+hint,{tech}));
      }
      if(r.side==="source"&&["prepared","confirmed"].includes(r.state)){
       if(r.source_approved)bar.append(actionButton("发送绑定提案",r.project_id,"send_binding_proposal",{id:r.relation_id},relationReview+"\n交给接收端独立核对任务合同。",{tech}));
@@ -8122,11 +8203,11 @@ setInterval(refresh, 15000);    // fallback poll: a dead SSE never leaves a stal
  $("fleet-refresh").addEventListener("click",load);$("fleet-filters").addEventListener("submit",e=>{e.preventDefault();limit=1000;load();});owner.addEventListener("change",load);project.addEventListener("change",load);$("fleet-more").addEventListener("click",()=>{limit=Math.min(limit*2,10000);load();});
  function linkedTask(){const uid=new URLSearchParams(location.hash.slice(1)).get("fleet-task");if(!uid)return;openFleet();if(detail.open)detail.close();showTask(uid);}
  window.addEventListener("hashchange",linkedTask);linkedTask();
- // 侧栏的「证据」节:同一套分页,存活判断换成这一节还在不在页面上。
+ // 侧栏的「证据」节:同一套分页,存活判断换成这一节还在不在页面上。读失败返回 false,调用方下次展开再读。
  async function taskEvidence(uid,container){
   container.replaceChildren(el("p","正在读取…","fleet-note"));
-  try{const t=await request("/api/fleet/task?uid="+encodeURIComponent(uid));if(!container.isConnected)return;container.replaceChildren();evidenceAlive=()=>container.isConnected;evidence(t.evidence,container);}
-  catch(e){if(container.isConnected)container.replaceChildren(el("p",copyError(e),"fleet-note fleet-warning"));}
+  try{const t=await request("/api/fleet/task?uid="+encodeURIComponent(uid));if(!container.isConnected)return true;container.replaceChildren();evidenceAlive=()=>container.isConnected;evidence(t.evidence,container);return true;}
+  catch(e){if(container.isConnected)container.replaceChildren(el("p",copyError(e),"fleet-note fleet-warning"));return false;}
  }
  fleetApi={showTask,open:openFleet,act:openAction,evidence:taskEvidence,names:{history:historyStates,commands:commandNames,actions:actionStates}};
 })();
