@@ -2584,7 +2584,8 @@ const asOperator = (req, res) => {
 /** 操作员强制释放锁之后的记账:控制台一行、流水一条。协作接口与批准接口共用。 */
 function noteForceRelease(lock) {
   console.log(`协作锁 ${lock.resource} 被操作员强制释放(持有者 ${lock.holder}):${lock.release_reason}`);
-  coord.appendJournal(db, "operator", { kind: "lock.force_release", body: `强制释放 ${lock.resource}:${lock.release_reason}` });
+  // 理由可以是多行;流水一行一件,所以折成一行再记。
+  coord.appendJournal(db, "operator", { kind: "lock.force_release", body: approvals.oneLine(`强制释放 ${lock.resource}:${lock.release_reason}`, 300) });
 }
 async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();

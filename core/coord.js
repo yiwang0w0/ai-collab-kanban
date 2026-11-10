@@ -18,14 +18,15 @@ const LOCK_MAX_MIN = 1440;
 const PURPOSE_MAX = 120;
 const REASON_MAX = 200;
 // 事件流水:只追加,一行一件。正文不超过 300 字;产物按类型校验格式。
+// 正文、锁用途、状态各项与 url / path 产物都不接受换行、控制字符与双向控制符(URL 解析器会吞掉换行、把 ESC 编码掉而不报错,所以另查原始串)。
 const JOURNAL_BODY_MAX = 300;
 const JOURNAL_KIND_RE = /^[a-z][a-z0-9_.-]{0,31}$/;
 const ARTIFACT_MAX = 20;
 const ARTIFACT_CHECK = Object.freeze({
   sha256: (v) => /^[0-9a-f]{64}$/.test(v),
   commit: (v) => /^[0-9a-f]{7,40}$/.test(v),
-  path: (v) => v.length > 0 && v.length <= 260 && v.trim() === v && !/[\u0000-\u001f\u007f]/.test(v),
-  url: (v) => { try { const u = new URL(v); return ["http:", "https:"].includes(u.protocol) && v.length <= 500 && !u.username && !u.password; }
+  path: (v) => v.length > 0 && v.length <= 260 && v.trim() === v && !hasUnsafeText(v),
+  url: (v) => { try { const u = new URL(v); return ["http:", "https:"].includes(u.protocol) && v.length <= 500 && !u.username && !u.password && !hasUnsafeText(v); }
                catch { return false; } },
 });
 // 交接包里 done / next 各自的字数预算。超出预算的项整项换成指向 full_status 的指针,不从中间截断。
@@ -136,6 +137,7 @@ function setStatus(db, executorId, body = {}, now = Date.now()) {
   const current = body.current == null ? "" : body.current;
   if (typeof current !== "string") throw err(ERR.BAD_INPUT, "current 必须是字符串");
   if (chars(current) > L.current) over("current 字数", L.current, chars(current));
+  if (hasUnsafeText(current)) throw err(ERR.BAD_INPUT, "current 不能含换行、控制字符或双向控制符,未写入");
   const list = (name, max) => {
     const v = body[name] == null ? [] : body[name];
     if (!Array.isArray(v)) throw err(ERR.BAD_INPUT, `${name} 必须是字符串数组`);
@@ -143,6 +145,7 @@ function setStatus(db, executorId, body = {}, now = Date.now()) {
     v.forEach((x, i) => {
       if (typeof x !== "string" || !x.trim()) throw err(ERR.BAD_INPUT, `${name}[${i}] 必须是非空字符串`);
       if (chars(x) > L.item) over(`${name}[${i}] 字数`, L.item, chars(x));
+      if (hasUnsafeText(x)) throw err(ERR.BAD_INPUT, `${name}[${i}] 不能含换行、控制字符或双向控制符,未写入`);
     });
     return v;
   };
@@ -222,6 +225,7 @@ function acquire(db, executorId, { resource, minutes, purpose } = {}, now = Date
   const why = String(purpose ?? "").trim();
   if (!why) throw err(ERR.BAD_INPUT, "加锁必须写用途 purpose");
   if (chars(why) > PURPOSE_MAX) throw err(ERR.BAD_INPUT, `用途最多 ${PURPOSE_MAX} 字`);
+  if (hasUnsafeText(why)) throw err(ERR.BAD_INPUT, "用途写成一行,不能含换行、控制字符或双向控制符");
   try {
     const r = db.prepare("INSERT INTO coord_locks (resource, holder, purpose, started_at, expected_end) VALUES (?,?,?,?,?)")
       .run(res, String(executorId), why, now, Math.round(now + mins * 60000));
@@ -295,6 +299,7 @@ function appendJournal(db, executor, { kind, body, artifacts } = {}, now = Date.
   if (!JOURNAL_KIND_RE.test(k)) throw err(ERR.BAD_INPUT, `kind 只允许小写字母开头的字母、数字和 . _ -,1-32 位 —— 收到 ${JSON.stringify(kind)}`);
   if (typeof body !== "string" || !body.trim()) throw err(ERR.BAD_INPUT, "body 必须是非空字符串");
   if (chars(body) > JOURNAL_BODY_MAX) throw err(ERR.BAD_INPUT, `正文最多 ${JOURNAL_BODY_MAX} 字,实际 ${chars(body)},未写入`);
+  if (hasUnsafeText(body)) throw err(ERR.BAD_INPUT, "流水一行一件:正文不能含换行、控制字符或双向控制符,未写入");
   const arts = normalizeArtifacts(artifacts);
   const r = db.prepare("INSERT INTO coord_journal (at, executor, kind, body, artifacts) VALUES (?,?,?,?,?)")
     .run(iso(now), String(executor), k, body, JSON.stringify(arts));

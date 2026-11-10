@@ -208,23 +208,23 @@ def coord_cmd(cmd):
             ex = d["executor"]
             if save:
                 with io.open(save, "x", encoding="utf-8") as f: f.write(d["token"] + chr(10))
-                print(f"已登记执行者 {ex['id']}({ex['name']},{ex['kind']});令牌已写入 {save}")
+                print(f"已登记执行者 {ex['id']}({vis(ex['name'])},{ex['kind']});令牌已写入 {save}")
             else:
-                print(f"已登记执行者 {ex['id']}({ex['name']},{ex['kind']})")
+                print(f"已登记执行者 {ex['id']}({vis(ex['name'])},{ex['kind']})")
                 print(f"令牌(只显示这一次):{d['token']}")
         elif sub == "status":
             if arg("--file"):
                 s, d = call("POST", "/api/coord/status", json.loads(readfile(arg("--file"))))
                 if s >= 400: die(s, d)
                 st = d["status"]
-                print(f"状态已写入 {st['updated_at']}:当前 {st['current'] or '-'} · 已完成 {len(st['done'])} 项 · 下一步 {len(st['next'])} 项")
+                print(f"状态已写入 {st['updated_at']}:当前 {vis(st['current'] or '-')} · 已完成 {len(st['done'])} 项 · 下一步 {len(st['next'])} 项")
             else:
                 s, d = call("GET", "/api/coord/executors")
                 if s >= 400: die(s, d)
                 for ex in d["executors"]:
                     st = ex["status"]
-                    print(f"  {ex['id']:<16} {'活动' if ex['active'] else '已停止'} 心跳 {ex['last_seen'] or '-'}  当前 {st['current'] or '-'}"
-                          + (f"  下一步 {st['next'][0]}" if st["next"] else ""))
+                    print(f"  {ex['id']:<16} {'活动' if ex['active'] else '已停止'} 心跳 {ex['last_seen'] or '-'}  当前 {vis(st['current'] or '-')}"
+                          + (f"  下一步 {vis(st['next'][0])}" if st["next"] else ""))
         elif sub == "heartbeat":
             body = lease_arg({})
             if arg("--task"): body["task_id"] = int(arg("--task"))
@@ -249,7 +249,7 @@ def coord_cmd(cmd):
             s, d = call("POST", "/api/coord/locks", {"resource": res, "minutes": mins, "purpose": purpose})
             if s == 409:
                 h = d["holder"]
-                sys.exit(f"409 {res} 已被 {h['holder_name']}({h['holder']})占用:{h['purpose']},开始 {h['started_at']},预计结束 {h['expected_end']}")
+                sys.exit(f"409 {res} 已被 {vis(h['holder_name'])}({h['holder']})占用:{vis(h['purpose'])},开始 {h['started_at']},预计结束 {h['expected_end']}")
             if s >= 400: die(s, d)
             print(f"已加锁 {res},预计结束 {d['lock']['expected_end']}")
         elif sub == "release":
@@ -259,14 +259,14 @@ def coord_cmd(cmd):
             if "--force" in sys.argv: body.update({"force": True, "reason": readfile(arg("--file")).strip()})
             s, d = call("POST", "/api/coord/locks/release", body)
             if s >= 400: die(s, d)
-            print(f"已释放 {res}" + (f"(强制:{d['lock']['release_reason']})" if d["lock"]["released_by"] == "operator" else ""))
+            print(f"已释放 {res}" + (f"(强制:{vis(d['lock']['release_reason'])})" if d["lock"]["released_by"] == "operator" else ""))
         elif sub == "ls":
             s, d = call("GET", "/api/coord/locks" + ("?all=1" if "--all" in sys.argv else ""))
             if s >= 400: die(s, d)
             if not d["locks"]: print("没有被锁的资源")
             for l in d["locks"]:
                 state = "已释放" if l["released_at"] else ("逾期" if l["overdue"] else "持有中")
-                print(f"  {l['resource']:<28} {state:<4} {l['holder']:<16} 预计结束 {l['expected_end']}  {l['purpose']}")
+                print(f"  {l['resource']:<28} {state:<4} {l['holder']:<16} 预计结束 {l['expected_end']}  {vis(l['purpose'])}")
         else:
             sys.exit("lock acquire|release|ls")
     elif cmd == "journal":
@@ -286,8 +286,8 @@ def coord_cmd(cmd):
             s, d = call("GET", "/api/coord/journal" + ("?" + "&".join(qs) if qs else ""))
             if s >= 400: die(s, d)
             for e in d["entries"]:
-                arts = " ".join(f"{a['type']}:{a['value']}" for a in e["artifacts"])
-                print(f"  #{e['id']:<5} {e['at']} {e['executor']:<16} {e['kind']:<16} {e['body']}" + (f"  [{arts}]" if arts else ""))
+                arts = " ".join(vis(f"{a['type']}:{a['value']}") for a in e["artifacts"])
+                print(f"  #{e['id']:<5} {e['at']} {vis(e['executor']):<16} {vis(e['kind']):<16} {vis(e['body'])}" + (f"  [{arts}]" if arts else ""))
         else:
             sys.exit("journal add|ls")
     elif cmd == "handoff":
@@ -298,12 +298,12 @@ def coord_cmd(cmd):
             if not d["handoffs"]: print("没有待接手的交接")
             for h in d["handoffs"]:
                 p = h["package"]
-                print(f"  #{h['id']:<4} {h['executor']:<16} {h['reason']:<16} {h['created_at']}  目标 {p.get('goal') or '-'}"
+                print(f"  #{h['id']:<4} {h['executor']:<16} {h['reason']:<16} {h['created_at']}  目标 {vis(p.get('goal') or '-')}"
                       + (f"  已由 {h['ack']['by']} 接手" if h["ack"] else ""))
         elif sub == "show" and hid:
             s, d = call("GET", f"/api/coord/handoffs/{hid}")
             if s >= 400: die(s, d)
-            print(json.dumps(d["handoff"], ensure_ascii=False, indent=1))
+            print(chr(10).join(vis(line) for line in json.dumps(d["handoff"], ensure_ascii=False, indent=1).split(chr(10))))
         elif sub == "ack" and hid:
             s, d = call("POST", f"/api/coord/handoffs/{hid}/ack", {})
             if s >= 400: die(s, d)
