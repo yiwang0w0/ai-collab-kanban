@@ -42,16 +42,15 @@ const WORKER_FIXTURE = `import worker_loop as w
 w.API_MODE=False; w.PROFILE_MODE=False; w.RUNTIME='codex'; w.MODEL='fixture-model'; w.EFFORT='high'
 w.TOOL_PROFILE='read-only'; w.TIMEOUT=60; w.log=lambda *args,**kwargs:None
 w.gates_lib.append_spend=lambda *args,**kwargs:None
-w.harvest_spawned=lambda *args,**kwargs:([], '')
-w.stash_spawn=lambda *args,**kwargs:''
 w.usage_of=lambda *args,**kwargs:{'calls':None,'in':None,'cc':None,'cr':None,'out':None,'note':'夹具未知用量'}
 class Heartbeat:
  def __init__(self,*args): self.stop=threading.Event(); self.beats=0
  def start(self): pass
 w.Heartbeat=Heartbeat
 
-def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tail='完成本轮修改', evidence='本轮交付', api=False, identity_changed=False):
- case=folder/str(uuid.uuid4()); case.mkdir()
+def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tail='完成本轮修改', evidence='本轮交付', api=False, identity_changed=False, case=None, spawn=None, log_blocked=False):
+ # case 可复用：同一张卡被再次领取时证据目录不变；spawn 是模型首轮写下的派生建议。
+ case=case or folder/str(uuid.uuid4()); case.mkdir(exist_ok=True)
  w.DATA=str(case); w.EVID=str(case/'evidence'); w.LEDGER=str(case/'usage_ledger.jsonl')
  w.os.environ['CODEX_HOME']=str(case/'认证目录')
  w.API_MODE=api; w.PROFILE_MODE=False; w.LAST_ACCT={'sid':'旧账','t0':None,'usage':{'calls':999,'in':999,'cc':999,'cr':999,'out':999}}
@@ -61,9 +60,11 @@ def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tai
     'agent_instance_id':w.AGENT_INSTANCE_ID,'verify_cmd':'fixture-check','subject':'不得重堆的任务背景'}
  repair={'max_rounds':rounds,'legacy_retry':False}
  if policy: t['verification_repair']=repair
- calls=[]; requests=[]; deliveries=[]; verifies=[]; sid=str(uuid.uuid4())
+ calls=[]; requests=[]; deliveries=[]; verifies=[]; posts=[]; sid=str(uuid.uuid4())
  def call(method,path,body=None,**kwargs):
   requests.append((method,path,body))
+  if method=='POST' and path=='/api/tasks':
+   posts.append(body); return 201,{'task':{'id':100+len(posts),'parent_id':7,'released':len(posts)==1}}
   if method=='GET' and path.endswith('/runs'):
    return 200,{'runs':[{'run_id':t['run_id'],'worker':'fixture','agent_instance_id':w.AGENT_INSTANCE_ID,
     'state':'running','runtime':'codex','first_attempt':9,'last_attempt':9,
@@ -85,6 +86,9 @@ def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tai
   # 第二轮刻意不提供用量，旧轮数据必须被清空，不许沿用第一轮的已知值。
   if len(calls)==1: w.LAST_ACCT={'sid':sid,'t0':None,'usage':{'calls':1,'in':12,'cc':0,'cr':0,'out':3,'note':None}}
   if evidence: pathlib.Path(path).write_text(evidence,encoding='utf-8')
+  if spawn and len(calls)==1: pathlib.Path(w.spawn_path_for(7)).write_text(json.dumps(spawn,ensure_ascii=False),encoding='utf-8')
+  # log_blocked：本轮验证日志的路径被一个同名目录占住，宿主写不了日志。
+  if log_blocked: (pathlib.Path(w.EVID)/'verify_runs'/task['run_id']/('attempt-%d-round-%d.log'%(attempt,len(calls)))).mkdir(parents=True,exist_ok=True)
   return rc,tail
  w.run_worker=run_worker
  def verify(task):
@@ -97,7 +101,7 @@ def exercise(outputs, *, rounds=3, policy=True, lost=False, elapsed=0, rc=0, tai
  w.deliver=deliver
  result=w.handle(t,'fixture')
  rows=[json.loads(line) for line in pathlib.Path(w.LEDGER).read_text(encoding='utf-8').splitlines()] if pathlib.Path(w.LEDGER).exists() else []
- return types.SimpleNamespace(result=result,t=t,calls=calls,requests=requests,deliveries=deliveries,rows=rows,verifies=verifies)
+ return types.SimpleNamespace(result=result,t=t,calls=calls,requests=requests,deliveries=deliveries,rows=rows,verifies=verifies,posts=posts)
 red={'ok':False,'out':'AssertionError: 预期 2，实际 1'}
 green={'ok':True,'out':'PASS 本地桩验证'}
 `;
@@ -130,6 +134,61 @@ options='### 方案 A'+chr(10)+fence+'md'+chr(10)+'说明'+chr(10)+'### 判断�
 out=w._trim_options(options,{'id':7})
 assert fence not in out and '完整示例' not in out,out
 assert '省略 1 个完整选项块' in out and '任务 #7 的 verdict_note' in out and '协调者' in out,out
+`);
+});
+
+test("选项块按结构取舍：面板操作说明不送给执行者，超预算时选定方案的正文仍在", () => {
+  python(`import worker_loop as w
+import reviewer_loop as r
+def escalation(reason,a='把迁移回滚到上一版再重跑',b='保留迁移只补索引',summary='两条路都能走，需要你定。'):
+ # 备注用审阅线的真实组装函数生成，不手抄格式。
+ return r.fmt_escalation({'id':7},{'summary':summary,'reason':reason,'recommend':'A','checked':['读过迁移脚本','核过索引定义'],
+  'options':[{'key':'A','title':'回滚迁移','detail':a,'cost':'多一轮执行'},{'key':'B','title':'只补索引','detail':b,'cost':'旧数据不回填'}]})
+def card(note,said='A',choice='A',**extra):
+ head='—— 你的决定(2026-11-04T00:00:00.000Z · 通过 · 回原线继续)——'
+ return {'id':7,'last_verdict':'approve','last_note':said,'decision_choice':choice,'verdict_note':note+chr(10)*2+head+chr(10)*2+said,
+  'history_refs':{'decisions':{'seq':9,'source':'resolve','has_note':True}},**extra}
+def block(*args,**kwargs): return chr(10).join(w.verdict_block(card(*args,**kwargs)))
+# 不超预算：方案与依据都在，面板操作说明不在。
+short=escalation('依据：'+'短理由。'*20)
+assert len(short)<w.OPT_BUDGET and '下面的输入框里' in short and '这不是最终裁定' in short
+out=block(short)
+assert '下面的输入框里' not in out and '这不是最终裁定' not in out and '就此了结' not in out,out
+for kept in ('把迁移回滚到上一版再重跑','保留迁移只补索引','读过迁移脚本','短理由。','两条路都能走'):
+ assert kept in out,(kept,out)
+# 超预算：判断依据整节省略并点名，选定方案的正文、摘要与另一方案仍在。
+long=escalation('依据：'+'很长的理由。'*500)
+assert len(long)>w.OPT_BUDGET
+out=block(long)
+assert '把迁移回滚到上一版再重跑' in out and '保留迁移只补索引' in out and '两条路都能走' in out,out
+assert '很长的理由。' not in out and '下面的输入框里' not in out,out
+assert '判断依据' in out and '省略 1 个完整项' in out and '任务 #7 的 verdict_note' in out and '协调者' in out,out
+# 两个方案放不下：留人选定的那个，另一个整项省略并点名；摘要仍在。
+both=escalation('依据。',a='甲方案正文。'*250,b='乙方案正文。'*250)
+out=block(both,said='B',choice='B')
+assert '乙方案正文。'*250 in out and '甲方案正文。' not in out and '方案 A' in out and '两条路都能走' in out,out
+out=block(both,said='A',choice='方案 A')
+assert '甲方案正文。'*250 in out and '乙方案正文。' not in out and '方案 B' in out,out
+# 没有结构化选择、人只写了一个字母：按它指向的方案优先保留。
+out=block(both,said='B',choice=None)
+assert '乙方案正文。'*250 in out and '甲方案正文。' not in out,out
+# 选定方案自己就超过选项预算：放宽到裁定正文的预算，仍整项保留。
+big=escalation('依据。',a='很大的甲方案。'*400)
+assert w.OPT_BUDGET<len('很大的甲方案。'*400)<w.DEC_BUDGET
+out=block(big)
+assert '很大的甲方案。'*400 in out and '保留迁移只补索引' not in out,out
+# 备注里读不出选定方案时，从卡上的裁定包取它的标题、做法与代价。
+plain='审阅写了很长的散文，没有分节。'*200
+out=block(plain,decision_package={'options':[{'key':'A','title':'包里的甲方案','detail':'按包里的做法执行','cost':'包里的代价'}]})
+assert '包里的甲方案' in out and '按包里的做法执行' in out and '包里的代价' in out and '没有分节' not in out,out
+# 更早各轮裁定不并进选项块：选项按结构保留，更早的裁定另列，放不下的只报条数。
+earlier=long+chr(10)*2+'—— 你的决定(2026-11-01T00:00:00.000Z · 打回 · 回原线继续)——'+chr(10)*2+'先按 A 做，别动索引'
+out=block(earlier,said='【自动审阅】索引没建',choice=None)
+assert '把迁移回滚到上一版再重跑' in out and '先按 A 做，别动索引' in out and '【自动审阅】索引没建' in out,out
+assert out.index('把迁移回滚到上一版再重跑')<out.index('先按 A 做，别动索引')<out.index('【自动审阅】索引没建'),out
+rounds=chr(10)*2+(chr(10)*2).join('—— 自动审阅(2026-11-0%dT00:00:00.000Z · 打回 · 回原线继续)——'%day+chr(10)*2+('第%d轮理由。'%day)*120 for day in (1,2,3))
+out=block(short+rounds,said='最后一轮',choice=None)
+assert '第3轮理由。' in out and '第1轮理由。' not in out and '省略 2 条更早的完整裁定' in out and '把迁移回滚到上一版再重跑' in out,out
 `);
 });
 
@@ -199,9 +258,82 @@ for code in [None,-1,-2,-3]:
  assert v.classify(0,'完成',{'ok':False,'rc':code,'out':'FAIL'},'交付')=='environment',code
 assert v.classify(-2,'spawn失败',{'ok':False,'rc':1,'out':'FAIL'},'交付')=='environment'
 assert v.classify(0,'完成',None,None)=='environment'
+# 环境故障的输出里带 fail / failed 字样，不算测试红（审阅实测的六条）。
+for output in ['Error: connect ETIMEDOUT 127.0.0.1:5432'+chr(10)+'# fail 1',
+ 'OSError: [Errno 28] No space left on device'+chr(10)+'FAILED (errors=1)',
+ 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory',
+ 'npm ERR! Failed at the app@1.0.0 test script.',
+ '# pass 5'+chr(10)+'# fail 0'+chr(10)+'Error: coverage threshold not met',
+ '结果: 12 PASS / 0 FAIL'+chr(10)+'lint: 3 problems']:
+ assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':output},'交付')=='environment',output
+for output in ['read ECONNRESET'+chr(10)+'1 failed','getaddrinfo ENOTFOUND registry.invalid'+chr(10)+'1 failed',
+ 'EPERM: operation not permitted'+chr(10)+'1 failed','EBUSY: resource busy or locked'+chr(10)+'1 failed',
+ 'ENOSPC: no space left'+chr(10)+'1 failed','Access is denied.'+chr(10)+'1 failed','拒绝访问。'+chr(10)+'1 failed',
+ 'FAIL','FAILED','Failed to open the fixture','exit code 5'+chr(10)+'failed to start','0 FAIL'+chr(10)+'3 problems',
+ 'connection failed 3 times']:
+ assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':output},'交付')=='environment',output
+# 验证进程被信号或 Windows 异常终止（退出码为负、≥128 或不是整数）归环境，输出再像测试红也不续修。
+for code in [3221225477,137,128,-9,-1073741819,True,'1']:
+ assert v.classify(0,'完成',{'ok':False,'rc':code,'full_out':'Allocation failed'+chr(10)+'AssertionError: fixture'},'交付')=='environment',code
+# 带非零计数或断言特征的才是测试红。
+for output in ['# fail 2','1 failed, 3 passed','result: 3 PASS / 1 FAIL','not ok 3 - 夹具用例','FAIL tests/sample.test.js',
+ 'FAILED tests/test_sample.py::test_case - 夹具','FAIL: test_case (sample.Case)','--- FAIL: TestCase (0.00s)','FAILED (failures=2)',
+ '  2 failing','断言比较失败','ERR_ASSERTION','assertion failed','5 PASS / 1 FAIL'+chr(10)+'TypeError: fixture']:
+ for code in [1,2,127]:
+  assert v.classify(0,'完成',{'ok':False,'rc':code,'full_out':output},'交付')=='test_failure',(output,code)
 # 环境特征在完整输出首部，尾部恰为测试红，不能先截尾再误分成可续修。
 full='ERR_MODULE_NOT_FOUND: fixture'+chr(10)+'x'*6000+chr(10)+'FAIL assertion'
 assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':full,'out':full[-4000:]},'交付')=='environment'
+`);
+});
+
+test("模型声明卡住只认明确的第一人称声明：否定句、转述和验证已通过的交付不算", () => {
+  python(`import verification_repair as v
+green={'ok':True,'rc':0,'out':'PASS'}; red={'ok':False,'rc':1,'out':'AssertionError: 夹具红'}
+# 审阅实测的五句：都不是声明卡住。
+for text in ['# 未决'+chr(10)+'不需要人工介入','# 未决'+chr(10)+'没有需要人工处理的事项','修复了领取后无法继续续租的问题',
+ '本卡没有需要操作者提供的信息','Not stuck; fixed the assertion.']:
+ assert v.classify(0,'完成',green,text)=='passed',text
+ assert v.classify(0,text,green,'交付')=='passed',text
+ assert v.classify(0,'完成',None,text)=='passed',text
+ assert v.classify(0,text,red,text)=='test_failure',text
+for text in ['并不需要人工介入','目前没有任何需要人工处理的地方','不是无法继续，只是慢','there is no reason I cannot proceed',
+ 'I do not think I am stuck','修复了卡住的心跳线程','如确实卡住请明确说明']:
+ assert v.classify(0,text,red,text)=='test_failure',text
+# 登记验证通过就交付：正文里就算写了卡住，也留给审阅看，不在这里拦下。
+for text in ['我已卡住，需要人工处理','# 未决'+chr(10)+'需要人工介入']:
+ assert v.classify(0,text,green,text)=='passed',text
+# 明确的声明：验证未通过或卡没挂验证时判卡住。
+for text in ['我已卡住，需要人工处理','我卡住了。','测试一直不过，需要人工介入','环境不可用需要人工介入','缺少凭据，无法继续。',
+ '需要操作者提供数据库账号',"I'm blocked on credentials.",'I am stuck.','The build is not passing, I cannot proceed without the token.']:
+ assert v.classify(0,text,red,'交付')=='blocked',text
+ assert v.classify(0,'完成',red,'做了一半。'+chr(10)+text)=='blocked',text
+ assert v.classify(0,'完成',None,'做了一半。'+chr(10)+text)=='blocked',text
+ assert v.classify(-2,text,None,None)=='blocked',text
+# 四节证据只看「给人看的结果」和「未决」两节；改动、检查两节里的字样不是声明。
+body=chr(10).join(['# 给人看的结果','完成。','# 改动','core/demo.py:1-2 需要人工介入时给出提示','# 检查','需要人工介入 -> pass 1 / fail 0','# 未决','无'])
+assert v.classify(0,'完成',None,body)=='passed'
+assert v.classify(0,'完成',None,body.replace('# 未决'+chr(10)+'无','# 未决'+chr(10)+'需要人工介入：缺少账号'))=='blocked'
+assert v.classify(0,'完成',None,body.replace('完成。','我卡住了，没有完成。'))=='blocked'
+# 散文证据里代码围栏内的引用不算。
+fence=chr(96)*3
+assert v.classify(0,'完成',None,'日志如下'+chr(10)+fence+chr(10)+'我已卡住，需要人工介入'+chr(10)+fence)=='passed'
+`);
+});
+
+test("分类耗时有界：超长数字串、大段空白与超大输出都在一秒内返回，首尾特征仍被看到", () => {
+  python(`import time
+import verification_repair as v
+def timed(output):
+ started=time.perf_counter(); reason=v.classify(0,'完成',{'ok':False,'rc':1,'full_out':output},'交付'); return reason,time.perf_counter()-started
+for output in ('9'*20000,'1'+' '*20000+'x','0'+' '*20000+'x',('7 '*10000)+'x'):
+ reason,elapsed=timed(output)
+ assert reason=='environment' and elapsed<1,(output[:12],reason,elapsed)
+# 超过扫描上限的输出只看首尾两段：首部的环境特征与尾部的测试红都不能丢。
+reason,elapsed=timed('ERR_MODULE_NOT_FOUND: fixture'+chr(10)+'x'*600000+chr(10)+'3 failed')
+assert reason=='environment' and elapsed<1,(reason,elapsed)
+reason,elapsed=timed('日志行'+chr(10)+'x'*600000+chr(10)+'3 failed')
+assert reason=='test_failure' and elapsed<1,(reason,elapsed)
 `);
 });
 
@@ -241,6 +373,144 @@ assert blocked.result=='wait' and len(blocked.calls)==1,(blocked.result,blocked.
 maximum=exercise([red],rounds=3)
 assert maximum.result=='wait' and len(maximum.calls)==3,(maximum.result,maximum.calls)
 assert len(maximum.rows)==3 and {row['attempt'] for row in maximum.rows}=={9},maximum.rows
+`);
+});
+
+test("失败后再成功不收割旧建议：非完成出口把派生文件留档，说明并入等待报告", () => {
+  python(WORKER_FIXTURE + `suggestion={'tasks':[{'subject':'失败路线上的建议','description':'只在首轮写下'}]}
+shared=folder/'同一张卡'
+# 第 1 次派发：模型写了建议与证据，登记验证属环境故障，转等待。
+first=exercise([{'ok':False,'out':'timeout'}],case=shared,spawn=suggestion)
+assert first.result=='wait' and first.posts==[],(first.result,first.posts)
+spawn=pathlib.Path(w.spawn_path_for(7))
+kept=list(pathlib.Path(w.EVID).glob('spawn-7-retained-*.json'))
+assert not spawn.exists() and len(kept)==1 and json.loads(kept[0].read_text(encoding='utf-8'))==suggestion,(spawn.exists(),kept)
+report=first.deliveries[0][0][3]
+assert '候选发现' in report and '失败路线上的建议' in report and str(kept[0]) in report and 'environment' in report,report
+# 第 2 次派发（人裁定退回原线后再领）：模型没有重写建议，验证通过。旧建议不立卡。
+second=exercise([green],case=shared)
+assert second.result=='done' and second.posts==[],(second.result,second.posts)
+assert '派生' not in second.deliveries[0][0][3],second.deliveries[0][0][3]
+# 对照：同一次派发里写下建议并通过验证，照常立卡（上面的「不立」不是因为收割不工作）。
+third=exercise([green],spawn=suggestion)
+assert third.result=='done' and [body['subject'] for body in third.posts]==['失败路线上的建议'],third.posts
+# 其余非完成出口同样留档：轮数用尽、模型声明卡住、续修前失租、没有证据。
+for options in ({'outputs':[red],'rounds':2},{'outputs':[red],'tail':'我已卡住，需要人工处理'},
+  {'outputs':[red,green],'lost':'lease'},{'outputs':[green],'evidence':''}):
+ outputs=options.pop('outputs'); f=exercise(outputs,spawn=suggestion,**options)
+ assert f.result=='wait' and f.posts==[],(options,f.result,f.posts)
+ assert not pathlib.Path(w.spawn_path_for(7)).exists() and '候选发现' in f.deliveries[0][0][3],(options,f.deliveries[0][0][3])
+# 处置中途抛出未预期的异常（由主循环兜底转等待）：派生文件也留档。
+w.acct_attempt=lambda *args,**kwargs:(_ for _ in ()).throw(KeyError('夹具异常'))
+case=folder/'异常卡'
+try: exercise([green],case=case,spawn=suggestion)
+except KeyError: pass
+else: raise AssertionError('夹具异常没有抛出')
+assert not (case/'evidence'/'spawn-7.json').exists() and len(list((case/'evidence').glob('spawn-7-retained-*.json')))==1
+`);
+});
+
+test("领取开始时先把上一次遗留的派生文件留档：进程被杀留下的旧建议不被这次成功收割", () => {
+  python(WORKER_FIXTURE + `stale={'tasks':[{'subject':'进程被杀前写下的建议','description':'上一次领取'}]}
+def leftover(name):
+ # 上一次领取的进程被杀：没走到任何出口，派生文件原样留在证据目录。
+ case=folder/name; (case/'evidence').mkdir(parents=True)
+ (case/'evidence'/'spawn-7.json').write_text(json.dumps(stale,ensure_ascii=False),encoding='utf-8')
+ return case
+def retained(case): return list((case/'evidence').glob('spawn-7-retained-*.json'))
+# 这次领取：模型没有写建议，验证通过。遗留文件在模型运行前就被留档，不立卡。
+case=leftover('被杀的卡'); f=exercise([green],case=case)
+assert f.result=='done' and f.posts==[],(f.result,f.posts)
+kept=retained(case)
+assert len(kept)==1 and json.loads(kept[0].read_text(encoding='utf-8'))==stale and not (case/'evidence'/'spawn-7.json').exists(),kept
+report=f.deliveries[0][0][3]
+assert '候选发现' in report and '上一次领取遗留' in report and str(kept[0]) in report,report
+# 这次领取里新写的建议不受影响：旧的留档，新的照常立卡。
+case=leftover('又被杀的卡'); g=exercise([green],case=case,spawn={'tasks':[{'subject':'这次领取写下的建议'}]})
+assert g.result=='done' and [body['subject'] for body in g.posts]==['这次领取写下的建议'],g.posts
+assert len(retained(case))==2,retained(case)
+# 这次没成功：遗留文件同样已留档，等待报告里有说明。
+case=leftover('被杀后又失败的卡'); h=exercise([{'ok':False,'out':'timeout'}],case=case)
+assert h.result=='wait' and h.posts==[] and len(retained(case))==1 and '上一次领取遗留' in h.deliveries[0][0][3],h.deliveries
+# 旧阶梯路径同样在领取开始时留档。
+case=leftover('旧阶梯被杀的卡')
+w.os.environ['WORKER_LEGACY_RETRY']='1'
+w.DATA=str(case); w.EVID=str(case/'evidence'); w.LEDGER=str(case/'ledger.jsonl')
+w.LAST_ACCT={'sid':None,'t0':None,'usage':{'calls':None,'in':None,'cc':None,'cr':None,'out':None}}
+old={'id':7,'run_id':str(uuid.uuid4()),'attempts':1,'attempts_this_claim':1,'max_attempts':3,'verify_cmd':'fixture-check','subject':'旧阶梯夹具','weight':'standard'}
+posted=[]; delivered=[]
+def model(task,worker,path,prev,attempt,name,effort): pathlib.Path(path).write_text('旧阶梯交付',encoding='utf-8'); return 0,'完成'
+w.run_worker=model
+w.run_verify=lambda task:{'ok':True,'key':'fixture-check','cmd':'本地函数桩','rc':0,'out':'PASS 本地桩验证','registry_sha256':'a'*64}
+def call(method,path,body=None,**kwargs):
+ if method=='POST' and path=='/api/tasks': posted.append(body); return 201,{'task':{'id':101,'parent_id':7,'released':True}}
+ return 200,{'tasks':[]}
+w.call=call
+w.deliver=lambda *args,**kwargs:(delivered.append(args),True)[1]
+try: outcome=w.handle(old,'fixture')
+finally: w.os.environ.pop('WORKER_LEGACY_RETRY',None)
+assert outcome=='done' and posted==[] and delivered[0][2]=='done',(outcome,posted,delivered)
+assert len(retained(case))==1 and '上一次领取遗留' in delivered[0][3],delivered[0][3]
+`);
+});
+
+test("验证日志落盘失败不改写验证结果：执行线转等待不重跑模型，审阅线本轮跳过不裁决", () => {
+  python(WORKER_FIXTURE + `import verify_lib as v
+import reviewer_loop as r
+occupied=folder/'被文件占住'; occupied.write_text('占位',encoding='utf-8')
+for passed in (True,False):
+ vr={'ok':passed,'key':'fixture-check','cmd':'本地函数桩','rc':0 if passed else 1,'out':'本地输出','full_out':'本地输出','registry_sha256':'a'*64}
+ assert v.save_verify_log(vr,str(occupied/'verify_runs'/'x.log')) is False
+ assert vr['ok'] is passed and 'code' not in vr and 'log_path' not in vr and vr['log_error'].startswith('VERIFY_LOG_UNAVAILABLE'),vr
+ text=v.fmt_verify(vr)
+ assert ('结果: 通过' if passed else '结果: 失败') in text and '保存失败' in text,text
+# 新路径：验证通过但日志存不下来 → 转等待，原因单独记一类；不追加模型调用。
+f=exercise([green],log_blocked=True)
+assert f.result=='wait' and len(f.calls)==1 and [row['reason'] for row in f.rows]==['verify_log_unavailable'],(f.result,f.rows)
+report=f.deliveries[0][0][3]
+assert f.deliveries[0][0][2]=='wait' and '结果: 通过' in report and '保存失败' in report and 'verify_log_unavailable' in report,report
+# 旧阶梯路径：同样转等待。把通过的验证当失败去重跑模型的话，会向看板要新的 attempt —— 夹具对任何看板请求直接报错。
+w.os.environ['WORKER_LEGACY_RETRY']='1'
+case=folder/'旧阶梯'; case.mkdir(); w.DATA=str(case); w.EVID=str(case/'evidence'); w.LEDGER=str(case/'ledger.jsonl')
+w.LAST_ACCT={'sid':None,'t0':None,'usage':{'calls':None,'in':None,'cc':None,'cr':None,'out':None}}
+old={'id':7,'run_id':str(uuid.uuid4()),'attempts':1,'attempts_this_claim':1,'max_attempts':3,'verify_cmd':'fixture-check','subject':'旧阶梯夹具','weight':'standard'}
+models=[]; delivered=[]
+def model(task,worker,path,prev,attempt,name,effort):
+ models.append(attempt); pathlib.Path(path).write_text('旧阶梯交付',encoding='utf-8')
+ (pathlib.Path(w.EVID)/'verify_runs'/task['run_id']/('attempt-%d-legacy.log'%attempt)).mkdir(parents=True)
+ return 0,'完成'
+w.run_worker=model
+w.run_verify=lambda task:{'ok':True,'key':'fixture-check','cmd':'本地函数桩','rc':0,'out':'PASS 本地桩验证','registry_sha256':'a'*64}
+def refuse(method,path,body=None,**kwargs): raise AssertionError('旧阶梯不应重试或写看板:'+method+' '+path)
+w.call=refuse
+w.deliver=lambda *args,**kwargs:(delivered.append(args),True)[1]
+try: outcome=w.handle(old,'fixture')
+finally: w.os.environ.pop('WORKER_LEGACY_RETRY',None)
+assert outcome=='wait' and models==[1],(outcome,models)
+assert delivered[0][2]=='wait' and '结果: 通过' in delivered[0][3] and '保存失败' in delivered[0][3],delivered
+# 审阅线：验证是绿的，只是日志写不了 → 本轮跳过这张卡：不调用模型、不打回、不盖已审印，日志里单独记一行。
+reviewed=[]; sent=[]; logged=[]
+r.review_one=lambda t,vr:(reviewed.append(1) or {'verdict':'approve','reason':'夹具'},None)
+r.call=lambda method,path,body=None:(sent.append((method,path,body)),(200,{}))[1]
+r.log=lambda message:logged.append(message)
+card={'id':7,'subject':'审阅夹具','acceptance':'静态核对','aggregate_version':3,'updated_at':'夹具时刻'}
+for passed in (True,False):
+ r.DATA=str(occupied); sent.clear(); logged.clear()
+ r.run_verify=lambda t:{'ok':passed,'key':'fixture-check','cmd':'本地函数桩','rc':0 if passed else 1,'out':'本地输出','full_out':'本地输出'}
+ kind,d,err,vr=r.judge_one(card)
+ assert kind=='host_error' and vr['ok'] is passed and not reviewed and '日志' in err,(kind,err,vr)
+ assert r.settle(card,kind,d,err,vr)=='skipped' and sent==[],(sent,logged)
+ assert any('#7' in line and '跳过' in line for line in logged),logged
+# 对照：日志能写时，验证真的红照旧机械打回；绿的照旧交给模型判读。
+r.DATA=str(folder/'审阅数据'); sent.clear()
+r.run_verify=lambda t:{'ok':False,'key':'fixture-check','cmd':'本地函数桩','rc':1,'out':'1 failed','full_out':'1 failed'}
+kind,d,err,vr=r.judge_one(card)
+assert kind=='mech_reject' and not reviewed and vr.get('log_path'),(kind,err,vr)
+assert r.settle(card,kind,d,err,vr)=='reject'
+assert len(sent)==1 and sent[0][1]=='/api/tasks/7/resolve' and sent[0][2]['verdict']=='reject' and sent[0][2]['verify_ok'] is False,sent
+r.run_verify=lambda t:{'ok':True,'key':'fixture-check','cmd':'本地函数桩','rc':0,'out':'PASS','full_out':'PASS'}
+kind,d,err,vr=r.judge_one(card)
+assert kind=='model' and reviewed==[1] and d['verdict']=='approve',(kind,d,err)
 `);
 });
 

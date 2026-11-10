@@ -1361,3 +1361,7 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-10 首页改版整合第 2b-2 步：并入 Zcode 独立执行循环（claude/home-v2-zcode，11 个提交，无冲突；复核提出的 8 条已在该分支修完）并接线：`npm run zcode-worker`，test 串与 CI 加 zcodeworkertest，CI 另补 approval／conv／lessons／usage／doctorallow／cliversions／upgradecli 七组；Zcode 账本行补 line、ok、duration_ms、cost_source，用量结算按线归并，词元与费用是未知不是 0；`*.cjs` 固定 LF。
 - zcodeworkertest 27/0、schedulertest 32/0、dispatchtest 65/0、noderuntimetest 8/0、adaptertest 26/0、supervisortest 28/0、mcptest 43/0、evidencecontracttest 8/0、usagetest 3/0、servertest 216/0、clitest 114/0、looptest 85/0、selftest 402/0；全程合成供应商，没有调用模型。
 - 卡在操作者：Zcode 真实调用（登录 Zcode、填固定摘要与 real 授权、启用预算、在启动终端设 BOARD_ZCODE_RELEASED=1，步骤见 docs/Zcode接入.md）。
+- 2026-11-10 执行线审阅修复 8 条（claude/home-v2-devfix-ev）：证据校验与验证分类耗时有界；带 fail 字样的环境故障不再当测试红；「声明卡住」分清否定句；非完成出口留档派生建议；选项块按结构取舍；操作员建卡的收紧字段照收；验证日志落盘失败不翻验证结果；「（未执行）」被审阅闸识别。
+- verificationrepairtest 18/0、evidencecontracttest 11/0、servertest 222/0、looptest 85/0、reviewtest 32/0、selftest 402/0、lessonstest 5/0、usagetest 3/0、clitest 114/0、prompt-selftest 82/0、codex-selftest 33/0。阻塞：无。
+- 同批续修：runfencetest 领取身份用例的切片只取到 claimIdentity（原切片自 51b5583 起带进读 process.env 的代码，一直红）；建卡 lockKey 与较低起跑档照收、worker 派生卡的收紧取值生效；审阅闸计数模式改线性；领取开始时留档上一次遗留的派生文件。runfencetest 26/0、servertest 226/0、verificationrepairtest 19/0、evidencecontracttest 12/0、looptest 85/0、reviewtest 32/0、selftest 402/0。
+- 未决：宿主验证附录仍与模型正文拼在同一段文本，没有独立字段；审阅线因验证日志落盘失败跳过的卡，数据目录修好前每轮都会重跑验证。合规的小写检查行（`cmd -> pass 12 / fail 0`）不计为机器产出、维持转人工，已裁定不放宽。

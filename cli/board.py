@@ -543,6 +543,8 @@ def main():
         s, d = call("POST", "/api/tasks", json.loads(readfile(fp)))
         if s >= 400: die(s, d)
         print(f"已建 #{d['task']['id']}: {d['task']['subject']}")
+        for note in d.get("not_applied") or []:      # 建成的卡比 payload 更严的地方,服务端逐项点名
+            print(f"  ⚠ {note}")
 
     elif cmd == "claim":
         if not who and not arg("--token-file"): sys.exit("claim 需要 --as <线名>")

@@ -1255,7 +1255,8 @@ function add(db, args) {
       const prior=db.prepare("SELECT 1 FROM task_events WHERE kind='add' AND json_extract(detail,'$.parent_run_id')=? LIMIT 1").get(args.parentRunId);
       // 升级前的子卡没有运行来源，不能把未知历史当成尚未派生过首案。
       const unknown=db.prepare("SELECT 1 FROM tasks child WHERE child.parent_id=? AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id=child.id AND e.kind='add' AND json_extract(e.detail,'$.parent_run_id') IS NOT NULL) LIMIT 1").get(args.parentId);
-      args={...args,kind:"task",needsBash:0,released:prior||unknown?0:1};
+      // 首案由这里决定放行；worker 自己要求先不放行(released:0)时照办，收紧不被这条规则盖掉。
+      args={...args,kind:"task",needsBash:0,released:prior||unknown||args.released===0||args.released===false?0:1};
     }
     const id = addInner(db, args);
     const t = db.prepare(
@@ -1326,10 +1327,13 @@ function matchesExecutionProfile(db, task, profile) {
     ["path", "device", "inode"].every(key => expected.workspace[key] === profile.workspace[key]);
 }
 
+// 建卡时每次派发的默认尝试次数。服务端建卡入口用它判断「请求的次数是不是在放宽」。
+const DEFAULT_MAX_ATTEMPTS = 3;
+
 function addInner(db, {
   subject, description = "", acceptance = "", summary = null, blockedBy = [],
   route = DEFAULT_ROUTE, line = null, lockKey = null, needsBash = 0,
-  released = 1, maxAttempts = 3, evidencePath = null,
+  released = 1, maxAttempts = DEFAULT_MAX_ATTEMPTS, evidencePath = null,
   kind = "task", parentId = null, treeMode, verifyCmd = null, weight = "standard",
   oneofKey = null, provesParent = false, humanGate = null,
 }) {
@@ -3439,7 +3443,7 @@ module.exports = {
   chainDepth, placeInChain, MAX_CHAIN_DEPTH, HIERARCHICAL_MAX_DEPTH:taskTree.HIERARCHICAL_MAX_DEPTH,
   // Budget calibers: the lifetime-ceiling constant and the one-shot catch-up (tests
   // fire it directly).
-  LIFETIME_DISPATCH_CAP, backfillAttemptsBase,
+  LIFETIME_DISPATCH_CAP, DEFAULT_MAX_ATTEMPTS, backfillAttemptsBase,
   WIP_PER_ROOT, rootOf, unreleasedAncestor, depsSatisfied, normalizeDeps, dependentsOf,
   // Verdict-caliber migration (one shot when the column is added; tests fire it
   // directly).

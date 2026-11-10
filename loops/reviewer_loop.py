@@ -40,6 +40,7 @@ board_env.apply()
 import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,勿各自复写)
 import codex_runtime
 import context_lib
+import evidence_contract
 from prompt_items import whole_text, retrieval_hint
 from pool_state import report_exhausted
 from verify_lib import (run_verify, fmt_verify, save_verify_log, verify_registry, cli_deny_rules, auth_home_deny_rules,
@@ -151,9 +152,12 @@ _DEMAND = [
                  r"|decisiontest|gatetest|decomposetest|pytest|unittest"),
 ]
 # 机器产出的形状。**loop 产出**(前段)与**散文产出**(其余)分开持有。
+# ⚠这些模式扫的是卡面证据全文(执行者写的,长度不由审阅控制),必须线性:
+#   计数从数字串串首起(前面不是数字),不逐位重试;量词之间不留两个相邻都能吃空白的位置。
+#   认的写法与原来相同,只是失败时不再平方级回溯(2 万位数字曾要十几秒,期间心跳都跳不动)。
 _EV_LOOP  = r"——\s*验证\(由循环执行"
 _EV_PROSE = [
-    ("PASS/FAIL 计数", r"\d+\s*(?:项|個|个|件)?\s*(?:PASS|FAIL|合格|不合格)|(?:PASS|FAIL)\s*\d+|\[OK\]|\[FAIL\]"),
+    ("PASS/FAIL 计数", r"(?<!\d)\d+\s*(?:(?:项|個|个|件)\s*)?(?:PASS|FAIL|合格|不合格)|(?:PASS|FAIL)\s*\d+|\[OK\]|\[FAIL\]"),
     ("退出码",         r"\brc\s*=\s*-?\d+|exit(?:\s+code)?\s*[=:]\s*\d+"),
     ("报错原文",       r"Traceback \(most recent call last\)|at Object\.<anonymous>|SyntaxError:|AssertionError"),
     ("HTTP 实测码",    r"HTTP/1\.[01]\s+\d{3}|←\s*\d{3}\b"),
@@ -196,7 +200,9 @@ def machine_evidence(t, vr=None):
     hits, muted = [], []
     if vr and vr.get("ok"):
         hits.append(f"循环代跑 {vr.get('key')} → rc={vr.get('rc')} 通过")
-    no_run = bool(re.search(_NO_RUN, r))
+    # 四节合同把未执行统一写成「cmd -> pass 0 / fail 0（未执行）」:同样是「这次没跑」的自陈,
+    # 有它在,正文里的数字与验证标记一律不算机器产出(只剩本轮循环代跑的 vr)。
+    no_run = bool(re.search(_NO_RUN, r)) or evidence_contract.declares_unrun(r)
     executable = t.get("last_runtime") == "codex"
     if re.search(_EV_LOOP, r):
         # A textual marker is not proof that a nonexecuting seat ran a command.
@@ -795,12 +801,15 @@ def judge_one(t):
     路径分三段,顺序有意义:
       ① 先跑卡点名的验证 —— 红了就机器打回,不烧模型。
       ② 模型读(把绿的验证输出与逐条清点一并递给它)。
-      ③ 给模型的 approve 套上机器产出闸 —— 判据不够就降为转人工(escalate)。"""
+      ③ 给模型的 approve 套上机器产出闸 —— 判据不够就降为转人工(escalate)。
+    验证日志存不下来时返回 "host_error":那是审阅宿主自己的故障,验证结果不因此改写,
+    这张卡本轮不出任何裁决(见 settle)。"""
     vr = run_verify(t)
     if vr:
         # 复用既有宿主验证日志目录，不扩大审阅模型的 Write 目录。
         path = os.path.join(DATA, "evidence", "verify_runs", f"review-task-{int(t['id'])}-{time.time_ns()}.log")
-        save_verify_log(vr, path)
+        if not save_verify_log(vr, path):
+            return "host_error", vr, "验证日志落盘失败(" + str(vr.get("log_error")) + ")", vr
     if vr and not vr.get("ok"):
         return "mech_reject", vr, None, vr
     d, err = review_one(t, vr)
@@ -893,6 +902,37 @@ def apply_verdict(t, d, vr=None):
     return "escalate"
 
 
+def settle(t, kind, d, err, vr):
+    """把一张卡的判读结果落到看板上(主线程串行调用)。返回落下的是什么。"""
+    if kind == "host_error":
+        # 审阅宿主自己的故障(验证日志写不了):这张卡本轮不裁决 —— 不打回、不记 verify_ok、不盖「看过」印,
+        # 卡原样留在待验收,下一轮照常重审。必须出声:沉默的话看上去像「没有可审的卡」。
+        log(f"  ⛔ #{t['id']} 本轮跳过:{err} —— 未裁决、未盖已审印;"
+            "请检查审阅宿主的看板数据目录(磁盘空间、写权限、路径被占),修好后自动重审")
+        return "skipped"
+    if kind == "mech_reject":
+        vr0 = d
+        note0 = ("【自动审阅·机械】卡指名的验证未通过 —— 不经模型直接打回。"
+                 + chr(10) + fmt_verify(vr0))
+        s0, r0 = call("POST", f"/api/tasks/{t['id']}/resolve",
+                      {"verdict": "reject", "note": note0, "resolved_by": "auto",
+                       "verify_ok": False, "expected_version": t["aggregate_version"]})
+        log(f"  #{t['id']} → 机械打回(验证 {vr0.get('key')} rc={vr0.get('rc')})"
+            if s0 < 400 else f"  #{t['id']} 机械打回落盘失败 {s0}")
+        return "reject" if s0 < 400 else "error"
+    if err:
+        # 审阅自己崩掉的卡也盖上「看过」的印 —— 下个周期不再捡起
+        # (不在坏卡上一直烧钱)。卡一动就自动回到重审对象里。
+        s2, r2 = call("POST", f"/api/tasks/{t['id']}/autoreview",
+                      {"note": f"【自动审阅】本次未能出判决:{err[:400]}",
+                       "expect_updated_at": t.get("updated_at"), "expected_version": t["aggregate_version"]})
+        if s2 != 200:
+            log(f"  #{t['id']} 「看过」印被拒 {s2} {(r2 or {}).get('error', '')} —— 卡已变,下轮重审")
+        log(f"  #{t['id']} 审阅失败:{err.splitlines()[0][:80]}")
+        return "error"
+    return apply_verdict(t, d, vr=vr)
+
+
 def context_supplement_selftest():
     """审阅增量回归：只用本地文件与函数桩，不访问服务或模型。"""
     import tempfile
@@ -941,9 +981,9 @@ def context_supplement_selftest():
             globals()["DATA"] = blocked
             reviewed.clear()
             kind, _, _, vr = judge_one({"id": 42, "acceptance": "静态核对"})
-            check("验证原文保存失败就停止本卡，不调用审阅函数或伪造日志路径",
-                  kind == "mech_reject" and not reviewed and vr.get("code") == "VERIFY_LOG_UNAVAILABLE"
-                  and not vr.get("log_path"))
+            check("验证原文保存失败就停止本卡：不调用审阅函数、不伪造日志路径，也不把通过的验证改写成失败",
+                  kind == "host_error" and not reviewed and vr.get("ok") is True and not vr.get("code")
+                  and str(vr.get("log_error", "")).startswith("VERIFY_LOG_UNAVAILABLE") and not vr.get("log_path"))
     finally:
         for name, value in prior.items(): globals()[name] = value
     print("supplement: %d PASS / %d FAIL" % (sum(checks), len(checks) - sum(checks)))
@@ -1117,27 +1157,7 @@ def main():
         for t in batch:
             if t["id"] not in results: continue   # 预算收队没审到的卡: 原样留在队列,下轮再来
             kind, d, err, vr = results.get(t["id"], ("model", None, "(线程没回话)", None))
-            if kind == "mech_reject":
-                vr0 = d
-                note0 = ("【自动审阅·机械】卡指名的验证未通过 —— 不经模型直接打回。"
-                         + chr(10) + fmt_verify(vr0))
-                s0, r0 = call("POST", f"/api/tasks/{t['id']}/resolve",
-                              {"verdict": "reject", "note": note0, "resolved_by": "auto",
-                               "verify_ok": False, "expected_version": t["aggregate_version"]})
-                log(f"  #{t['id']} → 机械打回(验证 {vr0.get('key')} rc={vr0.get('rc')})"
-                    if s0 < 400 else f"  #{t['id']} 机械打回落盘失败 {s0}")
-                continue
-            if err:
-                # 审阅自己崩掉的卡也盖上「看过」的印 —— 下个周期不再捡起
-                # (不在坏卡上一直烧钱)。卡一动就自动回到重审对象里。
-                s2, r2 = call("POST", f"/api/tasks/{t['id']}/autoreview",
-                              {"note": f"【自动审阅】本次未能出判决:{err[:400]}",
-                               "expect_updated_at": t.get("updated_at"), "expected_version": t["aggregate_version"]})
-                if s2 != 200:
-                    log(f"  #{t['id']} 「看过」印被拒 {s2} {(r2 or {}).get('error', '')} —— 卡已变,下轮重审")
-                log(f"  #{t['id']} 审阅失败:{err.splitlines()[0][:80]}")
-                continue
-            apply_verdict(t, d, vr=vr)
+            settle(t, kind, d, err, vr)
         if once: return
         # ⭐积压自适应: 本轮没审完队列 → 短睡 30s 连轴排空;排空了才按 interval 省着睡。
         time.sleep(30 if len(todo) > len(batch) else interval)

@@ -3857,12 +3857,39 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       if(!b||typeof b!=="object"||Array.isArray(b))throw store.err(store.ERR.BAD_INPUT,"建卡请求必须是 JSON 对象");
       // 先保留执行配置的角色闸；白名单外字段统一丢弃，不成为 store 的内部参数。
+      // 例外是下面几个闸门字段：收紧的取值照收，否则「先不放行」「加人工闸」会被当成没写。
       if(b.execution_profile_id!==undefined&&boardRole!=="operator")return json(res,403,{error:"任务执行配置只能由操作者选择"});
       const allowed=boardRole==="operator"
         ? ["subject","summary","description","acceptance","line","route","parentId","parent_id","blockedBy","verifyCmd","needsBash","kind","execution_profile_id","model","effort"]
         : ["subject","summary","description","acceptance","line","parentId","parent_id","parent_run_id","worker"];
       const fields=Object.fromEntries(allowed.filter(key=>Object.hasOwn(b,key)).map(key=>[key,b[key]]));
       fields.actor=boardRole;
+      // 三个闸门字段，操作者与 worker(派生卡)都收，只收会收紧的取值：
+      // released 为 0/false、humanGate 为 1/true、maxAttempts 不大于默认。
+      // 放宽方向不在建卡时生效(仍走 release / edit)，建好后在响应里点名；取值类型不对直接 400，
+      // 不交给真假值判断(字符串 "0" 是真值，会被当成放行)。
+      for(const key of ["released","humanGate"])
+        if(Object.hasOwn(b,key)&&![true,false,1,0].includes(b[key]))
+          throw store.err(store.ERR.BAD_INPUT,`${key} 只接受 true/false(或 1/0)，收到 ${JSON.stringify(b[key])}`);
+      if(Object.hasOwn(b,"maxAttempts")&&!(Number.isSafeInteger(b.maxAttempts)&&b.maxAttempts>=1))
+        throw store.err(store.ERR.BAD_INPUT,`maxAttempts=${JSON.stringify(b.maxAttempts)} 不合法：要 ≥1 的整数`);
+      if(b.released===false||b.released===0)fields.released=0;
+      if(b.humanGate===true||b.humanGate===1)fields.humanGate=true;
+      if(b.maxAttempts<=store.DEFAULT_MAX_ATTEMPTS)fields.maxAttempts=b.maxAttempts;
+      if(boardRole==="operator"){
+        // lockKey 只给这张卡加互斥(同键的卡不同时跑)，照收。worker 不收：它能借别人的键挡住别的卡。
+        if(Object.hasOwn(b,"lockKey")&&b.lockKey!==null){
+          if(typeof b.lockKey!=="string"||b.lockKey.length>200)
+            throw store.err(store.ERR.BAD_INPUT,`lockKey 要 200 字以内的字符串，收到 ${JSON.stringify(b.lockKey).slice(0,60)}`);
+          if(b.lockKey.trim())fields.lockKey=b.lockKey;
+        }
+        // weight 是起跑档(决定首轮的模型与强度)：不高于默认的照收，更高的不在建卡时生效，建好后点名。
+        if(Object.hasOwn(b,"weight")){
+          if(!WEIGHTS.includes(b.weight))
+            throw store.err(store.ERR.BAD_INPUT,`未知的起跑档(weight): ${JSON.stringify(b.weight)}；可用 ${WEIGHTS.join(" / ")}`);
+          if(WEIGHTS.indexOf(b.weight)<=WEIGHTS.indexOf("standard"))fields.weight=b.weight;
+        }
+      }
       if(b.execution_profile_id!==undefined){
         if(!fields.line)throw store.err(store.ERR.BAD_INPUT,"选择执行配置时必须指定执行线");
         const agent=settingsOf(fields.line).agents.find(a=>a.execution_profile_id===fields.execution_profile_id&&a.model===fields.model&&a.effort===fields.effort);
@@ -3885,7 +3912,18 @@ const server = http.createServer(async (req, res) => {
       if (badRoutable(res, fields)) return;   // creation entrance for route/line domains (ONE criterion)
       const id = store.add(db, fields);
       emit("task.created", { id });
-      return json(res, 201, { task: taskOut(store.get(db, id)) });
+      const made = taskOut(store.get(db, id));
+      // 建成的卡比请求更严的地方逐项点名(放宽没有生效、执行配置卡固定未放行等)，不静默。
+      const notApplied = [];
+      if((b.released===true||b.released===1)&&!made.released)
+        notApplied.push("released：这张卡建成未放行；核对后用 release 放行");
+      if((b.humanGate===false||b.humanGate===0)&&made.human_gate)
+        notApplied.push("humanGate:false 未生效：标题命中人工裁定字样，卡带人工闸；要开闸请建卡后用 edit");
+      if(b.maxAttempts>made.max_attempts)
+        notApplied.push(`maxAttempts:${b.maxAttempts} 未生效：建卡不放宽尝试次数，现为 ${made.max_attempts}；要放宽请建卡后用 edit`);
+      if(boardRole==="operator"&&Object.hasOwn(b,"weight")&&made.weight!==b.weight)
+        notApplied.push(`weight:${b.weight} 未生效：建卡不抬高起跑档，现为 ${made.weight}；要调请建卡后用 edit`);
+      return json(res, 201, { task: made, ...(notApplied.length ? { not_applied: notApplied } : {}) });
     }
 
     // ── goals

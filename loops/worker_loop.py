@@ -514,6 +514,20 @@ def stash_spawn(tid, why):
             + f"\n完整候选原件：{saved}（{os.path.getsize(saved)} bytes）")
 
 
+def set_aside_leftover(tid):
+    """领取开始、模型还没跑:证据目录里若已有本卡的派生文件,只能是上一次领取留下的
+    (进程被杀、租约被回收,没走到任何出口)。先留档移走 —— 这次成功只收割这次写下的建议。
+    返回 (要并进报告的说明, 本次还能不能收割)。留档失败时文件还在原处,这次不收割。"""
+    try:
+        memo = stash_spawn(tid, "上一次领取遗留,本次开始前移走")
+    except OSError as error:
+        log(f"  ⚠上一次领取遗留的派生文件留档失败({error})—— 本次不收割派生建议")
+        return f"⚠上一次领取遗留的派生文件留档失败({error}):{spawn_path_for(tid)} 仍在原处;本次未收割派生建议,请人工移走。", False
+    if memo:
+        log("  上一次领取遗留的派生文件已留档,不参与本次收割")
+    return memo or "", True
+
+
 def harvest_spawned(t, worker):
     """把 worker 放下的 spawn 文件变成卡。**建卡的是 loop**。
     ⭐派生闸:「子任务」是「候选发现」。
@@ -698,11 +712,124 @@ VERDICT_HEAD = re.compile(
 
 OPT_BUDGET = 2600   # 选项块允许的字数(提示词经 argv 传递,Windows 的 32767 是天花板)
 DEC_BUDGET = 4000   # 人写的裁定正文允许的字数
+EARLIER_BUDGET = 1200   # 更早各轮裁定允许的字数(完整条目,新的优先)
+_OPT_ITEM = re.compile(r"\*\*([A-Za-z0-9?]{1,3})\.\s")   # 「### 方案」下一个方案的首行:**A. 标题**
+
+
+def _plain_lines(text):
+    """逐行给出 (起始偏移, 行, 是否在代码围栏外)。围栏里的标题、抬头只是示例正文,不算结构。"""
+    rows, position, fence = [], 0, None
+    for line in text.split("\n"):
+        mark = re.match(r"\s*(`{3,}|~{3,})", line)
+        plain = fence is None and not mark
+        if mark:
+            token = mark.group(1)
+            if fence is None:
+                fence = (token[0], len(token))
+            elif token[0] == fence[0] and len(token) >= fence[1] and not line[mark.end():].strip():
+                fence = None
+        rows.append((position, line, plain))
+        position += len(line) + 1
+    return rows
+
+
+def _option_parts(text):
+    """把审阅备注切成完整项:开头说明、各小节、「### 方案」下的每个方案。"""
+    parts, in_options = [], False
+    current = {"kind": "section", "name": "开头说明", "key": None, "lines": []}
+    for _, line, plain in _plain_lines(text):
+        title = evidence_contract.heading_title(line) if plain else None
+        item = _OPT_ITEM.match(line) if plain and in_options and title is None else None
+        if title is not None:
+            parts.append(current)
+            in_options = title == "方案"
+            current = {"kind": "options_head" if in_options else "section", "name": title, "key": None, "lines": [line]}
+        elif item:
+            parts.append(current)
+            key = item.group(1).upper()
+            current = {"kind": "option", "name": "方案 " + key, "key": key, "lines": [line]}
+        else:
+            current["lines"].append(line)
+    parts.append(current)
+    for part in parts:
+        part["text"] = "\n".join(part["lines"]).strip()
+    return [part for part in parts if part["text"]]
+
+
+def _chosen_key(card, keys):
+    """人选定的方案键。先认卡上的字段;没有字段时,人的话里只点到一个方案字母也算指向,点到多个就不猜。"""
+    card = card or {}
+    raw = str(card.get("decision_choice") or "").strip().upper()
+    if raw:
+        tokens = re.findall(r"[A-Z0-9?]+", raw)
+        return raw if raw in keys else tokens[-1] if tokens and tokens[-1] in keys else None
+    said = str(card.get("last_note") or "").upper()
+    named = [key for key in keys if re.search(r"(?<![A-Z0-9])" + re.escape(key) + r"(?![A-Z0-9])", said)]
+    return named[0] if len(named) == 1 else None
 
 
 def _trim_options(s, card=None):
-    """选项块完整留或舍；标题也可能是围栏示例正文，不能据它预剪裁。"""
-    return whole_text(s, OPT_BUDGET, retrieval_hint(card, field="verdict_note（本轮选项）"), unit="选项块", mode="item")
+    """审阅摆出的选项块,送给执行者之前整理:
+      ① 末尾「—— 自动审阅(…)· 这不是最终裁定 ——」及其后是给面板操作者看的说明,一律去掉
+         (执行者读到会以为还没裁定);
+      ② 不超预算就原样保留;
+      ③ 超预算按完整项取舍,**方案留到最后**:人选定的方案 → 开头摘要 → 其余方案 → 其余小节。
+         选定方案自己超预算时放宽到裁定正文的预算。省略的项逐个点名并给取回指引,不截半项;
+      ④ 分不出结构(只有一整块)时整块留或舍。"""
+    rows = _plain_lines(s)
+    trailer = next((position for position, line, plain in reversed(rows)
+                    if plain and line.startswith("—— 自动审阅(") and "这不是最终裁定" in line), None)
+    if trailer is not None:
+        s = s[:trailer].rstrip()
+    if len(s) <= OPT_BUDGET:
+        return s
+    hint = retrieval_hint(card, field="verdict_note（本轮选项）")
+    parts = _option_parts(s)
+    keys = [part["key"] for part in parts if part["kind"] == "option"]
+    package = [o for o in ((card or {}).get("decision_package") or {}).get("options") or [] if isinstance(o, dict)]
+    chosen = _chosen_key(card, list(dict.fromkeys(keys + [str(o.get("key") or "").upper() for o in package])))
+    if chosen and chosen not in keys:
+        # 备注里读不出这个方案(审阅写的是散文),从卡上的裁定包取它的标题、做法与代价。
+        option = next(o for o in package if str(o.get("key") or "").upper() == chosen)
+        text = "\n".join(["**%s. %s**" % (chosen, option.get("title") or "")]
+                         + ["- 做什么:" + str(option["detail"])] * bool(option.get("detail"))
+                         + ["- 代价:" + str(option["cost"])] * bool(option.get("cost")))
+        parts.append({"kind": "option", "name": "方案 " + chosen, "key": chosen, "text": text})
+    if len(parts) < 2:
+        return whole_text(s, OPT_BUDGET, hint, unit="选项块", mode="item")
+    head = next((i for i, part in enumerate(parts) if part["kind"] == "options_head"), len(parts))
+    def rank(i):
+        part = parts[i]
+        return (0 if part["kind"] == "option" and part["key"] == chosen else
+                1 if i < head else 2 if part["kind"] == "option" else 3, i)
+    kept, used = set(), 0
+    for i in sorted((i for i in range(len(parts)) if parts[i]["kind"] != "options_head"), key=rank):
+        size = len(parts[i]["text"]) + 2
+        if used + size <= (DEC_BUDGET if rank(i)[0] == 0 else OPT_BUDGET):
+            kept.add(i); used += size
+    if not kept:
+        return whole_text(s, OPT_BUDGET, hint, unit="选项块", mode="item")
+    if head < len(parts) and any(parts[i]["kind"] == "option" for i in kept):
+        kept.add(head)      # 「### 方案」这行标题跟着方案走
+    omitted = [part["name"] for i, part in enumerate(parts) if i not in kept and part["kind"] != "options_head"]
+    body = "\n\n".join(parts[i]["text"] for i in sorted(kept))
+    if omitted:
+        body += "\n\n[省略 %d 个完整项：%s；未截取任何半项。%s]" % (len(omitted), "、".join(omitted), hint)
+    return body
+
+
+def _earlier_rounds(text):
+    """选项块之后、本轮抬头之前的更早各轮裁定:按完整条目取舍,从最新的往回留,
+    放不下就到此为止(中间跳着留的裁定史比少几条更误导)。返回 (保留的原文, 省略条数)。"""
+    starts = [position for position, line, plain in _plain_lines(text)
+              if plain and VERDICT_HEAD.match(line) and "这不是最终裁定" not in line]
+    blocks = [text[a:b].strip() for a, b in zip(starts, starts[1:] + [len(text)])]
+    kept, used = [], 0
+    for item in reversed(blocks):
+        if used + len(item) + 2 > EARLIER_BUDGET:
+            break
+        kept.append(item); used += len(item) + 2
+    return "\n\n".join(reversed(kept)), len(blocks) - len(kept)
 
 
 def verdict_tail(note, card=None):
@@ -720,10 +847,16 @@ def verdict_tail(note, card=None):
     # 正文里的引用抬头没有结构身份；只认完整备注前、紧邻它的服务端抬头。
     boundary = next((head for head in reversed(list(VERDICT_HEAD.finditer(prefix))) if head.end() == len(prefix)), None)
     dec = s[boundary.start():] if boundary else s
-    options = _trim_options(prefix[:boundary.start()].strip(), card) if boundary else ""
+    # 本轮抬头之前:第一个裁定抬头前面是审阅摆出的选项(审阅转人工时整段覆盖旧备注,所以它总在最前);
+    # 其后到本轮抬头之间是更早各轮裁定,另算,不并进选项块(并进去只会让选项块更容易超预算)。
+    before = prefix[:boundary.start()].strip() if boundary else ""
+    first = next((position for position, line, plain in _plain_lines(before)
+                  if plain and VERDICT_HEAD.match(line) and "这不是最终裁定" not in line), len(before))
+    options = _trim_options(before[:first].strip(), card) if before[:first].strip() else ""
+    earlier, skipped = _earlier_rounds(before[first:]) if first < len(before) else ("", 0)
     numbered = ref.get("source") in ("legacy", "cascade", "autoreview") or (boundary is not None and ref.get("source") == "resolve" and ref.get("has_note") is True)
     dec = whole_text(dec, DEC_BUDGET, retrieval_hint(card, "decisions" if numbered else None, "verdict_note"), unit="裁定", mode="item")
-    return {"options": options, "decision": dec, "skipped": 0}
+    return {"options": options, "earlier": earlier, "decision": dec, "skipped": skipped}
 
 
 def verdict_block(t):
@@ -755,7 +888,9 @@ def verdict_block(t):
               "——已经定了的不要再猜,已经答过的不要再问一遍。",
               "(本轮备注有完整边界时优先保留；旧文无法辨认边界时整块保留或给出原字段取回指引。)"]
         if tail["options"]:
-            L += ["", "--- 本轮裁定前的原文(选项及已有记录，整块取舍) ---", tail["options"]]
+            L += ["", "--- 本轮裁定前的审阅原文(按完整方案与小节取舍) ---", tail["options"]]
+        if tail["earlier"]:
+            L += ["", "--- 更早的裁定(完整条目,新的在后) ---", tail["earlier"]]
         if tail["skipped"]:
             L += ["", "(省略 %d 条更早的完整裁定；这些旧文本的历史编号未知。%s)" % (tail["skipped"], retrieval_hint(t, field="verdict_note"))]
         L += ["", "--- 最近一次裁定(完整保留或整条取回指引)---", tail["decision"]]
@@ -2320,12 +2455,33 @@ def prompt_measurement(prompt):
     return {"prompt_chars": measured["chars"], "prompt_bytes": measured["bytes"]}
 
 
+# 证据文件的读入上限(字节)。超过就不读入:原文留在原处,由调用方按拒收或等待处理,
+# 宿主不为一份超大文件付出与其大小成比例的内存与解析时间。
+# 看板一次请求的正文上限约 1e6 字符,更大的证据本来也交不上去。
+EVIDENCE_READ_MAX = 1024 * 1024
+
+
+def evidence_oversize(path):
+    """证据文件超过读入上限时返回它的字节数,否则 None。"""
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    return size if size > EVIDENCE_READ_MAX else None
+
+
 def read_evidence(path, *, preserve=False):
     try:
         if os.path.isfile(path):
-            with io.open(path, encoding="utf-8", errors="strict" if preserve else "replace", newline="" if preserve else None) as source:
-                s = source.read()
-            return s if preserve else s.strip() or None
+            with io.open(path, "rb") as source:
+                raw = source.read(EVIDENCE_READ_MAX + 1)      # 多读一个字节只为判断是否超限
+            if len(raw) > EVIDENCE_READ_MAX:
+                log(f"  证据文件超过读入上限 {EVIDENCE_READ_MAX} bytes —— 不读入,原文保留在 {path}")
+                return None
+            if preserve:
+                return raw.decode("utf-8")
+            s = raw.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+            return s.strip() or None
     except Exception as e:
         log(f"  证据读取失败:{e}")
     return None
@@ -2356,9 +2512,11 @@ def handle_legacy(t, worker):
     run_id = t.get("run_id")
     if not isinstance(run_id, str) or str(uuid.UUID(run_id)) != run_id:
         raise RuntimeError("领取回执缺少有效 run_id；未调用模型")
-    def deliver_run(*args, **kwargs):
-        return deliver(*args, run_id=run_id, **kwargs)
+    def deliver_run(card, who, outcome, text, **kwargs):
+        # 上一次领取遗留的派生文件已在开始时留档;说明并入本次的每一份报告。
+        return deliver(card, who, outcome, text + ((chr(10) * 2 + leftover) if leftover else ""), run_id=run_id, **kwargs)
     os.makedirs(EVID, exist_ok=True)
+    leftover, may_harvest = set_aside_leftover(tid)
     attempt = int(t.get("attempts", 1))
     # ⭐判定上限**只在这里**。看板只返回次数,不说"已经用尽"。
     max_att = int(t.get("max_attempts", 3))
@@ -2457,14 +2615,27 @@ def handle_legacy(t, worker):
             #   有产出但验证挂了就不算交付(把真实输出交给下一次尝试)。
             vr = run_verify(t) if ev else None
             if vr:
-                save_verify_log(vr, os.path.join(EVID, "verify_runs", run_id, f"attempt-{attempt}-legacy.log"))
+                logged = save_verify_log(vr, os.path.join(EVID, "verify_runs", run_id, f"attempt-{attempt}-legacy.log"))
                 ev += chr(10) + chr(10) + fmt_verify(vr)
                 log(f"  验证 {vr['key']}: " + ("通过" if vr["ok"] else f"失败 rc={vr.get('rc')}"))
+                if not logged:
+                    # 日志存不下来是宿主环境故障:验证结果如实写进报告,但不把它当成验证失败去重跑模型,
+                    # 也不带着缺日志的证据交付。修好数据目录后重新放行即可。
+                    log(f"  ⚠验证日志落盘失败({vr.get('log_error')})—— 转等待,不重试")
+                    LAST_FAIL_FP = "verify-log-unavailable"
+                    st_memo = stash_spawn(tid, "父卡未成功(验证日志落盘失败)")
+                    deliver_run(tid, worker, "wait",
+                                "**验证日志落盘失败**(宿主环境故障,不是本卡内容的问题):验证命令的真实结果见下,"
+                                "未重试、未追加模型调用。修好看板数据目录(磁盘空间、写权限、路径被占)后重新放行。"
+                                + chr(10) + chr(10) + ev
+                                + ((chr(10) + chr(10) + st_memo) if st_memo else "")
+                                + chr(10) + chr(10) + fmt_acct(acct), what="转等待")
+                    return "wait"
 
             if ev and (vr is None or vr["ok"]):
                 ev = host_delivery(t, ev, ev_path, vr, rc)
                 ev += lessons_lib.session(t, DATA, log).close(True)   # 经验入库 + 附过的条目各记一次命中
-                made, memo = ([], "") if PROFILE_MODE else harvest_spawned(t, worker)
+                made, memo = ([], "") if PROFILE_MODE or not may_harvest else harvest_spawned(t, worker)
                 if made and not any(isinstance(x, dict) for x in made):
                     ev += (chr(10) + chr(10) + "—— 本卡派生出的子任务卡 ——" + chr(10) +
                            "#" + " #".join(str(x) for x in made))
@@ -2614,7 +2785,22 @@ def handle(t, worker):
     os.makedirs(EVID, exist_ok=True)
     log_dir = os.path.join(EVID, "verify_runs", run_id)
     os.makedirs(log_dir, exist_ok=True)
-    def finish(outcome, text):
+    leftover, may_harvest = set_aside_leftover(tid)
+    def set_aside(why):
+        """父卡没成功:派生文件留档不立卡,返回要并进报告的说明。
+        放着不管,这张卡下次成功时会把失败路线上的建议立成卡(首案还会自动放行)。"""
+        try:
+            memo = stash_spawn(tid, f"父卡未成功({why})")
+        except OSError as error:
+            log(f"  ⚠派生文件留档失败({error})—— 文件仍在证据目录,下次成功前须人工移走")
+            return f"\n\n⚠派生文件留档失败({error}):{spawn_path_for(tid)} 仍在原处,本卡再次放行前请先移走。"
+        return "\n\n" + memo if memo else ""
+
+    def finish(outcome, text, why=None):
+        if outcome != "done":
+            text += set_aside(why or "未完成")
+        if leftover:
+            text += "\n\n" + leftover
         text += lessons.close(outcome == "done")    # 收尾:经验入库;验证通过时给附过的条目各记一次命中
         delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id)
         return "done" if delivered and outcome == "done" else "wait" if delivered else "rejected"
@@ -2627,7 +2813,7 @@ def handle(t, worker):
                           "session_missing" if not context.get("session_id") else None)
                 if reason:
                     LAST_FAIL_FP = reason
-                    return finish("wait", f"停止续修：{reason}。\n" + last_result)
+                    return finish("wait", f"停止续修：{reason}。\n" + last_result, reason)
             ev_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number}.md")
             try:
                 os.remove(ev_path)
@@ -2648,9 +2834,15 @@ def handle(t, worker):
             if FORKED_SID:
                 confirm_forked(FORKED_SID)
             evidence = read_evidence(ev_path, preserve=bool(contract))
-            task["_evidence_measurement"] = evidence_contract.measure(evidence) if evidence is not None else None
+            oversize = evidence_oversize(ev_path) if evidence is None else None
+            task["_evidence_measurement"] = (evidence_contract.measure(evidence) if evidence is not None
+                                             else {"chars": None, "bytes": oversize} if oversize else None)
             evidence = lessons.take(evidence)    # 「经验」小节先摘出来,不进四节合同与后面的验证
             body_check = evidence_contract.validate(evidence, contract) if contract and evidence is not None else None
+            if oversize and contract:
+                # 没读入也算拒收:同会话要求精简,不把超大文件当成「没有证据」。
+                body_check = {"ok": False, "chars": None, "bytes": oversize,
+                              "errors": [f"证据文件 {oversize} UTF-8 bytes 超过读入上限 {EVIDENCE_READ_MAX} bytes，未读入"]}
             if host_guard:
                 host_guard.assert_intact()
                 if not body_check or body_check["ok"]:
@@ -2668,7 +2860,8 @@ def handle(t, worker):
             log_path = os.path.join(log_dir, f"attempt-{attempt}-round-{number}.log")
             if vr:
                 if not save_verify_log(vr, log_path):
-                    reason = "environment"
+                    # 宿主写不了日志:验证结果不改写(附录照实写通过或失败),只是停在这里,原因单独记一类。
+                    reason = "verify_log_unavailable"
                 if contract:
                     appendix = (f"—— 宿主验证附录 ——\n{vr.get('cmd') or vr.get('key')} -> pass {1 if vr['ok'] else 0} / fail {0 if vr['ok'] else 1}（命令数）\n"
                                 + (f"日志：{log_path}（{vr['log_bytes']} UTF-8 bytes）" if vr.get("log_path") else "日志保存失败"))
@@ -2683,11 +2876,13 @@ def handle(t, worker):
             if not API_MODE and all(row.get(k) is not None for k in ("in", "cc", "cr", "out")):
                 gates_lib.append_spend(DATA, f"worker:{worker}", gates_lib.usd_of(row, model) if RUNTIME == "claude" else 0,
                                        card=tid, model=model, note="逐轮用量；其他池不占主座席美元账" if RUNTIME != "claude" else None, log=log)
-            last_result = ("证据正文拒收：" + "；".join(body_check["errors"]) + f"。原文保留：{ev_path}（{body_check['chars']} 字符，{body_check['bytes']} UTF-8 bytes）。"
-                           if body_check and not body_check["ok"] else evidence or str(tail))
+            last_result = ("证据正文拒收：" + "；".join(body_check["errors"]) + f"。原文保留：{ev_path}（{evidence_contract.size_text(body_check)}）。"
+                           if body_check and not body_check["ok"] else
+                           f"证据文件 {oversize} UTF-8 bytes 超过读入上限 {EVIDENCE_READ_MAX} bytes，未读入；原文保留：{ev_path}。\n" + str(tail)
+                           if oversize else evidence or str(tail))
             if reason == "passed":
                 last_result = host_delivery(t, last_result, ev_path, vr, rc)
-                made, memo = ([], "") if PROFILE_MODE else harvest_spawned(task, worker)
+                made, memo = ([], "") if PROFILE_MODE or not may_harvest else harvest_spawned(task, worker)
                 if made:
                     last_result += "\n本卡派生子任务：" + str(made)
                 if memo:
@@ -2695,16 +2890,20 @@ def handle(t, worker):
                 return finish("done", last_result)
             LAST_FAIL_FP = reason
             if reason not in ("test_failure", "evidence_contract"):
-                return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result)
+                return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result, reason)
             next_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md")
             context["prompt"] = (evidence_contract.correction(body_check, contract, ev_path, next_path)
                                  if reason == "evidence_contract" else verification_repair.repair_prompt(vr, log_path, next_path, number + 1))
             # 出错先查经验库:用这次失败的输出查,命中的条目附在续修消息后面(开场附过的不重复)。
             context["prompt"] += lessons.failure_block((vr or {}).get("full_out") or (vr or {}).get("out") or "")
-        return finish("wait", "续修轮数用尽。\n" + last_result)
+        return finish("wait", "续修轮数用尽。\n" + last_result, "round_limit")
     except HostCommitError as error:
         LAST_FAIL_FP = "host-commit-refused"
-        return finish("wait", "宿主自动提交停止：" + str(error) + "\n" + last_result)
+        return finish("wait", "宿主自动提交停止：" + str(error) + "\n" + last_result, "host-commit-refused")
+    except Exception:
+        # 未预期的异常由主循环兜底转等待;派生文件同样先留档,不留给下一次成功去收割。
+        set_aside("loop 异常")
+        raise
     finally:
         hb.stop.set()
 
