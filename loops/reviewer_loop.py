@@ -40,6 +40,7 @@ board_env.apply()
 import gates_lib          # revision 绑定门 + 全局预算(诸 loop 共用,勿各自复写)
 import codex_runtime
 import context_lib
+import evidence_contract
 from prompt_items import whole_text, retrieval_hint
 from pool_state import report_exhausted
 from verify_lib import (run_verify, fmt_verify, save_verify_log, verify_registry, cli_deny_rules, auth_home_deny_rules,
@@ -196,7 +197,9 @@ def machine_evidence(t, vr=None):
     hits, muted = [], []
     if vr and vr.get("ok"):
         hits.append(f"循环代跑 {vr.get('key')} → rc={vr.get('rc')} 通过")
-    no_run = bool(re.search(_NO_RUN, r))
+    # 四节合同把未执行统一写成「cmd -> pass 0 / fail 0（未执行）」:同样是「这次没跑」的自陈,
+    # 有它在,正文里的数字与验证标记一律不算机器产出(只剩本轮循环代跑的 vr)。
+    no_run = bool(re.search(_NO_RUN, r)) or evidence_contract.declares_unrun(r)
     executable = t.get("last_runtime") == "codex"
     if re.search(_EV_LOOP, r):
         # A textual marker is not proof that a nonexecuting seat ran a command.

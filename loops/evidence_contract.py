@@ -98,6 +98,25 @@ def check_line(line):
     return None
 
 
+# 宿主附加在正文之后的标记。正文里不许出现：审阅线按这些标记识别循环验证，模型写一行就等于自己盖章。
+_HOST_MARKS = ("宿主验证附录", "验证(由循环执行", "验证（由循环执行")
+
+
+def declares_unrun(text):
+    """证据里有没有「这条检查没执行」的声明：四节形状的「检查」节里出现「未执行」，
+    或任何位置出现一条合同形状的检查行带（未执行）。只做识别，不校验格式。"""
+    text = str(text or "")
+    parts = sections(text)
+    if parts and any("未执行" in line for line in parts["检查"]):
+        return True
+    for line in text.splitlines():
+        if "未执行" in line and "->" in line and len(line) <= LINE_MAX:
+            found = check_line(line)
+            if found and found["unrun"]:
+                return True
+    return False
+
+
 def validate(text, contract):
     measured = measure(text)
     if not contract:
@@ -127,9 +146,16 @@ def validate(text, contract):
                 errors.append("改动每行写 path:行段 一句话")
                 break
         for line in sections["检查"]:
-            if not check_line(line):
+            found = check_line(line)
+            if not found:
                 errors.append("检查每行写 cmd -> pass N / fail N；未执行写 cmd -> pass 0 / fail 0（未执行）")
                 break
+            if found["unrun"] and (int(found["passed"]) or int(found["failed"])):
+                errors.append("声明未执行的检查只能写 pass 0 / fail 0：没执行就没有计数")
+                break
+        if any(line.startswith("——") or any(mark in line for mark in _HOST_MARKS)
+               for lines in sections.values() for line in lines):
+            errors.append("正文不写宿主附录，也不写以「——」开头的行：登记验证由宿主执行并另行附加")
         if any("```" in line for lines in sections.values() for line in lines):
             errors.append("不内联长输出或代码块；只引用日志文件与实际 UTF-8 字节数")
     return {"ok": not errors, **measured, "errors": errors}
@@ -143,7 +169,7 @@ def prompt(contract):
             "# 检查", "cmd -> pass 2 / fail 0",
             "未执行写 cmd -> pass 0 / fail 0（未执行），cmd 替换为实际检查命令；保留命令名和 ->，不要虚构检查。",
             "# 未决", "每条一行；没有写无。",
-            "长输出只引用日志文件及实际字节数；登记验证日志由宿主附加，无须重复执行验证。"]
+            "长输出只引用日志文件及实际字节数；登记验证日志由宿主附加，无须重复执行验证，正文不写宿主附录或以「——」开头的行。"]
 
 
 def size_text(result):
