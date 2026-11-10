@@ -55,6 +55,25 @@ def _split(text):
     return sections, seen, stray
 
 
+def sections(text):
+    """正文是四节形状（最前面依次是那四个标题）时返回各节的非空行，否则 None。
+    第四节之后再出现的标题不属于正文（宿主附录、日志摘录），到那里为止。"""
+    found, current = {}, None
+    for line in str(text or "").splitlines():
+        heading = _heading(line)
+        if heading is not None:
+            if len(found) == len(HEADINGS):
+                break
+            if heading != HEADINGS[len(found)]:
+                return None
+            current = found.setdefault(heading, [])
+        elif line.strip():
+            if current is None:
+                return None
+            current.append(re.sub(r"^\s*[-*]\s+", "", line).strip())
+    return found if len(found) == len(HEADINGS) else None
+
+
 def check_line(line):
     """解析一条检查行 `cmd -> pass N / fail N[（未执行）][；日志: 路径（N bytes）]`。
     合法返回 {"passed", "failed", "unrun"}（计数保持原数字串），否则返回 None。"""

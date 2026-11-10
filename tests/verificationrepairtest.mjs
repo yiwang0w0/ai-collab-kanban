@@ -228,6 +228,40 @@ assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':full,'out':full[-4000
 `);
 });
 
+test("模型声明卡住只认明确的第一人称声明：否定句、转述和验证已通过的交付不算", () => {
+  python(`import verification_repair as v
+green={'ok':True,'rc':0,'out':'PASS'}; red={'ok':False,'rc':1,'out':'AssertionError: 夹具红'}
+# 审阅实测的五句：都不是声明卡住。
+for text in ['# 未决'+chr(10)+'不需要人工介入','# 未决'+chr(10)+'没有需要人工处理的事项','修复了领取后无法继续续租的问题',
+ '本卡没有需要操作者提供的信息','Not stuck; fixed the assertion.']:
+ assert v.classify(0,'完成',green,text)=='passed',text
+ assert v.classify(0,text,green,'交付')=='passed',text
+ assert v.classify(0,'完成',None,text)=='passed',text
+ assert v.classify(0,text,red,text)=='test_failure',text
+for text in ['并不需要人工介入','目前没有任何需要人工处理的地方','不是无法继续，只是慢','there is no reason I cannot proceed',
+ 'I do not think I am stuck','修复了卡住的心跳线程','如确实卡住请明确说明']:
+ assert v.classify(0,text,red,text)=='test_failure',text
+# 登记验证通过就交付：正文里就算写了卡住，也留给审阅看，不在这里拦下。
+for text in ['我已卡住，需要人工处理','# 未决'+chr(10)+'需要人工介入']:
+ assert v.classify(0,text,green,text)=='passed',text
+# 明确的声明：验证未通过或卡没挂验证时判卡住。
+for text in ['我已卡住，需要人工处理','我卡住了。','测试一直不过，需要人工介入','环境不可用需要人工介入','缺少凭据，无法继续。',
+ '需要操作者提供数据库账号',"I'm blocked on credentials.",'I am stuck.','The build is not passing, I cannot proceed without the token.']:
+ assert v.classify(0,text,red,'交付')=='blocked',text
+ assert v.classify(0,'完成',red,'做了一半。'+chr(10)+text)=='blocked',text
+ assert v.classify(0,'完成',None,'做了一半。'+chr(10)+text)=='blocked',text
+ assert v.classify(-2,text,None,None)=='blocked',text
+# 四节证据只看「给人看的结果」和「未决」两节；改动、检查两节里的字样不是声明。
+body=chr(10).join(['# 给人看的结果','完成。','# 改动','core/demo.py:1-2 需要人工介入时给出提示','# 检查','需要人工介入 -> pass 1 / fail 0','# 未决','无'])
+assert v.classify(0,'完成',None,body)=='passed'
+assert v.classify(0,'完成',None,body.replace('# 未决'+chr(10)+'无','# 未决'+chr(10)+'需要人工介入：缺少账号'))=='blocked'
+assert v.classify(0,'完成',None,body.replace('完成。','我卡住了，没有完成。'))=='blocked'
+# 散文证据里代码围栏内的引用不算。
+fence=chr(96)*3
+assert v.classify(0,'完成',None,'日志如下'+chr(10)+fence+chr(10)+'我已卡住，需要人工介入'+chr(10)+fence)=='passed'
+`);
+});
+
 test("分类耗时有界：超长数字串、大段空白与超大输出都在一秒内返回，首尾特征仍被看到", () => {
   python(`import time
 import verification_repair as v
