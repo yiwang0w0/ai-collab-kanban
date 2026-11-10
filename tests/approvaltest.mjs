@@ -481,3 +481,23 @@ test("协作安全:执行者请求的完整 action 出现在事项、单项查�
     assert.equal(seen.decision.result.action, action, "决定后按 id 查,仍能对上原文");
   } finally { await B.stop(); }
 });
+
+test("协作安全:逾期锁经批准接口强制释放时,note 按接口上限 500 字接受;没写 note 的理由写明未写与决定者", { timeout: 120000 }, async () => {
+  const B = await board({ env: { BOARD_COORD_OVERDUE_GRACE_MIN: "0" } });
+  try {
+    const ex = await B.register("agent-n");
+    for (const resource of ["device:long-note", "device:no-note"])
+      assert.equal((await B.api("POST", "/api/coord/locks", ex, { resource, minutes: 0.01, purpose: "回归" })).status, 201);
+    await delay(1200);
+    const items = Object.fromEntries((await B.list()).filter((a) => a.kind === "lock").map((a) => [a.title, a]));
+    const note = "持有者的会话已经结束,设备空着。".repeat(20);   // 320 字:在 note 的 500 字上限内,超过锁理由的 200 字
+    const it = items["device:long-note"];
+    const d = await B.decide(it.id, { decision: "approve", note, source: src("phone-app"), expected_version: it.expected_version });
+    assert.equal(d.status, 200, `合乎接口上限的 note 应被接受:${JSON.stringify(d.body)}`);
+    assert.equal(d.body.decision.note, note, "决定记录保留 note 全文");
+    const locks = async () => (await B.api("GET", "/api/coord/locks?all=1", B.operator)).body.locks;
+    const long = (await locks()).find((l) => l.resource === "device:long-note");
+    assert.equal(long.released_by, "operator");
+    assert.ok([...long.release_reason].length <= 200 && long.release_reason.startsWith(note.slice(0, 150)), `锁记录里的理由截到 200 字以内:${long.release_reason}`);
+  } finally { await B.stop(); }
+});

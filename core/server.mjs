@@ -3016,7 +3016,9 @@ function decideApproval(rawId, body, who) {
       after = () => setTimeout(() => { void restartBoard("approval-upgrade"); }, 80);
     }
   } else if (ref.kind === "lock" && approve) {
-    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: d.note || "经批准接口强制释放" }, now, COORD_GRACE_MS);
+    // note 的上限是 500 字,锁理由是 200 字:理由取 note 折成一行后的前 200 字,全文留在决定记录的 note 里。
+    const why = approvals.oneLine(d.note, coord.REASON_MAX) || "经批准接口强制释放";
+    const rr = coord.release(db, { role: "operator" }, { resource: r.resource, force: true, reason: why }, now, COORD_GRACE_MS);
     noteForceRelease(rr.lock);
     emit("coord.lock", { resource: rr.lock.resource, holder: rr.lock.holder, op: "force_release" });
     result = { resource: rr.lock.resource, released_at: rr.lock.released_at };

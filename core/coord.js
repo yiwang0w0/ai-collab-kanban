@@ -464,7 +464,7 @@ function heartbeat(db, executorId, { taskId = null, leaseMin } = {}, now = Date.
 module.exports = {
   migrate, register, byToken, isExecutor, listExecutors, heartbeat, touch, executorLease, executorOut,
   statusOf, setStatus, STATUS_LIMITS,
-  acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN,
+  acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN, REASON_MAX,
   appendJournal, journal, ARTIFACT_CHECK, JOURNAL_BODY_MAX, RESERVED_IDS,
   stop, sweepStale, listHandoffs, getHandoff, ackHandoff, HANDOFF_LIST_BUDGET,
   EXECUTOR_ID_RE, EXECUTOR_KINDS, EXECUTOR_MAX_LEASE_MIN, isUnsafeChar, hasUnsafeText,
