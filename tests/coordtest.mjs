@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
 import { spawnSync } from "node:child_process";
@@ -363,4 +363,27 @@ test("面板协作区:逾期锁与待接手交接标出,外部执行线不出启
   assert.ok(!html.includes("<甲>"), "执行者名转义");
   const rig = src.slice(src.indexOf("function renderRig(){"), src.indexOf("let MODELS = []"));
   assert.match(rig, /w\.external \? `<span class="wk-acts"><\/span><\/div>`/, "外部执行线不渲染齿轮与启动按钮");
+});
+
+test("协作安全:共享 worker 令牌不能冒用已登记执行者的 id 领卡、续租、交付", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("agent-s1");
+    const t = await B.card("执行者的卡", "ext");
+    const got = await B.take(tok, t.id);
+    assert.equal(got.status, 200, JSON.stringify(got.body));
+    const run = (await B.api("GET", `/api/tasks/${t.id}`, B.worker)).body.task.run_id;
+    assert.ok(run, "run_id 对已认证角色可读,所以身份不能只靠它");
+    const hb = await B.api("POST", `/api/tasks/${t.id}/heartbeat`, B.worker, { worker: "agent-s1", run_id: run });
+    assert.equal(hb.status, 409, `worker 令牌冒名续租:${JSON.stringify(hb.body)}`);
+    const rep = await B.api("POST", `/api/tasks/${t.id}/report`, B.worker, { worker: "agent-s1", run_id: run, outcome: "done", evidence: "伪造" });
+    assert.equal(rep.status, 409, `worker 令牌冒名交付:${JSON.stringify(rep.body)}`);
+    await B.card("外部线上的另一张", "ext");
+    const cl = await B.api("POST", "/api/claim", B.worker, { worker: "agent-s1", line: "ext", worker_protocol_version: 2, agent_instance_id: randomUUID() });
+    assert.equal(cl.status, 409, `worker 令牌冒名领卡:${JSON.stringify(cl.body)}`);
+    const still = (await B.api("GET", `/api/tasks/${t.id}`, B.operator)).body.task;
+    assert.deepEqual([still.status, still.worker], ["in_progress", "agent-s1"], "卡没有被冒名改动");
+    const own = await B.api("POST", `/api/tasks/${t.id}/report`, tok, { run_id: run, outcome: "done", evidence: "执行者自己的交付" });
+    assert.equal(own.status, 200, JSON.stringify(own.body));
+  } finally { await B.stop(); }
 });

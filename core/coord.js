@@ -154,6 +154,9 @@ function getRow(db, id) {
   return db.prepare("SELECT * FROM coord_executors WHERE id=?").get(String(id));
 }
 
+/** 这个名字是不是已登记的执行者 id(领卡身份检查用)。 */
+const isExecutor = (db, id) => typeof id === "string" && !!getRow(db, id);
+
 /** 操作员登记执行者。返回明文令牌(只此一次)。rotate=true 时为已登记的执行者换发令牌,旧令牌立即失效。 */
 function register(db, { id, name, kind = "external", rotate = false } = {}, now = Date.now()) {
   const eid = String(id ?? "").trim();
@@ -423,7 +426,7 @@ function heartbeat(db, executorId, { taskId = null, leaseMin } = {}, now = Date.
 }
 
 module.exports = {
-  migrate, register, byToken, listExecutors, heartbeat, touch, executorLease, executorOut,
+  migrate, register, byToken, isExecutor, listExecutors, heartbeat, touch, executorLease, executorOut,
   statusOf, setStatus, STATUS_LIMITS,
   acquire, release, listLocks, sweepOverdue, RESOURCE_RE, LOCK_MAX_MIN,
   appendJournal, journal, ARTIFACT_CHECK, JOURNAL_BODY_MAX, RESERVED_IDS,

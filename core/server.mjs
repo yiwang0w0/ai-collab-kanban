@@ -2246,6 +2246,9 @@ const readBody = (req) => new Promise((resolve, reject) => {
     if (req.boardRole === "worker" && body?.worker !== undefined &&
         (req.workerSeat ? body.worker !== req.workerSeat.worker : workers.get(String(body.worker))?.workerToken))
       return reject(store.err(store.ERR.CONFLICT, "worker identity does not match its credential"));
+    // 已登记的执行者 id 只属于它自己的 exe_ 令牌:共享 worker 令牌不能把 worker 写成它。
+    if (req.boardRole === "worker" && !req.workerSeat && body?.worker !== undefined && coord.isExecutor(db, body.worker))
+      return reject(store.err(store.ERR.CONFLICT, "worker identity belongs to a registered executor"));
     // 执行者只能以自己的 id 领卡、续租、交付;不给 worker 时按令牌补上。
     if (req.boardRole === "executor" && body && typeof body === "object" && !Array.isArray(body)) {
       if (body.worker !== undefined && body.worker !== req.executor.id)
