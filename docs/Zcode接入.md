@@ -225,6 +225,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 顺序是先落第一个标记、写账本行、再落第二个。只有第一个而没有第二个,说明这次运行还欠一行账:账本写不进去(`LEDGER_WRITE_FAILED`)、`ledger_file` 是 `null`(`LEDGER_NOT_CONFIGURED`),或者中途退出。欠的那一行用 `reconcile --assignment <请求ID>` 补;补之前会先在账本里按分派查一遍,已经有就只补标记,不会写出第二行。
 
 - `calls`、`in`、`cc`、`cr`、`out` 五个用量键恒为 `null`。
+- 这一行同时是看板用量结算(`docs/用量结算.md`)的用量行:`line` 是线名,`phase` 是 `initial`(汇总时读成 `implement`),`ok` 与 `settled_success` 同值,`duration_ms` 是监管进程量到的墙钟(进程没起来或没有进程观察时是 `null`),`cost_usd` 是 `null`、`cost_source` 是 `unknown`。`/api/usage` 与 `board.py usage` 把它归到这条线,词元与费用显示为未知,不是 0。
 - 四个结论各记各的,不合并成一个「成功」:
   - `settled_success`:进程观察是否成功;
   - `task_read_observed`:这次运行是否真的读过卡;

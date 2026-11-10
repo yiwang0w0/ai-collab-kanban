@@ -1358,3 +1358,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - convtest 3/0、servertest 216/0、clitest 114/0、lessonstest 5/0、usagetest 3/0、hometest 25/0、panelcopytest 27/0、decomposetest 84/0、doctorallowtest 17/0、cliversionstest 47/0、upgradeclitest 27/0；阻塞：无。
 - 2026-11-10 首页改版整合第 2b-1 步：并入协作与批准接口的安全修复（claude/home-v2-secfix，29 个提交）。core/server.mjs 一处冲突：正常停止时两边各加了一行（远程入口审计计数落库、干净退出标记），两行都保留，先落库再写标记。面板「待你批准」原样回传服务端给的事项 id 与 expected_version，board.py 取事项 id 的版本段，版本类事项的新版本段两处都不用改。
 - coordtest 24/0、approvaltest 19/0、servertest 216/0、clitest 114/0、convtest 3/0、usagetest 3/0、hometest 25/0、panelcopytest 27/0、looptest 85/0、selftest 402/0、decomposetest 84/0；阻塞：无。
+- 2026-11-10 首页改版整合第 2b-2 步：并入 Zcode 独立执行循环（claude/home-v2-zcode，11 个提交，无冲突；复核提出的 8 条已在该分支修完）并接线：`npm run zcode-worker`，test 串与 CI 加 zcodeworkertest，CI 另补 approval／conv／lessons／usage／doctorallow／cliversions／upgradecli 七组；Zcode 账本行补 line、ok、duration_ms、cost_source，用量结算按线归并，词元与费用是未知不是 0；`*.cjs` 固定 LF。
+- zcodeworkertest 27/0、schedulertest 32/0、dispatchtest 65/0、noderuntimetest 8/0、adaptertest 26/0、supervisortest 28/0、mcptest 43/0、evidencecontracttest 8/0、usagetest 3/0、servertest 216/0、clitest 114/0、looptest 85/0、selftest 402/0；全程合成供应商，没有调用模型。
+- 卡在操作者：Zcode 真实调用（登录 Zcode、填固定摘要与 real 授权、启用预算、在启动终端设 BOARD_ZCODE_RELEASED=1，步骤见 docs/Zcode接入.md）。

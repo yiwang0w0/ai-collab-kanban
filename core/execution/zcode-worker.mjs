@@ -325,8 +325,13 @@ function account({db,c,sourceGate,root,emit},dispatchId){
   catch(e){emit({kind:'attention',code:code(e),dispatch_id:d.dispatch_id});}
  }
  // 供应商没有给用量:五个键一律 null。看板归并遇 null 显示「待核实」,不会记成 0。
- const row={ts:stamp(),card:d.task_id,attempt:run?.last_attempt??null,worker:d.worker,run_id:d.run_id,agent_instance_id:d.agent_instance_id,model:context.model??null,effort:context.effort??null,runtime:'zcode',
+ // 与用量结算(core/usage.mjs)同一套键:line 写线名(worker 是「mcp:角色:分派」,从它推不出线);phase 沿用执行线的 initial(汇总读成 implement);
+ // ok 显式写(reason 是诊断码,不写 ok 会被读成「没通过」);耗时取监管进程量到的墙钟,进程没起来或没有观察时是 null;费用未知。
+ const activity=d.execution?.observation?.process?.activity;
+ const duration_ms=activity&&activity.started_at!==null&&Number.isSafeInteger(activity.elapsed_ms)&&activity.elapsed_ms>=0?activity.elapsed_ms:null;
+ const row={ts:stamp(),card:d.task_id,attempt:run?.last_attempt??null,worker:d.worker,line:c.line,run_id:d.run_id,agent_instance_id:d.agent_instance_id,model:context.model??null,effort:context.effort??null,runtime:'zcode',
   calls:null,in:null,cc:null,cr:null,out:null,note:'供应商未提供用量',round:1,phase:'initial',reason:d.execution?.observation?.diagnostic??d.result?.status??null,
+  ok:settled_success,duration_ms,cost_usd:null,cost_source:'unknown',
   dispatch_id:d.dispatch_id,delivered_via,contract_ok,...(contract_errors?{contract_errors}:{}),task_read_observed,settled_success,host_verify:'not_applicable',host_commit:'not_applicable'};
  // 一次写入一整行。写不进去只报告,不阻塞结算。
  let written=false;

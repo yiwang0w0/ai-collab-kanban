@@ -24,6 +24,7 @@ import {openScheduler} from '../core/execution/scheduler.mjs';
 import {createSourceGate} from '../core/execution/source-gate.mjs';
 import {pinFile} from '../core/execution/supervisor.mjs';
 import {taskExecutionView} from '../core/task-execution-view.mjs';
+import {openLedger} from '../core/usage.mjs';
 import {openZcodeWorker,reconcileZcodeAssignment,validateZcodeWorkerConfig,zcodeWorkerPlan,enqueueZcodeTask,DEFAULT_MAX_LAUNCHES,HARD_MAX_LAUNCHES} from '../core/execution/zcode-worker.mjs';
 const require=createRequire(import.meta.url),store=require('../core/store.js'),vendor=require('./helpers/zcode-mcp-vendor.cjs');
 const HOST_ENV=harnessEnvironment(),WINDOWS=process.platform==='win32',skip=WINDOWS?false:'Zcode 执行循环仅支持 Windows';
@@ -221,6 +222,11 @@ test('端到端:假卡经 enqueue 登记后被领取、执行、按四节合同�
  assert.equal(line.card,id);assert.equal(line.run_id,d.run_id);assert.equal(line.attempt,1);assert.equal(line.dispatch_id,d.dispatch_id);assert.equal(line.runtime,'zcode');assert.equal(line.model,'GLM-5.3');assert.equal(line.effort,'low');
  assert.equal(line.settled_success,true);assert.equal(line.task_read_observed,true);assert.equal(line.delivered_via,'existing_mcp_report_preserved');assert.equal(line.contract_ok,true);assert.ok(!Object.hasOwn(line,'contract_errors'));
  assert.equal(line.host_verify,'not_applicable');assert.equal(line.host_commit,'not_applicable');assert.equal(line.reason,'SUCCESS');assert.ok(line.note);
+ // 看板的用量结算(core/usage.mjs,/api/usage 与 board.py usage 都走它)读的是同一个文件、同一套键:
+ // 这一行归到本线、implement 阶段,算一次没失败的尝试;词元与费用是未知(null),不是 0;耗时是监管进程量到的墙钟。
+ const usage=openLedger(f.config.ledger_file),byLine=usage.group('line').groups,g=byLine[0];
+ assert.deepEqual({lines:byLine.map(x=>x.key),phases:usage.group('phase').groups.map(x=>x.key),rows:g.rows,attempts:g.attempts,tokens:USAGE_KEYS.map(k=>g[k]),cost_usd:g.cost_usd,cost_source:g.cost_source,duration_ms:g.duration_ms,failed_rows:usage.card(id).failed.rows,card_in:usage.cards()[id].in},
+  {lines:['zcode'],phases:['implement'],rows:1,attempts:1,tokens:USAGE_KEYS.map(()=>null),cost_usd:null,cost_source:'unknown',duration_ms:o.process.activity.elapsed_ms,failed_rows:0,card_in:null},JSON.stringify(line));
  for(const name of ['ACCOUNTING.json','ACCOUNTED.json'])assert.ok(existsSync(join(f.scheduler.root,a.assignment_id,name)),name);
  // 把这次合成运行的关键回执留在测试输出里(只有代码、计数与本次临时库的 ID)。
  context.diagnostic(JSON.stringify({card:{status:now.status,waiting_for:now.waiting_for,attempts:now.attempts},dispatch:{phase:d.phase,delivery:result.delivery,usage:result.usage,real_model_call_confirmed:result.real_model_call_confirmed,cleanup:o.process.cleanup},quota_used:used(f),ledger_row:line}));

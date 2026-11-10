@@ -204,6 +204,11 @@ jobs:
         run: bash hrun.sh node tests/schedulertest.mjs
         env:
           PYTHON: python
+      - name: zcodeworkertest (Zcode execution loop on a synthetic vendor; no model calls, no real auth home)
+        if: ${{ !cancelled() && matrix.shard == '4' }}
+        run: bash hrun.sh node tests/zcodeworkertest.mjs
+        env:
+          PYTHON: python
       - name: decisiontest (rulings + handoff)
         if: ${{ !cancelled() && matrix.shard == '3' }}
         run: bash hrun.sh node tests/decisiontest.mjs
@@ -216,6 +221,17 @@ jobs:
       - name: clitest (setup / reset / node preflight)
         if: ${{ !cancelled() && matrix.shard == '4' }}
         run: bash hrun.sh node tests/clitest.mjs
+      - name: doctorallowtest (doctor checks on write-allow rules)
+        if: ${{ !cancelled() && matrix.shard == '2' }}
+        run: bash hrun.sh node tests/doctorallowtest.mjs
+        env:
+          PYTHON: python
+      - name: cliversionstest (executor CLI version watch, local registry stub)
+        if: ${{ !cancelled() && matrix.shard == '2' }}
+        run: bash hrun.sh node tests/cliversionstest.mjs
+      - name: upgradeclitest (executor CLI upgrade flow, all stubs)
+        if: ${{ !cancelled() && matrix.shard == '2' }}
+        run: bash hrun.sh node tests/upgradeclitest.mjs
       - name: gates_lib selftest (revision pin + budget)
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh python gates/gates_lib.py
@@ -241,9 +257,27 @@ jobs:
         run: bash hrun.sh node tests/looptest.mjs
         env:
           PYTHON: python
+      - name: "lessonstest (lesson entries, query and worker-loop hooks; local stubs)"
+        if: ${{ !cancelled() && matrix.shard == '3' }}
+        run: bash hrun.sh node --test tests/lessonstest.mjs
+        env:
+          PYTHON: python
+      - name: "usagetest (usage ledger grouping, settlement events and unknown values)"
+        if: ${{ !cancelled() && matrix.shard == '3' }}
+        run: bash hrun.sh node --test tests/usagetest.mjs
+        env:
+          PYTHON: python
       - name: "coordtest (executors, locks, journal, handoffs)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/coordtest.mjs
+      - name: "approvaltest (pending approvals, decision routing, remote entry and approval tokens)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/approvaltest.mjs
+        env:
+          PYTHON: python
+      - name: "convtest (coordinator conversations, plans and apply; fake coordinator CLI)"
+        if: ${{ !cancelled() && matrix.shard == '2' }}
+        run: bash hrun.sh node --test tests/convtest.mjs
       - name: "servertest (supervisor: stop reasons, backoff, refusal)"
         if: ${{ !cancelled() && matrix.shard == '3' }}
         run: bash hrun.sh node tests/servertest.mjs
