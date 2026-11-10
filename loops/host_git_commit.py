@@ -91,6 +91,89 @@ def _tree(path):
     return result
 
 
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+    _KERNEL = ctypes.WinDLL("kernel32", use_last_error=True)
+    _KERNEL.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+    _KERNEL.CreateJobObjectW.restype = wintypes.HANDLE
+    _KERNEL.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    _KERNEL.AssignProcessToJobObject.restype = wintypes.BOOL
+    _KERNEL.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+    _KERNEL.TerminateJobObject.restype = wintypes.BOOL
+    _KERNEL.CloseHandle.argtypes = (wintypes.HANDLE,)
+    _KERNEL.CloseHandle.restype = wintypes.BOOL
+    _NTDLL = ctypes.WinDLL("ntdll")
+    _NTDLL.NtResumeProcess.argtypes = (wintypes.HANDLE,)
+    _NTDLL.NtResumeProcess.restype = ctypes.c_long
+    CREATE_SUSPENDED = 0x00000004
+
+
+def _spawn(argv, cwd, env, data, timeout):
+    """运行一条 Git 命令，返回 (退出码, stdout, stderr, 是否超时)。超时终止的是整棵进程树。
+    PATH 上的 git.exe 常是转发器，真正的 git、钩子、钩子里的子进程都是它的后代；只终止直接子进程，
+    后代会带着输出管道继续跑完(提交照样生成)，调用方却要等它们结束才拿得到超时。
+    Windows：进程在挂起状态下创建，放进作业对象之后才放行，此后它的所有后代都在作业里，
+    不依赖父子进程号链(MSYS 的 exec 会断链)。POSIX：独立会话的进程组。"""
+    pipes = {"stdin": subprocess.PIPE if data is not None else subprocess.DEVNULL,
+             "stdout": subprocess.PIPE, "stderr": subprocess.PIPE}
+    if os.name != "nt":
+        import signal
+        process = subprocess.Popen(argv, cwd=cwd, env=env, start_new_session=True, **pipes)
+
+        def stop():
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        return _collect(process, data, timeout, stop)
+    job = _KERNEL.CreateJobObjectW(None, None)
+    if not job:
+        raise OSError("无法创建作业对象，错误码 " + str(ctypes.get_last_error()))
+    try:
+        process = subprocess.Popen(argv, cwd=cwd, env=env, creationflags=subprocess.CREATE_NO_WINDOW | CREATE_SUSPENDED, **pipes)
+        try:
+            handle = int(process._handle)
+            if not _KERNEL.AssignProcessToJobObject(job, handle):
+                raise OSError("无法把 Git 进程放进作业对象，错误码 " + str(ctypes.get_last_error()))
+            status = _NTDLL.NtResumeProcess(handle)
+            if status:
+                raise OSError("无法放行挂起的 Git 进程，状态码 " + hex(status & 0xFFFFFFFF))
+        except BaseException:
+            _kill(process)          # 还挂着，一条指令都没执行
+            process.communicate()
+            raise
+        return _collect(process, data, timeout, lambda: _KERNEL.TerminateJobObject(job, 1))
+    finally:
+        _KERNEL.CloseHandle(job)
+
+
+def _collect(process, data, timeout, stop):
+    try:
+        out, err = process.communicate(data, timeout=timeout)
+        return process.returncode, out, err, False
+    except subprocess.TimeoutExpired:
+        stop()
+        try:
+            out, err = process.communicate(timeout=15)
+        except subprocess.TimeoutExpired:
+            _kill(process)
+            out, err = b"", b""
+        return process.returncode, out or b"", err or b"", True
+    except BaseException:
+        stop()
+        _kill(process)
+        raise
+
+
+def _kill(process):
+    """整树终止之后的兜底；进程正在退出时再终止一次会被系统拒绝，不算错。"""
+    try:
+        process.kill()
+    except OSError:
+        pass
+
+
 def is_batch(path):
     """.bat/.cmd 经 cmd.exe 启动，参数会被当作命令行解释；判据与 worker 的 cli_is_batch 相同。"""
     return os.path.splitext(str(path or ""))[1].lower() in (".bat", ".cmd")
@@ -177,11 +260,17 @@ def _path(value):
 
 class HostCommitGuard:
     """一仓一占用；失败不清理索引、不撤销文件、不自动抢残留锁。"""
-    def __init__(self, repo, owner, program=None, protected=(), batch=is_batch):
+    QUERY_TIMEOUT = 60          # 只读查询与 add：秒
+
+    def __init__(self, repo, owner, program=None, protected=(), batch=is_batch, commit_timeout=600):
         """program 是循环启动时 resolve_git 固定下来的 (路径, 字节钉)；protected 是数据目录等
-        模型可写、因而不得存放 Git 程序的目录。"""
+        模型可写、因而不得存放 Git 程序的目录；commit_timeout 是 git commit(含它跑的钩子)的秒数上限，
+        与只读查询的 60 秒分开。"""
         if not os.path.isabs(repo):
             _fail("工作仓必须是绝对路径")
+        if isinstance(commit_timeout, bool) or not isinstance(commit_timeout, (int, float)) or not commit_timeout > 0:
+            _fail("commit 超时必须是正数秒")
+        self.commit_timeout = commit_timeout
         self.requested_root = os.path.abspath(repo)
         self.root = os.path.realpath(repo)
         self.owner = str(owner)
@@ -212,20 +301,39 @@ class HostCommitGuard:
         self.lock = None
         self.bound = None
 
-    def _run(self, args, data=None, optional=False, refresh=False):
-        """refresh 只给领卡时那一次索引落定用；其余调用一律不让 Git 顺手重写索引。"""
+    def _exec(self, args, data, timeout, refresh=False):
+        """(退出码, stdout, stderr, 是否超时)。refresh 只给领卡时那一次索引落定用；
+        其余调用一律不让 Git 顺手重写索引。"""
         if _file(self.git) != self.git_pin:
             _fail("固定 Git 程序已改变")
+        argv = [self.git, "--no-pager"] + ([] if refresh else ["--no-optional-locks"]) + ["--no-replace-objects"] + args
         try:
-            p = subprocess.run([self.git, "--no-pager"] + ([] if refresh else ["--no-optional-locks"]) + ["--no-replace-objects"] + args,
-                               cwd=self.root, env=self.env, input=data, stdout=subprocess.PIPE,
-                               stderr=subprocess.PIPE, timeout=60,
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        except (OSError, subprocess.TimeoutExpired) as e:
+            return _spawn(argv, self.root, self.env, data, timeout)
+        except OSError as e:
             _fail("Git 操作失败，保留现场；" + str(e))
-        if p.returncode and not (optional and p.returncode == 1):
-            _fail("Git 操作失败，保留现场；" + p.stderr.decode("utf-8", "replace").strip())
-        return p.stdout
+
+    def _run(self, args, data=None, optional=False, refresh=False):
+        code, out, err, timed_out = self._exec(args, data, self.QUERY_TIMEOUT, refresh)
+        if timed_out:
+            _fail("Git 操作失败，保留现场；超过 %d 秒，已终止它的整棵进程树" % self.QUERY_TIMEOUT)
+        if code and not (optional and code == 1):
+            _fail("Git 操作失败，保留现场；" + err.decode("utf-8", "replace").strip())
+        return out
+
+    def _commit(self, message):
+        """普通提交。正常结束返回 None；超时返回一句说明——超时不等于没提交(钩子可以在提交写入
+        之后才变慢)，是否已生成由调用方随后核对 HEAD。"""
+        # 提交信息从标准输入给：卡标题是任何能写卡的人的自由文本，不进任何命令行。
+        # 自动维护(gc / maintenance --auto)会在提交收尾时打包引用、重打包对象，改写的是与本卡无关的
+        # 控制文件；宿主这一次提交不顺带做它。钩子、身份、签名等其余配置照旧。
+        code, _, err, timed_out = self._exec(
+            ["-c", "gc.auto=0", "-c", "maintenance.auto=false", "commit", "--cleanup=verbatim", "-F", "-"],
+            (message + "\n").encode("utf-8"), self.commit_timeout)
+        if timed_out:
+            return "git commit 超过 %g 秒，宿主已终止它的整棵进程树(含钩子)" % self.commit_timeout
+        if code:
+            _fail("Git 操作失败，保留现场；" + err.decode("utf-8", "replace").strip())
+        return None
 
     def _text(self, args, optional=False):
         try:
@@ -552,20 +660,25 @@ class HostCommitGuard:
             _fail("模型证据在提交前改变，保留现场")
         self.assert_intact()
         message = "#" + str(task_id) + " " + title.strip()
-        # 提交信息从标准输入给：卡标题是任何能写卡的人的自由文本，不进任何命令行。
-        # 自动维护(gc / maintenance --auto)会在提交收尾时打包引用、重打包对象，改写的是与本卡无关的
-        # 控制文件；宿主这一次提交不顺带做它。钩子、身份、签名等其余配置照旧。
-        self._run(["-c", "gc.auto=0", "-c", "maintenance.auto=false", "commit", "--cleanup=verbatim", "-F", "-"],
-                  (message + "\n").encode("utf-8"))
+        timed_out = self._commit(message)
         # 这是普通提交：保留当前配置与钩子，任何失败均不 reset 或重试。
         # commit 正常改变 HEAD/index/ref。其他控制字节仍须先直接检查，不能先跑新 Git。
-        self._assert_after_commit()
+        try:
+            self._assert_after_commit()
+        except HostCommitError as error:
+            if timed_out:
+                # 进程树是被中途终止的，可能留下锁文件；此时不再启动 Git，也就判断不了提交是否已生成。
+                _fail(timed_out + "；随后的磁盘检查：" + str(error).replace("宿主提交拒绝：", "", 1))
+            raise
         if _file(evidence) != proof:
             _fail("模型证据在普通提交期间改变，保留现场")
         if self._working_snapshot(paths) != self.bound:
             _fail("普通钩子改写了已验证文件，保留已生成提交及占用，需重新核实验证")
         sha = self._text(["rev-parse", "--verify", "HEAD"])
         self._assert_after_commit()
+        if timed_out and sha == self.head:
+            _fail(timed_out + "；核对 HEAD 没有前移，提交没有生成。本卡改动仍在暂存区，占用保留，需人工处理；"
+                  "钩子本来就要跑这么久时，调大 WORKER_HOST_COMMIT_TIMEOUT_SEC")
         if self._branch_value() not in (None, sha):
             _fail("提交后本分支引用与 HEAD 不一致，请人工核实并保留现场")
         parent = self._text(["rev-parse", "--verify", "HEAD^"])
@@ -579,7 +692,11 @@ class HostCommitGuard:
         self._assert_after_commit()
         if self._run(["status", "--porcelain=v1", "-z", "--untracked-files=all"]):
             _fail("提交后仍有改动，请人工核实并保留现场")
-        return {"sha": sha, "paths": paths}
+        result = {"sha": sha, "paths": paths}
+        if timed_out:
+            # 走到这里，父提交、路径、提交信息、工作区都已按本卡核对过：提交是真的，只是收尾没跑完。
+            result["note"] = timed_out + "；核对确认提交已生成，父提交、路径与提交信息均与本卡一致。被终止的钩子可能没有跑完"
+        return result
 
     def _assert_after_commit(self):
         if self.dotgit_identity is not None and _identity(os.path.join(self.root, ".git")) != self.dotgit_identity:

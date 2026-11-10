@@ -201,11 +201,11 @@ for name in ('config','HEAD','index','MERGE_HEAD','index.lock','attributes','nes
  elif name=='hook': path=repo/'.git'/'hooks'/'pre-commit'
  else: path=repo/'.git'/name
  path.write_bytes(path.read_bytes()+b'\\n# mutated' if path.exists() else b'*.txt filter=unexpected\\n')
- original=subprocess.run; calls=[]
+ original=(subprocess.run,subprocess.Popen); calls=[]
  def forbidden(*args,**kwargs): calls.append(args); raise AssertionError('篡改后运行了 Git')
- subprocess.run=forbidden
+ subprocess.run=subprocess.Popen=forbidden
  try: refused(guard.bind_changes)
- finally: subprocess.run=original
+ finally: subprocess.run,subprocess.Popen=original
  assert calls==[],(name,calls)
 `);
 });
@@ -248,11 +248,11 @@ for name in ('include','global-attributes','external-hooks','git-pointer'):
  if path.exists():
   with path.open('r+b') as changed: changed.seek(0,2); changed.write(b'\\n# changed')
  else: path.write_bytes(b'*.txt filter=unexpected\\n')
- original_run=subprocess.run; calls=[]
+ original_run=(subprocess.run,subprocess.Popen); calls=[]
  def forbidden(*args,**kwargs): calls.append(args); raise AssertionError('有效控制面变动后调用了 Git')
- subprocess.run=forbidden
+ subprocess.run=subprocess.Popen=forbidden
  try: refused(guard.bind_changes)
- finally: subprocess.run=original_run
+ finally: subprocess.run,subprocess.Popen=original_run
  assert calls==[],name
  if name=='global-attributes': path.unlink()
 `);
@@ -550,6 +550,44 @@ for kind in ('loose','packed','symbolic','head'):
   with (pathlib.Path(guard.git_dir)/'HEAD').open('ab') as changed: changed.write(b' ')
  else: g(work,'update-ref',branch,other)
  zero_git(guard.bind_changes)
+`);
+});
+
+const SLOW_HOOK = `import time
+def slow_hook(repo,name):
+ marker=repo/'.git'/(name+'-finished'); hook=repo/'.git'/'hooks'/name
+ hook.write_text('#!/bin/sh\\nsleep 6\\necho done > "'+marker.as_posix()+'"\\n',encoding='utf-8'); hook.chmod(0o755)
+ return marker
+`;
+
+test("commit 超时收掉整棵进程树：钩子不再带着管道跑完，提交未生成时如实说明并保留暂存与占用", () => {
+  python(SLOW_HOOK + `repo=setup(); marker=slow_hook(repo,'pre-commit')
+guard=h.HostCommitGuard(str(repo),'第一线',commit_timeout=2).acquire(); before=g(repo,'rev-parse','HEAD')
+(repo/'one.txt').write_text('本轮',encoding='utf-8'); guard.bind_changes(); started=time.monotonic()
+try: guard.finish(17,'钩子太慢',evidence())
+except h.HostCommitError as error: message=str(error)
+else: raise AssertionError('本应拒绝却继续')
+elapsed=time.monotonic()-started
+assert '超过 2 秒' in message and '整棵进程树' in message and '提交没有生成' in message and 'Git 操作失败' not in message,message
+time.sleep(max(0,8-elapsed))
+assert not marker.exists(),'超时之后钩子仍然跑完了：只终止了直接子进程（finish 用时 %.1f 秒）'%elapsed
+assert g(repo,'rev-parse','HEAD')==before and g(repo,'diff','--cached','--name-only')=='one.txt'
+refused(lambda:h.HostCommitGuard(str(repo),'第二线').acquire())
+`);
+});
+
+test("commit 超时但提交其实已生成：核对后按成功处理，原卡报告带 SHA 并说明超时", () => {
+  python(SLOW_HOOK + `repo=setup(); marker=slow_hook(repo,'post-commit')
+` + WORKER + `
+w.HOST_COMMIT_TIMEOUT=3; before=g(repo,'rev-parse','HEAD')
+_,body=w.claim_task('第一线','alpha','default'); task=body['task']; started=time.monotonic()
+assert w.handle(task,'第一线')=='done',deliveries[-1]
+elapsed=time.monotonic()-started; sha=g(repo,'rev-parse','HEAD'); report=deliveries[-1][0][3]
+assert sha!=before and g(repo,'rev-parse','HEAD^')==before and g(repo,'log','-1','--format=%s')=='#1 同文件逐卡提交'
+assert sha in report and '超过 3 秒' in report and '提交已生成' in report and 'Git 操作失败' not in report,report
+time.sleep(max(0,9-elapsed))
+assert not marker.exists(),'超时之后钩子仍然跑完了：只终止了直接子进程（handle 用时 %.1f 秒）'%elapsed
+task['_host_commit_guard'].release()
 `);
 });
 

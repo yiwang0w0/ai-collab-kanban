@@ -632,6 +632,9 @@ def host_commit_enabled():
 
 
 HOST_GIT = None      # 宿主提交用的固定 Git 程序 (绝对路径, 字节钉)；解析一次，之后不再搜索
+# git commit(含它跑的钩子)的秒数上限，与只读查询的 60 秒分开。到时宿主终止整棵进程树，
+# 再核对提交是否其实已经生成。钩子要跑测试、全量检查的仓把它调大。
+HOST_COMMIT_TIMEOUT = max(10, int(os.environ.get("WORKER_HOST_COMMIT_TIMEOUT_SEC", "600")))
 
 
 def host_git():
@@ -668,7 +671,8 @@ def claim_task(worker, line, route):
         refusal = host_commit_gate()
         if refusal:
             raise HostCommitError(refusal)
-        guard = HostCommitGuard(REPO, worker, program=host_git(), protected=[DATA], batch=cli_is_batch).acquire()
+        guard = HostCommitGuard(REPO, worker, program=host_git(), protected=[DATA], batch=cli_is_batch,
+                                commit_timeout=HOST_COMMIT_TIMEOUT).acquire()
     try:
         status, body = call("POST", "/api/claim",
                             {"worker": worker, "line": line, "route": route, "lease_minutes": LEASE,
@@ -710,6 +714,9 @@ def host_delivery(t, evidence, evidence_path, verification, rc):
         raise HostCommitError("模型调用或登记验证未成功，拒绝自动提交；保留现场及仓库占用")
     result = guard.finish(t["id"], t["subject"], evidence_path)
     note = ("宿主本地提交：" + result["sha"] + "\n本卡路径：" + "、".join(result["paths"])) if result["sha"] else "宿主检查：本卡没有文件变化，未创建空提交。"
+    if result.get("note"):
+        # commit 调用超时、核对后确认提交已生成：按成功交付，但把经过写进原卡。
+        note += "\n" + result["note"]
     return evidence + "\n\n" + note
 
 
