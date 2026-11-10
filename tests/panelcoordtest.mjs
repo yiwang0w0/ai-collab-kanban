@@ -114,7 +114,7 @@ function fixture() {
     icon: (name) => `<svg class="ic" aria-hidden="true" focusable="false"><use href="#i-${name}"/></svg>`,
     localTime: (value) => String(value).slice(5, 16).replace("T", " "), lineLabel: (line) => "线·" + line,
     // 请求体是被测代码在 vm 里造的对象:转成本侧的普通对象再记,好做深比较。
-    post: async (url, body) => { posts.push({ url, body: JSON.parse(JSON.stringify(body)) }); if (postFails) throw new Error(postFails); return {}; },
+    post: async (url, body) => { posts.push({ url, body: JSON.parse(JSON.stringify(body)) }); if (postFails) throw typeof postFails === "string" ? new Error(postFails) : postFails; return {}; },
     homeGet: async (path) => {
       gets.push(path);
       if (path === "/api/coord/locks") {
@@ -154,7 +154,7 @@ const coordData = (extra) => ({ executors: [executor("a")], locks: [lock()], jou
 const request = (extra) => ({ id: "request:9:1", kind: "request", title: "ext-a 请求批准", summary: "重启共享设备上的应用", risk: "high",
   detail_ref: { type: "request", id: 9 }, created_at: iso(T0), expected_version: 1, actions: ["approve", "reject"], labels: { approve: "批准", reject: "拒绝" }, ...extra });
 const lockApproval = (extra) => ({ id: "lock:7:1790000000000", kind: "lock", title: "device:test-phone", summary: "device:test-phone 已逾期:甲 · 回归",
-  detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, created_at: iso(T0), expected_version: 1790000000000,
+  detail_ref: { type: "lock", id: 7, lock_id: 7, holder: "a", resource: "device:test-phone" }, created_at: iso(T0), expected_version: 1790000000000,
   actions: ["approve", "reject"], labels: { approve: "强制释放", reject: "保留" }, ...extra });
 const taskApproval = (kind, id) => ({ id: `${kind}:${id}:3`, kind, title: `#${id} 一张卡`, summary: "交付摘要", detail_ref: { type: "task", id },
   created_at: iso(T0), expected_version: 3, actions: ["approve", "reject"], labels: { approve: "通过", reject: "打回" } });
@@ -254,7 +254,7 @@ test("批准决定带备注：请求体含 note；逾期锁的强制释放没写
   assert.equal(release2.textContent, "再按=确认强制释放");
   await f.context.approvalPress(release2);
   assert.deepEqual(f.posts, [{ url: "/api/approvals/lock%3A7%3A1790000000000/decide",
-    body: { decision: "approve", note: "持有者已离开", source: { client: "panel" }, expected_version: 1790000000000 } }]);
+    body: { decision: "approve", note: "持有者已离开", source: { client: "panel" }, expected_version: 1790000000000, lock_id: 7, holder: "a" } }], "强制释放带锁记录编号与持有者");
   assert.equal(f.refreshes(), 1);
   assert.deepEqual(f.state().notes, [], "决定发出后草稿清掉");
   // 执行者请求:备注可不填,拒绝也带 note 字段。
@@ -301,6 +301,33 @@ test("任务类批准行只带人去侧栏：标题是按钮，只有「打开�
   assert.ok(handler.includes('if ((b = hit("button[data-apv], button[data-apt-revoke]"))) approvalPress(b);'));
   assert.ok(handler.includes("openSide({ id, uid: byId.get(id)?.task_uid || null, item: null });") && handler.includes("coordLockShow(b.dataset.apvLock)"));
   assert.ok(handler.includes('hit("button[data-lock-release]")') && handler.includes('hit("button[data-lock-confirm]")') && handler.includes('hit("button[data-lock-cancel]")'));
+});
+
+test("版本确认第一下展开确认说明与改动、不到时复原，第二下才发；强制释放遇 409 LOCK_CHANGED 写「这把锁已换人」不弹窗", async () => {
+  const f = fixture(), box = f.box("approvals");
+  const ver = { id: "version:bless:t.0", kind: "version", title: "确认当前版本", summary: "确认版本 abc", detail_ref: { type: "setup" }, created_at: iso(T0),
+    expected_version: "t.0", actions: ["approve", "reject"], labels: { approve: "确认此版本", reject: "暂不确认" },
+    confirm: "确认版本 abc\n\n上次确认 → 这次,改了什么:\n  a.js | 2 +-\n\n确认之后执行线才会用这个版本起跑。", changes: { prev: "p", files: 1, stat: ["a.js | 2 +-"], more: 0 } };
+  f.set({ approvals: { approvals: [ver] } }); f.context.renderApprovals();
+  const ok = box.querySelector('[data-apv-decision="approve"]');
+  await f.context.approvalPress(ok);
+  const rv = box.querySelector("[data-apv-review]");
+  assert.deepEqual([ok.textContent, ok.dataset.armed, f.timers.length, f.posts.length, rv.querySelectorAll("pre").length], ["再按=确认确认此版本", "1", 0, 0, 1], "清单已在确认说明里:只放一块");
+  assert.match(rv.textContent, /上次确认后改了 1 个文件确认版本 abc[\s\S]*a\.js \| 2 \+-[\s\S]*收起/);
+  f.set({ approvals: { approvals: [] } }); f.context.renderApprovals();
+  assert.equal(box.replacements, 1, "展开着不重画");
+  f.context.approvalReviewClose(rv.querySelector("[data-apv-collapse]"));
+  assert.deepEqual([ok.dataset.armed, box.replacements], ["", 2], "收起:复原并补画");
+  f.set({ approvals: { approvals: [ver] } }); f.context.renderApprovals();
+  const ok2 = box.querySelector('[data-apv-decision="approve"]');
+  await f.context.approvalPress(ok2); await f.context.approvalPress(ok2);
+  assert.deepEqual(f.posts.map((p) => [p.url, p.body.expected_version]), [["/api/approvals/version%3Abless%3At.0/decide", "t.0"]]);
+  f.set({ approvals: { approvals: [lockApproval()] } }); f.context.renderApprovals();
+  const why = box.querySelector("[data-apv-note]"); why.value = "持有者已离开"; f.context.approvalNoteInput(why);
+  f.failPosts(Object.assign(new Error("锁已变化，没有释放"), { status: 409, body: { code: "LOCK_CHANGED" } }));
+  const go = box.querySelector('[data-apv-decision="approve"]');
+  await f.context.approvalPress(go); await f.context.approvalPress(go);
+  assert.deepEqual([f.alerts, box.querySelector(".coord-note").textContent, f.refreshes()], [[], "device:test-phone：这把锁已换人，请重新核对", 2]);
 });
 
 test("锁表强制释放：理由为空时确认钮禁用；上膛写明资源与持有者；请求带 force 与理由", async () => {
@@ -529,7 +556,7 @@ test("结构钉：窄屏行的标题与按钮组占整行，各类行各有模�
   assert.ok(narrow.includes(".apv-acts{gap:var(--sp-2)}"));
   assert.ok(wide.includes(".coord-row > .badge{justify-self:start}"), "徽标不再通栏");
   // 宽屏:批准、锁、交接、令牌各一套列,不共用原来的五列模板。
-  for (const row of [".apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:\"lead title acts\" \"when sum acts\" \". note acts\"",
+  for (const row of [".apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:\"lead title acts\" \"when sum acts\" \". facts acts\" \". note acts\" \". review review\"",
     ".lock-row{grid-template-columns:", ".hand-row{grid-template-columns:", ".apt-row{grid-template-columns:"])
     assert.ok(wide.includes(row), row);
   assert.ok(!/\.coord-row\{[^}]*grid-template-columns:[^}]*\}/.test(wide), "通用行不再带列模板");

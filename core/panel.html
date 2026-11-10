@@ -742,10 +742,17 @@
     font-size:var(--fs-md);font-weight:500;line-height:1.5}
   button.cr-link:hover{background:transparent;border-color:transparent;text-decoration:underline}
   /* 批准行:左 种类与时间,中 标题、摘要、备注上下叠放,右 按钮。强调色左边条只给这一块。 */
-  .apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:"lead title acts" "when sum acts" ". note acts";align-items:start}
+  .apv-row{grid-template-columns:10em minmax(0,1fr) minmax(13.5em,auto);grid-template-areas:"lead title acts" "when sum acts" ". facts acts" ". note acts" ". review review";align-items:start}
   .apv-row .cr-lead,.apv-row .cr-when{padding-top:2px}
   .apv-row .cr-sum{color:var(--dim)}
   .apv-row .cr-note{width:100%;max-width:44em;margin-top:var(--sp-1)}
+  .apv-row .apv-flag{vertical-align:baseline}
+  .cr-facts{grid-area:facts;display:grid;gap:2px;margin-top:2px}
+  .cr-facts p{margin:0;overflow-wrap:anywhere}
+  .cr-review{grid-area:review;display:grid;gap:var(--sp-2);margin-top:var(--sp-1);padding:var(--sp-2) var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);min-width:0}
+  .cr-review p{margin:0}
+  .apv-confirm{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;font-family:inherit;font-size:var(--fs-sm);line-height:1.6;max-height:320px;overflow:auto}
+  .apv-confirm.mono{font-family:var(--mono)}
   .coord-row[data-tone="need"]{box-shadow:inset 3px 0 0 var(--accent);padding-left:var(--sp-2)}
   .apv-acts{gap:var(--sp-1)}
   /* 锁行:上 资源、持有者、状态、按钮;下 用途、时间;理由输入展开时占整行。 */
@@ -779,7 +786,7 @@
     .coord-row > *{grid-area:auto}
     .coord-row > .cr-when{justify-self:end}
     .coord-row > .cr-title,.coord-row > .cr-sum,.coord-row > .cr-who,.coord-row > .cr-use,.coord-row > .cr-state,.coord-row > .cr-note,
-    .coord-row > .cr-acts,.coord-row > .cr-fold,.coord-row > .cr-form{grid-column:1/-1}
+    .coord-row > .cr-acts,.coord-row > .cr-fold,.coord-row > .cr-form,.coord-row > .cr-facts,.coord-row > .cr-review{grid-column:1/-1}
     .coord-row > .cr-state{justify-self:start}
     .coord-row > .cr-acts{justify-content:flex-start}
     .apv-acts{gap:var(--sp-2)}
@@ -888,6 +895,7 @@
   .hcard{gap:6px;padding:10px 12px;cursor:pointer;align-items:stretch;justify-content:flex-start}
   .hc-top{display:flex;align-items:flex-start;gap:var(--sp-2);min-width:0}
   .hc-title{flex:1;min-width:0;font-size:var(--fs-lg);font-weight:600;line-height:1.45}
+  .hc-title.hc-full{display:block;-webkit-line-clamp:unset;overflow:visible}
   .hc-top .badge{flex:none;max-width:55%;white-space:normal;text-align:left}
   .hcard[data-tone="warn"] .hc-st{color:var(--warn)}
   .hc-meta{gap:2px var(--sp-3)}
@@ -3562,7 +3570,10 @@ const COORD_COPY = {
   handoff: { pack: "查看交接包", loading: "正在读取", failed: "交接包读取失败：", done: "已完成", next: "下一步", locks: "交接时仍持有的锁",
              journal: "最近流水编号", ack: "接手方运行", none: "没有记录" },
   approval: { openTask: "打开任务", approve: "批准", reject: "拒绝", note: "备注", notePlaceholder: "备注，可不填",
-              lockNote: "释放理由", lockNotePlaceholder: "释放理由，必填", needNote: "先写释放理由" },
+              lockNote: "释放理由", lockNotePlaceholder: "释放理由，必填", needNote: "先写释放理由",
+              rerun: "再次放行", changed: "配置已变化", workspace: "工作目录", tools: "权限", budget: "预算", held: "收回原因",
+              readOnly: "只读", write: "可改项目文件", noHeld: "没有留下说明", files: (n) => "上次确认后改了 " + n + " 个文件", first: "首次确认",
+              more: (n) => "…还有 " + n + " 行", collapse: "收起" },
   token: { created: "生成于", used: "最近使用", unused: "未使用", revoke: "吊销" },
   remote: { off: "远程入口已关闭。在配置里打开 remote_access。", on: "远程入口：", idle: "未在监听", allow: "允许来源", unset: "未设置", failed: "监听失败" },
 };
@@ -3636,21 +3647,46 @@ function coordJournalView(e){
 /** 待你批准的一行。任务类(待裁定、待验收、放行确认)只给「打开任务」,决定在侧栏里做;版本确认、逾期锁、执行者请求留按钮。
  *  逾期锁的强制释放要写理由(needsNote),理由随备注进流水;其余备注可不填。key 不带版本段,事项换了版本备注草稿还在。 */
 function approvalRowView(a){
-  const C = COORD_COPY, ref = a.detail_ref || {}, task = ref.type === "task" && ref.id != null, lock = a.kind === "lock";
+  const C = COORD_COPY, A = C.approval, ref = a.detail_ref || {}, task = ref.type === "task" && ref.id != null, lock = a.kind === "lock";
+  const version = a.kind === "version", confirm = version ? String(a.confirm ?? "").trim() : "";
+  const ch = version && a.changes && typeof a.changes === "object" ? a.changes : null;
+  // 版本确认:第一下展开确认说明与改动清单,第二下才批。清单已写在确认说明里就不再列一遍。
+  const all = coordList(ch && ch.stat), stat = all.every((s) => confirm.includes(s)) ? [] : all;
+  const review = version && (confirm || ch) ? { confirm, head: ch ? (Number.isSafeInteger(ch.files) ? A.files(ch.files) : A.first) : "",
+    stat, more: stat.length && Number(ch.more) > 0 ? A.more(Number(ch.more)) : "" } : null;
   const actions = task ? [] : (Array.isArray(a.actions) ? a.actions : []).filter((x) => x === "approve" || x === "reject").map((x) => {
-    const label = coordText(a.labels && a.labels[x]) || (x === "approve" ? C.approval.approve : C.approval.reject);
-    return { decision: x, label, armed: armedLabel(label), primary: x === "approve", needsNote: lock && x === "approve" };
+    const label = coordText(a.labels && a.labels[x]) || (x === "approve" ? A.approve : A.reject);
+    return { decision: x, label, armed: armedLabel(label), primary: x === "approve", needsNote: lock && x === "approve", review: !!review && x === "approve" };
   });
-  const id = String(a.id ?? "");
+  const id = String(a.id ?? ""), p = a.kind === "release" && a.execution_profile && typeof a.execution_profile === "object" ? a.execution_profile : null;
+  // 放行确认:摘要里的【再次放行】【配置已变化】换成徽标;工作目录、权限、预算与收回原因逐行写出。
+  const flags = a.kind !== "release" ? [] : [
+    ...(a.rerun ? [{ tone: "warn", icon: "warn", label: A.rerun }] : []),
+    ...(p && p.configuration_changed ? [{ tone: "warn", icon: "warn", label: A.changed }] : [])];
+  const facts = !p && !a.rerun ? [] : [
+    ...(p ? [[A.workspace, coordText(p.workspace_path) || C.unknown, true],
+             [A.tools, p.tools === "read-only" ? A.readOnly : p.tools === "write" ? A.write : C.unknown],
+             [A.budget, approvalBudget(p.budget) || C.unknown]] : []),
+    ...(a.rerun ? [[A.held, coordText(a.held_note) || A.noHeld]] : [])];
+  const raw = a.kind === "request" ? coordText(a.action) || coordText(a.summary) : coordText(a.summary);
   return { id, key: id.split(":").slice(0, 2).join(":"),
     kind: copyLabel(C.apvKind, a.kind, C.unknown) + (a.risk ? " · " + copyLabel(C.apvRisk, a.risk, C.unknown) : ""),
-    title: coordText(a.title) || C.unknown, summary: coordText(a.summary), blocked: coordText(a.blocked), createdAt: a.created_at || null,
-    version: a.expected_version,
-    open: task ? { type: "task", id: ref.id, label: C.approval.openTask } : lock ? { type: "lock", resource: String(ref.resource ?? a.title ?? "") } : null,
+    title: coordText(a.title) || C.unknown, summary: a.kind === "release" ? raw.replace(/^(?:【再次放行】|【配置已变化】)+/, "") : raw,
+    blocked: coordText(a.blocked), createdAt: a.created_at || null, version: a.expected_version, flags, facts, review,
+    lock: lock && (ref.lock_id ?? ref.id) != null ? { id: String(ref.lock_id ?? ref.id), holder: String(ref.holder ?? "") } : null,
+    open: task ? { type: "task", id: ref.id, label: A.openTask } : lock ? { type: "lock", resource: String(ref.resource ?? a.title ?? "") } : null,
     actions,
     note: task || !actions.length ? null
-      : lock ? { required: true, max: 200, label: C.approval.lockNote, placeholder: C.approval.lockNotePlaceholder }
-      : { required: false, max: 500, label: C.approval.note, placeholder: C.approval.notePlaceholder } };
+      : lock ? { required: true, max: 200, label: A.lockNote, placeholder: A.lockNotePlaceholder }
+      : { required: false, max: 500, label: A.note, placeholder: A.notePlaceholder } };
+}
+/** 放行确认里的预算:金额、时限、轮次,有几样写几样;一样都没有返回空串。 */
+function approvalBudget(b){
+  if (!b || typeof b !== "object") return "";
+  const n = (v) => typeof v === "number" && Number.isFinite(v) && v > 0;
+  return [n(b.max_cost_usd) ? "金额上限 " + b.max_cost_usd + " 美元" : "",
+          n(b.timeout_sec) ? "时限 " + (b.timeout_sec < 60 ? b.timeout_sec + " 秒" : coordSpan(b.timeout_sec * 1000)) : "",
+          n(b.max_turns) ? "最多 " + b.max_turns + " 轮" : ""].filter(Boolean).join(" · ");
 }
 /** 批准令牌上方的一句:远程入口开没开、在哪监听、允许谁。 */
 function aptRemoteLine(r){
@@ -3678,6 +3714,8 @@ const coordSig = new Map(), coordPending = new Set();
 const coordOpen = new Set();            // 展开着的折叠,重画后照原样展开
 const coordPacks = new Map();           // 交接编号 → 正在读或已读到的交接包
 const apvNotes = new Map();             // 批准行的备注草稿,重画后填回
+const apvReviews = new Map();           // 版本确认行 → 第一下展开的确认说明与改动清单(按画出来的那一版)
+let apvNote = "";                       // 待你批准上方的一句:强制释放时锁已换人
 /** 这块里有没有不该被重画打断的状态。焦点只算看得见的那种:键盘走到的控件、正在输入的框;鼠标点过按钮留下的焦点不算,
  *  否则点一下不再按,这块就一直停在旧数据上。 */
 function coordBusy(box){
@@ -3685,7 +3723,7 @@ function coordBusy(box){
   let seen = true;
   try { seen = !a || a.matches(":focus-visible"); } catch {}
   if (a && a !== box && a !== document.body && box.contains(a) && seen) return true;
-  return !!(box.querySelector('[data-armed="1"]') || box.querySelector("[data-lock-form]"));
+  return !!(box.querySelector('[data-armed="1"]') || box.querySelector("[data-lock-form]") || box.querySelector("[data-apv-review]"));
 }
 /** 画一块:签名变了且这块不忙才换节点;live 是随时间变的字(键 → 文字),每次都原位更新,不换节点。 */
 function coordFill(box, sig, build, live){
@@ -3818,15 +3856,22 @@ function renderApprovals(){
   const sec = (title, ...nodes) => { const s = homeEl("div"); s.append(homeEl("h4", title), ...nodes); return [s]; };
   if (!d){ coordFill(box, "down", () => sec(C.head.approvals, homeEl("p", C.empty.approvalsDown, "set-empty"))); return; }
   const rows = (d.approvals || []).map(approvalRowView);
-  coordFill(box, JSON.stringify(rows), () => {
+  coordFill(box, JSON.stringify([rows, apvNote]), () => {
     const row = (a) => {
       const el = homeEl("div", undefined, "coord-row apv-row"), acts = homeEl("span", undefined, "cr-acts apv-acts");
       el.dataset.tone = "need"; el.dataset.apvRow = a.id;
       const title = homeEl(a.open ? "button" : "span", a.title, "cr-title" + (a.open ? " cr-link" : ""));
       if (a.open){ title.type = "button"; if (a.open.type === "task") title.dataset.apvTask = String(a.open.id); else title.dataset.apvLock = a.open.resource; }
-      const sum = homeEl("span", a.summary, "cr-sum");
+      const sum = homeEl("span", undefined, "cr-sum");
+      for (const f of a.flags) sum.append(coordBadge(f, "apv-flag"), " ");
+      sum.append(a.summary);
       if (a.blocked) sum.append(a.summary ? " " : "", homeEl("span", a.blocked, "dim"));
       el.append(homeEl("span", a.kind, "cr-lead"), homeEl("span", coordWhen(a.createdAt), "cr-when dim"), title, sum);
+      if (a.facts.length){
+        const facts = homeEl("div", undefined, "cr-facts");
+        for (const [k, v, mono] of a.facts){ const p = homeEl("p"); p.append(homeEl("span", k, "dim"), " ", homeEl("span", v, mono ? "mono" : "")); facts.append(p); }
+        el.append(facts);
+      }
       const draft = a.note ? apvNotes.get(a.key) || "" : "";
       if (a.note){
         const input = homeEl("input"); input.type = "text"; input.className = "cr-note"; input.maxLength = a.note.max;
@@ -3840,14 +3885,38 @@ function renderApprovals(){
       for (const x of a.actions){
         const b = homeEl("button", x.label, x.primary ? "pri" : ""); b.type = "button";
         Object.assign(b.dataset, { apv: a.id, apvDecision: x.decision, apvVersion: String(a.version) });
+        if (a.lock && x.decision === "approve") Object.assign(b.dataset, { apvLockId: a.lock.id, apvHolder: a.lock.holder });
         if (x.needsNote){ b.dataset.apvNeedsNote = "1"; b.disabled = !draft.trim(); b.title = b.disabled ? C.approval.needNote : ""; }
+        if (x.review) b.dataset.apvReviewFor = a.key;
         acts.append(b);
       }
       el.append(acts);
+      if (a.review) apvReviews.set(a.key, a.review);
       return el;
     };
-    return sec(C.head.approvals + " " + rows.length, ...(rows.length ? rows.map(row) : [homeEl("p", C.empty.approvals, "set-empty")]));
+    const note = homeEl("p", apvNote, "coord-note"); note.setAttribute("role", "status");
+    return sec(C.head.approvals + " " + rows.length, note, ...(rows.length ? rows.map(row) : [homeEl("p", C.empty.approvals, "set-empty")]));
   });
+}
+/** 版本确认第一下:在行里展开确认说明与改动清单,按钮上膛且不到时复原;「收起」或第二下之后收回。 */
+function approvalReviewOpen(b){
+  const row = b.closest("[data-apv-row]"), v = apvReviews.get(b.dataset.apvReviewFor), A = COORD_COPY.approval;
+  if (!row || !v || row.querySelector("[data-apv-review]")) return;
+  const box = homeEl("div", undefined, "cr-review"); box.dataset.apvReview = b.dataset.apvReviewFor;
+  if (v.head) box.append(homeEl("p", v.head, "apv-rv-head"));
+  if (v.confirm) box.append(homeEl("pre", v.confirm, "apv-confirm"));
+  if (v.stat.length) box.append(homeEl("pre", v.stat.join("\n") + (v.more ? "\n" + v.more : ""), "apv-confirm mono"));
+  const no = homeEl("button", A.collapse); no.type = "button"; no.dataset.apvCollapse = "1";
+  const acts = homeEl("div", undefined, "coord-acts"); acts.append(no); box.append(acts);
+  row.append(box);
+  coordArm(b, armedLabel(b.textContent), true);
+}
+function approvalReviewClose(b){
+  const row = b.closest("[data-apv-row]"), box = row ? row.querySelector("[data-apv-review]") : null;
+  if (!box) return;
+  box.remove();
+  for (const x of row.querySelectorAll('[data-armed="1"]')) coordDisarm(x);
+  coordFlush();
 }
 function renderApt(){
   const d = aptData, rem = document.getElementById("apt-remote"), box = document.getElementById("apt-list"), C = COORD_COPY;
@@ -3872,29 +3941,35 @@ function renderApt(){
 function coordDisarm(b){
   b.dataset.armed = ""; b.classList.remove("armed"); disarmRestore(b);
 }
-/** 两押的第一下:按钮写上「再按=确认…」,4 秒不按复原,复原后把等着的重画补上。 */
-function coordArm(b, text){
+/** 两押的第一下:按钮写上「再按=确认…」,4 秒不按复原,复原后把等着的重画补上。hold = 展开着核对内容,不到时复原。 */
+function coordArm(b, text, hold){
   b.dataset.armed = "1"; b.dataset.orig = b.textContent; b.classList.add("armed");
   armSwap(b, text);
-  setTimeout(() => { if (b.dataset.armed === "1"){ coordDisarm(b); coordFlush(); } }, 4000);
+  if (!hold) setTimeout(() => { if (b.dataset.armed === "1"){ coordDisarm(b); coordFlush(); } }, 4000);
 }
-/** 待你批准的按钮与批准令牌的吊销:两押。决定带上这一行的备注;逾期锁的强制释放没写理由不上膛、不发请求。 */
+/** 待你批准的按钮与批准令牌的吊销:两押。决定带上这一行的备注;逾期锁的强制释放没写理由不上膛、不发请求,
+ *  请求带锁记录编号与持有者,锁已换人(409 LOCK_CHANGED)时写在这一块上方。版本确认第一下先展开改动。 */
 async function approvalPress(b){
   const row = b.closest("[data-apv-row]"), noteEl = row ? row.querySelector("[data-apv-note]") : null;
   const note = noteEl ? String(noteEl.value || "").trim() : "";
   if (b.dataset.apvNeedsNote === "1" && !note){ noteEl?.focus(); return; }
-  if (b.dataset.armed !== "1"){ coordArm(b, armedLabel(b.textContent)); return; }
-  coordDisarm(b); b.disabled = true;
+  if (b.dataset.armed !== "1"){ if (b.dataset.apvReviewFor) approvalReviewOpen(b); else coordArm(b, armedLabel(b.textContent)); return; }
+  coordDisarm(b); b.disabled = true; apvNote = "";
+  if (row){ row.querySelector("[data-apv-review]")?.remove(); for (const x of row.querySelectorAll('[data-armed="1"]')) coordDisarm(x); }
   try {
     if (b.dataset.aptRevoke) await post(`/api/approval-tokens/${b.dataset.aptRevoke}/revoke`, {});
     else {
-      const v = b.dataset.apvVersion;
-      await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`,
-                 { decision: b.dataset.apvDecision, note, source: { client: "panel" }, expected_version: /^\d+$/.test(v) ? Number(v) : v });
+      const v = b.dataset.apvVersion, body = { decision: b.dataset.apvDecision, note, source: { client: "panel" }, expected_version: /^\d+$/.test(v) ? Number(v) : v };
+      if (b.dataset.apvLockId) Object.assign(body, { lock_id: Number(b.dataset.apvLockId), ...(b.dataset.apvHolder ? { holder: b.dataset.apvHolder } : {}) });
+      await post(`/api/approvals/${encodeURIComponent(b.dataset.apv)}/decide`, body);
       if (noteEl) apvNotes.delete(noteEl.dataset.apvNote);
     }
-  } catch (err){ alert("操作失败:" + copyError(err)); }
-  finally { b.disabled = false; coordSettle(b.closest(".coord")); refresh(); }
+  } catch (err){
+    if (err?.status === 409 && err.body?.code === "LOCK_CHANGED")
+      apvNote = (row?.querySelector(".cr-title")?.textContent || "") + "：" + COORD_COPY.lock.moved;
+    else alert("操作失败:" + copyError(err));
+  }
+  finally { b.disabled = false; coordSettle(b.closest(".coord")); if (apvNote) renderApprovals(); refresh(); }
 }
 /** 批准行的备注:记成草稿;逾期锁那一行的强制释放按钮,理由空着不可按。 */
 function approvalNoteInput(input){
@@ -5098,6 +5173,7 @@ document.addEventListener("click", (e) => {
     openSide({ id, uid: byId.get(id)?.task_uid || null, item: null });
   }
   else if ((b = hit("[data-apv-lock]"))) coordLockShow(b.dataset.apvLock);
+  else if ((b = hit("button[data-apv-collapse]"))) approvalReviewClose(b);
   else if ((b = hit("button[data-lock-release]"))) coordLockOpen(b);
   else if ((b = hit("button[data-lock-confirm]"))) coordLockPress(b);
   else if ((b = hit("button[data-lock-cancel]"))) coordLockClose(b);
@@ -5512,8 +5588,9 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
     if (!a || (a.kind !== "request" && a.kind !== "lock")) continue;
     const request = a.kind === "request";
     mine.push({ key: "approval:" + a.id, uid: null, localId: null, action: "approval", kind: a.kind, id: a.id,
-      title: String((request ? a.summary || a.title : a.title || a.summary) || (request ? "执行者请求" : "逾期锁")), computer: here,
-      updated: String(a.created_at || ""), state: request ? "执行者请求" : "逾期锁", tone: "", next: "到设置页处理", rank: request ? 1 : 3 });
+      title: String((request ? a.action || a.summary || a.title : a.title || a.summary) || (request ? "执行者请求" : "逾期锁")), computer: here,
+      updated: String(a.created_at || ""), state: request ? "执行者请求" : "逾期锁", tone: "", next: "到设置页处理", rank: request ? 1 : 3,
+      ...(request && a.action ? { fullTitle: true } : {}) });
   }
   const byWait = (a, b) => a.rank - b.rank || a.updated.localeCompare(b.updated);   // longest waiting first
   mine.sort(byWait); running.sort(byWait);
@@ -7030,7 +7107,7 @@ function homeCard(item, lane){
   const [tone, ic] = item.tone === "warn" ? ["warn", "warn"] : HOME_BADGE[lane] || ["quiet", "wait"];
   const st = homeEl("span", item.state, "hc-st badge"); st.dataset.tone = tone; st.insertAdjacentHTML("afterbegin", icon(ic));
   const top = homeEl("span", undefined, "hc-top");
-  top.append(homeEl("span", item.title, "hc-title"), st);
+  top.append(homeEl("span", item.title, "hc-title" + (item.fullTitle ? " hc-full" : "")), st);
   meta.append(homeEl("span", item.computer, "hc-pc"));
   if (next) meta.append(homeEl("span", next, "hc-next"));
   b.append(top, meta);

@@ -691,8 +691,8 @@ test("协作区文案：执行者三态与已停止、锁的逾期与持有中�
     assert.deepEqual([v.kind, v.open, v.actions, v.note], [word, { type: "task", id: 9, label: "打开任务" }, [], null], kind);
   }
   const version = coord.approvalRowView(apv("version", { id: "version:upgrade:r2.0", detail_ref: { type: "setup" }, labels: { approve: "更新并重启", reject: "暂不更新" } }));
-  assert.deepEqual(version.actions, [{ decision: "approve", label: "更新并重启", armed: "再按=确认更新并重启", primary: true, needsNote: false },
-    { decision: "reject", label: "暂不更新", armed: "再按=确认暂不更新", primary: false, needsNote: false }]);
+  assert.deepEqual(version.actions, [{ decision: "approve", label: "更新并重启", armed: "再按=确认更新并重启", primary: true, needsNote: false, review: false },
+    { decision: "reject", label: "暂不更新", armed: "再按=确认暂不更新", primary: false, needsNote: false, review: false }]);
   assert.deepEqual([version.open, version.key, version.note], [null, "version:upgrade", { required: false, max: 500, label: "备注", placeholder: "备注，可不填" }]);
   const lk = coord.approvalRowView(apv("lock", { id: "lock:7:1790000000000", title: "device:test-phone", detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, labels: { approve: "强制释放", reject: "保留" } }));
   assert.deepEqual([lk.kind, lk.open, lk.key], ["逾期锁", { type: "lock", resource: "device:test-phone" }, "lock:7"]);
@@ -703,6 +703,18 @@ test("协作区文案：执行者三态与已停止、锁的逾期与持有中�
   const odd = coord.approvalRowView({ id: "future:1:1", kind: "future_kind", risk: "toString", title: "", summary: undefined, actions: ["approve", "escalate"], detail_ref: null });
   assert.deepEqual([odd.kind, odd.title, odd.summary, odd.blocked, odd.createdAt, odd.actions.map((x) => x.decision)], ["待核实 · 待核实", "待核实", "", "", null, ["approve"]],
     "未知的种类和风险写「待核实」,认不得的动作不给按钮");
+  // 第三波:执行者请求写完整 action;放行确认的标记换成徽标并列出工作目录、权限、预算与收回原因;版本确认第一下展开的内容。
+  const full = "重启共享设备上的应用并清掉".repeat(20);
+  assert.equal(coord.approvalRowView(apv("request", { summary: full.slice(0, 159) + "…", action: full, detail_ref: { type: "request", id: 9 } })).summary, full);
+  const rel = coord.approvalRowView(apv("release", { summary: "【再次放行】【配置已变化】Claude CLI · m · high:改首页", rerun: true, held_note: "租约到期，结果未知",
+    execution_profile: { workspace_path: "C:\\work\\repo", tools: "read-only", budget: { max_cost_usd: 2, timeout_sec: 1800, max_turns: 30 }, configuration_changed: true } }));
+  assert.deepEqual([rel.summary, rel.flags.map((f) => [f.label, f.tone]), rel.facts.map(([k, v]) => k + " " + v)],
+    ["Claude CLI · m · high:改首页", [["再次放行", "warn"], ["配置已变化", "warn"]],
+     ["工作目录 C:\\work\\repo", "权限 只读", "预算 金额上限 2 美元 · 时限 30 分钟 · 最多 30 轮", "收回原因 租约到期，结果未知"]]);
+  const vr = coord.approvalRowView(apv("version", { id: "version:bless:t.0", detail_ref: { type: "setup" }, confirm: "确认版本 abc\n\n  a.js | 2 +-\n\n确认之后执行线才会用这个版本起跑。",
+    changes: { prev: "p", files: 1, stat: ["a.js | 2 +-", " 1 file changed"], more: 0 } }));
+  assert.deepEqual([vr.actions.map((x) => x.review), vr.review], [[true, false], { confirm: "确认版本 abc\n\n  a.js | 2 +-\n\n确认之后执行线才会用这个版本起跑。",
+    head: "上次确认后改了 1 个文件", stat: ["a.js | 2 +-", "1 file changed"], more: "" }], "清单里有确认说明没写到的行时另列");
 
   // 上膛的字:再按=确认 + 原按钮文字。
   assert.equal(coord.armedLabel("更新并重启"), "再按=确认更新并重启");
