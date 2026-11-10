@@ -322,6 +322,8 @@ def approvals_cmd(cmd):
             for a in d["approvals"]:
                 risk = f" [{a['risk']}]" if a.get("risk") else ""
                 print(f"  {vis(a['id'])}{vis(risk)}  {vis(a['summary'])}  可选 {'/'.join(a.get('actions') or [])}")
+                # 执行者请求:摘要可能截断,决定是对完整的 action 生效的,所以整段再打一遍。
+                if a.get("action") and a["action"] != a["summary"]: print(f"      完整动作:{vis(a['action'])}")
         elif sub in ("approve", "reject"):
             aid = pos(3)
             if not aid or aid.count(":") < 2:

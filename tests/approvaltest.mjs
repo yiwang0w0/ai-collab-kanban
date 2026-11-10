@@ -459,3 +459,25 @@ test("协作安全:通配监听与 allow_ips 全开按解析后的地址判断,�
   const mapped = cfg({ allow_ips: ["::ffff:192.0.2.0/124"] });
   assert.deepEqual([mapped.allows("192.0.2.5"), mapped.allows("::ffff:192.0.2.5"), mapped.allows("192.0.2.77"), mapped.allows("8.8.8.8")], [true, true, false, false]);
 });
+
+test("协作安全:执行者请求的完整 action 出现在事项、单项查询与决定记录里,不只是截断的摘要", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const ex = await B.register("agent-f");
+    const action = "清理测试设备上的构建缓存".repeat(13) + ";随后重置共享设备并清空其上的测试数据库" + "。".repeat(100);
+    assert.ok([...action].length > 160 && [...action].length <= 300);
+    const rq = (await B.api("POST", "/api/approvals/request", ex, { action, risk: "low" })).body.request;
+    const item = (await B.list()).find((a) => a.id === rq.approval_id);
+    assert.equal([...item.summary].length, 160, "摘要仍是截断的一行");
+    assert.equal(item.action, action, "事项带完整的 action,批准者看得到后半段");
+    assert.equal((await B.api("GET", `/api/approvals/${encodeURIComponent(rq.approval_id)}`, B.operator)).body.approval.action, action);
+    const c = B.cli("approvals", "ls");
+    assert.ok(c.out.includes("随后重置共享设备并清空其上的测试数据库"), `命令行列表显示完整 action:${c.out}`);
+    const d = await B.decide(rq.approval_id, { decision: "approve", source: src("cli"), expected_version: 1 });
+    assert.equal(d.status, 200, JSON.stringify(d.body));
+    assert.equal(d.body.decision.result.action, action, "决定记录存下被批准的原文");
+    const seen = (await B.api("GET", `/api/approvals/${encodeURIComponent(rq.approval_id)}`, ex)).body;
+    assert.equal(seen.approval, null);
+    assert.equal(seen.decision.result.action, action, "决定后按 id 查,仍能对上原文");
+  } finally { await B.stop(); }
+});

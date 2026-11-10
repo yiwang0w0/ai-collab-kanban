@@ -2924,8 +2924,9 @@ function lockApprovalEntry(l) {
 }
 function requestApprovalEntry(r) {
   if (!r) return null;
+  // summary 只有 160 字,而 action 最长 300 字:决定是对整段 action 生效的,所以事项另带完整的 action。
   return { item: { id: r.approval_id, kind: "request", title: `${r.executor} 请求批准`, summary: approvals.oneLine(r.action),
-                   risk: r.risk, executor: r.executor, detail_ref: { type: "request", id: r.id, api: `/api/approvals/${r.approval_id}` },
+                   action: approvals.oneLine(r.action, approvals.ACTION_MAX), risk: r.risk, executor: r.executor, detail_ref: { type: "request", id: r.id, api: `/api/approvals/${r.approval_id}` },
                    created_at: r.created_at, expected_version: 1, actions: [...APPROVE_REJECT], labels: { approve: "批准", reject: "拒绝" } },
            route: { requestId: r.id } };
 }
@@ -3019,6 +3020,8 @@ function decideApproval(rawId, body, who) {
     noteForceRelease(rr.lock);
     emit("coord.lock", { resource: rr.lock.resource, holder: rr.lock.holder, op: "force_release" });
     result = { resource: rr.lock.resource, released_at: rr.lock.released_at };
+  } else if (ref.kind === "request") {
+    result = { action: current.action };   // 决定记录里留下被批准 / 拒绝的原文,事后能对账
   }
   const src = d.source.client + (d.source.device ? "/" + d.source.device : "");
   const text = approvals.oneLine(`${DECISION_VERB[d.decision]} ${rawId}。操作者 ${who.actor},来源 ${src},经 ${who.via}` +
