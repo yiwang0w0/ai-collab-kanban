@@ -974,6 +974,7 @@
   .set-toc button:hover{color:var(--fg);background:var(--hover);border-color:var(--dim2)}
   .set-toc button[aria-current]{color:var(--fg);font-weight:600;border-left-color:var(--accent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
   .set-target{scroll-margin-top:72px}
+  #approvals{scroll-margin-top:120px}   /* 首页带人过来时,「协作」的标题留在页头下面 */
   @media (max-width:900px){
     .set-layout{grid-template-columns:minmax(0,1fr);gap:var(--sp-3)}
     .set-toc{position:relative;top:auto;flex-direction:row;overflow-x:auto;gap:var(--sp-1);padding-bottom:2px;scrollbar-width:thin;
@@ -981,6 +982,7 @@
     .set-toc button{flex:none;white-space:nowrap;border-left:0;border-bottom:2px solid transparent;border-radius:var(--r-sm) var(--r-sm) 0 0}
     .set-toc button[aria-current]{border-bottom-color:var(--accent)}
     .set-target{scroll-margin-top:132px}
+    #approvals{scroll-margin-top:180px}
   }
 
   /* ── 执行器设置:标题行(线名 · 执行器设置 + 运行状态徽标 + 保存状态),一行说明,智能体横向卡 */
@@ -3461,7 +3463,9 @@ function renderNow(){
   //   landing in waiting used to be silent unless the sentries were mounted
   //   (measured on a live deployment: delivered cards sat unheard) — the tab
   //   title now carries the waiting count, visible from any other tab.
-  document.title = c.waiting > 0 ? `(${c.waiting} 待裁)AI 协作看板` : "AI 协作看板";
+  //   执行者请求与逾期锁也在等人,一并数进去(它们不是卡,不在 counts 里)。
+  const asks = (approvalData?.approvals || []).filter((a) => a && (a.kind === "request" || a.kind === "lock")).length;
+  document.title = c.waiting > 0 || asks > 0 ? `(${(c.waiting || 0) + asks} 待裁)AI 协作看板` : "AI 协作看板";
   document.getElementById("f-when").textContent = "刷新于 " + new Date().toTimeString().slice(0,8);
 }
 const set = (id, v) => { document.getElementById(id).textContent = v == null ? "–" : v; };
@@ -5411,8 +5415,9 @@ function homeResolved(t) {
 }
 /** The two home lists and the history list. `tasks` = this board's cards, each carrying `hb`;
  *  `remote` = /api/fleet rows (only other computers' cached copies are read from it);
- *  `actions` = /api/fleet/actions; `nodeNames` = node_id → display name. */
-function homeLists({ tasks = [], localName = "本机", remote = [], actions = null, nodeNames = {}, autoReview = false } = {}) {
+ *  `actions` = /api/fleet/actions; `nodeNames` = node_id → display name;
+ *  `approvals` = /api/approvals 的事项:执行者请求与逾期锁不是卡,从这里进「待我处理」;任务类的事项卡片已经在列表里,不重复进。 */
+function homeLists({ tasks = [], localName = "本机", remote = [], actions = null, nodeNames = {}, autoReview = false, approvals = [] } = {}) {
   const mine = [], running = [], history = [], here = homeName(localName, "本机");
   const place = (row, s) => (s.lane === "mine" ? mine : running).push({ ...row, state: s.state, tone: s.tone, next: s.next, rank: s.rank });
   // 有委派记录的本机卡:状态与下一步用跨机流程的那一步;等对端的进「正在执行」。
@@ -5460,6 +5465,14 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
       const b = (actions.bindings || []).find((x) => x.relation_id === r.relation_id);
       add(r, "result", r.result_id, b && b.task_uid, "交付已回传", "查看交付", 5, from(b && b.target_node_id), b && b.subject);
     }
+  }
+  // 执行者在等的请求排在「执行方在等你决定」那一档,逾期锁排在受阻那一档;都到设置页的「待你批准」里处理。
+  for (const a of Array.isArray(approvals) ? approvals : []) {
+    if (!a || (a.kind !== "request" && a.kind !== "lock")) continue;
+    const request = a.kind === "request";
+    mine.push({ key: "approval:" + a.id, uid: null, localId: null, action: "approval", kind: a.kind, id: a.id,
+      title: String((request ? a.summary || a.title : a.title || a.summary) || (request ? "执行者请求" : "逾期锁")), computer: here,
+      updated: String(a.created_at || ""), state: request ? "执行者请求" : "逾期锁", tone: "", next: "到设置页处理", rank: request ? 1 : 3 });
   }
   const byWait = (a, b) => a.rank - b.rank || a.updated.localeCompare(b.updated);   // longest waiting first
   mine.sort(byWait); running.sort(byWait);
@@ -6093,6 +6106,12 @@ function locateOnBoard(id){
   document.getElementById("task-find").requestSubmit();
 }
 function openHomeItem(item){
+  // 执行者请求与逾期锁在设置页的「待你批准」里处理:切过去并滚到那一块。
+  if (item.action === "approval") {
+    setView("settings");
+    requestAnimationFrame(() => { document.getElementById("approvals")?.scrollIntoView({ block: "start" }); tocMark("set-coord"); });
+    return;
+  }
   // 跨机事项在侧栏里处理:落在本机某张卡上的开那张卡,否则按这件事本身打开。
   if (item.action === "fleet") {
     const card = item.taskUid ? tasks.find((t) => t.task_uid === item.taskUid) : null;
@@ -7049,6 +7068,7 @@ function renderHomeViews(){
     remote: homeFleet?.tasks || [], actions: homeActions,
     nodeNames: Object.fromEntries((nodes || []).map((n) => [n.node_id, n.display_name])),
     autoReview: workers.some((w) => w.line === "review" && w.running),
+    approvals: approvalData?.approvals || [],
   });
   if (homeView === "home"){
     const s = homeStatus({ localName: homeLocalName(), nodes, fleetError: homeFleetError, health: homeHealth,

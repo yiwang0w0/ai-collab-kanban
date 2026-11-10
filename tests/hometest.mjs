@@ -983,3 +983,36 @@ test("跨机结构钉：核对正文不拼编号，编号进技术信息；侧�
   const item = src.slice(src.indexOf("function openHomeItem(item){"), src.indexOf("function sideCard(){"));
   assert.ok(item.includes("openSide({ action: { kind: item.kind, id: item.id }") && !item.includes("fleetApi"));
 });
+
+test("执行者请求与逾期锁进「待我处理」，到设置页处理；任务类批准事项卡片已在列表里，不重复进", () => {
+  const tasks = [card(2, { waiting_for: "decision" }), card(4, { waiting_for: "review" })];
+  // 形状照 GET /api/approvals:任务类带 detail_ref.type = task;锁的标题是资源名;请求的摘要是执行者要做的事。
+  const approvals = [
+    { id: "decision:2:5", kind: "decision", title: "#2 卡 2", summary: "卡 2", detail_ref: { type: "task", id: 2 }, created_at: at(2) },
+    { id: "delivery:4:3", kind: "delivery", title: "#4 卡 4", summary: "卡 4", detail_ref: { type: "task", id: 4 }, created_at: at(4) },
+    { id: "release:9:1.a.0", kind: "release", title: "#9 卡 9", summary: "卡 9", detail_ref: { type: "task", id: 9 }, created_at: at(9) },
+    { id: "version:bless:abc", kind: "version", title: "确认当前版本", summary: "确认版本 abc", detail_ref: { type: "setup" }, created_at: at(1) },
+    { id: "lock:7:1790000000000", kind: "lock", title: "device:test-phone", summary: "device:test-phone 已逾期:甲 · 回归", detail_ref: { type: "lock", id: 7, resource: "device:test-phone" }, created_at: at(6) },
+    { id: "request:3:1", kind: "request", title: "ext-a 请求批准", summary: "重启共享设备上的应用", risk: "high", detail_ref: { type: "request", id: 3 }, created_at: at(5) },
+  ];
+  const { mine } = M.homeLists({ tasks, localName: "台式机 A", approvals });
+  assert.deepEqual(mine.map((r) => [r.localId ?? r.key, r.title, r.state, r.next]), [
+    [2, "卡 2", "执行方在等你决定", "同意或否决"],
+    ["approval:request:3:1", "重启共享设备上的应用", "执行者请求", "到设置页处理"],
+    [4, "卡 4", "待你验收", "通过或打回"],
+    ["approval:lock:7:1790000000000", "device:test-phone", "逾期锁", "到设置页处理"],
+  ], "任务类三种和版本确认都不另出一条");
+  assert.ok(mine.filter((r) => r.action === "approval").every((r) => r.computer === "台式机 A" && r.uid === null && r.localId === null));
+  assert.deepEqual(M.homeLists({ tasks }).mine.map((r) => r.localId), [2, 4], "不传 approvals 时照旧");
+  assert.deepEqual(M.homeLists({ tasks, approvals: null }).mine.map((r) => r.localId), [2, 4]);
+  // 首页的两个状态词与设置页「待你批准」的种类词是同一对。
+  const c0 = src.indexOf("// ── coord-copy(pure;tests/panelcopytest.mjs)──"), c1 = src.indexOf("// ── /coord-copy ──");
+  const kinds = new Function("copyLabel", src.slice(src.indexOf("\n", c0) + 1, c1) + ";return COORD_COPY.apvKind;")(() => "");
+  assert.deepEqual([kinds.request, kinds.lock], ["执行者请求", "逾期锁"]);
+  // 点开:切到设置页并滚到「待你批准」;页签标题的待裁计数加上这两类。
+  const open = src.slice(src.indexOf("function openHomeItem(item){"), src.indexOf("function sideCard(){"));
+  assert.ok(open.includes('if (item.action === "approval") {') && open.includes('setView("settings");') && open.includes('document.getElementById("approvals")?.scrollIntoView({ block: "start" })'));
+  assert.ok(src.includes('const asks = (approvalData?.approvals || []).filter((a) => a && (a.kind === "request" || a.kind === "lock")).length;'));
+  assert.ok(src.includes('document.title = c.waiting > 0 || asks > 0 ? `(${(c.waiting || 0) + asks} 待裁)AI 协作看板` : "AI 协作看板";'));
+  assert.ok(src.includes("approvals: approvalData?.approvals || [],"), "首页把批准事项交给 homeLists");
+});
