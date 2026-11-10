@@ -3314,11 +3314,11 @@ function finishCoordinatorTurn(convId, r, wallMs) {
     // 续接失败(会话文件不在了):不悄悄另开新会话,那样会丢掉上文而人不知道。
     const reason = /No conversation found/i.test(tail) ? "续接不到这次对话之前的会话记录,这次对话不能继续。请开新对话"
       : redact(parsed.reason) + (r.code ? `(退出码 ${r.code}${tail ? ",输出尾部:" + tail : ""})` : "");
-    return conversations.failTurn(db, convId, reason, { usage });
+    return conversations.failTurn(db, convId, reason, { usage, cliCost: parsed.cliCost });
   }
   if (parsed.usage?.denials) console.log(`对话 #${convId}:协调线这一轮有 ${parsed.usage.denials} 次工具调用被拒`);
   conversations.completeTurn(db, convId, { reply: parsed.turn.reply, title: parsed.turn.title ?? null, plan: parsed.turn.plan,
-                                           tools: parsed.tools, usage });
+                                           tools: parsed.tools, usage, cliCost: parsed.cliCost });
 }
 /** 看板停止或重启前收掉在跑的协调线进程(留着就是没人看的模型进程)。 */
 const stopCoordinatorRuns = () => Promise.all([...coordinatorRuns.values()].map(async (run) => { try { await run.stop(); await run.finished; } catch {} }));

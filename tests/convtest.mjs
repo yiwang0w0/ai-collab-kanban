@@ -305,7 +305,8 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     assert.ok(content.includes("3. 迁移旧导出记录 | 线:alpha | 排在 1、2 之后 | 要人确认 | 要跑命令 | 人改过:line") && content.includes("| 已停用"), content);
     assert.ok(content.endsWith("[用户消息]\n这样排可以吗"));
     assert.equal(d.plans.length, 2, "plan 为 null 的一轮不出版本");
-    assert.equal(d.conversation.usage.turns, 2); assert.equal(d.conversation.usage.cost_usd, 0.025);
+    // 续接时 CLI 报的 total_cost_usd 是会话累计(假 CLI 第二轮报 0.025),对话上只加这一轮的差额;词元本来就是这一轮的。
+    assert.deepEqual(d.conversation.usage, { turns: 2, cost_usd: 0.025, in: 22, out: 44, cr: 666, cc: 88 }, "两轮累计与真实 CLI 同形");
     assert.equal(d.conversation.title, "导出功能改造");
 
     // 过不了检查的计划:不出版本,原因记在这一轮的 system 消息上。
