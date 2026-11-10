@@ -1191,6 +1191,7 @@
   .chat-state[data-tone="warn"] .ic{color:var(--warn)}
   .chat-state[data-tone="bad"] .ic{color:var(--bad)}
   .cs-text{flex:1;min-width:0;overflow-wrap:anywhere}
+  .cs-note{flex-basis:100%;min-width:0;color:var(--dim);overflow-wrap:anywhere}
   .chat-compose .home-new form{margin-bottom:var(--sp-2);max-height:min(56vh,520px);overflow:auto}
   .chat-box{display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-3);background:var(--panel);border:1px solid var(--line);
             border-radius:var(--r-md);transition:border-color .15s,box-shadow .15s}
@@ -6194,9 +6195,15 @@ const chatLength = (text) => [...String(text ?? "").trim()].length;
 /** 输入框上方的那一行:没发出去 > 正在回复 > 这条太长 > 协调线不可用 > 上一轮没有完成。null = 不显示。
  *  协调线不可用的原因照服务端给的原样写(GET /api/coordinator 只在两种情况给 available:false:Claude CLI 找不到
  *  或不能直接启动、当前版本还没确认;CLI 登录失效不在这里,表现为那一轮 failed + error)。
- *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 把上一条你的话重发一遍。
- *  since = 这一轮开始的时刻(上一条你的话的 created_at):正在回复时带出,调用方每秒写「已等待 …」。 */
-function chatStateLine({ coordinator = null, conversation = null, sending = false, fail = null, text = "", since = null } = {}) {
+ *  act: "resend" 重发刚才那条;"stop" 停止本轮;"retry" 带 retry_of 重跑上一条你的话(服务端不追加消息)。
+ *  since = 这一轮开始的时刻(上一条你的话的 created_at):正在回复时带出,调用方每秒写「已等待 …」。
+ *  note = 附在这一行下面的一行说明(重试被拒、退回普通发送的原因);没有别的状态时单独成一行。 */
+function chatStateLine({ note = null, ...state } = {}) {
+  const line = chatStateBase(state), why = String(note ?? "").trim();
+  if (!why) return line;
+  return line ? { ...line, note: why } : { tone: "warn", icon: "warn", text: why, act: null, label: "" };
+}
+function chatStateBase({ coordinator = null, conversation = null, sending = false, fail = null, text = "", since = null } = {}) {
   if (fail) return { tone: "bad", icon: "warn", text: "没有发出去：" + fail, act: "resend", label: "重试" };
   if (conversation && conversation.status === "running")
     return { tone: "run", icon: "chat", text: "协调线正在回复", act: "stop", label: "停止本轮", ...(since ? { since: String(since) } : {}) };
@@ -6228,12 +6235,8 @@ function chatTimeline(messages = [], plans = []) {
   const byRev = new Map(plans.map((p) => [p.rev, p])), used = new Set(), out = [];
   const latest = plans.reduce((max, p) => Math.max(max, p.rev), 0), done = plans.find((p) => p.applied), appliedRev = done ? done.rev : null;
   const card = (p) => ({ kind: "plan", plan: p, latest: p.rev === latest, appliedRev });
-  let prev = null;
+  // 每条消息都显示:「重试」带 retry_of 重跑,服务端不追加消息,这里不再合并相同的话。
   for (const m of messages) {
-    // 「重试」把上一条你的话再发一遍:紧挨着的两条相同的你的话只显示一条(中间没有回复,就是同一轮重来)。
-    const same = prev && prev.role === "user" && m.role === "user" && String(prev.text ?? "").trim() === String(m.text ?? "").trim();
-    prev = m;
-    if (same) continue;
     out.push({ kind: "message", message: m });
     if (m.plan_rev != null && byRev.has(m.plan_rev) && !used.has(m.plan_rev)) { used.add(m.plan_rev); out.push(card(byRev.get(m.plan_rev))); }
   }
@@ -7671,8 +7674,11 @@ async function zcodeLoad(){
 setInterval(() => {
   if (homeView === "settings" && !document.hidden && Date.now() - zcodeStatusSlot.at >= 30000) zcodeLoad();
 }, 10000);
-/** Zcode 线:有卡带 zcode 字段的线;还没有这样的卡时,Zcode 已配置就认线名 zcode。 */
+/** Zcode 线:以 /api/zcode/status 的 line(服务端认定的 Zcode 角色线名)为准。没有 line 时(旧服务端,或服务端也定不了)
+ *  才退回旧判定:有卡带 zcode 字段的线;还没有这样的卡时,Zcode 已配置就认线名 zcode。 */
 function zcodeLines(){
+  const line = zcodeStatusSlot.value?.line;
+  if (typeof line === "string" && line.trim()) return new Set([line]);
   const out = new Set();
   for (const t of tasks) if (t && t.zcode && typeof t.line === "string") out.add(t.line);
   if (!out.size && zcodeStatusSlot.value?.configured === true && LINES.includes("zcode")) out.add("zcode");
@@ -7751,7 +7757,7 @@ function homeAfterRefresh(){
 // /api/conversations…;事件 conversation.changed 只当「该刷新了」,收到后重新读列表和当前对话。
 // ⭐ 协调线、人和系统写的字一律走 textContent(homeEl);这一段不拼 innerHTML,图标只用 icon() 的固定标记。
 let chatCoord = null, chatRows = null, chatRowsError = null, chatId = null, chatData = null, chatDataError = null;
-let chatLoadedAt = 0, chatSeq = 0, chatSending = false, chatFail = null, chatTimer = 0, chatStick = true;
+let chatLoadedAt = 0, chatSeq = 0, chatSending = false, chatFail = null, chatNote = null, chatTimer = 0, chatStick = true;   // chatNote:重试被拒、退回普通发送的原因
 let chatArchRows = [], chatRename = null, chatArchOpen = false, chatListNote = null;   // 已归档的对话、正在改名的对话、「已归档」开没开、改名/归档没成的原因
 const chatInput = document.getElementById("chat-input"), chatShell = document.getElementById("chat-shell");
 const chatKey = (id = chatId) => id == null ? "new" : "c:" + id;
@@ -7799,7 +7805,7 @@ function chatChanged(){ if (homeView !== "home") return; clearTimeout(chatTimer)
 /** 换到一个对话(null = 新对话):各对话的输入草稿分开记。 */
 function chatOpen(id){
   chatDraftSave();
-  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatPlanNote = null; chatStick = true; chatRename = null; chatListNote = null;
+  chatId = id ?? null; chatData = null; chatDataError = null; chatFail = null; chatNote = null; chatPlanNote = null; chatStick = true; chatRename = null; chatListNote = null;
   chatSave({ cur: chatId });
   chatInput.value = (chatStore().input || {})[chatKey()] || "";
   chatGrow(); chatDrawer(false); renderChat();
@@ -7823,11 +7829,13 @@ function chatWork(open){
   if (open) (work.querySelector("button:not([disabled]), [tabindex]:not([tabindex='-1'])") || toggle).focus({ preventScroll: true });
   else if (inside || !document.activeElement || document.activeElement === document.body) toggle.focus({ preventScroll: true });
 }
-/** 发一条消息。新对话 = 建对话并带上第一条;text 给了就发它(重试上一轮),不动输入框里正在写的字。 */
-async function chatSend(text){
+/** 发一条消息。新对话 = 建对话并带上第一条;text 给了就发它,不动输入框里正在写的字。
+ *  retryOf 给了 = 重试失败的那一轮:带 retry_of(那条你的消息的 id)让服务端用原文再跑,不追加消息、不重发正文;
+ *  服务端回 409 RETRY_NOT_APPLICABLE 时退回普通发送(text 作为一条新消息),并在状态行下写一行原因。 */
+async function chatSend(text, retryOf = null){
   const typed = text === undefined, message = String(typed ? chatInput.value : text).trim();
   if (!chatCanSend({ coordinator: chatCoord, conversation: chatData?.conversation, sending: chatSending, text: message })) return;
-  chatSending = true; chatFail = null; chatStick = true; renderChat();
+  chatSending = true; chatFail = null; chatNote = null; chatStick = true; renderChat();
   try {
     if (chatId == null) {
       const v = await chatApi("POST", "/api/conversations", { message });
@@ -7836,14 +7844,22 @@ async function chatSend(text){
       chatSave({ cur: chatId, input });
     } else {
       await chatBeforeSend();
-      await chatApi("POST", chatPath("/messages"), { message });
+      if (retryOf == null) await chatApi("POST", chatPath("/messages"), { message });
+      else {
+        try { await chatApi("POST", chatPath("/messages"), { retry_of: retryOf }); }
+        catch (e) {
+          if (e?.code !== "RETRY_NOT_APPLICABLE") throw e;
+          await chatApi("POST", chatPath("/messages"), { message });
+          chatNote = "没能按原条重试（" + (String(e.message || "").trim().replace(/[。．.\s]+$/, "") || "原因未记录") + "），已把这句作为新消息发出。";
+        }
+      }
     }
     if (typed) { chatInput.value = ""; chatGrow(); chatDraftSave(); }
   } catch (e) {
     // 协调线不可用(409 COORDINATOR_UNAVAILABLE):不写「没有发出去 · 重试」——这时重试也发不出去。
     // 原因照服务端给的写在「协调线现在不可用」那一行;字还在输入框里,协调线恢复后再发。
     if (e?.code === "COORDINATOR_UNAVAILABLE") chatCoord = { ...(chatCoord || {}), available: false, reason: e.message };
-    else chatFail = { why: chatErrorText(e), text: typed ? undefined : message };
+    else chatFail = { why: chatErrorText(e), text: typed ? undefined : message, retryOf: typed ? null : retryOf };
   } finally {
     chatSending = false;
     await chatLoad(true);
@@ -7856,9 +7872,10 @@ async function chatStop(){
   try { await chatApi("POST", chatPath("/stop"), {}); } catch (e) { chatFail = { why: chatErrorText(e), text: undefined }; }
   await chatLoad(true);
 }
+/** 「重试」失败的一轮:带上一条你的消息的 id(retry_of)重跑,不再重发正文。 */
 function chatRetryTurn(){
   const last = [...(chatData?.messages || [])].reverse().find((m) => m.role === "user");
-  if (last) chatSend(last.text);
+  if (last) return chatSend(last.text, last.id ?? null);
 }
 /** 当前对话在列表里的两个动作:改名、归档(已归档的是「取消归档」)。改名时换成一个输入框与「保存」「取消」。 */
 function chatItemActs(c, archived){
@@ -8113,7 +8130,7 @@ function chatFill(box, sig, build){
 function chatSync(){
   const conversation = chatData?.conversation || null;
   const since = [...(chatData?.messages || [])].reverse().find((m) => m.role === "user")?.created_at || conversation?.updated_at || null;
-  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value, since });
+  const line = chatStateLine({ coordinator: chatCoord, conversation, sending: chatSending, fail: chatFail?.why || null, text: chatInput.value, since, note: chatNote });
   const state = document.getElementById("chat-state");
   state.hidden = !line;
   if (line) state.dataset.tone = line.tone;
@@ -8125,9 +8142,11 @@ function chatSync(){
     const out = [chatIcon(line.icon), text];
     if (line.act) {
       const b = homeEl("button", line.label); b.type = "button";
-      b.addEventListener("click", () => line.act === "stop" ? chatStop() : line.act === "retry" ? chatRetryTurn() : chatSend(chatFail?.text));
+      // 「没有发出去」的重试沿用原来那次的做法:重试失败的一轮仍带 retry_of,普通发送仍发原文。
+      b.addEventListener("click", () => line.act === "stop" ? chatStop() : line.act === "retry" ? chatRetryTurn() : chatSend(chatFail?.text, chatFail?.retryOf ?? null));
       out.push(b);
     }
+    if (line.note) out.push(homeEl("span", line.note, "cs-note"));
     return out;
   });
   chatWaitTick();

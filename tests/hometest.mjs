@@ -890,10 +890,10 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   const plans = [{ ...plan, rev: 1, created_at: at(2) }, { ...plan, rev: 2, author: "human", created_at: at(4) }];
   assert.deepEqual(C.chatTimeline(messages, plans).map((x) => x.kind === "plan" ? "计划" + x.plan.rev + (x.latest ? "*" : "") : "消息" + x.message.id),
     ["消息1", "消息2", "计划1", "计划2*", "消息3"]);
-  // 第三波:重试把上一条你的话再发一遍,紧挨着的同一句只显示一条;回复中带出这一轮开始的时刻,已等待的时长按秒、分写
+  // 重试带 retry_of、服务端不追加消息:消息流不再合并紧挨着的同一句,存了几条就显示几条;回复中带出这一轮开始的时刻,已等待的时长按秒、分写
   const retried = [...messages, { id: 4, role: "user", text: " 再改 ", created_at: at(6) }, { id: 5, role: "coordinator", text: "改好了", created_at: at(7) },
     { id: 6, role: "user", text: "再改", created_at: at(8) }];
-  assert.deepEqual(C.chatTimeline(retried, []).map((x) => x.message.id), [1, 2, 3, 5, 6], "中间有回复的同一句照常显示");
+  assert.deepEqual(C.chatTimeline(retried, []).map((x) => x.message.id), [1, 2, 3, 4, 5, 6], "紧挨着的同一句也各自显示");
   assert.deepEqual([C.chatStateLine({ conversation: { status: "running" }, since: at(6) }).since, C.chatWaited(45000), C.chatWaited(185000), C.chatWaited(120000), C.chatWaited(NaN)],
     [at(6), "已等待 45 秒", "已等待 3 分 5 秒", "已等待 2 分", ""]);
 
@@ -951,12 +951,12 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
 
   // 发送被拒(真实的 chatSend 切出来跑,接口换成替身):409 COORDINATOR_UNAVAILABLE 不写「没有发出去 · 重试」
   // (这时重试也发不出去),输入框上方照服务端给的原因写「协调线现在不可用」,字留在输入框里;别的拒绝照旧。
-  const s0 = src.indexOf("async function chatSend(text){"), s1 = src.indexOf("/** 发消息前要先做完的事", s0);
+  const s0 = src.indexOf("async function chatSend(text, retryOf = null){"), s1 = src.indexOf("/** 发消息前要先做完的事", s0);
   assert.ok(s0 > 0 && s1 > s0, "chatSend 没找到");
   const sendRefused = async (error) => {
     const input = { value: "把导出做成可配置的" };
     const run = new Function("chatInput", "chatCanSend", "chatApi", "chatErrorText", `
-      let chatCoord = { available: true }, chatData = null, chatSending = false, chatFail = null, chatStick = true, chatId = null;
+      let chatCoord = { available: true }, chatData = null, chatSending = false, chatFail = null, chatNote = null, chatStick = true, chatId = null;
       const renderChat = () => {}, chatLoad = async () => {}, chatGrow = () => {}, chatDraftSave = () => {}, chatStore = () => ({}), chatSave = () => {},
         chatBeforeSend = async () => {}, chatPath = () => "";
       ${src.slice(s0, s1)}
@@ -969,6 +969,59 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
     ["协调线现在不可用：这个版本还没确认过。确认当前版本后协调线才能用。可以先用「手动建卡」。", null, "把导出做成可配置的"]);
   const [running] = await sendRefused(Object.assign(Error("协调线还在回复上一条消息"), { status: 409, code: "TURN_RUNNING" }));
   assert.deepEqual([running.text, running.act], ["没有发出去：看板的原话：协调线还在回复上一条消息", "resend"]);
+});
+
+test("对话「重试」带 retry_of 重跑上一条你的消息、不重发正文;409 RETRY_NOT_APPLICABLE 退回普通发送并写一行原因", async () => {
+  const c0 = src.indexOf("// ── chat-model(pure;tests/hometest.mjs)──"), c1 = src.indexOf("// ── /chat-model ──");
+  const C = new Function(src.slice(src.indexOf("\n", c0) + 1, c1) + ";return {chatStateLine,chatCanSend};")();
+  // 真实的 chatSend 与 chatRetryTurn 切出来跑,接口换成替身
+  const s0 = src.indexOf("async function chatSend(text, retryOf = null){"), s1 = src.indexOf("/** 发消息前要先做完的事", s0);
+  const r0 = src.indexOf("/** 「重试」失败的一轮"), r1 = src.indexOf("/** 当前对话在列表里的两个动作", r0);
+  assert.ok(s0 > 0 && s1 > s0 && r0 > 0 && r1 > r0, "chatSend / chatRetryTurn 没找到");
+  const messages = [{ id: 7, role: "user", text: "做导出" }, { id: 8, role: "coordinator", text: "好" }, { id: 9, role: "user", text: "再改成可配置" }];
+  const retry = async (answer) => {
+    const calls = [], input = { value: "正在写的下一句" };
+    const run = new Function("chatInput", "chatCanSend", "chatApi", "chatErrorText", "chatData", `
+      let chatCoord = { available: true }, chatSending = false, chatFail = null, chatNote = null, chatStick = true, chatId = 3;
+      const renderChat = () => {}, chatLoad = async () => {}, chatGrow = () => {}, chatDraftSave = () => {}, chatStore = () => ({}), chatSave = () => {},
+        chatBeforeSend = async () => {}, chatPath = (rest = "") => "/api/conversations/3" + rest;
+      ${src.slice(s0, s1)}
+      ${src.slice(r0, r1)}
+      return chatRetryTurn().then(() => ({ fail: chatFail, note: chatNote }));`);
+    const after = await run(input, C.chatCanSend, async (method, path, body) => { calls.push([method, path, body]); return answer(body); }, (e) => e.message,
+      { conversation: { status: "failed", error: "协调线超时" }, messages });
+    return { calls, ...after, typed: input.value };
+  };
+  // 接受:只发一次 retry_of(上一条你的消息的 id),不带正文;输入框里正在写的字不动
+  const ok = await retry(() => ({ turn: { id: 9, status: "running" } }));
+  assert.deepEqual(ok.calls, [["POST", "/api/conversations/3/messages", { retry_of: 9 }]]);
+  assert.deepEqual([ok.fail, ok.note, ok.typed], [null, null, "正在写的下一句"]);
+  // 409 RETRY_NOT_APPLICABLE:退回普通发送(原文作为一条新消息),状态行下写一行原因
+  const refused = await retry((body) => {
+    if (body.retry_of) throw Object.assign(Error("这条消息不能重试:它已经得到协调线的回复"), { status: 409, code: "RETRY_NOT_APPLICABLE" });
+    return { turn: { id: 10, status: "running" } };
+  });
+  assert.deepEqual(refused.calls.map((c) => c[2]), [{ retry_of: 9 }, { message: "再改成可配置" }]);
+  assert.equal(refused.note, "没能按原条重试（这条消息不能重试:它已经得到协调线的回复），已把这句作为新消息发出。");
+  const shown = C.chatStateLine({ coordinator: { available: true }, conversation: { status: "running" }, note: refused.note });
+  assert.deepEqual([shown.text, shown.act, shown.note], ["协调线正在回复", "stop", refused.note]);
+  assert.equal(C.chatStateLine({ coordinator: { available: true }, conversation: { status: "idle" }, note: refused.note }).text, refused.note, "没有别的状态时单独一行");
+  // 别的拒绝不退回普通发送:写「没有发出去」,再按「重试」仍带 retry_of
+  const busy = await retry(() => { throw Object.assign(Error("协调线还在回复上一条消息"), { status: 409, code: "TURN_RUNNING" }); });
+  assert.deepEqual([busy.calls.length, busy.fail.why, busy.fail.retryOf, busy.note], [1, "协调线还在回复上一条消息", 9, null]);
+  assert.ok(src.includes("chatSend(chatFail?.text, chatFail?.retryOf ?? null)"), "「没有发出去」的重试沿用原来那次的 retry_of");
+});
+
+test("Zcode 线以 /api/zcode/status 的 line 为准,没有 line 时才按卡与线名 zcode 判断", () => {
+  const z0 = src.indexOf("function zcodeLines(){"), z1 = src.indexOf("function renderZcode(){", z0);
+  assert.ok(z0 > 0 && z1 > z0, "zcodeLines 没找到");
+  const lines = (status, tasks, LINES = ["zcode", "engine", "glm"]) =>
+    [...new Function("tasks", "zcodeStatusSlot", "LINES", src.slice(z0, z1) + "\nreturn zcodeLines();")(tasks, { value: status }, LINES)];
+  const zcard = { line: "glm", zcode: { request_state: "dispatched" } };
+  assert.deepEqual(lines({ configured: true, line: "engine", loop: {} }, [zcard]), ["engine"], "服务端给了 line 就只认它,不再看卡");
+  assert.deepEqual(lines({ configured: true, line: null, loop: {} }, [zcard]), ["glm"], "line 为 null:退回按卡判断");
+  assert.deepEqual(lines({ configured: true, loop: {} }, []), ["zcode"], "旧服务端没有 line、也没有卡:已配置就认线名 zcode");
+  assert.deepEqual(lines({ configured: false, line: null, loop: {} }, []), [], "没配置、没有卡:没有 Zcode 线");
 });
 
 // ── 跨机事项按任务归拢:fleetLinks / fleetStep ──
