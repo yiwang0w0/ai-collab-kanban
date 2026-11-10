@@ -228,6 +228,13 @@ try {
        && names.includes("Bash") && names.includes("Edit") && names.includes("WebFetch") && !names.includes("Write"),
        JSON.stringify(rules.slice(0, 6)));
     ok("R4l ⭐不接浏览器集成(--no-chrome:它带进来的工具不在 --tools 管辖内)", av.includes("--no-chrome"));
+    // 工作仓 git 元数据只读不写(与执行线同一份规则;审阅线的写放行只有判决目录,这里是纵深)。
+    const rootFwd = (WINP ? "" : "/") + ROOT.replace(/\\/g, "/");
+    const hasRule = (r) => rules.some((x) => WINP ? x.toLowerCase() === r.toLowerCase() : x === r);
+    ok("R4m ⭐工作仓 .git 进 Edit 拒绝(.git 本身 + .git/**);没有对应的 Read 拒绝(只挡写)",
+       hasRule(`Edit(${rootFwd}/.git)`) && hasRule(`Edit(${rootFwd}/.git/**)`)
+       && !rules.some((r) => /^Read\(/.test(r) && /\/\.git[/)]/.test(r)),
+       rules.filter((r) => /\/\.git[/)]/.test(r)).join(" ") || "(没有 .git 规则)");
   }
 
   console.log(NL + "[§3 机器产出闸:验收要机器、证据纯散文、模型说 approve → 机械降 escalate]");

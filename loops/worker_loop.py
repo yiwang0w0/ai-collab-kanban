@@ -55,7 +55,8 @@ from pool_state import RATE_LIMIT_PAT, report_exhausted
 # 验证的执行器统一在 verify_lib(审阅将来与之共用)。
 from prompt_items import whole_text, retrieval_hint
 from verify_lib import (run_verify, fmt_verify, save_verify_log, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules,  # noqa: F401
-                        deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules, cli_denied_tools)
+                        deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules, cli_denied_tools,
+                        git_dir_deny_rules)
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
 # clash, and ignoring it here would aim this client at the DEFAULT port's board.
@@ -1006,13 +1007,48 @@ def prompt_selftest():
     deny_names = cli_denied_tools(WORKER_TOOLS)
     ok("⭐主座席 argv 带 --disallowedTools:开头是显式工具名段,其后紧跟全部路径规则",
        "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:]
-       == deny_names + rules + [verify_log_rule] + auth_home_deny_rules(),
+       == deny_names + rules + [verify_log_rule] + auth_home_deny_rules() + git_dir_deny_rules(REPO),
        str(av[av.index("--disallowedTools") + 1:][:4]) if "--disallowedTools" in av else "(无)")
     ok("⭐显式工具名段 = DENIED_TOOLS 去掉 write 档白名单:Bash/PowerShell/联网/子代理在内,Write/Edit 不在",
        deny_names == [n for n in DENIED_TOOLS if n not in WORKER_TOOLS]
        and all(n in deny_names for n in ("Bash", "PowerShell", "NotebookEdit", "WebFetch", "WebSearch", "Task", "Skill"))
        and not set(deny_names) & set(WORKER_TOOLS) and len(deny_names) == len(DENIED_TOOLS) - 2, str(deny_names[:6]))
     ok("⭐不接浏览器集成(--no-chrome:它带进来的工具不在 --tools 管辖内)", "--no-chrome" in av)
+    # ── 工作仓 git 元数据只读不写(外部审核 2026-11-10):write 档的 Edit(<工作仓>/**) 放行盖住了
+    #    .git/config 与 .git/hooks,写进去不进 git status,而别人跑 git 时会被执行。
+    import tempfile as _tg
+    git_rules = git_dir_deny_rules(REPO)
+    repo_fwd = deny_path(REPO).rstrip("/")
+    ok("⭐工作仓 .git 进 Edit 拒绝(.git 本身 + .git/**);只挡写,不挡读",
+       git_rules[:2] == [f"Edit({repo_fwd}/.git)", f"Edit({repo_fwd}/.git/**)"]
+       and all(r.startswith("Edit(") for r in git_rules), str(git_rules[:2]))
+    ok("⭐write 档:.git 的拒绝与工作仓的写放行在同一条 argv 里(拒绝胜过放行)",
+       all(r in deny_values for r in git_rules) and f"Edit({repo_fwd}/**)" in _vals(av, "--allowedTools"))
+    _g = _tg.mkdtemp(prefix="gitdeny-")
+    _main, _wt, _plain = os.path.join(_g, "main"), os.path.join(_g, "wt"), os.path.join(_g, "plain")
+    _real = os.path.join(_main, ".git", "worktrees", "wt")
+    for _d in (_real, _wt, _plain): os.makedirs(_d)
+    with io.open(os.path.join(_real, "commondir"), "w", encoding="utf-8") as _f: _f.write("../.." + chr(10))
+    with io.open(os.path.join(_wt, ".git"), "w", encoding="utf-8") as _f: _f.write("gitdir: " + _real.replace("\\", "/") + chr(10))
+    wt_want = [f"Edit({deny_path(_wt)}/.git)", f"Edit({deny_path(_wt)}/.git/**)",
+               f"Edit({deny_path(_real)}/**)", f"Edit({deny_path(os.path.join(_main, '.git'))}/**)"]
+    wt_rules = git_dir_deny_rules(_wt)
+    ok("⭐worktree 形(.git 是文件):工作仓的 .git、主仓里的真实目录、公共目录(hooks 与 config 所在)都挡",
+       wt_rules == wt_want, str(wt_rules))
+    with io.open(os.path.join(_wt, ".git"), "w", encoding="utf-8") as _f: _f.write("gitdir: ../main/.git/worktrees/wt" + chr(10))
+    ok("worktree 形:gitdir 写成相对路径时按工作仓解析,结果相同", git_dir_deny_rules(_wt) == wt_want, str(git_dir_deny_rules(_wt)))
+    ok("(对照)不是 git 仓:仍产 .git 两条(模型也不该在里面新建一个 .git)",
+       git_dir_deny_rules(_plain) == [f"Edit({deny_path(_plain)}/.git)", f"Edit({deny_path(_plain)}/.git/**)"])
+    with io.open(os.path.join(_plain, ".git"), "w", encoding="utf-8") as _f: _f.write("不是指针" + chr(10))
+    _refused = []
+    for _bad in (_plain, "相对/路径", ""):
+        try:
+            git_dir_deny_rules(_bad); _refused.append(False)
+        except ValueError:
+            _refused.append(True)
+    ok("⭐.git 是文件却读不出指向 / 工作仓不是绝对路径 ⇒ ValueError(拒绝启动,不猜真实目录在哪)",
+       _refused == [True, True, True], str(_refused))
+    shutil.rmtree(_g, ignore_errors=True)
     verify_sample = deny_path(os.path.join(EVID, "verify_runs", "run-1", "round-1.log"))
     ok("宿主验证日志拒绝修改、允许读取，模型交付证据仍可写",
        verify_log_rule in deny_values
@@ -1542,6 +1578,10 @@ def cli_argv(prompt, sargs, model, effort):
         其后是 v0.17.0 起的**路径规则** —— 令牌目录与登记簿、全部执行配置的认证目录对模型不可读
         不可写(cli_deny_rules / auth_home_deny_rules);拒绝胜过放行,所以它们即便落在放行目录之内
         也仍然读不得写不得。
+        再其后是工作仓 git 元数据的 Edit 拒绝(verify_lib.git_dir_deny_rules):write 档的写放行
+        `Edit(<工作仓>/**)` 盖住了 `.git/config` 与 `.git/hooks`,往那里写不进 git status,而协调者
+        或 loop 下一次跑 git 时会被执行 —— 所以 `.git`(worktree 形还有主仓里的真实目录与公共目录)
+        只读不写。
     ⚠ 证据目录要**单独** `--add-dir`:split 部署里 <data> 在工作仓之外(acceptEdits 时代靠「写哪都
       放行」蒙过去了),dontAsk 下不挂就连证据文件都交不出来。"""
     tools = READONLY_TOOLS if TOOL_PROFILE == "read-only" else WORKER_TOOLS
@@ -1573,6 +1613,8 @@ def cli_argv(prompt, sargs, model, effort):
         # 全部执行配置的认证目录(可自定义到数据目录之外,不在 PROTECTED 的 auth/** 里):旧线与显式配置
         #   一样,文件工具对每个目录都不读不写(verify_lib.auth_home_deny_rules)。
         *auth_home_deny_rules(),
+        # 工作仓的 git 元数据只读不写(拒绝胜过上面 `Edit(<工作仓>/**)` 的放行)。
+        *git_dir_deny_rules(REPO),
         *((READONLY_RULES or []) if TOOL_PROFILE == "read-only" else []),
     ]
 
@@ -2771,6 +2813,13 @@ def main():
             cli_write_allow_rules([REPO, EVID])
         except ValueError as e:
             print(f"[worker] ⛔ {e} —— 写放行规则组不出来(查 BOARD_REPO / BOARD_DATA_DIR),拒绝启动", flush=True)
+            sys.exit(gates_lib.EXIT_REFUSED)
+        # 工作仓 git 元数据的写拒绝(git_dir_deny_rules)。`.git` 是文件却读不出指向 = 不知道真实目录
+        #   在哪 ⇒ 挡不全,不许起跑。
+        try:
+            git_dir_deny_rules(REPO)
+        except ValueError as e:
+            print(f"[worker] ⛔ {e} —— 工作仓 git 元数据的写拒绝规则组不出来,拒绝启动", flush=True)
             sys.exit(gates_lib.EXIT_REFUSED)
     global READONLY_RULES
     if TOOL_PROFILE == "read-only" and RUNTIME == "claude" and not API_MODE:

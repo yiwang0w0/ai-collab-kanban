@@ -43,7 +43,7 @@ import context_lib
 from prompt_items import whole_text, retrieval_hint
 from pool_state import report_exhausted
 from verify_lib import (run_verify, fmt_verify, save_verify_log, verify_registry, cli_deny_rules, auth_home_deny_rules,
-                        cli_write_allow_rules, cli_denied_tools)
+                        cli_write_allow_rules, cli_denied_tools, git_dir_deny_rules)
 
 BASE = os.environ.get("BOARD_URL") or (
     "http://127.0.0.1:" + os.environ["BOARD_PORT"] if os.environ.get("BOARD_PORT")
@@ -618,7 +618,9 @@ def review_cli_argv(cli, prompt):
       · `--disallowedTools` 开头是显式工具名段(verify_lib.cli_denied_tools:拆解器同一份清单去掉
         REVIEW_TOOLS;白名单之外的纵深),其后是路径规则:令牌目录与登记簿对审阅模型不可读不可写
         (v0.17.0,verify_lib.cli_deny_rules),全部执行配置的认证目录同样(auth_home_deny_rules)。
-        拒绝胜过放行 ⇒ 它们落在判决目录的兄弟位置也仍然读不得写不得。"""
+        拒绝胜过放行 ⇒ 它们落在判决目录的兄弟位置也仍然读不得写不得。
+        末尾是工作仓 git 元数据的 Edit 拒绝(verify_lib.git_dir_deny_rules)。审阅线的写放行只有判决
+        目录,`.git` 本来就写不进去;这一段是纵深,也让两条线对 `.git` 的立场是同一份规则。"""
     return cli + ["-p", prompt, "--model", MODEL, "--effort", EFFORT,
                   *(["--max-budget-usd", REVIEWER_BUDGET]
                     if REVIEWER_BUDGET not in ("0", "") else []),
@@ -631,7 +633,7 @@ def review_cli_argv(cli, prompt):
                   "--add-dir", REPO, "--add-dir", OUTDIR,
                   "--allowedTools", *cli_write_allow_rules([OUTDIR]),
                   "--disallowedTools", *cli_denied_tools(REVIEW_TOOLS),
-                  *cli_deny_rules(DATA), *auth_home_deny_rules()]
+                  *cli_deny_rules(DATA), *auth_home_deny_rules(), *git_dir_deny_rules(REPO)]
 
 
 def review_one(t, vr=None):
@@ -949,6 +951,10 @@ def main():
             cli_write_allow_rules([OUTDIR])
         except ValueError as e:
             print(f"[reviewer] ⛔ {e} —— 判决目录的写放行规则组不出来(查 BOARD_DATA_DIR),拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
+        try:
+            git_dir_deny_rules(REPO)
+        except ValueError as e:
+            print(f"[reviewer] ⛔ {e} —— 工作仓 git 元数据的写拒绝规则组不出来,拒绝启动", flush=True); sys.exit(gates_lib.EXIT_REFUSED)
     if RUNTIME == "codex":
         cg = codex_runtime.gate(CODEX_CLI)
         if not cg:

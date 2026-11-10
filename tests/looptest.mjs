@@ -23,7 +23,7 @@ import {
   symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
@@ -901,6 +901,32 @@ process.stdin.on("end", () => {
        && names.includes("Bash") && names.includes("WebFetch") && names.includes("Task") && !names.includes("Write") && !names.includes("Edit"),
        JSON.stringify(denied.slice(0, 6)));
     ok("⑭ ⭐不接浏览器集成(--no-chrome:它带进来的工具不在 --tools 管辖内)", argv.includes("--no-chrome"));
+    // ── 工作仓 git 元数据只读不写:写放行 Edit(<工作仓>/**) 盖住了 .git/config 与 .git/hooks ——
+    //    写进去不进 git status,协调者或 loop 下一次跑 git 时会被执行。拒绝胜过放行。
+    //    工作仓是 git worktree 时 .git 是文件,真实目录在主仓 .git/worktrees/<名>,公共目录(hooks、
+    //    config 所在)是主仓 .git:三处都要在拒绝规则里。
+    const hasRule = (r) => rules.some((x) => WIN ? x.toLowerCase() === r.toLowerCase() : x === r);
+    const asRule = (p) => (WIN ? "" : "/") + p.replace(/\\/g, "/");   // 与 verify_lib.deny_path 同一写法
+    ok("⑭ ⭐工作仓 .git 进 Edit 拒绝(.git 本身 + .git/**),与工作仓的写放行同在一条 argv;没有对应的 Read 拒绝(只挡写)",
+       hasRule(`Edit(${asRule(ROOT)}/.git)`) && hasRule(`Edit(${asRule(ROOT)}/.git/**)`)
+       && !rules.some((r) => /^Read\(/.test(r) && /\/\.git[/)]/.test(r)),
+       rules.filter((r) => /\/\.git[/)]/.test(r)).join(" ") || "(没有 .git 规则)");
+    {
+      const dot = join(ROOT, ".git");
+      let pointer = null;
+      try { pointer = (readFileSync(dot, "utf8").match(/^gitdir:[ \t]*(\S.*?)\s*$/) || [])[1] || null; } catch {}
+      if (pointer) {      // 本检出是 worktree / 子模块:.git 是文件
+        const gitdir = resolve(ROOT, pointer);
+        let common = gitdir;
+        try { common = resolve(gitdir, readFileSync(join(gitdir, "commondir"), "utf8").trim()); } catch {}
+        ok("⑭ ⭐worktree 形:真实 git 目录与公共目录(hooks、config 所在)也在 Edit 拒绝里",
+           hasRule(`Edit(${asRule(gitdir)}/**)`) && hasRule(`Edit(${asRule(common)}/**)`),
+           rules.filter((r) => /\/\.git[/)]/.test(r)).join(" "));
+      } else {
+        ok("⑭ 普通克隆形:.git 是目录,两条规则即全部(worktree 形由 --prompt-selftest 用临时目录量)",
+           rules.filter((r) => /\/\.git[/)]/.test(r)).length === 2, rules.filter((r) => /\/\.git[/)]/.test(r)).join(" "));
+      }
+    }
     // ── v0.24.0:读写边界的 argv 形状(2026-10-28 spike 实测:不带路径的 `--allowedTools Read`
     //    等于放行任意路径的读取;dontAsk 下 cwd 与 --add-dir 内的读不需要放行规则)。
     const evid = join(TMP, "evidence");

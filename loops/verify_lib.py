@@ -134,6 +134,51 @@ def cli_denied_tools(tools):
     return [name for name in DENIED_TOOLS if name not in keep]
 
 
+def git_dir_deny_rules(repo):
+    """工作仓 git 元数据的 Edit 拒绝规则(Claude 座席,执行线与审阅线共用)。只挡写,不挡读。
+
+    为什么需要:执行线 write 档的写放行是 `Edit(<工作仓>/**)`,它把 `<工作仓>/.git/config` 与
+    `<工作仓>/.git/hooks/*` 一起放行了。往那里写**不进 git status**(源码闸与人都看不见),而协调者
+    或 loop 下一次在这个仓里跑 git 时,hooks、`core.fsmonitor`、`core.sshCommand` 之类会被**执行**
+    —— 模型没有 Bash,却能借别人的 git 拿到执行权(外部审核 2026-11-10)。拒绝胜过放行,所以这里
+    产 Edit 拒绝规则,而不是去收窄放行规则(放行侧没有「除了」的写法)。
+
+    挡哪几处:
+      · `<工作仓>/.git` 本身与 `<工作仓>/.git/**` —— 普通克隆的形;工作仓不是 git 仓时同样产出
+        (模型也不该在里面新建一个 .git)。
+      · 工作仓是 git worktree / 子模块时 `.git` 是一个**文件**(`gitdir: <路径>`),真实目录在主仓的
+        `.git/worktrees/<名>`(子模块在 `.git/modules/<名>`):该目录 `/**` 一条;它的 `commondir`
+        指向的公共目录(主仓 `.git`,hooks 与 config 实际住在那里)`/**` 再一条。`.git` 文件本身
+        也在第一组里 —— 否则把它改写成指向仓内某个自造目录,等于换掉整个 git 目录。
+    `.git` 是文件却读不出 gitdir 指向 = ValueError(未知值落拒绝侧,调用方拒绝启动):那种仓里 git
+    自己也跑不起来,不猜它的元数据在哪。不是绝对路径同样 ValueError。"""
+    if not (isinstance(repo, str) and repo.strip() and os.path.isabs(repo)):
+        raise ValueError(f"工作仓必须是绝对路径:{repo!r}")
+    base = deny_path(repo).rstrip("/")
+    rules = [f"Edit({base}/.git)", f"Edit({base}/.git/**)"]
+    dot = os.path.join(repo, ".git")
+    if os.path.isfile(dot):
+        try:
+            with io.open(dot, encoding="utf-8", errors="replace") as source:
+                pointer = re.match(r"gitdir:[ \t]*(\S.*?)\s*$", source.read(4096))
+        except OSError:
+            pointer = None
+        if not pointer:
+            raise ValueError(f"{dot} 是文件但读不出 gitdir 指向")
+        gitdir = os.path.normpath(os.path.join(repo, pointer.group(1)))
+        common = gitdir
+        try:
+            with io.open(os.path.join(gitdir, "commondir"), encoding="utf-8", errors="replace") as source:
+                common = os.path.normpath(os.path.join(gitdir, source.read(4096).strip() or "."))
+        except OSError:
+            pass                              # 子模块没有 commondir:公共目录就是 gitdir 自己
+        for path in (gitdir, common):
+            rule = f"Edit({deny_path(path).rstrip('/')}/**)"
+            if rule not in rules:
+                rules.append(rule)
+    return rules
+
+
 AUTH_HOMES_ENV = "WORKER_AUTH_HOMES"
 
 

@@ -94,6 +94,12 @@ from a named incident (see `docs/INCIDENTS.md`):
   `Edit(<目录>/**)`（`verify_lib.cli_write_allow_rules`）：执行线 = 工作仓 + 证据目录，只读档只有证据目录
   （所以写不了工作仓），审阅线只有判决目录（「只写判决文件」从提示词约束变成结构约束）。argv 形状由
   looptest ⑭⑮、reviewtest §2b 与 `--prompt-selftest` 钉住；真实 CLI 的越界读/越界写实测见本次交付的证据。
+  工作仓的 git 元数据只读不写（`verify_lib.git_dir_deny_rules`）：执行线的写放行 `Edit(<工作仓>/**)` 盖住了
+  `.git/config` 与 `.git/hooks`，往那里写不进 `git status`，而协调者或循环下一次在该仓里运行 git 时会执行其中的内容
+  （hooks、`core.fsmonitor` 等）。两条线的拒绝规则因此包含 `Edit(<工作仓>/.git)` 与 `Edit(<工作仓>/.git/**)`；工作仓是
+  git worktree 或子模块时 `.git` 是文件，另加它指向的真实目录与公共目录（主仓 `.git`，hooks 与 config 实际所在）。
+  拒绝胜过放行；读取不受影响。`.git` 是文件却读不出指向时两条线拒绝启动。两条线另带 `--no-chrome`（浏览器集成的工具
+  不在 `--tools` 管辖内），`--disallowedTools` 开头另有一段显式工具名（与拆解器同一份清单，去掉本线白名单）。
 - **Card text is never a command line.** The worker refuses `.bat/.cmd` CLIs
   (CVE-2024-24576, "BatBadBut": cmd.exe re-parses arguments, so a card body
   could become an executable command line). The gate judges by extension on
