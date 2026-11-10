@@ -360,8 +360,8 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
     append(...nodes) { this.children.push(...nodes); }
     get textContent() { return this.text + this.children.map((n) => n.textContent).join(""); }
   }
-  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高" });
-  vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t){", "function sideRelationshipBox(t){"), context);
+  const context = vm.createContext({ homeEl: (tag, text) => new Element(tag, text), localTime: (value) => value, effortName: () => "高", lineLabel: (line) => line });
+  vm.runInContext(profileSource + "\n" + panelSection("function sideExecution(t, need = false){", "function sideRelationshipBox(t){"), context);
   const card = { id: 4, status: "not_started", released: false, aggregate_version: 7,
     verification_repair: { max_rounds: 3 }, verification_repair_digest: "b".repeat(64), execution_profile: {
     execution_profile_id: "claude-api", profile_digest: "a".repeat(64), configuration_changed: true, label: "API 样本", channel: "claude_agent_sdk", auth_kind: "api_key", billing_kind: "anthropic_api", model: "allowed", effort: "high", tools: "write", budget: null, workspace: { path: "C:/隔离/中文 工作仓" },
@@ -393,6 +393,29 @@ test("侧栏显示固定执行快照和模型活动，放行只复用原接口�
   assert.ok(source.includes('released: true, expected_version: Number(b.dataset.version)'));
   assert.ok(source.includes('confirm_execution_profile_digest: b.dataset.executionProfileDigest'), "两押提交原按钮绑定的摘要，配置变化不静默确认");
   assert.ok(source.includes('confirm_verification_repair_digest: b.dataset.verificationRepairDigest'), "续修策略沿原放行请求提交，不自动扩大旧授权");
+  // 目标卡沿用同一个放行入口,只换按钮上的字;只差放行时整节标成「要你做什么」,按钮还是那一个。
+  const goal = context.sideExecution({ ...legacy, kind: "goal" }), goalButtons = goal.children.filter((n) => n.tag === "button");
+  assert.deepEqual(goalButtons.map((n) => [n.textContent, n.dataset.a, n.dataset.version, n.dataset.verificationRepairDigest]), [["放行这个目标", "release", "7", "b".repeat(64)]]);
+  const need = context.sideExecution(card, true);
+  assert.equal(need.dataset.tone, "need"); assert.equal(need.children[0].textContent, "要你做什么");
+  assert.equal(need.children.filter((n) => n.tag === "button").length, 1, "标成要你做什么不新增第二个放行入口");
+  assert.equal(section.dataset.tone, undefined);
+});
+
+test("侧栏验收区不写说明句：按钮上的字随留言变，占位符不带括号，人工闸只写命令行里的处理位置", () => {
+  const box = panelSection("function sideControlsBox(t, ctl){", "/** 这条线现在的样子");
+  assert.ok(!source.includes("留空按「通过」= 结案") && !source.includes("按两次才生效。\" +"), "原说明句已删");
+  assert.ok(!source.includes("(写了=打回继续)") && box.includes('"可选:补充给原执行方的一句指示"'), "占位符去掉括号里的内容");
+  assert.ok(box.includes('if (ctl.kind === "accept" && t.execution_profile) box.append(homeEl("p", PROFILE_RELEASE_NOTE));'), "只在显式执行配置卡保留取消放行这一句");
+  // 留言跟随:侧栏是留言范围,打字时按钮上的字同样跟着变;重建回填草稿后也同步一次。
+  assert.ok(source.includes('e.target.closest(".card") || e.target.closest("[data-decision-scope]") || e.target.closest("[data-task-scope]");\n  if (scope) syncHandoff(scope);'));
+  assert.ok(source.includes('syncHandoff(document.getElementById("task-side"));'));
+  // 人工闸:面板没有解闸按钮,两押名单里也没有这个动作;处理位置写成 cli/board.py 实有的命令。
+  assert.ok(!source.includes('"ungate"') && !source.includes("humanGate:false") && !source.includes("humanGate: false"), "面板不新增解除人工闸的权力");
+  assert.ok(box.includes('"python cli/board.py edit " + t.id + " --file gate.json --version " + t.aggregate_version'));
+  const cli = readFileSync(new URL("../cli/board.py", import.meta.url), "utf8");
+  assert.ok(cli.includes("$P edit  <id> --file payload.json --version <aggregate_version>") && cli.includes('elif cmd == "edit":')
+    && cli.includes("description / acceptance / line / route / humanGate / blockedBy"), "命令行的 edit 接受 humanGate，写法与面板上的命令一致");
 });
 
 test("写了指示的卡按放行状态显示：未放行说明须放行后再跑，已放行保留原文案", () => {

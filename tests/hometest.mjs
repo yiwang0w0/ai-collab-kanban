@@ -27,7 +27,7 @@ test("decisions and answers wait for me; a delivery waits for me only when no re
   ];
   const plain = M.homeLists({ tasks, localName: "台式机 A" });
   assert.deepEqual(ids(plain.mine), [1, 2, 3, 4], "confirm, then decision, then deliveries oldest first");
-  assert.deepEqual(plain.mine.map((r) => r.next), ["选择方案", "给出决定", "确认验收", "确认验收"]);
+  assert.deepEqual(plain.mine.map((r) => r.next), ["选择方案", "同意或否决", "通过或打回", "通过或打回"]);
   assert.equal(plain.running.length, 0, "dependency and re-review waits are machine-tended, not on the home lists");
   const reviewed = M.homeLists({ tasks, localName: "台式机 A", autoReview: true });
   assert.deepEqual(ids(reviewed.mine), [1, 2, 3], "a running reviewer takes deliveries — except one it may not judge");
@@ -52,10 +52,43 @@ test("a card the machine will not move is mine even with the reviewer running", 
   const { mine, running } = M.homeLists({ tasks, autoReview: true });
   assert.deepEqual(running.map((r) => [r.localId, r.state]), [[4, "等待自动审阅"]], "only an unheld, unjudged delivery is the reviewer's");
   assert.deepEqual(mine.map((r) => [r.localId, r.state, r.next]), [
-    [1, "待你验收", "确认验收"], [2, "待你验收", "确认验收"], [3, "待你验收", "按对应协议完成结算或人工恢复"],
+    [1, "待你验收", "通过或打回"], [2, "待你验收", "通过或打回"], [3, "待你验收", "按对应协议完成结算或人工恢复"],
     [6, "重审受阻", "核对审阅记录及子任务结果"], [8, "待人工裁定", "由操作者裁定或显式解除人工闸"],
-    [9, "待人工裁定", "由操作者裁定或显式解除人工闸"],
-  ], "unfinished children and a judged dependency wait are the machine's; an unreleased card stays in 全部任务");
+    [9, "待人工裁定", "由操作者裁定或显式解除人工闸"], [10, "待放行", "核对后放行"],
+  ], "unfinished children and a judged dependency wait are the machine's; a card that only lacks its release waits for me, last");
+});
+
+test("只差放行的卡进「待我处理」；祖先未放行或还有别的阻塞的不进；未放行的目标卡进", () => {
+  const why = (code, extra) => ({ code, message: code, next_action: "按服务端给的做", ...extra });
+  const tasks = [
+    card(1, { status: "not_started", released: 0, progress_blockers: [why("NOT_RELEASED")] }),
+    card(2, { status: "not_started", released: 0, parent_id: 5, progress_blockers: [why("NOT_RELEASED"), why("ANCESTOR_NOT_RELEASED", { related_task_ids: [5] })] }),
+    card(3, { status: "not_started", released: 0, progress_blockers: [why("NOT_RELEASED"), why("DEPENDENCIES_UNFINISHED", { related_task_ids: [1] })] }),
+    card(4, { status: "not_started", released: 1 }),
+    card(5, { kind: "goal", status: "not_started", released: 0, progress_blockers: [why("DESCENDANTS_UNFINISHED", { related_task_ids: [2] })] }),
+    card(6, { kind: "goal", status: "not_started", released: 1, progress_blockers: [why("DESCENDANTS_UNFINISHED", { related_task_ids: [9] })] }),
+    card(7, { kind: "goal", status: "not_started", released: 0, progress_blockers: [why("GOAL_WITHOUT_CHILDREN")] }),
+    card(8, { status: "not_started", released: 0, human_gate: 1, progress_blockers: [why("NOT_RELEASED"), why("HUMAN_GATE")] }),
+  ];
+  const { mine, running } = M.homeLists({ tasks });
+  assert.deepEqual(mine.map((r) => [r.localId, r.state, r.next, r.rank]),
+    [[8, "待人工裁定", "按服务端给的做", 4], [1, "待放行", "核对后放行", 5], [5, "待放行", "核对后放行", 5]],
+    "人工闸先于放行；祖先未放行的子卡、依赖未完成的卡、已放行的卡、已放行或没有子任务的目标都不进");
+  assert.equal(running.length, 0);
+  assert.equal(M.homeStep(tasks[0], { remoteName: "笔记本 B" }).lane, null, "另一台电脑的卡在它自己那里放行");
+  assert.equal(M.homeStep(card(9, { status: "not_started", released: 0 })).lane, null, "服务端没给「尚未放行」这一条就不猜");
+});
+
+test("侧栏次按钮去哪、受阻原因：心跳中断去执行线，进程未启动看逐项记录，受阻带服务端原因", () => {
+  const run = { status: "in_progress", run_id: "r" };
+  assert.equal(M.homeStep({ ...run, hb: "dead" }).go, "lines");
+  const cold = M.homeStep({ ...run, hb: "fresh", execution_trace: { run_id: "r", process_state: "not_started" } });
+  assert.deepEqual([cold.next, cold.go], ["检查启动回执", "receipt"]);
+  assert.equal(M.homeStep({ ...run, hb: "fresh" }).go, undefined, "正常在跑的卡没有次按钮");
+  const stuck = M.homeStep({ status: "waiting", waiting_for: "rearm",
+    progress_blockers: [{ code: "NO_NEW_CHILD_RESULT", message: "未观察到上次审阅之后的新子任务结果", next_action: "核对审阅记录及子任务结果" }] });
+  assert.deepEqual([stuck.lane, stuck.state, stuck.why, stuck.next], ["mine", "重审受阻", "未观察到上次审阅之后的新子任务结果", "核对审阅记录及子任务结果"]);
+  assert.equal("why" in M.homeStep({ status: "waiting", waiting_for: "dep", progress_blockers: [{ code: "HUMAN_GATE", next_action: "裁定" }] }), false, "服务端没写原因就不出这一行");
 });
 
 test("running cards name their executor and a silent one comes first with a warning", () => {
@@ -202,9 +235,17 @@ test("side panel controls follow the board card rule: no more power, no less", (
     "the board shows 通过 on every waiting card without options; so does the side panel");
   assert.equal(M.sideControls(w({ waiting_for: "dep" }), { mine: false }).primary, false, "but folded when the next step is not mine");
   for (const status of ["not_started", "in_progress", "done"])
-    assert.equal(M.sideControls({ id: 9, status }).kind, "none", status + " has nothing to rule on");
+    assert.equal(M.sideControls({ id: 9, status, released: 1 }).kind, "none", status + " has nothing to rule on");
   assert.equal(M.sideControls(w({ waiting_for: "review" }), { remote: true, mine: true }).kind, "none", "another computer's cache is read-only");
   assert.equal(M.sideControls(null).kind, "none");
+  // 未开始的卡两种轮到人的情形:人工闸、还没放行。远端卡照旧只读。
+  const q = (extra) => ({ id: 9, status: "not_started", ...extra });
+  assert.deepEqual(M.sideControls(q({ human_gate: 1, released: 0 }), { mine: true }), { kind: "gate", primary: true }, "人工闸先于放行");
+  assert.deepEqual(M.sideControls(q({ released: 0 }), { mine: true }), { kind: "release", primary: true });
+  assert.deepEqual(M.sideControls(q({ released: 0 }), { mine: false }), { kind: "release", primary: false }, "还有别的阻塞时放行不是主操作");
+  assert.equal(M.sideControls(w({ waiting_for: "review", human_gate: 1 }), { mine: true }).kind, "accept", "等待中的人工闸卡照旧是通过");
+  for (const extra of [{ human_gate: 1 }, { released: 0 }])
+    assert.equal(M.sideControls(q(extra), { remote: true, mine: true }).kind, "none", "远端卡仍为 none");
 });
 
 test("new task: a title, a configured working line, and no internal ids", () => {
@@ -367,9 +408,76 @@ test("side panel says what any card is doing, not only the two home lanes", () =
     { state: "已打回 · 排队中", next: "等待「引擎」继续" }, "handed back with a note: say so");
   assert.deepEqual(M.sideFallback({ ...base, status: "not_started", released: false }, o), { state: "未放行", next: "放行后才会被领取" });
   assert.deepEqual(M.sideFallback({ ...base, status: "done" }, o), { state: "已完成", next: "无需操作" });
-  assert.deepEqual(M.sideFallback({ ...base, status: "waiting", waiting_for: "dep" }, o), { state: "等待中 · 依赖完成", next: "等待依赖完成" });
+  assert.deepEqual(M.sideFallback({ ...base, status: "waiting", waiting_for: "dep" }, o), { state: "等待中 · 依赖完成", next: "依赖完成" });
+  const rearm = M.sideFallback({ ...base, status: "waiting", waiting_for: "rearm" }, { ...o, wfLabels: { rearm: "等待重审" } });
+  assert.deepEqual(rearm, { state: "等待中 · 等待重审", next: "等待重审" }, "下一步直接用状态词");
+  assert.ok(!rearm.next.includes("等待等待"));
   const side = src.slice(src.indexOf("function renderSide(){"), src.indexOf("function sideFromHash(){"));
   assert.ok(side.includes("sideTaskStep(t, item)"), "侧栏使用同一状态与下一步计算");
+});
+
+test("未开始的卡为什么没被领：服务端原因、无进展、线未启动，都不是才写排队中", () => {
+  const base = { id: 2, line: "engine", released: true, status: "not_started" };
+  const o = { lineName: (l) => ({ engine: "引擎" })[l] || l };
+  const dep = { code: "DEPENDENCIES_UNFINISHED", message: "依赖任务尚未完成", next_action: "核对依赖任务与定义", related_task_ids: [4, 9] };
+  assert.deepEqual(M.sideFallback({ ...base, released: false, progress_blockers: [{ code: "NOT_RELEASED", message: "任务尚未放行", next_action: "核对任务后显式放行" }, dep] }, o),
+    { state: "依赖任务尚未完成", next: "核对依赖任务与定义", related: [4, 9] }, "「尚未放行」之外的第一条原因原样写，带它指向的卡号");
+  assert.deepEqual(M.sideFallback({ ...base, progress_blockers: [{ code: "ATTEMPT_LIMIT", message: "累计派发次数已达到上限", next_action: "人工核对失败原因并补充输入或调整任务" }] }, o),
+    { state: "累计派发次数已达到上限", next: "人工核对失败原因并补充输入或调整任务" }, "原因不指向别的卡就不带 related");
+  assert.deepEqual(M.sideFallback({ ...base, no_progress: { since: at(1) } }, { ...o, lineState: "stopped" }),
+    { state: "无进展，已暂停派发", next: "补充任务说明或推进依赖" }, "无进展先于线的状态");
+  assert.deepEqual(M.sideFallback(base, { ...o, lineState: "stopped" }), { state: "「引擎」未启动", next: "启动执行线", go: "lines" });
+  for (const lineState of ["running", "external", null])
+    assert.deepEqual(M.sideFallback(base, { ...o, lineState }), { state: "排队中", next: "等待「引擎」领取" }, String(lineState));
+  // 目标卡:状态写子任务完成数。
+  const goal = { id: 3, kind: "goal", status: "not_started", released: true };
+  assert.deepEqual(M.sideFallback(goal, { children: { done: 1, total: 3 } }), { state: "子任务 1/3 完成", next: "推进未完成的子任务" });
+  assert.equal(M.sideFallback(goal, { children: { done: 0, total: 0 } }).state, "还没有子任务");
+  // 调用处用执行线接口算出线的状态再传入。
+  const step = src.slice(src.indexOf("function sideLineState(line){"), src.indexOf("/** 进行中的卡:最近一次心跳"));
+  assert.ok(step.includes("workers.find((x) => x.line === line)") && step.includes("lineState: sideLineState(t.line)"));
+});
+
+test("刷新后保留：留言、方案选择、执行结果、回执和草稿版本写进本标签页，读回后恢复", () => {
+  const a = src.indexOf('const DRAFTS_KEY = "tb_drafts_v1";'), b = src.indexOf("\nrestoreDrafts();\n", a);
+  assert.ok(a > 0 && b > a, "drafts block not found");
+  const NAMES = ["verdictDraft", "decisionChoice", "receiptDraft", "outcomeDraft", "draftVersions"];
+  const boot = (sessionStorage) => {
+    const maps = NAMES.map(() => new Map());
+    const api = new Function("sessionStorage", ...NAMES, src.slice(a, b) + ";return { persistDrafts, restoreDrafts };")(sessionStorage, ...maps);
+    return { api, maps: Object.fromEntries(NAMES.map((n, i) => [n, maps[i]])) };
+  };
+  const mem = new Map(), storage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, String(v)) };
+  const first = boot(storage);
+  first.maps.verdictDraft.set(7, "请补一条测试"); first.maps.verdictDraft.set(8, "   ");
+  first.maps.decisionChoice.set(9, "B"); first.maps.outcomeDraft.set(9, "failure"); first.maps.receiptDraft.set(9, "exit 1");
+  first.maps.draftVersions.set(7, 3); first.maps.draftVersions.set(9, 12); first.maps.draftVersions.set(20, 4);
+  first.api.persistDrafts({ new: { title: "草稿标题" } });
+  const stored = JSON.parse(mem.get("tb_drafts_v1"));
+  for (const key of ["vin", "choice", "outcome", "receipt", "versions"]) assert.ok(Object.hasOwn(stored, key), key);
+  assert.deepEqual(stored, { vin: { 7: "请补一条测试" }, choice: { 9: "B" }, outcome: { 9: "failure" }, receipt: { 9: "exit 1" },
+    versions: { 7: 3, 9: 12 }, new: { title: "草稿标题" } }, "只有空白的留言不存；没有草稿的卡不留版本");
+  const again = boot(storage); again.api.restoreDrafts();
+  assert.deepEqual([...again.maps.decisionChoice], [[9, "B"]]);
+  assert.deepEqual([...again.maps.outcomeDraft], [[9, "failure"]]);
+  assert.deepEqual([...again.maps.receiptDraft], [[9, "exit 1"]]);
+  assert.deepEqual([...again.maps.verdictDraft], [[7, "请补一条测试"]]);
+  assert.deepEqual([...again.maps.draftVersions], [[7, 3], [9, 12]]);
+  // 存储读写都抛错时照常工作,只是不保留;存进去的脏数据不进草稿。
+  const broken = boot({ getItem() { throw Error("denied"); }, setItem() { throw Error("denied"); } });
+  broken.maps.decisionChoice.set(1, "A"); broken.api.persistDrafts(); broken.api.restoreDrafts();
+  assert.deepEqual([...broken.maps.decisionChoice], [[1, "A"]]);
+  mem.set("tb_drafts_v1", JSON.stringify({ choice: { x: "A", 5: 9 }, versions: { 5: "3" }, receipt: null }));
+  const dirty = boot(storage); dirty.api.restoreDrafts();
+  assert.deepEqual([dirty.maps.decisionChoice.size, dirty.maps.draftVersions.size, dirty.maps.receiptDraft.size], [0, 0, 0]);
+  // 结构钉:三处输入都落盘;启动时读回;侧栏恢复后有方案草稿就重开方案弹窗;纯数字的 #task= 按卡号打开。
+  for (const line of ["receiptDraft.set(Number(receiptId), e.target.value);\n    persistDrafts();",
+    "outcomeDraft.set(Number(outcomeId), e.target.value);\n    persistDrafts();", "decisionChoice.set(Number(id), e.target.value);\n  persistDrafts();"])
+    assert.ok(src.includes(line), line);
+  const boot2 = src.slice(src.indexOf("function sideAfterRefresh(){"), src.indexOf("// ── 首页「新建任务」(第 3 批)"));
+  assert.ok(boot2.includes("if (t && decisionChoice.has(t.id) && t.status === \"waiting\" && t.decision_package?.options?.length) openDecisionModal(t);"));
+  const hash = src.slice(src.indexOf("function sideFromHash(){"), src.indexOf("function sideAfterRefresh(){"));
+  assert.ok(hash.includes("if (/^\\d+$/.test(ref)) {") && hash.includes("openSide({ id, uid: null, item: null });"), "批准接口给的 /#task=卡号 链接能打开");
 });
 
 test("领取、启动许可、进程与输出观察分开，不接受旧运行观察", () => {

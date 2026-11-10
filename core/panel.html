@@ -423,6 +423,18 @@
   .side-brief-v[data-tone="warn"]{color:var(--warn)}
   .side-brief-next{color:var(--dim)}
   .side-brief-stack{display:grid;gap:var(--sp-1)}
+  /* 「现在」行下面:下一步与它右边的次按钮、原因指向的卡号按钮、给命令行的等宽命令 */
+  .side-brief-nextrow{display:flex;align-items:center;gap:var(--sp-2);flex-wrap:wrap}
+  .side-brief-nextrow .side-brief-next{flex:1 1 12em;min-width:0}
+  .side-brief .side-brief-nextrow button,.side-brief .side-links button{margin-top:0}
+  .side-brief-row > button{grid-column:-2;justify-self:start}   /* 「看完整证据」跟在内容一列下面,不挤进标签列 */
+  .side-brief .side-links{margin:0}
+  .side-card-no{font-family:var(--mono)}
+  .side-cmd{display:block;font-family:var(--mono);font-size:var(--fs-sm);line-height:1.5;padding:var(--sp-1) var(--sp-2);margin:var(--sp-1) 0 var(--sp-2);
+            border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);overflow-wrap:anywhere;user-select:all}
+  /* 只差放行时,放行核对这一节就是「要你做什么」:强调色左边条给这一节 */
+  .side-sec[data-tone="need"]{border-left:3px solid var(--accent);padding-left:var(--sp-3)}
+  .side-sec[data-tone="need"] > .side-brief-k{margin:0 0 var(--sp-1)}
   .side-brief textarea{width:100%;box-sizing:border-box;margin-bottom:var(--sp-2)}
   .side-brief button{margin-top:var(--sp-1)}
   .side-detail > summary{font-size:13px}
@@ -809,6 +821,9 @@
 
   /* ── 浮层(编辑、移线)沿用面板底色,控件随统一样式 */
   .cfg#edit{width:280px;z-index:45}   /* 从侧栏打开时要压在侧栏(40)之上,仍低于弹窗(50) */
+  .cfg#edit.wide{width:min(420px,calc(100vw - 16px));max-height:calc(100vh - 16px);overflow:auto}
+  .cfg#edit textarea{width:100%;box-sizing:border-box}
+  .edit-acts{display:flex;gap:var(--sp-2);flex-wrap:wrap}
   .pick{z-index:45}
   .pick button{justify-content:flex-start}
 
@@ -1562,19 +1577,28 @@ const receiptDraft = new Map();
 const outcomeDraft = new Map();
 const draftVersions = new Map();
 let decisionSnapshot = null;
-// 第 3 批: 刷新后保留没提交的输入——审阅留言与新建表单存进本标签页的 sessionStorage。
+// 第 3 批: 刷新后保留没提交的输入——审阅留言、方案选择、执行结果、回执与新建表单存进本标签页的 sessionStorage。
 // 只是本机便利: 读写都包 try,无痕窗口或禁用存储时照常工作,只是不保留。
+// versions = 草稿开始时看到的任务版本(draftVersions):只为还有草稿的卡保存,读回后照旧拿它判断草稿是否过期。
 const DRAFTS_KEY = "tb_drafts_v1";
 function loadDrafts(){ try { return JSON.parse(sessionStorage.getItem(DRAFTS_KEY) || "{}") || {}; } catch { return {}; } }
 function persistDrafts(extra){
   try {
-    const d = loadDrafts();
-    d.vin = Object.fromEntries([...verdictDraft].filter(([, v]) => v && v.trim()));
+    const d = loadDrafts(), filled = (m) => Object.fromEntries([...m].filter(([, v]) => v && String(v).trim()));
+    d.vin = filled(verdictDraft); d.choice = filled(decisionChoice); d.outcome = filled(outcomeDraft); d.receipt = filled(receiptDraft);
+    d.versions = Object.fromEntries([...draftVersions].filter(([id, v]) => Number.isSafeInteger(v) &&
+      [d.vin, d.choice, d.outcome, d.receipt].some((o) => Object.hasOwn(o, id))));
     if (extra) Object.assign(d, extra);
     sessionStorage.setItem(DRAFTS_KEY, JSON.stringify(d));
   } catch {}
 }
-{ const d = loadDrafts(); for (const [k, v] of Object.entries(d.vin || {})) verdictDraft.set(Number(k), v); }
+function restoreDrafts(){
+  const d = loadDrafts(), text = (v) => typeof v === "string";
+  const fill = (m, o, ok) => { for (const [k, v] of Object.entries(o && typeof o === "object" ? o : {})) if (/^\d+$/.test(k) && ok(v)) m.set(Number(k), v); };
+  fill(verdictDraft, d.vin, text); fill(decisionChoice, d.choice, text); fill(outcomeDraft, d.outcome, text); fill(receiptDraft, d.receipt, text);
+  fill(draftVersions, d.versions, Number.isSafeInteger);
+}
+restoreDrafts();
 // 同一张卡的留言框可能同时出现在两处(看板卡片 + 任务侧栏)。按下的按钮读【它身边】那个,
 // 找不到才退回全文档第一个——否则侧栏里写的打回指示可能被隐藏看板上的空框顶掉,
 // 把「打回」静默变成「结案」。
@@ -1597,6 +1621,7 @@ document.addEventListener("input", (e) => {
   if (receiptId){
     captureDraftVersion(receiptId,e.target);
     receiptDraft.set(Number(receiptId), e.target.value);
+    persistDrafts();
     const scope = e.target.closest("[data-decision-scope]") || e.target.closest(".card");
     if (scope) syncDecision(scope, taskForView(receiptId,scope));
     return;
@@ -1606,7 +1631,8 @@ document.addEventListener("input", (e) => {
   if(!e.target.value && !decisionChoice.has(Number(id))) draftVersions.delete(Number(id));
   verdictDraft.set(Number(id), e.target.value);
   persistDrafts();
-  const scope = e.target.closest(".card") || e.target.closest("[data-decision-scope]");
+  // 侧栏也是留言范围(data-task-scope):在侧栏里打字,按钮上的字同样跟着变。
+  const scope = e.target.closest(".card") || e.target.closest("[data-decision-scope]") || e.target.closest("[data-task-scope]");
   if (scope) syncHandoff(scope);
 });
 document.addEventListener("change", (e) => {
@@ -1614,6 +1640,7 @@ document.addEventListener("change", (e) => {
   if (outcomeId){
     captureDraftVersion(outcomeId,e.target);
     outcomeDraft.set(Number(outcomeId), e.target.value);
+    persistDrafts();
     const scope = e.target.closest(".card") || e.target.closest("[data-decision-scope]");
     if (scope) syncDecision(scope, taskForView(outcomeId,scope));
     return;
@@ -1621,6 +1648,7 @@ document.addEventListener("change", (e) => {
   const id = e.target.dataset?.choice; if (!id) return;
   captureDraftVersion(id,e.target);
   decisionChoice.set(Number(id), e.target.value);
+  persistDrafts();
   const scope = e.target.closest(".card") || e.target.closest("[data-decision-scope]");
   if (scope) syncDecision(scope, taskForView(id,scope));
 });
@@ -3709,6 +3737,9 @@ function openEdit(anchor, taskId){
   if (!t) return;
   epop.dataset.version=String(t.aggregate_version);
   const ma = Number(t.max_attempts) || 3;
+  // 未开始的卡还能改说明和验收条件:两个多行框,按「保存」才提交(不即改即存)。文字用 .value 填,不进 innerHTML。
+  const face = t.status === "not_started";
+  epop.classList.toggle("wide", face);
   epop.innerHTML = `
     <h4>编辑 #${t.id}</h4>
     <div class="row">
@@ -3729,7 +3760,20 @@ function openEdit(anchor, taskId){
       <input type="range" min="1" max="9" step="1" value="${ma}" data-eid="${t.id}" data-k="maxAttempts" aria-label="自行尝试次数上限">
       <div class="ends"><span>1</span><span>9</span></div>
     </div>
+    ${face ? `<div class="row">
+      <div class="cap">说明</div>
+      <textarea id="edit-desc" rows="6" aria-label="任务说明"></textarea>
+    </div>
+    <div class="row">
+      <div class="cap">验收条件</div>
+      <textarea id="edit-acc" rows="3" aria-label="验收条件"></textarea>
+    </div>
+    <div class="edit-acts"><button type="button" class="pri" data-edit-save="${t.id}">保存</button><button type="button" data-edit-close>关闭</button></div>` : ""}
     <div class="note" id="edit-note">已尝试 ${Number(t.attempts) || 0} 次。</div>`;
+  if (face) for (const [id, text] of [["edit-desc", t.description], ["edit-acc", t.acceptance]]) {
+    const box = document.getElementById(id);
+    box.value = box.dataset.orig = String(text || "");
+  }
   const r = anchor.getBoundingClientRect();
   // Measure after showing: a card near the viewport bottom must not hide errors.
   epop.classList.add("show");
@@ -3737,12 +3781,23 @@ function openEdit(anchor, taskId){
   epop.style.top = Math.max(8,Math.min(r.bottom + 6, innerHeight - epop.offsetHeight - 8)) + "px";
 }
 
+/** 编辑浮层里有没有改了还没保存的说明或验收条件。 */
+const editDirty = () => [...epop.querySelectorAll("textarea")].some((box) => box.value !== box.dataset.orig);
+/** 收起编辑浮层并清空:留着的多行框会被「有没保存的输入」算进去,拦住换版本后的自动刷新。 */
+function closeEdit(){ epop.classList.remove("show"); epop.replaceChildren(); }
+epop.addEventListener("click", (e) => {
+  if (e.target.closest("[data-edit-close]")) { closeEdit(); return; }
+  const save = e.target.closest("[data-edit-save]");
+  if (save) saveEdit(save.dataset.editSave, { description: document.getElementById("edit-desc").value, acceptance: document.getElementById("edit-acc").value });
+});
+// k 是键名时改一项(即改即存的线、路由、上限);是对象时一次提交几项(说明与验收条件)。
 async function saveEdit(id, k, v){
   const n = document.getElementById("edit-note");
-  const body = {expected_version:Number(epop.dataset.version)}; body[k] = v;
+  const body = typeof k === "object" ? {expected_version:Number(epop.dataset.version), ...k} : {expected_version:Number(epop.dataset.version), [k]: v};
   try{
     const r = await post(`/api/tasks/${id}/update`, body);
     epop.dataset.version=String(r.task.aggregate_version);
+    if (typeof k === "object") for (const box of epop.querySelectorAll("textarea")) box.dataset.orig = box.value;
     // ⭐ Reading `changed` is this function's point. 200 ≠ saved — a wrong key name
     //   returns 200 with zero columns. "Accepted" and "applied" are shown apart.
     // A notice (today: an in-progress description append is invisible to the running
@@ -3796,7 +3851,8 @@ document.addEventListener("click", (e) => {
   // #cfg 已停靠在设置页里,不再因点别处而关闭(用它自己的关闭按钮或再按齿轮)。
   // Same open/close etiquette; excluding the OPENING button itself is required or
   // it closes itself on the way in (capture runs first).
-  if (!e.target.closest("#edit") && !e.target.closest("[data-edit]")) epop.classList.remove("show");
+  // 说明或验收条件改了还没保存时,点别处不收起:用「保存」或「关闭」。
+  if (!e.target.closest("#edit") && !e.target.closest("[data-edit]") && epop.classList.contains("show") && !editDirty()) closeEdit();
 }, true);
 
 let ctxLines = [];
@@ -4670,8 +4726,9 @@ function homeStep(t, { autoReview = false, remoteName = null } = {}) {
       : trace?.work_state === "activity_observed" ? "已领取 · 有输出记录"
       : trace?.process_state === "observed" ? "进程已启动 · 开工待核实"
       : trace?.launch_requested_at ? "已请求启动 · 开工待核实" : "已领取 · 开工待核实";
-    if (t.hb === "dead") return { lane: "running", state: rt + stage + " · 心跳中断", tone: "warn", next: "检查执行线", rank: 0 };
-    if (trace?.process_state === "not_started") return { lane: "running", state: rt + stage, tone: "warn", next: "检查启动回执", rank: 0 };
+    // go = 侧栏「下一步」右边那个次按钮带人去哪:lines 执行线设置,receipt 本卡的逐项记录。
+    if (t.hb === "dead") return { lane: "running", state: rt + stage + " · 心跳中断", tone: "warn", next: "检查执行线", rank: 0, go: "lines" };
+    if (trace?.process_state === "not_started") return { lane: "running", state: rt + stage, tone: "warn", next: "检查启动回执", rank: 0, go: "receipt" };
     return { lane: "running", state: rt + stage, tone: "", next: remoteName ? "等待所属电脑同步执行回执" : "等待执行回执", rank: 1 };
   }
   const blockers = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).filter((b) => b && typeof b.code === "string");
@@ -4681,20 +4738,22 @@ function homeStep(t, { autoReview = false, remoteName = null } = {}) {
     // Parked for a person on purpose: the queue never hands it out and nothing sends it back.
     if (t.human_gate && !remoteName) return { lane: "mine", state: "待人工裁定", tone: "", rank: 4,
       next: said(blockers.find((b) => b.code === "HUMAN_GATE"), "裁定或解除人工闸") };
+    // 只差放行:排在别的待办后面,放行前的核对在侧栏里做。
+    if (!remoteName && homeAwaitsRelease(t, blockers)) return { lane: "mine", state: "待放行", tone: "", next: "核对后放行", rank: 5 };
     return { lane: null };
   }
   if (t.status !== "waiting") return { lane: null };
   const there = remoteName ? "到「" + remoteName + "」上处理" : null;
   if (t.waiting_for === "confirm") return { lane: "mine", state: "待你选择方案", tone: "", next: there || "选择方案", rank: 0 };
-  if (t.waiting_for === "decision") return { lane: "mine", state: "执行方在等你决定", tone: "", next: there || "给出决定", rank: 1 };
+  if (t.waiting_for === "decision") return { lane: "mine", state: "执行方在等你决定", tone: "", next: there || "同意或否决", rank: 1 };
   if (t.waiting_for === "review") {
     if (remoteName) return { lane: null };          // that computer's own reviewer may take it; it lists there
     // pendingReview skips human-gated cards, cards held by a protocol and deliveries it
     // already judged: each of those waits for a person even with the reviewer running.
     const held = besides("HUMAN_GATE", "DELIVERY_ALREADY_REVIEWED")[0];
-    if (held) return { lane: "mine", state: "待你验收", tone: "", next: said(held, "确认验收"), rank: 2 };
+    if (held) return { lane: "mine", state: "待你验收", tone: "", next: said(held, "通过或打回"), rank: 2 };
     if (!autoReview || t.review_hold === "same_family" || t.human_gate || blockers.length)
-      return { lane: "mine", state: "待你验收", tone: "", next: "确认验收", rank: 2 };
+      return { lane: "mine", state: "待你验收", tone: "", next: "通过或打回", rank: 2 };
     return { lane: "running", state: "等待自动审阅", tone: "", next: "无需操作", rank: 2 };
   }
   if (t.waiting_for === "rearm" || t.waiting_for === "dep") {
@@ -4703,9 +4762,19 @@ function homeStep(t, { autoReview = false, remoteName = null } = {}) {
     const stuck = t.waiting_for === "rearm" ? besides("CHILDREN_UNFINISHED")[0] : besides("DELIVERY_ALREADY_REVIEWED")[0];
     if (!stuck || remoteName) return { lane: null };
     const state = stuck.code === "HUMAN_GATE" ? "待人工裁定" : t.waiting_for === "rearm" ? "重审受阻" : "依赖受阻";
-    return { lane: "mine", state, tone: "", next: said(stuck, "查看原因"), rank: 3 };
+    // why = 服务端给的受阻原因,侧栏在「现在」下面原样写出。
+    const why = typeof stuck.message === "string" ? stuck.message.trim() : "";
+    return { lane: "mine", state, tone: "", next: said(stuck, "查看原因"), rank: 3, ...(why ? { why } : {}) };
   }
   return { lane: "mine", state: "等待处理", tone: "", next: there || "查看", rank: 3 };
+}
+/** 只差放行:未开始、没有人工闸,服务端给的阻塞只有「尚未放行」这一条(祖先未放行、依赖未完成都算别的阻塞)。
+ *  目标卡没有领取这回事,服务端不给它「尚未放行」:按 released 字段判,「目标下仍有未完成任务」不算阻塞;
+ *  没有子任务的目标放行了也没有可领的卡,不算。 */
+function homeAwaitsRelease(t, blockers) {
+  if (!t || t.status !== "not_started" || t.human_gate) return false;
+  if (t.kind === "goal") return (t.released === 0 || t.released === false) && blockers.every((b) => b.code === "DESCENDANTS_UNFINISHED");
+  return blockers.some((b) => b.code === "NOT_RELEASED") && blockers.every((b) => b.code === "NOT_RELEASED");
 }
 function homeResolved(t) {
   if (t.kind === "goal") return "目标完成";
@@ -4721,8 +4790,9 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
     if (t.archived_at) continue;
     const row = { key: "local:" + t.id, uid: t.task_uid || null, localId: t.id, title: String(t.subject || ""), computer: here, updated: String(t.updated_at || "") };
     if (t.status === "done") { history.push({ ...row, state: homeResolved(t), tone: "", next: "" }); continue; }
-    if (t.kind === "goal") continue;
     const s = homeStep(t, { autoReview });
+    // 目标卡只在「待放行」时上首页;其余时候它的进度看子任务。
+    if (t.kind === "goal" && s.state !== "待放行") continue;
     if (s.lane) place(row, s);
   }
   for (const t of remote) {
@@ -4786,25 +4856,44 @@ function homeStatus({ localName = "本机", nodes = null, fleetError = null, hea
   return { tone, line, alerts };
 }
 /** 侧栏里给哪些控件。规则照抄看板卡片: 等待中且没有方案包 → 通过(决定类再加否决);
- *  有方案包 → 打开方案弹窗。侧栏不比看板多一种权力,也不少一种。primary = 这一步是不是「我」的。 */
+ *  有方案包 → 打开方案弹窗。未开始的卡: 人工闸 → gate(只写处理位置,面板不解闸);未放行 → release
+ *  (放行核对区原有的那个按钮)。侧栏不比看板多一种权力。primary = 这一步是不是「我」的。 */
 function sideControls(t, { remote = false, mine = false } = {}) {
-  if (!t || remote || t.status !== "waiting") return { kind: "none", primary: false };
+  if (!t || remote) return { kind: "none", primary: false };
+  // 未开始的卡有两种轮到人的情形:人工闸(gate)、还没放行(release,与侧栏放行核对区同一个条件)。
+  if (t.status === "not_started" && t.human_gate) return { kind: "gate", primary: mine };
+  if (t.status === "not_started" && !t.released) return { kind: "release", primary: mine };
+  if (t.status !== "waiting") return { kind: "none", primary: false };
   if (t.decision_package?.options?.length) return { kind: "package", primary: mine };
   return { kind: t.waiting_for === "decision" ? "decide" : "accept", primary: mine };
 }
 /** 侧栏的状态与下一步兜底。homeStep 只为首页两栏(待我处理/正在执行)写字,其余状态返回
- *  lane:null;侧栏要能说清任何一张卡: 排队、打回后排队、已完成、在等别的什么。 */
-function sideFallback(t, { lineName = (l) => l, wfLabels = {} } = {}) {
+ *  lane:null;侧栏要能说清任何一张卡: 为什么没被领、打回后排队、已完成、在等别的什么。
+ *  未开始的卡先用服务端给的阻塞原因(progress_blockers,与领取同一判据)原样写;related = 原因指向的卡号。
+ *  lineState = 这条线现在的样子: running / stopped / external;children = 目标卡的子任务计数 { done, total }。 */
+function sideFallback(t, { lineName = (l) => l, wfLabels = {}, lineState = null, children = null } = {}) {
   const who = "「" + lineName(t.line) + "」";
   if (t.status === "done") return { state: "已完成", next: "无需操作" };
+  if (t.kind === "goal" && children) {
+    if (!children.total) return { state: "还没有子任务", next: "重新拆解" };
+    return { state: "子任务 " + children.done + "/" + children.total + " 完成", next: children.done < children.total ? "推进未完成的子任务" : "等待目标结算" };
+  }
   if (t.status === "not_started") {
+    const held = (Array.isArray(t.progress_blockers) ? t.progress_blockers : [])
+      .find((b) => b && typeof b.code === "string" && b.code !== "NOT_RELEASED");
+    if (held) {
+      const related = (Array.isArray(held.related_task_ids) ? held.related_task_ids : []).map(Number).filter((n) => Number.isSafeInteger(n) && n > 0);
+      return { state: String(held.message || "").trim() || "受阻", next: String(held.next_action || "").trim() || "查看原因", ...(related.length ? { related } : {}) };
+    }
     if (!t.released) return { state: "未放行", next: "放行后才会被领取" };
+    if (t.no_progress) return { state: "无进展，已暂停派发", next: "补充任务说明或推进依赖" };
+    if (lineState === "stopped") return { state: who + "未启动", next: "启动执行线", go: "lines" };
     if (t.last_verdict) return { state: "已打回 · 排队中", next: "等待" + who + "继续" };
     return { state: "排队中", next: "等待" + who + "领取" };
   }
   if (t.status === "waiting") {
     const what = wfLabels[t.waiting_for] || "处理";
-    return { state: "等待中 · " + what, next: "等待" + what };
+    return { state: "等待中 · " + what, next: what };
   }
   return { state: "状态待核实", next: "核对任务记录" };
 }
@@ -5085,7 +5174,8 @@ function openSide(ref){
 function closeSide(){
   sideRef = null; sideSig = "";
   document.getElementById("task-side").hidden = true;
-  document.getElementById("task-side-body").replaceChildren();
+  const body = document.getElementById("task-side-body");
+  body.replaceChildren(); delete body.dataset.card;
   sideHash(null);
 }
 document.getElementById("task-side-close").addEventListener("click", closeSide);
@@ -5103,7 +5193,8 @@ function sideSection(title, text){
  *    · 要做什么 = 服务端算好的 t.brief(store.cardBrief:summary 优先,其次「【一句话】」,都没有 ⇒ 不出这一行;
  *      标题本来就在上面,**不截长正文充数**)。
  *    · 现在     = 五步条同一个判断(sideTaskStep → homeStep),状态与下一步两个节点的 id 不变,
- *      updateSideLive 每秒只改这两处文字。
+ *      updateSideLive 每秒只改这一行里的字(sideNowFill):受阻原因、下一步右边的次按钮、
+ *      进行中的心跳与最近输出、原因指向的卡号按钮都在这一行下面。
  *    · 结果     = 交付时宿主从证据里取出的 t.result_summary。交付了却取不到 ⇒ 说出来,并给证据入口;
  *      看板不替交付方总结。
  *    · 要你做什么 = 轮到人时才出现,就一个操作框(sideControlsBox),不轮到人时它收进「更多操作」。 */
@@ -5115,17 +5206,20 @@ function sideBrief(t, step, item, ctlBox, ctl){
     return row;
   };
   if (t?.brief) box.append(briefRow("要做什么", t.brief));
-  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
   const nowRow = homeEl("div", undefined, "side-brief-row");
-  const state = homeEl("p", [where, step?.state || item?.state].filter(Boolean).join(" · "), "side-brief-v");
-  state.id = "task-side-state"; state.dataset.tone = step?.tone || "";
-  const nextText = step?.next || item?.next || (t ? "无需操作" : "在它所属的电脑上处理");
-  const next = homeEl("p", "下一步：" + nextText, "side-brief-v side-brief-next");
-  next.id = "task-side-next";
+  const state = homeEl("p", "", "side-brief-v"); state.id = "task-side-state";
+  const why = homeEl("p", "", "side-brief-v"); why.id = "task-side-why";
+  const next = homeEl("p", "", "side-brief-v side-brief-next"); next.id = "task-side-next";
+  const go = homeEl("button", ""); go.type = "button"; go.id = "task-side-go";
+  go.addEventListener("click", () => sideGo(go.dataset.go));
+  const nextRow = homeEl("div", undefined, "side-brief-nextrow"); nextRow.append(next, go);
+  const beat = homeEl("p", "", "side-brief-v side-brief-next"); beat.id = "task-side-beat";
+  const related = homeEl("div", undefined, "side-links"); related.id = "task-side-related";
   const stack = homeEl("div", undefined, "side-brief-stack");
-  stack.append(state, next);
+  stack.append(state, why, nextRow, beat, related);
   nowRow.append(homeEl("span", "现在", "side-brief-k"), stack);
   box.append(nowRow);
+  sideNowFill({ state, why, next, go, beat, related }, t, item, step || {});
   // 交付之后才有「结果」这一行。t.result 有、result_summary 没有 = 交付了但没写那一节。
   if (t && t.result) {
     if (t.result_summary) box.append(briefRow("结果", t.result_summary));
@@ -5157,8 +5251,15 @@ function sideControlsBox(t, ctl){
     const b = homeEl("button", "展开方案并选择", "pri"); b.type = "button"; b.dataset.openDecision = String(t.id);
     box.append(b); return box;
   }
+  if (ctl.kind === "gate") {
+    // 面板不解除人工闸:只写在哪里处理。命令照 cli/board.py 的 edit(载荷键 humanGate,版本锁 --version)。
+    box.append(homeEl("p", "在命令行解除人工闸：", "side-brief-v"),
+      homeEl("code", "python cli/board.py edit " + t.id + " --file gate.json --version " + t.aggregate_version, "side-cmd"),
+      homeEl("p", "gate.json 的内容：", "side-brief-v"), homeEl("code", '{"humanGate": false}', "side-cmd"));
+    return box;
+  }
   const ta = homeEl("textarea"); ta.className = "vin"; ta.rows = 2; ta.dataset.vin = String(t.id);
-  ta.placeholder = ctl.kind === "decide" ? "可选:附一句话给执行方" : "可选:补充给原执行方的一句指示(写了=打回继续)";
+  ta.placeholder = ctl.kind === "decide" ? "可选:附一句话给执行方" : "可选:补充给原执行方的一句指示";
   const acts = homeEl("div", undefined, "side-acts");
   const ok = homeEl("button", ctl.kind === "decide" ? "同意" : "通过", "pri"); ok.type = "button";
   ok.dataset.a = "approve"; ok.dataset.id = String(t.id); ok.dataset.kind = ctl.kind === "decide" ? "decide" : "accept";
@@ -5168,33 +5269,109 @@ function sideControlsBox(t, ctl){
     no.dataset.a = "reject"; no.dataset.id = String(t.id); no.dataset.kind = "decide"; acts.append(no);
   }
   box.append(ta, acts);
-  // 写了一句再按 = 退回原线:显式执行配置卡此时被收回放行,补同一句;其他卡文案不变。
-  if (ctl.kind === "accept") box.append(homeEl("p", "留空按「通过」= 结案;写了一句再按 = 打回给原执行方继续。按两次才生效。" +
-    (t.execution_profile ? PROFILE_RELEASE_NOTE : "")));
+  // 按钮上的字随留言变(syncHandoff):留空是「通过」,写了是「打回并交回原线」。这里只留显式执行配置卡的那一句。
+  if (ctl.kind === "accept" && t.execution_profile) box.append(homeEl("p", PROFILE_RELEASE_NOTE));
   return box;
+}
+/** 这条线现在的样子: external 外部执行 / running 在跑 / stopped 没在跑也没请求启动;其余(不认识的线、已请求启动)= null。 */
+function sideLineState(line){
+  const w = workers.find((x) => x.line === line);
+  return !w ? null : w.external ? "external" : w.running ? "running" : w.desired_running ? null : "stopped";
 }
 function sideTaskStep(t, item){
   const autoReview = workers.some((w) => w.line === "review" && w.running);
   const step = t ? homeStep({ ...t, hb: hbClass(t) }, { autoReview }) : null;
-  if (t && !step?.lane) return { ...step, ...sideFallback(t, { lineName: lineLabel, wfLabels: meta.wf_labels || {} }) };
-  return step || { state: item?.state || "当前状态待核实", next: item?.next || "在它所属的电脑上处理" };
+  if (!t) return step || { state: item?.state || "当前状态待核实", next: item?.next || "在它所属的电脑上处理" };
+  const say = (extra) => sideFallback(t, { lineName: lineLabel, wfLabels: meta.wf_labels || {}, lineState: sideLineState(t.line), ...extra });
+  if (t.kind !== "goal") return step.lane ? step : { ...step, ...say() };
+  // 目标卡:状态写子任务完成数,下面列还没完成的子卡(与「关联任务」同一份子任务组)。
+  const kids = sideRelations(t, tasks).find((g) => g.label === "子任务")?.items || [];
+  const open = kids.filter((k) => k.status !== "done").map((k) => k.id);
+  const count = say({ children: { done: kids.length - open.length, total: kids.length } });
+  if (t.status === "done") return { ...step, ...count };
+  return step.lane ? { ...step, state: kids.length ? step.state + " · " + count.state : step.state, related: open } : { ...step, ...count, related: open };
+}
+/** 进行中的卡:最近一次心跳和本轮最近一次输出。取不到写「待核实」,不从状态推断。 */
+function sideBeat(t){
+  const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : null;
+  return "心跳 " + (t.heartbeat_at ? ago(t.heartbeat_at) : "待核实") +
+    " · 最近输出 " + (trace?.last_activity_at ? localTime(trace.last_activity_at).slice(-5) : "待核实");
+}
+/** 「下一步」右边的次按钮:lines 去设置页的执行线;receipt 展开本卡的逐项记录。 */
+function sideGo(kind){
+  if (kind === "lines") {
+    closeSide(); setView("settings");
+    requestAnimationFrame(() => { document.getElementById("set-lines")?.scrollIntoView({ block: "start" }); tocMark("set-lines"); });
+  } else if (kind === "receipt") {
+    const sec = document.getElementById("task-side-execution"), rec = sec?.querySelector("details.side-rec");
+    if (rec) rec.open = true;
+    (rec || sec)?.scrollIntoView?.({ block: "start" });
+  }
+}
+/** 「现在」一行里会随时钟变的字。n = 这一行的节点;只在文字变了时才写,焦点和选区不动。 */
+function sideNowFill(n, t, item, step){
+  const put = (el, text) => { if (el.textContent !== text) el.textContent = text; };
+  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
+  if (n.state) { put(n.state, [where, step.state].filter(Boolean).join(" · ")); n.state.dataset.tone = step.tone || ""; }
+  if (n.why) { put(n.why, step.why || ""); n.why.hidden = !step.why; }
+  if (n.next) put(n.next, "下一步：" + (step.next || (t ? "无需操作" : "在它所属的电脑上处理")));
+  if (n.go) {
+    const go = t && (step.go === "lines" || step.go === "receipt") ? step.go : "";
+    n.go.hidden = !go; n.go.dataset.go = go;
+    put(n.go, go === "lines" ? "去设置" : go === "receipt" ? "看逐项记录" : "");
+  }
+  if (n.beat) { const on = !!t && t.status === "in_progress"; n.beat.hidden = !on; put(n.beat, on ? sideBeat(t) : ""); }
+  if (n.related) {
+    const ids = t && Array.isArray(step.related) ? step.related : [], sig = ids.join(",");
+    if (n.related.dataset.sig !== sig) {
+      n.related.dataset.sig = sig; n.related.hidden = !ids.length;
+      n.related.replaceChildren(...ids.map((id) => {
+        const b = homeEl("button", "#" + id, "side-card-no"); b.type = "button";
+        b.title = String(byId.get(id)?.subject || "");
+        b.addEventListener("click", () => openSide({ id, uid: null, item: null }));
+        return b;
+      }));
+    }
+  }
 }
 /** 每秒仅更新状态文字，不重建输入框、焦点或待第二次确认的按钮。 */
 function updateSideLive(){
   if (!sideRef || document.getElementById("task-side").hidden) return;
-  const t = sideCard(), item = sideRef.item || null, step = sideTaskStep(t, item);
-  const where = homeMulti() ? (t ? homeLocalName() || "本机" : item?.computer) : null;
-  const state = document.getElementById("task-side-state"), next = document.getElementById("task-side-next");
-  if (state) { state.textContent = [where, step.state].filter(Boolean).join(" · "); state.dataset.tone = step.tone || ""; }
-  if (next) next.textContent = "下一步：" + (step.next || "无需操作");
+  const t = sideCard(), item = sideRef.item || null, el = (id) => document.getElementById(id);
+  sideNowFill({ state: el("task-side-state"), why: el("task-side-why"), next: el("task-side-next"), go: el("task-side-go"),
+                beat: el("task-side-beat"), related: el("task-side-related") }, t, item, sideTaskStep(t, item));
 }
-function sideExecution(t){
+/** 放行核对区是不是「要你做什么」:这张卡只差放行(首页同一个判断),按钮就是核对区里原有的那个。 */
+function sideReleaseNeed(t){
+  const step = sideTaskStep(t, null), ctl = sideControls(t, { mine: step?.lane === "mine" });
+  return ctl.kind === "release" && ctl.primary;
+}
+/** 派发步骤条这一节:常显,在给人看的小块下面。节首写交给哪条线,下面五步条;逐项记录折叠,
+ *  放行前核对时摊开。need = 这张卡只差放行:整节标成「要你做什么」,强调色左边条给这一节。
+ *  目标卡没有领取这回事:不画五步条,只留放行。 */
+function sideExecution(t, need = false){
   const section = homeEl("section", undefined, "side-sec");
   section.id = "task-side-execution";
-  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by]);
-  const checking = t.status === "not_started" && !t.released;
-  section.append(homeEl("h3", checking ? "放行前核对执行配置" : "派发与领取"));
+  section.dataset.signature = JSON.stringify([t.execution_trace, t.execution_profile, t.verification_repair, t.verification_repair_digest, t.released, t.run_id, t.status, t.waiting_for, !!t.result, t.resolved_by, t.kind, t.line, t.aggregate_version, need]);
+  const checking = t.status === "not_started" && !t.released, goal = t.kind === "goal";
+  if (need) { section.dataset.tone = "need"; section.append(homeEl("p", "要你做什么", "side-brief-k")); }
   const trace = t.execution_trace && t.execution_trace.run_id === t.run_id ? t.execution_trace : { released_at: t.execution_trace?.released_at };
+  const releaseButton = (label) => {
+    const release = homeEl("button", label, "pri"); release.type = "button";
+    release.dataset.a = "release"; release.dataset.id = String(t.id); release.dataset.version = String(t.aggregate_version);
+    release.dataset.executionProfileDigest = t.execution_profile?.profile_digest || "";
+    release.dataset.verificationRepairDigest = t.verification_repair_digest || "";
+    if (!release.dataset.verificationRepairDigest || t.execution_profile && (t.execution_profile.ready === false || !release.dataset.executionProfileDigest)) release.disabled = true;
+    return release;
+  };
+  if (goal) {
+    section.append(homeEl("h3", checking ? "放行前核对子任务" : "放行记录"));
+    if (checking) section.append(homeEl("p", "先核对子任务；按两次后才会放行。", "side-state"), releaseButton("放行这个目标"));
+    else section.append(homeEl("p", !t.released ? "尚未放行" : trace.released_at ? "最近放行 " + localTime(trace.released_at) : "已放行，时间未记录", "side-state"));
+    return section;
+  }
+  section.append(homeEl("h3", checking ? "放行前核对执行配置" : "派发与领取"));
+  section.append(homeEl("p", t.line ? "交给「" + lineLabel(t.line) + "」" : "未指派执行线", "side-state"));
   section.append(sideSteps(t, trace));
   const rows = [
     ["验证续修", `最多 ${t.verification_repair?.max_rounds || 1} 轮（含首轮）；同一会话与原档位，环境异常转等待`],
@@ -5224,16 +5401,12 @@ function sideExecution(t){
   if (checking) section.append(dl);
   else {
     const rec = homeEl("details", undefined, "side-rec");
+    rec.id = "task-side-rec";
     rec.append(homeEl("summary", "逐项记录"), dl);
     section.append(rec);
   }
   if (checking) {
-    const release = homeEl("button", "放行此任务", "pri"); release.type = "button";
-    release.dataset.a = "release"; release.dataset.id = String(t.id); release.dataset.version = String(t.aggregate_version);
-    release.dataset.executionProfileDigest = t.execution_profile?.profile_digest || "";
-    release.dataset.verificationRepairDigest = t.verification_repair_digest || "";
-    if (!release.dataset.verificationRepairDigest || t.execution_profile && (t.execution_profile.ready === false || !release.dataset.executionProfileDigest)) release.disabled = true;
-    section.append(homeEl("p", "先核对以上目录、通道、权限与预算；按两次后才会放行。", "side-state"), release);
+    section.append(homeEl("p", "先核对以上目录、通道、权限与预算；按两次后才会放行。", "side-state"), releaseButton("放行此任务"));
     if (t.execution_profile?.configuration_changed) section.append(homeEl("p", "执行配置已变化，请重新核对以上配置后再放行；第二次确认不会自动接受另一份配置。", "side-state"));
     if (t.execution_profile?.reason) section.append(homeEl("p", t.execution_profile.reason, "side-state"));
   }
@@ -5297,41 +5470,50 @@ function sideTech(t){
   box.append(dl);
   return box;
 }
-/** 关联任务或执行回执变化时，只刷新只读区，保留当前任务的输入与确认按钮。 */
+/** 关联任务或执行回执变化时，只刷新只读区，保留当前任务的输入与确认按钮。「逐项记录」开着就还开着。 */
 function updateSideContext(t){
   if (!t) return;
-  for (const [id, build] of [["task-side-execution", sideExecution], ["task-side-relations", sideRelationshipBox]]) {
+  for (const [id, build] of [["task-side-execution", (x) => sideExecution(x, sideReleaseNeed(x))], ["task-side-relations", sideRelationshipBox]]) {
     const current = document.getElementById(id);
     if (!current) continue;
     const fresh = build(t);
     if (current.dataset.signature === fresh.dataset.signature) continue;
+    const rec = current.querySelector("details.side-rec"), open = !!rec?.open;
     current.replaceChildren(...fresh.children); current.dataset.signature = fresh.dataset.signature;
+    if (fresh.dataset.tone) current.dataset.tone = fresh.dataset.tone; else delete current.dataset.tone;
+    const kept = current.querySelector("details.side-rec");
+    if (kept && rec) kept.open = open;
   }
 }
+/** 折叠区的键:有 id 用 id,没有用标题文字。 */
+const sideFoldKey = (d) => d.id || d.querySelector("summary")?.textContent || "";
 function renderSide(){
   if (!sideRef || document.getElementById("task-side").hidden) return;
   const t = sideCard(), item = sideRef.item || null;
   const step = sideTaskStep(t, item), ctl = sideControls(t, { remote: !t, mine: step?.lane === "mine" });
+  const goal = t?.kind === "goal" ? [tasks.some((x) => x.parent_id === t.id), REVIEW_LINES.length] : null;
   const sig = JSON.stringify(t ? [t.id, t.status, t.waiting_for, t.aggregate_version, t.human_gate, t.result,
                                   t.verdict_note, t.description, t.acceptance, (t.decision_package?.options || []).length,
-                                  ctl.kind, ctl.primary, t.brief, t.result_summary]
+                                  ctl.kind, ctl.primary, t.brief, t.result_summary, t.released, t.pinned_at, goal]
                                : ["remote", sideRef.uid, item?.title, item?.state, item?.next]);
   if (sig === sideSig) { updateSideLive(); updateSideContext(t); return; }
   sideSig = sig;
   const body = document.getElementById("task-side-body"), out = [];
+  // 同一张卡重建(卡的版本变了):折叠区的开合和滚动位置照原样恢复;换了一张卡就从头看。
+  const shown = t ? "id:" + t.id : "ref:" + (sideRef.uid || ""), same = body.dataset.card === shown;
+  const folds = new Map(), top = body.scrollTop;
+  if (same) for (const d of body.querySelectorAll("details")) folds.set(sideFoldKey(d), !!d.open);
   document.getElementById("task-side-title").textContent = t ? t.subject : (item?.title || "任务");
-  // ⭐ 最上面是给人看的小块(卡 #14)。原来的各节不是删了,是收进下面那个默认折叠的
-  //   「给执行者看的详细说明」—— 操作者的原话是「这三个都像给 agent 看的,我看得太吃力」。
-  const ctlBox = ctl.kind === "none" ? null : sideControlsBox(t, ctl);
+  // ⭐ 最上面是给人看的小块(卡 #14),下面是常显的派发步骤条;任务说明、验收条件、执行结果、裁定记录与
+  //   关联任务收进默认折叠的「给执行者看的详细说明」—— 操作者的原话是「这三个都像给 agent 看的,我看得太吃力」。
+  //   放行(release)的按钮在步骤条那一节里,不另造一个。
+  const ctlBox = ctl.kind === "none" || ctl.kind === "release" ? null : sideControlsBox(t, ctl);
   out.push(sideBrief(t, step, item, ctlBox, ctl));
   if (t) {
-    const execution = sideExecution(t);
-    const checking = t.status === "not_started" && !t.released;
-    if (checking) out.push(execution);
+    out.push(sideExecution(t, ctl.kind === "release" && ctl.primary));
     const detail = homeEl("details", undefined, "side-sec side-detail");
     detail.id = "task-side-detail";
     detail.append(homeEl("summary", "给执行者看的详细说明"));
-    if (!checking) detail.append(execution);
     detail.append(sideRelationshipBox(t));
     for (const [title, text] of [["任务说明", t.description], ["验收条件", t.acceptance], ["执行结果", t.result], ["裁定记录", t.verdict_note]]) {
       const sec = sideSection(title, text); if (sec) detail.append(sec);
@@ -5339,16 +5521,23 @@ function renderSide(){
     out.push(detail);
     // 其余操作: 不是「我」这一步时的手动处理、编辑、归档——收起来,不抢下一步
     const more = homeEl("details", undefined, "side-sec");
+    more.id = "task-side-more";
     more.append(homeEl("summary", ctlBox && !ctl.primary ? "仍要手动处理" : "更多操作"));
     if (ctlBox && !ctl.primary) more.append(ctlBox);
     const acts = homeEl("div", undefined, "side-acts");
-    if (t.status === "waiting") { const ed = homeEl("button", "编辑"); ed.type = "button"; ed.dataset.edit = String(t.id); acts.append(ed); }
-    if (t.status === "done" || t.status === "waiting") {
-      const ar = homeEl("button", "归档", "danger"); ar.type = "button"; ar.dataset.a = "archive"; ar.dataset.id = String(t.id); acts.append(ar);
+    const act = (label, cls) => { const b = homeEl("button", label, cls); b.type = "button"; acts.append(b); return b; };
+    if (t.kind === "goal") {
+      // 目标专有的操作:与看板目标卡同名同数据属性,由 document 上同一个处理器接管。
+      const on = !!t.pinned_at, pin = act(on ? "已置顶 · 取消" : "置顶");
+      pin.dataset.pin = String(t.id); pin.dataset.on = on ? "1" : "0";
+      if (!goal[0] && t.status !== "done") act("重新拆解").dataset.dec = String(t.id);
+      if (goal[1] && t.status !== "done") act("起评审卡").dataset.rev = String(t.id);
     }
-    const loc = homeEl("button", "在「全部任务」中定位"); loc.type = "button";
-    loc.addEventListener("click", () => { const id = t.id; closeSide(); locateOnBoard(id); });
-    acts.append(loc);
+    if (t.status === "waiting" || t.status === "not_started") act("编辑").dataset.edit = String(t.id);
+    if (t.status === "done" || t.status === "waiting" || t.kind === "goal") {
+      const ar = act("归档", "danger"); ar.dataset.a = "archive"; ar.dataset.id = String(t.id);
+    }
+    act("在「全部任务」中定位").addEventListener("click", () => { const id = t.id; closeSide(); locateOnBoard(id); });
     more.append(acts, homeEl("p", "编号 #" + t.id, "side-state"));
     out.push(more, sideTech(t));
   } else if (sideRef.uid && fleetApi) {
@@ -5357,18 +5546,35 @@ function renderSide(){
     out.push(b);
   }
   body.replaceChildren(...out);
-  // 草稿后注(同看板: 值不进签名,打字不被重建打断)
+  body.dataset.card = shown;
+  if (same) {
+    for (const d of body.querySelectorAll("details")) { const k = sideFoldKey(d); if (folds.has(k)) d.open = folds.get(k); }
+    if (typeof top === "number") body.scrollTop = top;
+  }
+  // 草稿后注(同看板: 值不进签名,打字不被重建打断);按钮上的字跟着留言走
   const vin = body.querySelector("[data-vin]");
-  if (vin && t) vin.value = verdictDraft.get(t.id) || "";
+  if (vin && t) { vin.value = verdictDraft.get(t.id) || ""; syncHandoff(document.getElementById("task-side")); }
 }
 function sideFromHash(){
-  const uid = new URLSearchParams(location.hash.slice(1)).get("task");
-  if (uid && sideRef?.uid !== uid && sideCard()?.task_uid !== uid) openSide({ uid, id: null, item: null });
+  const ref = new URLSearchParams(location.hash.slice(1)).get("task");
+  if (!ref) return;
+  // 纯数字 = 卡号(批准接口给的 /#task=卡号 链接);其余 = 任务的长编号。
+  if (/^\d+$/.test(ref)) {
+    const id = Number(ref);
+    if (Number(sideRef?.id) !== id && sideCard()?.id !== id) openSide({ id, uid: null, item: null });
+    return;
+  }
+  if (sideRef?.uid !== ref && sideCard()?.task_uid !== ref) openSide({ uid: ref, id: null, item: null });
 }
 function sideAfterRefresh(){
   persistDrafts();
   newLineOptions();
-  if (!sideBooted) { sideBooted = true; newRestore(); sideFromHash(); window.addEventListener("hashchange", sideFromHash); }
+  if (!sideBooted) {
+    sideBooted = true; newRestore(); sideFromHash(); window.addEventListener("hashchange", sideFromHash);
+    // 刷新前正在选方案:侧栏恢复后把方案弹窗重开,选择、执行结果和回执照草稿填回。
+    const t = sideCard();
+    if (t && decisionChoice.has(t.id) && t.status === "waiting" && t.decision_package?.options?.length) openDecisionModal(t);
+  }
   renderSide();
 }
 // ── 首页「新建任务」(第 3 批)────────────────────────────────────────
