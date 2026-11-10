@@ -16,7 +16,7 @@ import {spawn} from "node:child_process";
 import {statSync} from "node:fs";
 import {isAbsolute} from "node:path";
 import {DECOMPOSE_TOOLS,lockdown,boardCliEnvironment,schemaErrors} from "./board-claude-cli.mjs";
-import {detectClaude,findOnPath} from "./config-setup.mjs";
+import {findOnPath,resolveClaudeCli} from "./config-setup.mjs";
 
 const {lineMenu}=createRequire(import.meta.url)("./decompose_lib.js");
 const NL=String.fromCharCode(10);
@@ -196,20 +196,16 @@ export function coordinatorTurnOf(stdout){
 
 const isFile=path=>{try{return statSync(path).isFile();}catch{return false;}};
 /** 协调线用哪条命令起 CLI。argv 是 BOARD_COORDINATOR_CLI_ARGV 解出的整条基础命令(测试与 mock 用,
- *  与 WORKER_CLI_ARGV、REVIEWER_CLI_ARGV 同一做法);没给就找 Claude CLI(WORKER_CLAUDE_CLI,否则 PATH)。
- *  .cmd / .bat 不能不经 shell 直接启动,按找不到处理并说明怎么改。只查文件在不在,不运行 CLI。 */
+ *  与 WORKER_CLI_ARGV、REVIEWER_CLI_ARGV 同一做法);没给就按 resolveClaudeCli 找 Claude CLI,
+ *  与一键拆解、上下文压缩同一个帮助函数:WORKER_CLAUDE_CLI 优先,PATH 上只有 npm 的 .cmd 包装器时
+ *  改用旁边的原生可执行文件。只查文件在不在,不运行 CLI。 */
 export function coordinatorCommand({env=process.env,argv=null}={}){
- const locate=name=>isAbsolute(name)?(isFile(name)?name:null):findOnPath(name,{env});
  if(argv){
-  const exe=locate(argv[0]);
+  const exe=isAbsolute(argv[0])?(isFile(argv[0])?argv[0]:null):findOnPath(argv[0],{env});
   return exe?{ok:true,exe,prefix:argv.slice(1)}:{ok:false,reason:`找不到协调线的启动命令 ${argv[0]}`};
  }
- const named=detectClaude(env);
- const exe=named?locate(named):null;
- if(!exe)return {ok:false,reason:"找不到 Claude CLI。安装后重启看板,或把 WORKER_CLAUDE_CLI 设成 claude.exe 的完整路径"};
- if(/\.(?:cmd|bat)$/i.test(exe))
-  return {ok:false,reason:"找到的 Claude CLI 是 .cmd 包装,看板不能直接启动它。把 WORKER_CLAUDE_CLI 设成 claude.exe 的完整路径后重启看板"};
- return {ok:true,exe,prefix:[]};
+ const cli=resolveClaudeCli(env);
+ return cli.exe?{ok:true,exe:cli.exe,prefix:[]}:{ok:false,reason:cli.reason};
 }
 
 /** 收掉整棵进程树。Windows 上等 taskkill 走完再 kill 父进程:父进程先死,子孙会改挂而逃过 /T(server.mjs workerStop 实测)。 */

@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
 import { createRequire } from "node:module";
 import { nodeTooOld, backfillEnv, SEAT_KEYS } from "./env.mjs";
-import { buildConfig, writeNewConfig } from "./config-setup.mjs";
+import { buildConfig, writeNewConfig, resolveClaudeCli } from "./config-setup.mjs";
 import {readFleetView,readFleetTask,readFleetEvidencePage} from "./fleet-view.mjs";
 import {readFleetProgress} from "./fleet-progress.mjs";
 import {openFleetActions,loadFleetActionsConfig} from "./fleet-actions.mjs";
@@ -1277,7 +1277,6 @@ try {
   for (const [k, v] of Object.entries(raw))
     if (!k.startsWith("_") && v && v.session) LINEAGE[k] = v;
 } catch { /* fine to be absent; the startup log says so */ }
-const CLAUDE_CLI = process.env.WORKER_CLAUDE_CLI || "claude";
 // BOARD_CLAUDE_PROJECTS: test-only escape hatch. A harness must never plant a transcript
 // under the operator's real ~/.claude/projects, so it points this at a temp dir instead.
 const PROJECTS = process.env.BOARD_CLAUDE_PROJECTS || join(homedir(), ".claude", "projects");
@@ -1434,6 +1433,12 @@ function contextOf(line) {
 }
 
 const runCli = (args, timeout = 600000) => new Promise((resolve) => {
+  // 用哪个可执行文件:与对话的协调线同一个帮助函数(config-setup.mjs 的 resolveClaudeCli,规则同执行线)。
+  // WORKER_CLAUDE_CLI 写了就以它为准;PATH 上只有 npm 的 .cmd 包装器时改用旁边的原生可执行文件;
+  // 都没有就不起进程,把写给人看的原因放进 stderr 交回(调用方会把它带进报错)。
+  const cli = resolveClaudeCli(process.env);
+  if (!cli.exe) return resolve({ code: 1, stdout: "", stderr: cli.reason });
+  const CLAUDE_CLI = cli.exe;
   // ⭐ The prompt rides argv (-p) on the claude seat, and Windows CreateProcess caps a
   //   command line at 32767 UTF-16 chars: over budget, execFile dies with an opaque
   //   spawn error. Same caliber as the zcode gate (zcode-profile.mjs) and the two loop

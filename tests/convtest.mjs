@@ -17,6 +17,7 @@ const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const FAKE = join(ROOT, "tests", "helpers", "fake-coordinator-cli.mjs");
 const C = await import(pathToFileURL(join(ROOT, "core", "coordinator-cli.mjs")).href);
 const B = await import(pathToFileURL(join(ROOT, "core", "board-claude-cli.mjs")).href);
+const S = await import(pathToFileURL(join(ROOT, "core", "config-setup.mjs")).href);
 const conversations = createRequire(import.meta.url)(join(ROOT, "core", "conversations.js"));
 
 const freePort = async () => {
@@ -197,8 +198,40 @@ test("协调线一轮的参数与环境:只读工具白名单、dontAsk、schema
   // 启动命令:找不到就不可用并写明原因;超过命令行预算的一轮在起进程前拒发。
   const missing = C.coordinatorCommand({ env: { PATH: "" }, argv: ["no-such-coordinator-cli"] });
   assert.ok(!missing.ok && /找不到/.test(missing.reason));
-  assert.ok(!C.coordinatorCommand({ env: { PATH: "" } }).ok);
   assert.deepEqual(C.coordinatorCommand({ env: {}, argv: [process.execPath, "x.mjs"] }), { ok: true, exe: process.execPath, prefix: ["x.mjs"] });
+  // Claude CLI 的定位(协调线与一键拆解、压缩共用 resolveClaudeCli,规则同执行线):
+  // PATH 上只有 npm 的 .cmd 包装器 → 用它旁边的原生可执行文件;旁边没有、或 PATH 上什么都没有 → 不可用并写明怎么改;
+  // WORKER_CLAUDE_CLI 写了就以它为准。
+  const fake = mkdtempSync(join(tmpdir(), "convtest-cli-"));
+  try {
+    const empty = join(fake, "empty"), shimOnly = join(fake, "shim-only"), withNative = join(fake, "with-native");
+    const nativeDir = join(withNative, "node_modules", "@anthropic-ai", "claude-code", "bin");
+    for (const dir of [empty, shimOnly, nativeDir]) mkdirSync(dir, { recursive: true });
+    const none = S.resolveClaudeCli({ PATH: empty });
+    assert.equal(none.exe, null); assert.match(none.reason, /找不到 Claude CLI。先安装 Claude Code/);
+    assert.deepEqual(C.coordinatorCommand({ env: { PATH: empty } }), { ok: false, reason: none.reason });
+    const gone = S.resolveClaudeCli({ PATH: empty, WORKER_CLAUDE_CLI: join(empty, "claude.exe") });
+    assert.equal(gone.exe, null); assert.match(gone.reason, /WORKER_CLAUDE_CLI 指向的文件不存在/);
+    if (WIN) {
+      const native = join(nativeDir, "claude.exe");
+      for (const file of [join(shimOnly, "claude.cmd"), join(withNative, "claude.cmd"), native]) writeFileSync(file, "");
+      const found = S.resolveClaudeCli({ PATH: [empty, withNative].join(";") });
+      assert.equal(found.exe, native, "包装器旁边的原生可执行文件"); assert.match(found.note, /\.cmd 包装器,已改用它旁边的原生可执行文件/);
+      assert.equal(S.claudeNativeSibling(join(withNative, "claude.cmd")), native);
+      assert.deepEqual(C.coordinatorCommand({ env: { PATH: withNative } }), { ok: true, exe: native, prefix: [] });
+      const shim = S.resolveClaudeCli({ PATH: shimOnly });
+      assert.equal(shim.exe, null); assert.match(shim.reason, /\.cmd 包装器,旁边没有原生可执行文件.*WORKER_CLAUDE_CLI/);
+      assert.equal(S.claudeNativeSibling(join(shimOnly, "claude.cmd")), null);
+      assert.equal(C.coordinatorCommand({ env: { PATH: shimOnly } }).ok, false);
+      // 显式指定优先:不看 PATH 上的包装器,也不替它另找;指向包装器就是不可用。
+      assert.deepEqual(S.resolveClaudeCli({ PATH: withNative, WORKER_CLAUDE_CLI: process.execPath }), { exe: process.execPath, note: null });
+      const explicitShim = S.resolveClaudeCli({ PATH: withNative, WORKER_CLAUDE_CLI: join(withNative, "claude.cmd") });
+      assert.equal(explicitShim.exe, null); assert.match(explicitShim.reason, /WORKER_CLAUDE_CLI 指向 \.cmd 或 \.bat 包装器/);
+    } else {
+      writeFileSync(join(withNative, "claude"), "");
+      assert.deepEqual(S.resolveClaudeCli({ PATH: withNative }), { exe: join(withNative, "claude"), note: null });
+    }
+  } finally { rmSync(fake, { recursive: true, force: true }); }
   assert.ok(C.argvOverBudget(["claude", "-p", "字".repeat(16000)]) && !C.argvOverBudget(first));
 });
 
