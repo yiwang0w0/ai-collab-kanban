@@ -228,16 +228,20 @@ export function enqueueZcodeTask(db,{taskId,expectedVersion,config}){
  });
 }
 
-/** 只读:开关、各道门、预算、未结清的分派、已有请求与候选卡的拒收码。不写库、不启动、不调用 Python。 */
+/**
+ * 只读:开关、各道门、预算、未结清的分派、已有请求与候选卡的拒收码。不写库、不启动、不调用 Python。
+ * environment=null 表示调用方看不到循环终端的环境(看板服务):环境钥匙记 null,open 在配置侧开着时也是 null,
+ * 状态不因这把钥匙判成 disabled,其余顺序不变。
+ */
 export function zcodeWorkerPlan(db,config,environment=process.env){
- const c=validateZcodeWorkerConfig(config),p=profileOf(c),sw={config_enabled:c.launch.enabled===true,environment_released:zcodeReleased(environment)};
- const out={format:'ai-fleet-zcode-worker-plan/v1',configured:false,line:c.line,project_id:p.project_id,switch:{...sw,open:sw.config_enabled&&sw.environment_released},max_launches:c.launch.max_launches,hard_max_launches:HARD_MAX_LAUNCHES,launched:false};
+ const c=validateZcodeWorkerConfig(config),p=profileOf(c),sw={config_enabled:c.launch.enabled===true,environment_released:environment===null?null:zcodeReleased(environment)};
+ const out={format:'ai-fleet-zcode-worker-plan/v1',configured:false,line:c.line,project_id:p.project_id,switch:{...sw,open:sw.config_enabled?sw.environment_released:false},max_launches:c.launch.max_launches,hard_max_launches:HARD_MAX_LAUNCHES,launched:false};
  if(!['broker_roles','broker_task_projects','broker_assignments','broker_call_quotas','broker_dispatches','broker_execution_records'].every(name=>table(db,name)))return out;
  const gate=check=>{try{check();return null;}catch(e){return code(e);}};
  const q=quotaStatus(db,p.quota_id),open=occupied(db),requests=pendingRequests(db,c);
  const gates={authorization:gate(()=>authorizationGate(c)),role:gate(()=>roleGate(db,c)),budget:gate(()=>budgetGate(db,c)),coordinator:gate(()=>coordinatorGate(db,c))};
  // 未结清排在最前:它不因开关关着或预算用尽而消失,不能被这些状态遮住。
- const state=open.length?'needs_attention':!out.switch.open?'disabled':Object.values(gates).some(Boolean)?'blocked':!q.enabled?'budget_disabled':q.used+q.reserved>=q.limit_total?'budget_exhausted':'ready';
+ const state=open.length?'needs_attention':out.switch.open===false?'disabled':Object.values(gates).some(Boolean)?'blocked':!q.enabled?'budget_disabled':q.used+q.reserved>=q.limit_total?'budget_exhausted':'ready';
  return {...out,configured:true,state,authorization:c.launch.authorization.kind,gates,
   budget:q?{quota_id:q.quota_id,enabled:!!q.enabled,limit_total:q.limit_total,used:q.used,reserved:q.reserved}:null,
   // reason 是调度器给的占位原因;operator_attested=true 表示已做过 record-uncertain,但并发位仍被占着。
@@ -245,11 +249,11 @@ export function zcodeWorkerPlan(db,config,environment=process.env){
   request_pending:requests.length>0,requests:requests.map(a=>({assignment_id:a.assignment_id,task_id:a.task_id,refused:a.refused})),
   candidates:candidates(db,c).map(t=>({task_id:t.id,task_uid:t.task_uid,refused:verdict(db,c,t)}))};
 }
-/** 只读:plan 之外再给最近的分派与调度实例,供人判断「跑没跑、卡在哪」。 */
+/** 只读:plan 之外再给最近的分派(outcome 取结算结果的 status,没结算是 null)与调度实例,供人判断「跑没跑、卡在哪」。 */
 export function zcodeWorkerStatus(db,config,environment=process.env){
  const plan=zcodeWorkerPlan(db,config,environment);if(!plan.configured)return plan;
- const dispatches=db.prepare('SELECT dispatch_id,task_id,phase,reason,launch_at,finished_at FROM broker_dispatches WHERE quota_id=? ORDER BY created_at DESC,dispatch_id LIMIT 5').all(plan.budget?.quota_id??'');
- return {...plan,dispatches,scheduler:schedulerStatus(db,{limit:3}).instances.map(i=>({instance_id:i.instance_id,state:i.state,heartbeat_state:i.heartbeat_state,started_at:i.started_at,ended_at:i.ended_at}))};
+ const dispatches=db.prepare("SELECT dispatch_id,task_id,phase,reason,created_at,launch_at,finished_at,CASE WHEN json_valid(result_json) THEN json_extract(result_json,'$.status') END outcome FROM broker_dispatches WHERE quota_id=? ORDER BY created_at DESC,dispatch_id LIMIT 5").all(plan.budget?.quota_id??'');
+ return {...plan,dispatches,scheduler:schedulerStatus(db,{limit:3}).instances.map(i=>({instance_id:i.instance_id,state:i.state,heartbeat_state:i.heartbeat_state,heartbeat_at:i.heartbeat_at,started_at:i.started_at,ended_at:i.ended_at}))};
 }
 
 // ── 证据合同:复用 loops/evidence_contract.py,经固定摘要的 Python 调用 ─────

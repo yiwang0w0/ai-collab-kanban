@@ -77,6 +77,8 @@ node cli/zcode-worker.mjs setup --db <看板DB> --line zcode --project zcode-loc
 
 在 `fleet.config.json` 里给 `lines` 加一项 `{"id":"zcode","label":"Zcode","external":true}`,给 `routes` 加 `"mcp"`,然后重启看板。
 
+要在面板上看这条线的状态,再加一项 `"zcode_worker_config": "<配置文件的绝对路径>"`,见「面板上看状态」。
+
 **4. 验收治理检出**
 
 ```powershell
@@ -213,7 +215,54 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 请求合格、但调度器这一轮没能领取(领取期出现了接卡规则没有料到的拒绝):这一轮报 `blocked`,发一条 `REQUEST_UNCLAIMABLE` 提示(每个请求每个码一次)。请求原样留着,调度器每轮照旧重试;循环从下一轮起不再等它,接它后面的卡。
 
-路由为 `mcp` 的卡不动时,面板目前不会说原因,用 `plan` 看:`candidates` 是候选卡,`requests` 是已有请求,各带拒收码。
+路由为 `mcp` 的卡不动时,先看「面板上看状态」的两个接口;候选卡在建请求之前就被拒的原因只在 `plan` 里:`candidates` 是候选卡,`requests` 是已有请求,各带拒收码。
+
+## 面板上看状态
+
+循环是独立进程,看板服务不启动它,也不替它做任何决定。看板只提供两处只读信息,判定用的是 `plan` / `status` 同一份(`core/execution/zcode-worker.mjs`),不另写一套。
+
+**开启。** 在 `fleet.config.json` 加 `"zcode_worker_config": "<zcode-worker.config.json 的绝对路径>"`,重启看板。看板只读库和这个文件:不监听 MCP 端口、不取调度锁、不跑证据脚本、不迁移库,读的那段时间本连接处于只读模式。`synthetic` 授权会和 `plan` 一样数一下认证目录里的条目(不读内容),协调凭据会按库核对一次。
+
+**`GET /api/zcode/status`**:面板会话或操作员令牌可读;执行线、审阅线、执行者令牌 403,批准令牌在本机不认(401),远程入口不开放。
+
+```json
+{ "configured": true,
+  "switches": { "budget_enabled": true, "launch_enabled": true, "released_env": null },
+  "budget": { "used": 1, "limit": 1, "reserved": 0 },
+  "loop": { "state": "budget_exhausted", "reason": "…", "last_heartbeat_at": "…" },
+  "last_dispatch": { "task_id": 12, "phase": "settled", "outcome": "success", "at": "…" },
+  "model": "GLM-5.3" }
+```
+
+- 没配 `zcode_worker_config`,或库里还没 `setup`:只有 `{configured:false, loop:{state:"not_configured", reason}}`。
+- 配了但文件读不到、格式不对:`configured:true`、`loop.state:"blocked"`,`switches` 三项与 `budget` 是 `null`。
+- `released_env` 恒为 `null`。环境钥匙只在循环自己的终端里,看板看不到;状态不因它判成「关着」。
+- `last_dispatch` 是这份预算下最近的一次分派,`outcome` 取结算结果(`success` / `failed` / `timeout` 等),没结算是 `null`。
+- `last_heartbeat_at` 取本库最近的调度实例。调度锁按库唯一,同库另跑 `cli/scheduler.mjs` 时它也会算进来。
+- `reason` 是给人看的白话,只写状态和下一步。
+
+| `loop.state` | 意思 |
+|---|---|
+| `not_configured` | 看板没指配置,或库里还没登记这条线 |
+| `disabled` | 配置里 `launch.enabled` 是 `false`,或预算没启用 |
+| `blocked` | 授权、角色、预算登记、协调凭据有一道没过,或配置读不到 |
+| `budget_exhausted` | 预算用完 |
+| `unsettled` | 有分派没结清:循环活着且正在执行时是正常的;循环已停时先 `reconcile` |
+| `needs_attention` | 占着并发位的运行已被 `record-uncertain` 记为结果不明,`reconcile` 补不了,按「出问题时」处理 |
+| `ready` | 有合格的卡等 Zcode 接手;最近没有心跳时 `reason` 会写明循环没在运行 |
+| `idle` | 没有可接的卡 |
+
+**卡上的 `zcode` 字段**(`GET /api/tasks/:id` 与任务列表):路由为 `mcp`、线是 Zcode 角色线(库里该角色的运行时是 `zcode`)的卡才有,别的卡没有这个键。
+
+```json
+"zcode": { "request_state": "cancelled", "refusal_code": "VERIFY_UNSUPPORTED", "refusal_text": "带登记验证的卡不能交给 Zcode", "dispatches": 0 }
+```
+
+- `request_state`:这张卡最近一个分派请求的状态(`waiting_policy`、`waiting_release`、`waiting_executor`、`claimed`、`ended`、`cancelled`),没有请求是 `null`。
+- `refusal_code` / `refusal_text`:只在最近的请求被循环撤回、原因写着 `ZCODE_REFUSED:<拒收码>` 时给,白话与「接卡规则」两张表同义。
+- `dispatches`:这张卡名下的分派次数。
+
+候选卡在建请求之前就被拒(例如手工把卡改成 `mcp` 却没 `enqueue` 登记,`NOT_ENROLLED`)不写库,卡上看不到这个码;状态接口的 `idle` 会写明有几张被拒收,码用 `plan` 看。
 
 ## 账本
 
@@ -270,7 +319,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 ## 已知短处
 
 - 真实登录兼容性和真实模型任务都还没有验证过。
-- 面板没有 Zcode 的入口和状态:交卡靠 `enqueue`,看原因靠 `plan` / `status`。
+- 面板没有 Zcode 的入口:交卡靠 `enqueue`。状态有只读接口(见「面板上看状态」),面板显示是下一批;候选卡建请求前被拒的码只在 `plan` 里。
 - 用量拿不到,只能事后对供应商账单。
 - 被操作者声明为「结果不明」的运行不产生账本行,并且在本节点当前代次内一直占着并发位(见上)。
 - 已经在别的线上尝试过的卡,转到 Zcode 线后会以 `ATTEMPTS_EXHAUSTED` 被拒:尝试次数是累计的,从不清零。
