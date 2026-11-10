@@ -199,6 +199,29 @@ for code in [None,-1,-2,-3]:
  assert v.classify(0,'完成',{'ok':False,'rc':code,'out':'FAIL'},'交付')=='environment',code
 assert v.classify(-2,'spawn失败',{'ok':False,'rc':1,'out':'FAIL'},'交付')=='environment'
 assert v.classify(0,'完成',None,None)=='environment'
+# 环境故障的输出里带 fail / failed 字样，不算测试红（审阅实测的六条）。
+for output in ['Error: connect ETIMEDOUT 127.0.0.1:5432'+chr(10)+'# fail 1',
+ 'OSError: [Errno 28] No space left on device'+chr(10)+'FAILED (errors=1)',
+ 'FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory',
+ 'npm ERR! Failed at the app@1.0.0 test script.',
+ '# pass 5'+chr(10)+'# fail 0'+chr(10)+'Error: coverage threshold not met',
+ '结果: 12 PASS / 0 FAIL'+chr(10)+'lint: 3 problems']:
+ assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':output},'交付')=='environment',output
+for output in ['read ECONNRESET'+chr(10)+'1 failed','getaddrinfo ENOTFOUND registry.invalid'+chr(10)+'1 failed',
+ 'EPERM: operation not permitted'+chr(10)+'1 failed','EBUSY: resource busy or locked'+chr(10)+'1 failed',
+ 'ENOSPC: no space left'+chr(10)+'1 failed','Access is denied.'+chr(10)+'1 failed','拒绝访问。'+chr(10)+'1 failed',
+ 'FAIL','FAILED','Failed to open the fixture','exit code 5'+chr(10)+'failed to start','0 FAIL'+chr(10)+'3 problems',
+ 'connection failed 3 times']:
+ assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':output},'交付')=='environment',output
+# 验证进程被信号或 Windows 异常终止（退出码为负、≥128 或不是整数）归环境，输出再像测试红也不续修。
+for code in [3221225477,137,128,-9,-1073741819,True,'1']:
+ assert v.classify(0,'完成',{'ok':False,'rc':code,'full_out':'Allocation failed'+chr(10)+'AssertionError: fixture'},'交付')=='environment',code
+# 带非零计数或断言特征的才是测试红。
+for output in ['# fail 2','1 failed, 3 passed','result: 3 PASS / 1 FAIL','not ok 3 - 夹具用例','FAIL tests/sample.test.js',
+ 'FAILED tests/test_sample.py::test_case - 夹具','FAIL: test_case (sample.Case)','--- FAIL: TestCase (0.00s)','FAILED (failures=2)',
+ '  2 failing','断言比较失败','ERR_ASSERTION','assertion failed','5 PASS / 1 FAIL'+chr(10)+'TypeError: fixture']:
+ for code in [1,2,127]:
+  assert v.classify(0,'完成',{'ok':False,'rc':code,'full_out':output},'交付')=='test_failure',(output,code)
 # 环境特征在完整输出首部，尾部恰为测试红，不能先截尾再误分成可续修。
 full='ERR_MODULE_NOT_FOUND: fixture'+chr(10)+'x'*6000+chr(10)+'FAIL assertion'
 assert v.classify(0,'完成',{'ok':False,'rc':1,'full_out':full,'out':full[-4000:]},'交付')=='environment'
