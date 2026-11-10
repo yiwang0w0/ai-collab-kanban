@@ -49,6 +49,7 @@ import codex_runtime
 import context_lib
 import verification_repair
 import evidence_contract
+import lessons_lib        # 经验库(docs/经验库.md):开场 / 出错 / 收尾 / 命中即验证,全由宿主脚本完成
 from host_git_commit import HostCommitGuard, HostCommitError
 from agent_contract import provider_environment, workspace_identity
 from pool_state import RATE_LIMIT_PAT, report_exhausted
@@ -1227,10 +1228,14 @@ def build_prompt(t, worker, evidence_path, prev_tail=None, attempt=1):
     # 临时会话每卡都是新的:卡面之外还必须显式带上宿主配置的持久上下文契约。
     # 历史锚点可能含业务示例,只给路径+hash,按需只读技术段,不整篇自动外发。
     p += context_lib.prompt_block(REPO, ANCHOR, RUNTIME)
+    # 经验库:按卡面文字、里面提到的路径和上次输出尾查到的条目,整条附在资料区(有条数与字数上限)。
+    lessons = lessons_lib.session(t, DATA, log)
+    p += lessons.opening_block(t, prev_tail)
     if prev_tail:
         p.append("⚠ 上一次尝试**没有产出证据文件**。上次进程的输出尾部如下——"
                  "别再走同一条路,换个做法:\n```\n" + prev_tail + "\n```")
     p += delivery_block(evidence_path, evidence_contract.for_task(t))
+    p += lessons.write_hint(evidence_contract.for_task(t))
     p += [
         "",
         "【发现本卡范围外的工作】不要直接处理。写一个 JSON 文件,循环会替你建成卡挂在本卡下面:",
@@ -2380,6 +2385,7 @@ def handle_legacy(t, worker):
             # ⭐派生闸: 收割挪到**成功+验证通过之后**。在这之前收割的话,
             #   失败的父卡也会生子卡,每重试一次就增殖一次。
             ev = read_evidence(ev_path)
+            ev = lessons_lib.session(t, DATA, log).take(ev)     # 证据末尾的「经验」小节先摘出来
 
             # ⭐验证由 **loop** 跑。worker 没有执行权,所以也不可能持有"通过了"的申告
             #   —— 通过的证明由这边来做。
@@ -2392,6 +2398,7 @@ def handle_legacy(t, worker):
 
             if ev and (vr is None or vr["ok"]):
                 ev = host_delivery(t, ev, ev_path, vr, rc)
+                ev += lessons_lib.session(t, DATA, log).close(True)   # 经验入库 + 附过的条目各记一次命中
                 made, memo = ([], "") if PROFILE_MODE else harvest_spawned(t, worker)
                 if made and not any(isinstance(x, dict) for x in made):
                     ev += (chr(10) + chr(10) + "—— 本卡派生出的子任务卡 ——" + chr(10) +
@@ -2537,11 +2544,13 @@ def handle(t, worker):
     task = {**t, "_attempt_deadline": time.monotonic() + min(TIMEOUT, budget_timeout), "_repair_context": {}}
     context, rows, last_result = task["_repair_context"], [], ""
     contract = evidence_contract.for_task(task)
+    lessons = lessons_lib.session(task, DATA, log)
     hb = Heartbeat(tid, worker, run_id); hb.start()
     os.makedirs(EVID, exist_ok=True)
     log_dir = os.path.join(EVID, "verify_runs", run_id)
     os.makedirs(log_dir, exist_ok=True)
     def finish(outcome, text):
+        text += lessons.close(outcome == "done")    # 收尾:经验入库;验证通过时给附过的条目各记一次命中
         delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id)
         return "done" if delivered and outcome == "done" else "wait" if delivered else "rejected"
     try:
@@ -2575,6 +2584,7 @@ def handle(t, worker):
                 confirm_forked(FORKED_SID)
             evidence = read_evidence(ev_path, preserve=bool(contract))
             task["_evidence_measurement"] = evidence_contract.measure(evidence) if evidence is not None else None
+            evidence = lessons.take(evidence)    # 「经验」小节先摘出来,不进四节合同与后面的验证
             body_check = evidence_contract.validate(evidence, contract) if contract and evidence is not None else None
             if host_guard:
                 host_guard.assert_intact()
@@ -2624,6 +2634,8 @@ def handle(t, worker):
             next_path = os.path.join(EVID, f"task-{tid}-attempt-{attempt}-round-{number + 1}.md")
             context["prompt"] = (evidence_contract.correction(body_check, contract, ev_path, next_path)
                                  if reason == "evidence_contract" else verification_repair.repair_prompt(vr, log_path, next_path, number + 1))
+            # 出错先查经验库:用这次失败的输出查,命中的条目附在续修消息后面(开场附过的不重复)。
+            context["prompt"] += lessons.failure_block((vr or {}).get("full_out") or (vr or {}).get("out") or "")
         return finish("wait", "续修轮数用尽。\n" + last_result)
     except HostCommitError as error:
         LAST_FAIL_FP = "host-commit-refused"
