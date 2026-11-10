@@ -75,7 +75,8 @@ export function boardCliEnvironment({env=process.env,profiles=[]}={}){
  return output;
 }
 
-const lockdown=scope=>["--permission-mode","dontAsk","--setting-sources","","--strict-mcp-config","--no-chrome",
+/** 拆解、压缩与协调线(coordinator-cli.mjs)共用的收紧参数。--disallowedTools 是可变参数,后面只能再接别的 flag。 */
+export const lockdown=scope=>["--permission-mode","dontAsk","--setting-sources","","--strict-mcp-config","--no-chrome",
  "--disallowedTools",...DENIED_TOOLS,...boardDenyRules(scope)];
 
 /** 一键拆解：只读工作仓，计划经 --json-schema 的结构化输出交回（server 只读 structured_output，模型不写文件）。
