@@ -4,9 +4,10 @@
 // 环境钥匙 BOARD_ZCODE_RELEASED 只在循环自己的终端里,看板服务看不到:released_env 恒为 null,也不读本进程的环境去猜。
 // 白话只写状态和下一步(docs/style-guide.md「不写注释性语句」);拒收码的白话与 docs/Zcode接入.md「接卡规则」两张表同义。
 import {isAbsolute} from 'node:path';
+import {statSync} from 'node:fs';
 import {readRecoveryJSON} from './recovery.mjs';
 import {getRole} from './mcp/policy.mjs';
-import {validateZcodeWorkerConfig,zcodeWorkerStatus} from './execution/zcode-worker.mjs';
+import {validateZcodeWorkerConfig,zcodeWorkerStatus,zcodeTaskVerdict} from './execution/zcode-worker.mjs';
 
 const table=(db,name)=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
 const code=e=>typeof e?.code==='string'&&/^[A-Z][A-Z0-9_]{0,79}$/.test(e.code)?e.code:null;
@@ -63,6 +64,15 @@ export const REFUSAL_TEXT=Object.freeze({
  TASK_CHANGED:'这张卡在请求之后被改过，原请求作废',
 });
 const REFUSAL_FALLBACK='Zcode 线拒收了这张卡';
+let cached=null;
+/** 读并校验循环配置,读不到或格式不对就抛。任务列表每行都要用:按路径、修改时刻与大小缓存,文件一改就重读。 */
+function loadConfig(file){
+ if(typeof file!=='string'||!isAbsolute(file))throw Error('zcode_worker_config 须为绝对路径');
+ const st=statSync(file);
+ if(cached?.file===file&&cached.mtimeMs===st.mtimeMs&&cached.size===st.size)return cached.config;
+ const config=validateZcodeWorkerConfig(readRecoveryJSON(file));cached={file,mtimeMs:st.mtimeMs,size:st.size,config};
+ return config;
+}
 const IN_FLIGHT=new Set(['run_active','unsettled_preparation']);
 
 /** status() 的 state 换成面板的八态。unsettled = 有分派没结清;needs_attention = reconcile 也补不了、要人按手册处理。 */
@@ -97,7 +107,7 @@ export function zcodeStatus(db,{configFile=null}={}){
  const broken=reason=>({configured:true,switches:{budget_enabled:null,launch_enabled:null,released_env:null},budget:null,loop:{state:'blocked',reason}});
  if(configFile===null||configFile===undefined||configFile==='')return absent(TEXT.no_pointer);
  let config;
- try{if(typeof configFile!=='string'||!isAbsolute(configFile))throw Error('not absolute');config=validateZcodeWorkerConfig(readRecoveryJSON(configFile));}catch{return broken(TEXT.config_bad);}
+ try{config=loadConfig(configFile);}catch{return broken(TEXT.config_bad);}
  let s,model=null;
  try{s=readOnly(db,()=>zcodeWorkerStatus(db,config,null));}catch(e){return broken(GATE_TEXT[code(e)]??TEXT.unreadable);}
  if(!s.configured)return absent(TEXT.not_setup);
@@ -114,18 +124,24 @@ export function zcodeStatus(db,{configFile=null}={}){
 
 const REFUSED=/^ZCODE_REFUSED:([A-Z][A-Z0-9_]{0,79})$/;
 /**
- * 卡级:route=mcp 且线是 Zcode 角色线(broker_roles 里 runtime=zcode)的卡才有;其余返回 null。只读库,不读配置。
- * request_state = 这张卡最近一个分派请求的状态,没有请求是 null;拒收码只取循环撤回请求时写的 ZCODE_REFUSED:<码>。
+ * 卡级:route=mcp 且线是 Zcode 角色线(broker_roles 里 runtime=zcode)的卡才有;其余返回 null。只读。
+ * request_state = 这张卡最近一个分派请求的状态,没有请求是 null。
+ * 拒收码先取循环撤回请求时写的 ZCODE_REFUSED:<码>(refusal_source:"request");没有这条记录时,
+ * 按 configFile 用 plan() 候选卡的同一判定(zcodeTaskVerdict)给码(refusal_source:"plan");配置读不到就不给。
  */
-export function zcodeCard(db,t){
+export function zcodeCard(db,t,{configFile=null}={}){
  if(!t||t.route!=='mcp'||typeof t.line!=='string'||!t.line)return null;
  try{
   if(!table(db,'broker_roles')||getRole(db,t.line)?.policy.runtime!=='zcode')return null;
   const a=table(db,'broker_assignments')?db.prepare('SELECT state,reason FROM broker_assignments WHERE task_uid=? ORDER BY created_at DESC,assignment_id DESC LIMIT 1').get(t.task_uid):null;
-  const refusal=REFUSED.exec(a?.reason??'')?.[1]??null;
+  let refusal=REFUSED.exec(a?.reason??'')?.[1]??null,source=refusal?'request':null;
+  if(!refusal&&configFile)try{
+   const verdict=readOnly(db,()=>zcodeTaskVerdict(db,loadConfig(configFile),t.id));
+   if(verdict){refusal=verdict;source='plan';}
+  }catch{/* 配置读不到就不给。 */}
   const dispatches=table(db,'broker_dispatches')?db.prepare('SELECT count(*) n FROM broker_dispatches WHERE task_id=?').get(t.id).n:0;
-  return {request_state:a?.state??null,...(refusal?{refusal_code:refusal,refusal_text:REFUSAL_TEXT[refusal]??REFUSAL_FALLBACK}:{}),dispatches};
+  return {request_state:a?.state??null,...(refusal?{refusal_code:refusal,refusal_text:REFUSAL_TEXT[refusal]??REFUSAL_FALLBACK,refusal_source:source}:{}),dispatches};
  }catch{return null;}   // 展示用的附加字段:读不出来就不给,不拖垮任务接口
 }
-/** taskOut 用:是 Zcode 卡给 {zcode},否则给 {}。 */
-export const zcodeTaskField=(db,t)=>{const z=zcodeCard(db,t);return z?{zcode:z}:{};};
+/** taskOut 用:是 Zcode 卡给 {zcode},否则给 {}。configFile 同 zcodeStatus。 */
+export const zcodeTaskField=(db,t,configFile=null)=>{const z=zcodeCard(db,t,{configFile});return z?{zcode:z}:{};};

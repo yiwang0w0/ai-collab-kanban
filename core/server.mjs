@@ -330,8 +330,8 @@ const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),rep
   ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
   ...(profile ? {execution_profile:profile} : {}),
   progress_blockers: store.stuckWhy(db,t),
-  // Zcode 线的卡:最近一个分派请求的状态、循环写下的拒收码与白话、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
-  ...zcodeTaskField(db, t),
+  // Zcode 线的卡:最近一个分派请求的状态、拒收码与白话及其来源、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
+  ...zcodeTaskField(db, t, CFG.zcode_worker_config ?? null),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
   // ⭐ The panel's button captions come FROM the server-side criterion. If the panel
   //   computed its own, that would be a second copy of the formula — able to say

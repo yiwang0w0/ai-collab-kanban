@@ -215,7 +215,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 请求合格、但调度器这一轮没能领取(领取期出现了接卡规则没有料到的拒绝):这一轮报 `blocked`,发一条 `REQUEST_UNCLAIMABLE` 提示(每个请求每个码一次)。请求原样留着,调度器每轮照旧重试;循环从下一轮起不再等它,接它后面的卡。
 
-路由为 `mcp` 的卡不动时,先看「面板上看状态」的两个接口;候选卡在建请求之前就被拒的原因只在 `plan` 里:`candidates` 是候选卡,`requests` 是已有请求,各带拒收码。
+路由为 `mcp` 的卡不动时,先看「面板上看状态」的两个接口;命令行用 `plan` 看:`candidates` 是候选卡,`requests` 是已有请求,各带拒收码。
 
 ## 面板上看状态
 
@@ -255,14 +255,14 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 **卡上的 `zcode` 字段**(`GET /api/tasks/:id` 与任务列表):路由为 `mcp`、线是 Zcode 角色线(库里该角色的运行时是 `zcode`)的卡才有,别的卡没有这个键。
 
 ```json
-"zcode": { "request_state": "cancelled", "refusal_code": "VERIFY_UNSUPPORTED", "refusal_text": "带登记验证的卡不能交给 Zcode", "dispatches": 0 }
+"zcode": { "request_state": "cancelled", "refusal_code": "VERIFY_UNSUPPORTED", "refusal_text": "带登记验证的卡不能交给 Zcode", "refusal_source": "request", "dispatches": 0 }
 ```
 
 - `request_state`:这张卡最近一个分派请求的状态(`waiting_policy`、`waiting_release`、`waiting_executor`、`claimed`、`ended`、`cancelled`),没有请求是 `null`。
-- `refusal_code` / `refusal_text`:只在最近的请求被循环撤回、原因写着 `ZCODE_REFUSED:<拒收码>` 时给,白话与「接卡规则」两张表同义。
+- `refusal_code` / `refusal_text` / `refusal_source`:白话与「接卡规则」两张表同义。来源两种:
+  - `request`:最近的请求被循环撤回,原因写着 `ZCODE_REFUSED:<拒收码>`;
+  - `plan`:没有这条记录时,按 `zcode_worker_config` 用 `plan` 候选卡的同一判定现算(只读),例如手工把卡改成 `mcp` 却没 `enqueue` 登记的 `NOT_ENROLLED`、没人替它建请求的带登记验证的卡。只对满足候选条件的卡算;配置读不到就不给。
 - `dispatches`:这张卡名下的分派次数。
-
-候选卡在建请求之前就被拒(例如手工把卡改成 `mcp` 却没 `enqueue` 登记,`NOT_ENROLLED`)不写库,卡上看不到这个码;状态接口的 `idle` 会写明有几张被拒收,码用 `plan` 看。
 
 ## 账本
 
@@ -319,7 +319,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 ## 已知短处
 
 - 真实登录兼容性和真实模型任务都还没有验证过。
-- 面板没有 Zcode 的入口:交卡靠 `enqueue`。状态有只读接口(见「面板上看状态」),面板显示是下一批;候选卡建请求前被拒的码只在 `plan` 里。
+- 面板没有 Zcode 的入口:交卡靠 `enqueue`。状态有只读接口(见「面板上看状态」),面板显示是下一批。
 - 用量拿不到,只能事后对供应商账单。
 - 被操作者声明为「结果不明」的运行不产生账本行,并且在本节点当前代次内一直占着并发位(见上)。
 - 已经在别的线上尝试过的卡,转到 Zcode 线后会以 `ATTEMPTS_EXHAUSTED` 被拒:尝试次数是累计的,从不清零。

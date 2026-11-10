@@ -704,6 +704,16 @@ test('面板状态:看板没指配置、库里没登记都报 not_configured 且
  assert.equal(ready.model,'GLM-5.3');assert.equal('last_dispatch' in ready,false);
  const t=card(f);assert.equal(zcodeStatus(f.db,{configFile}).loop.state,'ready');assert.equal(zcodeCard(f.db,store.get(f.db,t.id)).dispatches,0);
 });
+test('卡级拒收码:没有 ZCODE_REFUSED 记录时按 plan 的同一判定给码并标来源;配置读不到就不给;只读',{skip},async()=>{
+ const f=await fixture(),configFile=join(f.base,'worker.json');writeFileSync(configFile,JSON.stringify(f.config));
+ const good=card(f),verify=card(f);f.db.prepare("UPDATE tasks SET verify_cmd='fixture-check' WHERE id=?").run(verify.id);
+ const now=id=>store.get(f.db,id),plan=zcodeWorkerPlan(f.db,f.config,null);
+ assert.equal(plan.candidates.find(x=>x.task_id===verify.id).refused,'VERIFY_UNSUPPORTED');   // 与 plan 同一口径
+ assert.deepEqual(zcodeCard(f.db,now(verify.id),{configFile}),{request_state:null,refusal_code:'VERIFY_UNSUPPORTED',refusal_text:'带登记验证的卡不能交给 Zcode',refusal_source:'plan',dispatches:0});
+ assert.deepEqual(zcodeCard(f.db,now(good.id),{configFile}),{request_state:null,dispatches:0});
+ for(const missing of [undefined,join(f.base,'absent.json'),'worker.json'])assert.deepEqual(zcodeCard(f.db,now(verify.id),{configFile:missing}),{request_state:null,dispatches:0});
+ f.db.prepare("UPDATE tasks SET verify_cmd=NULL WHERE id=?").run(verify.id);assert.equal(zcodeCard(f.db,now(verify.id),{configFile}).refusal_code,undefined);
+});
 test('面板状态接口:合成供应商跑完一张卡后读得到预算、最近分派、卡级派发次数与拒收原因;不取锁不开端口;只认操作员',{skip,timeout:180000},async()=>{
  const f=await fixture(),good=card(f),verify=card(f),plain=store.get(f.db,store.add(f.db,{subject:'plain card',description:'x',acceptance:'x'}));
  f.db.prepare("UPDATE tasks SET verify_cmd='fixture-check' WHERE id=?").run(verify.id);
@@ -738,7 +748,7 @@ test('面板状态接口:合成供应商跑完一张卡后读得到预算、最�
   const one=async id=>(await api('/api/tasks/'+id,operator)).body.task;
   const ran=await one(good.id),refused=await one(verify.id),other=await one(plain.id);
   assert.equal(ran.zcode.dispatches,1);assert.equal(ran.zcode.request_state,'ended');assert.equal('refusal_code' in ran.zcode,false);
-  assert.deepEqual(refused.zcode,{request_state:'cancelled',refusal_code:'VERIFY_UNSUPPORTED',refusal_text:'带登记验证的卡不能交给 Zcode',dispatches:0});
+  assert.deepEqual(refused.zcode,{request_state:'cancelled',refusal_code:'VERIFY_UNSUPPORTED',refusal_text:'带登记验证的卡不能交给 Zcode',refusal_source:'request',dispatches:0});
   assert.equal('zcode' in other,false);
   const listed=(await api('/api/tasks',operator)).body.tasks;assert.equal(listed.find(x=>x.id===verify.id).zcode.refusal_code,'VERIFY_UNSUPPORTED');assert.equal('zcode' in listed.find(x=>x.id===plain.id),false);
   // 门:与其他只读管理接口同一道。没令牌 401;执行线、审阅线、执行者令牌 403;批准令牌只给远程入口,本机不认,401。

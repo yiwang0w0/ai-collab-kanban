@@ -249,6 +249,15 @@ export function zcodeWorkerPlan(db,config,environment=process.env){
   request_pending:requests.length>0,requests:requests.map(a=>({assignment_id:a.assignment_id,task_id:a.task_id,refused:a.refused})),
   candidates:candidates(db,c).map(t=>({task_id:t.id,task_uid:t.task_uid,refused:verdict(db,c,t)}))};
 }
+/**
+ * 只读:单张卡按 plan() 的候选口径给拒收码,与 candidates[].refused 是同一个 eligible() + verdict()。
+ * 不满足候选条件(不在这条线、未放行、不是未开始等)返回 undefined,与 plan 不列它一致;合格返回 null。
+ */
+export function zcodeTaskVerdict(db,config,taskId){
+ const c=validateZcodeWorkerConfig(config),t=db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
+ if(!t||eligible(c,t)!==null)return undefined;
+ return verdict(db,c,t);
+}
 /** 只读:plan 之外再给最近的分派(outcome 取结算结果的 status,没结算是 null)与调度实例,供人判断「跑没跑、卡在哪」。 */
 export function zcodeWorkerStatus(db,config,environment=process.env){
  const plan=zcodeWorkerPlan(db,config,environment);if(!plan.configured)return plan;
