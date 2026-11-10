@@ -3239,13 +3239,37 @@ async function remoteHandler(req, res) {
     catch (e) { console.error(`远程入口审计写入失败:${e.message}`); }
   }
 }
+// 连接按来源分池,在 connection 事件上就分(这时还没读任何数据):只有一个不分来源的总名额时,白名单外的主机
+// 不用令牌、开满空闲连接就能把持有有效令牌的人挡在门外。
+//   白名单外的来源合用一个小池;池里的连接最多留 REMOTE_OUTSIDE_LIFE_MS(够读完请求头、回一个 403),池满时新连接直接断开。
+//   白名单内每个来源各有上限,一个来源占满自己的名额不影响别的来源。全部监听合计。
+const REMOTE_OUTSIDE_POOL = 32, REMOTE_OUTSIDE_LIFE_MS = 2000, REMOTE_PER_SOURCE = 16;
+const remoteConns = { outside: 0, bySource: new Map() };
+function admitRemoteConnection(sock) {
+  const ip = approvals.normalizeIp(sock.remoteAddress);
+  if (!REMOTE.allows(ip)) {
+    if (remoteConns.outside >= REMOTE_OUTSIDE_POOL) return sock.destroy();
+    remoteConns.outside++;
+    const timer = setTimeout(() => sock.destroy(), REMOTE_OUTSIDE_LIFE_MS);
+    sock.once("close", () => { clearTimeout(timer); remoteConns.outside--; });
+    return;
+  }
+  const n = remoteConns.bySource.get(ip) || 0;
+  if (n >= REMOTE_PER_SOURCE) return sock.destroy();
+  remoteConns.bySource.set(ip, n + 1);
+  sock.once("close", () => {
+    const left = (remoteConns.bySource.get(ip) || 1) - 1;
+    if (left > 0) remoteConns.bySource.set(ip, left); else remoteConns.bySource.delete(ip);
+  });
+}
 function startRemote() {
   if (!REMOTE.enabled) return;
   for (const l of REMOTE.listen) {
     const where = approvals.formatListen(l);
     const srv = http.createServer(remoteHandler);
     srv.requestTimeout = 15000; srv.headersTimeout = 10000; srv.keepAliveTimeout = 5000; srv.maxHeadersCount = 50;
-    srv.maxConnections = 256;
+    srv.maxConnections = 256;   // 总上限照旧;白名单外最多占其中 REMOTE_OUTSIDE_POOL 个
+    srv.on("connection", admitRemoteConnection);
     srv.on("error", (e) => {
       remoteState.errors.push(`${where} ${e.code || e.message}`);
       console.error(`⚠ 远程批准入口 ${where} 监听失败:${e.message}`);

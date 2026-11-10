@@ -370,6 +370,53 @@ test("协作安全:同一来源的失败请求不能把有效批准令牌锁在�
   } finally { await B.stop(); }
 });
 
+/** 开一条不发数据的 TCP 连接,连上(或失败)后返回;live() = 现在还连着。 */
+const idle = (port, local, host = "127.0.0.2") => new Promise((ok) => {
+  const s = connect({ host, port, localAddress: local });
+  const st = { s, open: false, closed: false, live: () => st.open && !st.closed };
+  s.on("error", () => {}); s.on("close", () => { st.closed = true; ok(st); });
+  s.once("connect", () => { st.open = true; ok(st); });
+});
+const quiet = (p) => p.catch((e) => ({ status: 0, body: String(e.code || e.message) }));
+
+test("协作安全:白名单外来源开满连接也挡不住白名单内的有效令牌;远程入口的连接按来源分池", { timeout: 120000 }, async () => {
+  const rport = await freePort("127.0.0.2");
+  const B = await board({ config: { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.2/32", "127.0.0.4"] } } });
+  let socks = [];
+  try {
+    for (let i = 0; i < 50 && await refused(rport); i++) await delay(100);
+    const tok = (await B.api("POST", "/api/approval-tokens", B.operator, { label: "phone" })).body.token;
+    // 白名单外的来源开 300 条不发数据的连接(修复前:占满全部 256 个名额,白名单内的请求连不上)
+    const t0 = Date.now();
+    socks = await Promise.all(Array.from({ length: 300 }, () => idle(rport, "127.0.0.3")));
+    await delay(150);
+    const held = socks.filter((x) => x.live()).length;
+    for (let i = 0; i < 3; i++) {
+      const r = await quiet(raw(rport, { token: tok }));
+      assert.equal(r.status, 200, `白名单外来源开了 300 条连接(留着 ${held} 条)时,白名单内带有效令牌的请求应照常:${JSON.stringify(r.body)}`);
+    }
+    assert.ok(held <= 32, `白名单外来源合用一个小池,同时留着的连接不超过 32 条:${held}`);
+    // 小池里的连接也留不久:2 秒内没发完请求头就被断开
+    for (let i = 0; i < 40 && socks.some((x) => x.live()); i++) await delay(100);
+    assert.equal(socks.filter((x) => x.live()).length, 0, `白名单外的空闲连接应在 2 秒左右被断开(已过 ${Date.now() - t0} ms)`);
+    assert.ok(Date.now() - t0 < 4500, `断开得太晚:${Date.now() - t0} ms`);
+    // 池子空出来之后,白名单外的请求仍得到 403(应答语义不变)
+    assert.equal((await raw(rport, { token: tok, local: "127.0.0.3" })).status, 403, "不在 allow_ips 的来源仍是 403");
+    // 白名单内每个来源也有上限:一个来源占满自己的名额,不影响另一个白名单来源
+    const mine = await Promise.all(Array.from({ length: 24 }, () => idle(rport, "127.0.0.4")));
+    socks.push(...mine);
+    await delay(150);
+    const kept = mine.filter((x) => x.live()).length;
+    assert.ok(kept >= 1 && kept <= 16, `白名单内每个来源最多 16 条连接:${kept}`);
+    assert.equal((await quiet(raw(rport, { token: tok, local: "127.0.0.4" }))).status, 0, "这个来源的名额占满后,它的新连接被断开");
+    assert.equal((await quiet(raw(rport, { token: tok }))).status, 200, "另一个白名单来源不受影响");
+    for (const x of mine) x.s.destroy();
+    let back = { status: 0 };
+    for (let i = 0; i < 30 && back.status !== 200; i++) { await delay(100); back = await quiet(raw(rport, { token: tok, local: "127.0.0.4" })); }
+    assert.equal(back.status, 200, "连接放掉后名额归还");
+  } finally { for (const x of socks) x.s.destroy(); await B.stop(); }
+});
+
 /** 裸 TCP 分两次写正文:第一段写到 cut 字节,隔一会儿再写剩下的。 */
 const rawSplit = (port, { path, token, body, cut, local = "127.0.0.2", host = "127.0.0.2" }) => new Promise((ok, ko) => {
   const buf = Buffer.from(body, "utf8");
