@@ -687,13 +687,42 @@ try {
     const before = ((await B.api("GET", "/api/tasks")).body?.tasks || []).length;
     const bad = [];
     for (const body of [{ released: "0" }, { released: null }, { humanGate: "true" }, { humanGate: 2 },
-                        { maxAttempts: 0 }, { maxAttempts: 1.5 }, { maxAttempts: "1" }, { maxAttempts: null }]) {
+                        { maxAttempts: 0 }, { maxAttempts: 1.5 }, { maxAttempts: "1" }, { maxAttempts: null },
+                        { lockKey: 5 }, { lockKey: { key: "x" } }, { weight: "huge" }, { weight: null }]) {
       const r = await B.api("POST", "/api/tasks", { subject: "取值不对的卡", line: LINE, ...body });
       const field = Object.keys(body)[0];
       if (r.status !== 400 || !String(r.body?.error || "").includes(field)) bad.push(`${JSON.stringify(body)}→${r.status} ${r.body?.error || ""}`);
     }
     const after = ((await B.api("GET", "/api/tasks")).body?.tasks || []).length;
     ok("⭐J5-6 取值类型不对 → 400 并点名字段,不建卡(不把 \"0\" 当成放行)", bad.length === 0 && after === before, bad.join(" ; ") + ` 卡数 ${before}→${after}`);
+    // lockKey 只给这张卡加互斥(同键的卡不同时跑),照收;weight 是起跑档:不高于默认的照收,更高的建卡时不生效并点名。
+    const locked = await made({ subject: "带资源锁的卡", line: LINE, released: 0, lockKey: "prod-db", weight: "light" });
+    ok("⭐J5-7 lockKey 与较低的起跑档照收",
+       locked.status === 201 && locked.task?.lock_key === "prod-db" && locked.task?.weight === "light" && locked.body?.not_applied === undefined,
+       `HTTP ${locked.status} lock=${locked.task?.lock_key} weight=${locked.task?.weight} ${JSON.stringify(locked.body?.not_applied)}`);
+    const heavy = await made({ subject: "想抬高起跑档的卡", line: LINE, released: 0, weight: "heavy" });
+    ok("J5-8 weight:heavy 建卡时不生效,响应点名",
+       heavy.status === 201 && heavy.task?.weight === "standard" && heavy.body?.not_applied?.length === 1 && /weight/.test(heavy.body.not_applied[0]),
+       `HTTP ${heavy.status} weight=${heavy.task?.weight} ${JSON.stringify(heavy.body?.not_applied)}`);
+    // worker 令牌建派生卡:收紧同样照收。首案本来由服务端自动放行,写了 released:0 就不放行。
+    const WK = readFileSync(join(B.DATA, "worker_token"), "utf8").trim();
+    const asWorker = async (p, b) => {
+      const r = await fetch(B.BASE + p, { method: "POST", headers: { "Content-Type": "application/json", "X-Board-Token": WK }, body: JSON.stringify(b) });
+      return { status: r.status, body: await r.json().catch(() => ({})) };
+    };
+    const wc = await asWorker("/api/claim", { worker_protocol_version: 2, agent_instance_id: "3a4b5c6d-7e8f-4a90-8b12-c3d4e5f6a7b8", worker: "alpha", line: LINE, route: "default" });
+    const parent = wc.body?.task;
+    const derived = (extra) => asWorker("/api/tasks", { subject: "派生卡", parentId: parent?.id, parent_run_id: parent?.run_id, worker: "alpha", ...extra });
+    const wbad = await derived({ subject: "取值不对的派生卡", released: "0" });
+    const wheld = await derived({ subject: "先不放行的派生卡", released: 0, humanGate: true, maxAttempts: 1 });
+    ok("⭐J5-9 worker 令牌建派生卡:released:0 / humanGate:true / maxAttempts:1 照收(首案不自动放行)",
+       wc.status === 200 && wbad.status === 400 && /released/.test(wbad.body?.error || "") && wheld.status === 201 &&
+       wheld.body?.task?.released === false && wheld.body?.task?.human_gate === true && wheld.body?.task?.max_attempts === 1,
+       `claim=${wc.status} bad=${wbad.status} held=${wheld.status} released=${wheld.body?.task?.released} gate=${wheld.body?.task?.human_gate} max=${wheld.body?.task?.max_attempts}`);
+    const wnext = await derived({ subject: "同一父运行的后一张", released: 1, lockKey: "x", weight: "heavy" });
+    ok("J5-10 (对照)worker 的放宽与非闸门字段不生效:后案仍是未放行的候选,lockKey / weight 不取",
+       wnext.status === 201 && wnext.body?.task?.released === false && wnext.body?.task?.lock_key === null && wnext.body?.task?.weight === "standard",
+       `HTTP ${wnext.status} released=${wnext.body?.task?.released} lock=${wnext.body?.task?.lock_key} weight=${wnext.body?.task?.weight}`);
   }
 
   // ══ §J9 the runtime stamp is seat-authoritative, not self-reported ══════════

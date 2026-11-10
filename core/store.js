@@ -1255,7 +1255,8 @@ function add(db, args) {
       const prior=db.prepare("SELECT 1 FROM task_events WHERE kind='add' AND json_extract(detail,'$.parent_run_id')=? LIMIT 1").get(args.parentRunId);
       // 升级前的子卡没有运行来源，不能把未知历史当成尚未派生过首案。
       const unknown=db.prepare("SELECT 1 FROM tasks child WHERE child.parent_id=? AND NOT EXISTS (SELECT 1 FROM task_events e WHERE e.task_id=child.id AND e.kind='add' AND json_extract(e.detail,'$.parent_run_id') IS NOT NULL) LIMIT 1").get(args.parentId);
-      args={...args,kind:"task",needsBash:0,released:prior||unknown?0:1};
+      // 首案由这里决定放行；worker 自己要求先不放行(released:0)时照办，收紧不被这条规则盖掉。
+      args={...args,kind:"task",needsBash:0,released:prior||unknown||args.released===0||args.released===false?0:1};
     }
     const id = addInner(db, args);
     const t = db.prepare(
