@@ -287,6 +287,37 @@ function normalizeCoordinatorPlan(raw) {
   return issues.length ? { ok: false, issues } : { ok: true, plan: { goal, tasks } };
 }
 
+/** 交给协调线就地修正的问题:语义检查(同 normalizeCoordinatorPlan)+ 线名不在实现线里。
+ *  线名一项只用来请它改:修正后仍不在实现线里的,照旧原样记下、建卡时降级。plan 为 null 时没有问题。 */
+function coordinatorPlanIssues(raw, { implLines = [] } = {}) {
+  if (raw == null) return [];
+  const checked = normalizeCoordinatorPlan(raw);
+  const issues = checked.ok ? [] : [...checked.issues];
+  (Array.isArray(raw.tasks) ? raw.tasks : []).forEach((t, i) => {
+    const line = typeof t?.line === "string" ? t.line.trim() : "";
+    if (line && line !== "null" && !implLines.includes(line))
+      issues.push({ n: i + 1, field: "line", message: `线名「${oneLine(line, 64)}」不在可选的线里` });
+  });
+  return issues.sort((a, b) => (a.n ?? 0) - (b.n ?? 0));
+}
+
+/** 一轮里起了两次 CLI(计划就地修正):按先后各算那一次的差额(roundCostOf 同一规则),再逐项相加;
+ *  哪一次某项未知,合计这一项就是未知(null)。第一次成功了会话才存在,所以第二次按已续接算。
+ *  返回的 usage 已经是这一轮的;cliCost 只用来记下最后一次的 total(restored:false = 不再按累计扣减),
+ *  给 roundUsage / completeTurn / failTurn 用。只算不写库。 */
+function mergeRoundUsage(db, id, parts) {
+  let r = row(db, id), seen;
+  const each = parts.map((p) => {
+    const c = roundCostOf(r, p?.usage ?? null, p?.cliCost ?? null);
+    if (c.seen !== undefined) seen = c.seen;
+    r = { ...r, session_started: 1, cli_cost_seen: c.seen !== undefined ? c.seen : r.cli_cost_seen };
+    return c.usage;
+  });
+  const keys = ["cost_usd", "in", "out", "cr", "cc", "num_turns", "duration_ms", "denials"];
+  const usage = Object.fromEntries(keys.map((k) => [k, each.every((u) => numberOrNull(u?.[k]) != null) ? each.reduce((n, u) => n + u[k], 0) : null]));
+  return { usage, cliCost: seen === undefined ? null : { total_usd: seen, restored: false } };
+}
+
 function insertPlan(db, convId, { author, baseRev, goal, goalEdited = false, tasks, sourceMessageId = null, raw = null }, now = Date.now()) {
   const next = Number(latestPlanRow(db, convId)?.rev ?? 0) + 1;
   db.prepare(`INSERT INTO conversation_plans (conversation_id, rev, author, base_rev, created_at, goal, goal_edited, tasks, source_message_id, raw)
@@ -298,8 +329,8 @@ function insertPlan(db, convId, { author, baseRev, goal, goalEdited = false, tas
 }
 
 /** 一轮正常结束:追加协调线消息(带用量),有合格的计划就生成新版本。
- *  计划不合格、或对话已经建过卡时不生成版本,另追加一条 system 消息说明。 */
-function completeTurn(db, id, { reply, title = null, plan = null, rawPlan = null, tools = null, usage: reported = null, cliCost = null } = {}, now = Date.now()) {
+ *  计划不合格、或对话已经建过卡时不生成版本,另追加一条 system 消息说明(retried = 这一轮已就地修正过一次)。 */
+function completeTurn(db, id, { reply, title = null, plan = null, rawPlan = null, tools = null, usage: reported = null, cliCost = null, retried = false } = {}, now = Date.now()) {
   return tx(db, () => {
     const r = row(db, id);
     const usage = roundCost(db, r, reported, cliCost);
@@ -309,7 +340,8 @@ function completeTurn(db, id, { reply, title = null, plan = null, rawPlan = null
     else if (plan != null) {
       checked = normalizeCoordinatorPlan(plan);
       if (!checked.ok) note = { kind: "plan_rejected",
-        text: "这一轮给出的计划没有通过检查,没有记录:" + checked.issues.slice(0, 5).map((x) => (x.n ? `第 ${x.n} 张 ` : "") + x.message).join(";") + "。可以让协调线重出。" };
+        text: "这一轮给出的计划没有通过检查,没有记录:" + checked.issues.slice(0, 5).map((x) => (x.n ? `第 ${x.n} 张 ` : "") + x.message).join(";") +
+              (retried ? "。已让协调线就地修正过一次,仍没有通过。可以让协调线重出。" : "。可以让协调线重出。") };
     }
     const prev = Number(latestPlanRow(db, r.id)?.rev ?? 0);
     const planRev = checked?.ok ? prev + 1 : null;
@@ -461,6 +493,6 @@ function boardFacts(db, { goalLimit = 8 } = {}) {
 module.exports = {
   migrate, recoverInterrupted, list, get, detail, create, beginTurn, session, setSessionFacts, unanswered,
   completeTurn, failTurn, stopTurn, patch, latestPlan, editPlan, planForApply, markApplied, addSystemMessage,
-  normalizeCoordinatorPlan, boardFacts, addUsage, roundUsage,
+  normalizeCoordinatorPlan, coordinatorPlanIssues, boardFacts, addUsage, roundUsage, mergeRoundUsage,
   MESSAGE_MAX, TITLE_MAX, PLAN_MAX_TASKS, FIELD_MAX, STATUSES, EDITABLE,
 };
