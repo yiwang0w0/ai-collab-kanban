@@ -606,4 +606,17 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
   const apply = src.slice(src.indexOf("async function chatPlanApply(){"), src.indexOf("function chatBadge("));
   assert.ok(apply.indexOf("await chatPlanFlush()") > 0 && apply.indexOf("await chatPlanFlush()") < apply.indexOf('"/apply"'), "建卡前先把本地改动存成新版本");
   assert.ok(src.includes("async function chatBeforeSend(){ await chatPlanFlush(); }"), "发消息前也先存");
+
+  // 实时事件(真实处理段切出来跑):对话有变只重读对话;版本确认了(code.accepted)对话区也立即重读——
+  // 协调线能不能用跟着版本确认变,不等 5 秒的读取间隔;其余事件照旧只刷新看板。
+  const h0 = src.indexOf('es.addEventListener("change", (e) => {'), h1 = src.indexOf("\n});", h0);
+  assert.ok(h0 > 0 && h1 > h0, "实时事件的处理段没找到");
+  const heard = (type) => {
+    const did = [];
+    new Function("es", "chatChanged", "refresh", "noteRestart", src.slice(h0, h1 + 4))(
+      { addEventListener: (_, handle) => handle({ data: JSON.stringify({ type }) }) }, () => did.push("对话"), () => did.push("看板"), () => did.push("重启"));
+    return did;
+  };
+  assert.deepEqual([heard("conversation.changed"), heard("code.accepted"), heard("task.created"), heard("board.restarting")],
+    [["对话"], ["对话", "看板"], ["看板"], ["重启"]]);
 });

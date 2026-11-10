@@ -4485,6 +4485,7 @@ es.addEventListener("change", (e) => {
     const d = JSON.parse(e.data);
     if (d.type === "board.restarting"){ noteRestart(d); return; }
     if (d.type === "conversation.changed"){ chatChanged(); return; }   // 对话有变:只重读对话列表和当前对话
+    if (d.type === "code.accepted") chatChanged();   // 版本确认了:协调线能不能用跟着变,对话区立即重读,不等 5 秒的读取间隔
   } catch {}
   refresh();
 });

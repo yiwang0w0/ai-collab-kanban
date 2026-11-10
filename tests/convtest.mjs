@@ -483,4 +483,23 @@ test("鉴权边界、同一对话只跑一轮、停止与超时收掉进程树�
       assert.equal(u.calls().length, 0);
     } finally { await u.stop(); }
   }
+
+  // 按正规流程确认版本(不跳过源码闸):确认前不可用;照设置引导给的动作确认后推 code.accepted
+  // (面板收到这个事件就重读协调线状态),协调线随即可用,能建对话。
+  const g = await board({ unpinned: false, config: { gated_subtree: "." } });
+  try {
+    const sse = g.listen(); await delay(300);
+    const before = (await g.api("GET", "/api/coordinator", g.operator)).body;
+    assert.equal(before.available, false); assert.match(before.reason, /这个版本还没确认过。确认当前版本后协调线才能用/);
+    const step = (await g.api("GET", "/api/setup", g.operator)).body.steps.find((s) => s.key === "bless");
+    assert.equal(step.action?.path, "/api/setup/bless", JSON.stringify(step));
+    assert.equal((await g.api(step.action.method, step.action.path, g.operator, step.action.body)).status, 200);
+    assert.deepEqual((await g.api("GET", "/api/coordinator", g.operator)).body, { available: true, runtime: "claude", model: "claude-opus-5", effort: "medium" });
+    for (let i = 0; i < 30 && !sse.seen.text.includes('"type":"code.accepted"'); i++) await delay(100);
+    assert.match(sse.seen.text, /event: change\ndata: \{"type":"code\.accepted"/, "版本确认推 code.accepted");
+    const made = await g.api("POST", "/api/conversations", g.operator, { message: "在吗" });
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+    assert.equal((await g.settle(made.body.conversation.id)).conversation.status, "idle");
+    sse.close();
+  } finally { await g.stop(); }
 });
