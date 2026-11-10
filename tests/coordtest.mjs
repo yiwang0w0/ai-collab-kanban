@@ -106,6 +106,12 @@ test("执行者令牌:只存哈希、只显示一次,权限只到执行面", { t
     const rot = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-a", rotate: true });
     assert.equal(rot.status, 200);
     assert.equal((await B.api("GET", "/api/coord", tok)).status, 401, "换发后旧令牌失效");
+    assert.equal(rot.body.executor.name, "执行者甲", "换发令牌不改显示名");
+    assert.equal((await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-o", name: "乙", kind: "other" })).status, 201);
+    const rot2 = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-o", rotate: true });
+    assert.deepEqual([rot2.body.executor.name, rot2.body.executor.kind], ["乙", "other"], "换发令牌不改种类");
+    const rot3 = await B.api("POST", "/api/coord/executors", B.operator, { id: "agent-o", rotate: true, name: "丙", kind: "external" });
+    assert.deepEqual([rot3.body.executor.name, rot3.body.executor.kind], ["丙", "external"], "换发时明确给了才改");
   } finally { await B.stop(); }
 });
 

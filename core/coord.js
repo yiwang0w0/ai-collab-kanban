@@ -158,17 +158,19 @@ function getRow(db, id) {
 const isExecutor = (db, id) => typeof id === "string" && !!getRow(db, id);
 
 /** 操作员登记执行者。返回明文令牌(只此一次)。rotate=true 时为已登记的执行者换发令牌,旧令牌立即失效。 */
-function register(db, { id, name, kind = "external", rotate = false } = {}, now = Date.now()) {
+function register(db, { id, name, kind, rotate = false } = {}, now = Date.now()) {
   const eid = String(id ?? "").trim();
   if (!EXECUTOR_ID_RE.test(eid))
     throw err(ERR.BAD_INPUT, `执行者 id 只允许小写字母、数字、- 或 _,1-32 位,以字母或数字开头 —— 收到 ${JSON.stringify(id)}`);
   if (RESERVED_IDS.includes(eid)) throw err(ERR.BAD_INPUT, `执行者 id 不能用保留名 ${RESERVED_IDS.join(" / ")}`);
-  const nm = String(name ?? "").trim() || eid;
+  const have = getRow(db, eid);
+  // 换发令牌时没给的显示名与种类保持原样;只有新登记才用默认值(显示名 = id,种类 = external)。
+  const nm = String(name ?? "").trim() || have?.name || eid;
   if (chars(nm) > NAME_MAX) throw err(ERR.BAD_INPUT, `显示名最多 ${NAME_MAX} 字`);
+  kind = kind ?? have?.kind ?? "external";
   if (!EXECUTOR_KINDS.includes(kind)) throw err(ERR.BAD_INPUT, `kind 只接受 ${EXECUTOR_KINDS.join(" / ")} —— 收到 ${JSON.stringify(kind)}`);
   const token = "exe_" + crypto.randomBytes(24).toString("hex");
   const at = iso(now);
-  const have = getRow(db, eid);
   if (have && !rotate) throw err(ERR.CONFLICT, `执行者 ${eid} 已登记;换发令牌请带 rotate:true`);
   if (have) db.prepare("UPDATE coord_executors SET name=?, kind=?, token_hash=?, token_issued_at=? WHERE id=?")
     .run(nm, kind, sha256(token), at, eid);

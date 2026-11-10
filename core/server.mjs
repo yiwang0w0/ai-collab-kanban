@@ -2600,7 +2600,7 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     const b = await readBody(req);
     if (isManagedSeatName(String(b.id ?? "").trim()))
       throw store.err(store.ERR.CONFLICT, `执行者 id ${String(b.id).trim()} 与受管执行线(或角色座席)同名;换一个 id,或把那条线配成外部执行线`);
-    const r = coord.register(db, { id: b.id, name: b.name, kind: b.kind ?? "external", rotate: b.rotate === true });
+    const r = coord.register(db, { id: b.id, name: b.name, kind: b.kind ?? undefined, rotate: b.rotate === true });
     emit("coord.executor", { id: r.executor.id });
     return json(res, r.rotated ? 200 : 201, r);
   }
