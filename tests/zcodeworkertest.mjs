@@ -7,10 +7,10 @@ import {DatabaseSync} from 'node:sqlite';
 import {createRequire} from 'node:module';
 import {randomUUID,createHash} from 'node:crypto';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,existsSync,rmSync,cpSync,copyFileSync,realpathSync,unlinkSync} from 'node:fs';
-import {join,relative,resolve,isAbsolute,sep,basename} from 'node:path';
+import {join,relative,resolve,isAbsolute,sep,basename,dirname} from 'node:path';
 import {tmpdir} from 'node:os';
 import {fileURLToPath} from 'node:url';
-import {execFileSync,spawnSync} from 'node:child_process';
+import {execFileSync,spawnSync,spawn} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
 import net from 'node:net';
 import {openSchedulerControlDatabase} from '../core/execution/lifecycle.mjs';
@@ -23,6 +23,7 @@ import {listenBroker} from '../core/mcp/gateway.mjs';
 import {openScheduler} from '../core/execution/scheduler.mjs';
 import {createSourceGate} from '../core/execution/source-gate.mjs';
 import {pinFile} from '../core/execution/supervisor.mjs';
+import {taskExecutionView} from '../core/task-execution-view.mjs';
 import {openZcodeWorker,validateZcodeWorkerConfig,zcodeWorkerPlan,enqueueZcodeTask,DEFAULT_MAX_LAUNCHES,HARD_MAX_LAUNCHES} from '../core/execution/zcode-worker.mjs';
 const require=createRequire(import.meta.url),store=require('../core/store.js'),vendor=require('./helpers/zcode-mcp-vendor.cjs');
 const HOST_ENV=harnessEnvironment(),WINDOWS=process.platform==='win32',skip=WINDOWS?false:'Zcode 执行循环仅支持 Windows';
@@ -31,14 +32,18 @@ const inside=(parent,child)=>{const r=relative(resolve(parent),resolve(child));r
 const dbs=[],closers=[];
 const git=(root,args)=>execFileSync('git',['-C',root,...args],{encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe']}).trim();
 // 临时治理仓副本:core、cli 与 loops 下两个证据脚本;开发检出里被忽略的数据目录不带进来。
-const source=join(TMP,'governance');mkdirSync(source);
-for(const d of ['core','cli'])cpSync(join(ROOT,d),join(source,d),{recursive:true,filter:from=>!from.split(sep).includes('.data')});
-mkdirSync(join(source,'loops'));for(const name of ['evidence_contract.py','zcode_evidence_check.py'])copyFileSync(join(ROOT,'loops',name),join(source,'loops',name));
-git(source,['init','--quiet','--template=']);git(source,['config','core.autocrlf','false']);git(source,['add','.']);
-git(source,['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','fixture']);
-const approval=join(TMP,'accepted-fixture');writeFileSync(approval,git(source,['rev-parse','HEAD:']));
-const gate=createSourceGate({codeRoot:source,approvalFile:approval});
-const python=pinFile(execFileSync(HOST_ENV.PYTHON||'python',['-I','-S','-X','utf8','-c','import sys; print(sys.executable)'],{encoding:'utf8',windowsHide:true}).trim());
+// 治理闸与固定摘要的 Python 只在 Windows 上建;其他平台全部用例跳过,不在导入期报错。
+const source=join(TMP,'governance'),approval=join(TMP,'accepted-fixture');let gate=null,python=null;
+if(WINDOWS){
+ mkdirSync(source);
+ for(const d of ['core','cli'])cpSync(join(ROOT,d),join(source,d),{recursive:true,filter:from=>!from.split(sep).includes('.data')});
+ mkdirSync(join(source,'loops'));for(const name of ['evidence_contract.py','zcode_evidence_check.py'])copyFileSync(join(ROOT,'loops',name),join(source,'loops',name));
+ git(source,['init','--quiet','--template=']);git(source,['config','core.autocrlf','false']);git(source,['add','.']);
+ git(source,['-c','user.name=Fixture','-c','user.email=fixture@example.invalid','commit','--quiet','-m','fixture']);
+ writeFileSync(approval,git(source,['rev-parse','HEAD:']));
+ gate=createSourceGate({codeRoot:source,approvalFile:approval});
+ python=pinFile(execFileSync(HOST_ENV.PYTHON||'python',['-I','-S','-X','utf8','-c','import sys; print(sys.executable)'],{encoding:'utf8',windowsHide:true}).trim());
+}
 const environment=Object.fromEntries(Object.entries(HOST_ENV).filter(([k])=>['systemroot','windir','temp','tmp'].includes(k.toLowerCase())));
 // 第三把钥匙只在这里显式给出;测试进程自己的环境已被 harness-env 清过。
 const RELEASED={...environment,BOARD_ZCODE_RELEASED:'1'};
@@ -371,6 +376,34 @@ test('取消在途调用:确认 Job 清空,额度不退;关闭后删锁,残留�
  finally{assert.ok(inside(f.base,schedulerLock(f)));unlinkSync(schedulerLock(f));}
 });
 
+test('面板读得到:真实看板服务带同一个库与数据目录,卡在待验收、有结果摘要、用量未知而不是 0、进程已被观察到',{skip,timeout:180000},async()=>{
+ const f=await fixture(),t=card(f),w=await open(f),r=await w.tick();assert.equal(r.results[0].phase,'settled',JSON.stringify([r,f.events]));await w.close();
+ // 进程内先看与面板共用的只读投影:启动许可已消费,进程被观察到。
+ const trace=taskExecutionView(f.db,store.get(f.db,t.id));
+ assert.equal(trace.process_state,'observed');assert.ok(trace.launch_requested_at);assert.ok(trace.process_started_at);assert.ok(trace.ended_at);
+ // 再起真实看板服务(只读它的两个接口,不调任何启动入口)。
+ const data=dirname(f.config.ledger_file),config=join(f.base,'fleet.json'),port=await freePort();
+ writeFileSync(config,JSON.stringify({lines:[{id:'zcode',label:'Zcode',external:true}],roles:[],routes:['default','mcp'],repo:f.base}));
+ const child=spawn(process.execPath,[join(ROOT,'core','server.mjs')],{cwd:f.base,windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...HOST_ENV,
+  BOARD_HOST:'127.0.0.1',BOARD_PORT:String(port),BOARD_CONFIG:config,BOARD_DATA_DIR:data,BOARD_DB:f.dbPath,BOARD_REPO:f.base,
+  BOARD_ALLOW_UNPINNED:'1',BOARD_NO_RESTORE:'1',BOARD_SPAWN_ECHO:'1',BOARD_RESTART_MODE:'exit',BOARD_TEST_SHUTDOWN_MS:'30000'}});
+ let logs='';const append=value=>{logs=(logs+String(value)).slice(-16384);};child.stdout.on('data',append);child.stderr.on('data',append);child.on('error',append);
+ const closed=new Promise(done=>child.once('close',done)),api=async(path,token=null)=>{
+  const response=await fetch('http://127.0.0.1:'+port+path,{headers:token?{'X-Board-Token':token}:{},signal:AbortSignal.timeout(10000)});return {status:response.status,body:await response.json()};
+ };
+ try{
+  let ready=false;for(let i=0;i<300&&!ready&&child.exitCode===null&&child.signalCode===null;i++){try{ready=(await api('/health')).status===200;}catch{}if(!ready)await delay(100);}
+  assert.ok(ready,logs);
+  const token=readFileSync(join(data,'board_token'),'utf8').trim(),detail=await api('/api/tasks/'+t.id,token),usage=await api('/api/usage',token);
+  assert.equal(detail.status,200,JSON.stringify(detail.body));assert.equal(usage.status,200);
+  const shown=detail.body.task,spent=usage.body.cards[String(t.id)];
+  assert.equal(shown.status,'waiting');assert.equal(shown.waiting_for,'review');assert.ok(shown.result_summary);assert.equal(shown.line,'zcode');
+  assert.equal(shown.execution_trace.process_state,'observed');assert.ok(shown.execution_trace.launch_requested_at);
+  // 一行账、一次尝试;五个用量键是 null(面板显示「待核实」),不是 0。
+  assert.equal(spent.rows,1);assert.equal(spent.attempts,1);for(const key of USAGE_KEYS)assert.equal(spent[key],null);
+ }finally{if(child.exitCode===null&&child.signalCode===null)child.kill();await closed;}
+});
+
 // 实际命令行:在治理仓副本里以白名单环境起子进程;第三把钥匙只在需要时显式给。
 const CLI_ENV=Object.fromEntries(Object.entries(HOST_ENV).filter(([k])=>['systemroot','windir','temp','tmp','path','pathext','pythonutf8'].includes(k.toLowerCase())));
 function cli(args,{released=false}={}){
@@ -387,6 +420,10 @@ test('命令行:plan/status 只读,enqueue 登记,once 走同一条闸并只输�
  assert.equal(plan.status,0,plan.err);assert.equal(status.status,0,status.err);assert.equal(snapshot(),before);
  assert.equal(plan.rows[0].configured,true);assert.equal(plan.rows[0].state,'disabled');assert.deepEqual(plan.rows[0].candidates,[]);assert.deepEqual(plan.rows[0].budget,{quota_id:f.q.quota_id,enabled:true,limit_total:1,used:0,reserved:0});
  assert.deepEqual(status.rows[0].dispatches,[]);
+ // 还没登记过任何角色与预算的库:只说「未配置」,不建表、不改文件。
+ const bare=join(f.base,'bare.db'),empty=new DatabaseSync(bare);try{store.migrate(empty);}finally{empty.close();}
+ const bytes=sha256(readFileSync(bare)),fresh=cli(['plan','--db',bare,'--config-file',configFile]);
+ assert.equal(fresh.status,0,fresh.err);assert.equal(fresh.rows[0].configured,false);assert.equal(fresh.rows[0].launched,false);assert.equal(sha256(readFileSync(bare)),bytes);
  // enqueue:route 改为 mcp、line 改为线名,并登记到项目。
  const queued=cli(['enqueue','--db',f.dbPath,'--task',String(id),'--version',String(store.get(f.db,id).aggregate_version),'--config-file',configFile]);
  assert.equal(queued.status,0,queued.err);assert.deepEqual(queued.rows[0].enrolled,[id]);assert.equal(row(f,id).route,'mcp');assert.equal(row(f,id).line,'zcode');
