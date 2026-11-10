@@ -13,8 +13,12 @@ import { createServer, connect } from "node:net";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
+import { createRequire } from "node:module";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
+// 不起服务、直接测 approvals.js 的用例用内存库。
+const approvals = createRequire(import.meta.url)("../core/approvals.js");
+const memdb = () => { const db = new DatabaseSync(":memory:"); approvals.migrate(db); return db; };
 const freePort = async (host = "127.0.0.1") => {
   const l = createServer(); await new Promise((r) => l.listen(0, host, r));
   const port = l.address().port; await new Promise((r) => l.close(r)); return port;
@@ -390,4 +394,29 @@ test("协作安全:远程决定的正文跨分片到达时,多字节字符不被
       body: JSON.stringify({ decision: "reject", note: "字".repeat(400), pad: "字".repeat(1100), source: { client: "phone-app" }, expected_version: 1 }) });
     assert.equal(big.status, 400, `超过 4KB(字节)的正文应拒绝:${JSON.stringify(big.body)}`);
   } finally { await B.stop(); }
+});
+
+test("协作安全:只追加的批准表挡住 REPLACE(整行替换),重复决定仍是 409", () => {
+  const db = memdb(), t0 = 1_800_000_000_000;
+  const rq = approvals.addRequest(db, "agent-a", { action: "重启共享设备上的应用", risk: "high" }, t0);
+  const rec = { approval_id: rq.approval_id, decision: "reject", note: "改天", actor: "operator", via: "local", source: { client: "cli", device: null } };
+  approvals.recordDecision(db, rec, t0 + 1000);
+  approvals.audit(db, { ip: "127.0.0.2", method: "GET", path: "/api/approvals", status: 200, tokenId: 1 }, t0);
+  const tries = {
+    "决定记录 INSERT OR REPLACE": () => db.prepare(`INSERT OR REPLACE INTO approval_decisions (approval_id,kind,object_id,version,decision,actor,via,client,at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(rq.approval_id, "request", "1", "1", "approve", "operator", "local", "cli", "2026-01-01T00:00:00.000Z"),
+    "决定记录 REPLACE INTO": () => db.prepare(`REPLACE INTO approval_decisions (approval_id,kind,object_id,version,decision,actor,via,client,at)
+      VALUES (?,?,?,?,?,?,?,?,?)`).run(rq.approval_id, "request", "1", "1", "approve", "operator", "local", "cli", "2026-01-01T00:00:00.000Z"),
+    "批准请求 替换": () => db.prepare("INSERT OR REPLACE INTO approval_requests (id,executor,action,risk,created_at) VALUES (?,?,?,?,?)").run(rq.id, "agent-a", "别的动作", "low", rq.created_at),
+    "远程审计 替换": () => db.prepare("INSERT OR REPLACE INTO remote_audit (id,at,ip,method,path,status) VALUES (1,?,?,?,?,?)").run("2026-01-01T00:00:00.000Z", "127.0.0.9", "GET", "/", 200),
+  };
+  for (const [what, run] of Object.entries(tries)) assert.throws(run, /append-only/, what);
+  assert.equal(approvals.decisionOf(db, rq.approval_id).decision, "reject");
+  assert.equal(approvals.getRequest(db, rq.id).action, "重启共享设备上的应用");
+  assert.equal(approvals.listAudit(db)[0].ip, "127.0.0.2");
+  assert.throws(() => approvals.recordDecision(db, { ...rec, decision: "approve" }, t0 + 2000), (e) => e.code === "CONFLICT", "同一项再决定仍按 409 报");
+  // 正常追加不受影响
+  assert.equal(approvals.addRequest(db, "agent-a", { action: "第二个请求", risk: "low" }, t0 + 3000).id, rq.id + 1);
+  approvals.audit(db, { ip: "127.0.0.2", method: "GET", path: "/api/summary", status: 200, tokenId: 1 }, t0 + 4000);
+  assert.equal(approvals.listAudit(db).length, 2);
 });

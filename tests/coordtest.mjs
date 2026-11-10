@@ -487,3 +487,25 @@ test("协作安全:不带 lease 的心跳只往后续租,不把长租约缩成�
     assert.ok(left(set, long.id) > 59 && left(set, long.id) < 61, "明确给了 lease 就按给的值");
   } finally { await B.stop(); }
 });
+
+test("协作安全:只追加的协作表挡住 REPLACE(整行替换),不只是 UPDATE 与 DELETE", () => {
+  const db = memdb(), t0 = 1_800_000_000_000;
+  coord.register(db, { id: "agent-p" }); coord.register(db, { id: "agent-q" });
+  const j = coord.appendJournal(db, "agent-p", { kind: "note", body: "原始正文" }, t0);
+  const h = coord.stop(db, "agent-p", "stop", t0 + 1000).handoff;
+  coord.ackHandoff(db, "agent-q", h.id, t0 + 2000);
+  const tries = {
+    "流水 INSERT OR REPLACE": () => db.prepare("INSERT OR REPLACE INTO coord_journal (id,at,executor,kind,body) VALUES (?,?,?,?,?)").run(j.id, j.at, "operator", "approval.decided", "被替换的正文"),
+    "流水 REPLACE INTO": () => db.prepare("REPLACE INTO coord_journal (id,at,executor,kind,body) VALUES (?,?,?,?,?)").run(j.id, j.at, "operator", "x", "y"),
+    "交接 按主键替换": () => db.prepare("INSERT OR REPLACE INTO coord_handoffs (id,executor,stop_seq,reason,created_at,package,full_status) VALUES (?,?,?,?,?,?,?)").run(h.id, "agent-p", 9, "stop", j.at, "{}", "{}"),
+    "交接 按(执行者,次数)替换": () => db.prepare("INSERT OR REPLACE INTO coord_handoffs (executor,stop_seq,reason,created_at,package,full_status) VALUES (?,?,?,?,?,?)").run("agent-p", h.stop_seq, "stop", j.at, "{}", "{}"),
+    "接手确认 替换": () => db.prepare("INSERT OR REPLACE INTO coord_handoff_acks (handoff_id,by,at) VALUES (?,?,?)").run(h.id, "agent-p", j.at),
+  };
+  for (const [what, run] of Object.entries(tries)) assert.throws(run, /append-only/, what);
+  assert.deepEqual(coord.journal(db, {}).map((e) => [e.id, e.executor, e.body]), [[j.id, "agent-p", "原始正文"]]);
+  assert.deepEqual([coord.getHandoff(db, h.id).reason, coord.getHandoff(db, h.id).ack.by], ["stop", "agent-q"]);
+  // 正常追加不受影响
+  assert.equal(coord.appendJournal(db, "agent-p", { kind: "note", body: "第二条" }, t0 + 3000).id, j.id + 1);
+  assert.equal(coord.stop(db, "agent-p", "stop", t0 + 4000).handoff.stop_seq, h.stop_seq + 1);
+  assert.throws(() => coord.ackHandoff(db, "agent-q", h.id), (e) => e.code === "CONFLICT", "重复确认仍是 409");
+});

@@ -98,6 +98,12 @@ function migrate(db) {
     db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
     db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   }
+  // REPLACE(INSERT OR REPLACE / REPLACE INTO)在冲突时删掉旧行,而 recursive_triggers 没开时不触发上面的 DELETE 触发器:
+  // 再加一道 BEFORE INSERT,主键或唯一键已存在就拒绝。自增插入时 NEW.id 还没有值,不受影响。
+  for (const [t, hit] of [["coord_journal", "id = NEW.id"], ["coord_handoff_acks", "handoff_id = NEW.handoff_id"],
+                          ["coord_handoffs", "id = NEW.id OR (executor = NEW.executor AND stop_seq = NEW.stop_seq)"]])
+    db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_replace BEFORE INSERT ON ${t} WHEN EXISTS (SELECT 1 FROM ${t} WHERE ${hit})
+             BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   db.exec(`CREATE TABLE IF NOT EXISTS coord_status (
     executor_id TEXT PRIMARY KEY REFERENCES coord_executors(id),
     status TEXT NOT NULL,

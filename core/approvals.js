@@ -23,7 +23,10 @@ const sha256 = (s) => crypto.createHash("sha256").update(String(s)).digest("hex"
 const iso = (ms) => new Date(Number(ms)).toISOString();
 const chars = (s) => [...String(s)].length;
 
-function appendOnly(db, t) {
+function appendOnly(db, t, key = "id") {
+  // REPLACE 在冲突时删旧行却不触发 DELETE 触发器(recursive_triggers 没开):主键已存在的插入也在这里拒绝。
+  db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_replace BEFORE INSERT ON ${t} WHEN EXISTS (SELECT 1 FROM ${t} WHERE ${key} = NEW.${key})
+           BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_update BEFORE UPDATE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
   db.exec(`CREATE TRIGGER IF NOT EXISTS ${t}_no_delete BEFORE DELETE ON ${t} BEGIN SELECT RAISE(ABORT, '${t} is append-only'); END`);
 }
@@ -55,7 +58,7 @@ function migrate(db) {
     journal_id INTEGER,
     result TEXT NOT NULL DEFAULT '{}'
   )`);
-  appendOnly(db, "approval_decisions");
+  appendOnly(db, "approval_decisions", "approval_id");
   // 批准令牌:只存 sha256。吊销写 revoked_at,不删行。
   db.exec(`CREATE TABLE IF NOT EXISTS approval_tokens (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -136,7 +139,7 @@ function recordDecision(db, rec, now = Date.now()) {
       .run(rec.approval_id, kind, object, version, rec.decision, rec.note || "", String(rec.actor), String(rec.via),
            rec.source.client, rec.source.device ?? null, rec.ip ?? null, iso(now), rec.journal_id ?? null, JSON.stringify(rec.result ?? {}));
   } catch (e) {
-    if (/UNIQUE|PRIMARY KEY/.test(String(e.message))) throw err(ERR.CONFLICT, `${rec.approval_id} 已经决定过,不能再决定`);
+    if (/UNIQUE|PRIMARY KEY|append-only/.test(String(e.message))) throw err(ERR.CONFLICT, `${rec.approval_id} 已经决定过,不能再决定`);
     throw e;
   }
   return decisionOf(db, rec.approval_id);
