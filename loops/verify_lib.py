@@ -117,6 +117,23 @@ def cli_write_allow_rules(dirs):
     return rules
 
 
+# 显式拒绝的写工具、执行工具与联网工具 —— `--tools` 白名单之外的纵深(白名单漏了、或某个 CLI 版本
+#   让白名单之外的工具照样出现时,这一段仍然拒绝)。清单与拆解器 core/board-claude-cli.mjs 的
+#   DENIED_TOOLS **逐项相同、顺序相同**:tests/looptest.mjs ⑭ 做 Python↔JS 对照,改一处必须同步另一处。
+DENIED_TOOLS = ("Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch", "Task",
+                "Skill", "Artifact", "Workflow", "SendMessage", "RemoteTrigger", "PushNotification", "CronCreate",
+                "CronDelete", "ScheduleWakeup", "EnterWorktree", "ExitWorktree", "Monitor", "DesignSync",
+                "TaskCreate", "TaskUpdate", "TaskStop")
+
+
+def cli_denied_tools(tools):
+    """本线 `--disallowedTools` 开头的工具名段:DENIED_TOOLS 去掉本线 `--tools` 白名单里的那几个
+    (执行线 write 档留 Write/Edit,只读档与审阅线只留 Write)。执行线与审阅线共用。
+    ⚠ 不带路径的工具名只许出现在**拒绝**侧;放行侧(cli_write_allow_rules)一个都不产。"""
+    keep = set(tools)
+    return [name for name in DENIED_TOOLS if name not in keep]
+
+
 AUTH_HOMES_ENV = "WORKER_AUTH_HOMES"
 
 

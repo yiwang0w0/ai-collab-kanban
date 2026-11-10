@@ -43,7 +43,7 @@ import context_lib
 from prompt_items import whole_text, retrieval_hint
 from pool_state import report_exhausted
 from verify_lib import (run_verify, fmt_verify, save_verify_log, verify_registry, cli_deny_rules, auth_home_deny_rules,
-                        cli_write_allow_rules)
+                        cli_write_allow_rules, cli_denied_tools)
 
 BASE = os.environ.get("BOARD_URL") or (
     "http://127.0.0.1:" + os.environ["BOARD_PORT"] if os.environ.get("BOARD_PORT")
@@ -602,6 +602,38 @@ def _resolve_claude_cli():
     return [p]
 
 
+def review_cli_argv(cli, prompt):
+    """审阅座席(Claude CLI)的整条 argv。抽成函数是为了让真实 CLI 探针(tests/cli-boundary-probe.mjs)
+    直接取这一份,而不是手抄一份去量 —— 手抄的那份量得再准,也证明不了线上发出去的是同一组参数。
+
+    ⭐ 读写边界(v0.24.0,按 2026-10-28 spike 实测改;与 worker 座席、拆解器同一组合,逐条依据见
+      verify_lib.cli_write_allow_rules 与 loops/worker_loop.py 的 cli_argv):
+      · dontAsk + `--tools` 白名单 —— 不再给不带路径的 `--allowedTools Read …`,那等于放行任意路径的
+        读取(spike P1 实测越界读成功)。读范围 = cwd(工作仓)+ 两个 `--add-dir`;越界读被拒,不靠提示词。
+      · `--setting-sources ""`:用户/项目/本地设置里的 allow 规则与 hooks 不进来。
+      · `--strict-mcp-config` 且不给 `--mcp-config`:用户的 MCP 一个都不加载;`--no-chrome`:不接浏览器
+        集成(它带进来的工具同样不在 `--tools` 管辖内)。
+      · 写只放行判决目录:dontAsk 下没有放行规则就写不出去,所以「只写判决文件」从 v0.24.0 起是
+        **结构约束**(此前只是提示词约束 —— 见本模块文件头第 2 条)。
+      · `--disallowedTools` 开头是显式工具名段(verify_lib.cli_denied_tools:拆解器同一份清单去掉
+        REVIEW_TOOLS;白名单之外的纵深),其后是路径规则:令牌目录与登记簿对审阅模型不可读不可写
+        (v0.17.0,verify_lib.cli_deny_rules),全部执行配置的认证目录同样(auth_home_deny_rules)。
+        拒绝胜过放行 ⇒ 它们落在判决目录的兄弟位置也仍然读不得写不得。"""
+    return cli + ["-p", prompt, "--model", MODEL, "--effort", EFFORT,
+                  *(["--max-budget-usd", REVIEWER_BUDGET]
+                    if REVIEWER_BUDGET not in ("0", "") else []),
+                  "--output-format", "json",
+                  "--permission-mode", "dontAsk",
+                  "--setting-sources", "",
+                  "--strict-mcp-config",
+                  "--no-chrome",
+                  "--tools", *REVIEW_TOOLS,
+                  "--add-dir", REPO, "--add-dir", OUTDIR,
+                  "--allowedTools", *cli_write_allow_rules([OUTDIR]),
+                  "--disallowedTools", *cli_denied_tools(REVIEW_TOOLS),
+                  *cli_deny_rules(DATA), *auth_home_deny_rules()]
+
+
 def review_one(t, vr=None):
     os.makedirs(OUTDIR, exist_ok=True)
     out = os.path.join(OUTDIR, f"verdict-{t['id']}.json")
@@ -662,27 +694,7 @@ def review_one(t, vr=None):
         cli = _resolve_claude_cli()
         if not cli:
             return None, "(找不到可用的 claude CLI —— 设 WORKER_CLAUDE_CLI 或 REVIEWER_CLI_ARGV)"
-        argv = cli + ["-p", prompt, "--model", MODEL, "--effort", EFFORT,
-                      *(["--max-budget-usd", REVIEWER_BUDGET]
-                        if REVIEWER_BUDGET not in ("0", "") else []),
-                      "--output-format", "json",
-                      # ⭐ 读写边界(v0.24.0,按 2026-10-28 spike 实测改;与 worker 座席、拆解器同一组合,
-                      #   逐条依据见 verify_lib.cli_write_allow_rules 与 loops/worker_loop.py 的 cli_argv):
-                      #   dontAsk + --tools 白名单 —— 不再给不带路径的 `--allowedTools Read …`,那等于
-                      #   放行任意路径的读取(spike P1 实测越界读成功)。读范围 = cwd(工作仓)+ 下面两个
-                      #   --add-dir;越界读被拒,不靠提示词。
-                      "--permission-mode", "dontAsk",
-                      "--setting-sources", "",     # 用户/项目/本地设置里的 allow 规则与 hooks 不进来
-                      "--strict-mcp-config",       # 且不给 --mcp-config ⇒ 用户的 MCP 一个都不加载
-                      "--tools", *REVIEW_TOOLS,
-                      "--add-dir", REPO, "--add-dir", OUTDIR,
-                      # ⭐ 写只放行判决目录:dontAsk 下没有放行规则就写不出去,所以「只写判决文件」
-                      #   从 v0.24.0 起是**结构约束**(此前只是提示词约束 —— 见本模块文件头第 2 条)。
-                      "--allowedTools", *cli_write_allow_rules([OUTDIR]),
-                      # ⭐ v0.17.0:令牌目录与登记簿对审阅模型不可读不可写(verify_lib.cli_deny_rules,实测有效)。
-                      #   全部执行配置的认证目录同样不可读不可写(verify_lib.auth_home_deny_rules)。
-                      #   拒绝胜过放行 ⇒ 它们落在判决目录的兄弟位置也仍然读不得写不得。
-                      "--disallowedTools", *cli_deny_rules(DATA), *auth_home_deny_rules()]
+        argv = review_cli_argv(cli, prompt)
         # ⭐ 提示词走 argv(-p)的 Windows 32767 天花板:与 worker 侧/zcode 闸同一预算口径,
         #   超限响亮拒发而不是让 spawn 死于 WinError 206(外部审计 2026-10-05)。
         if argv and sum(len(a) * 2 + 3 for a in argv) + len(argv[0]) > 30000:

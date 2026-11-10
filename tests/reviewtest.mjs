@@ -218,6 +218,16 @@ try {
     ok("R4j ⭐不读用户/项目/本地设置(--setting-sources \"\"),不加载任何 MCP(--strict-mcp-config 且无 --mcp-config)",
        sameList(valuesOf(av, "--setting-sources"), [""]) && av.includes("--strict-mcp-config") && !av.includes("--mcp-config"),
        JSON.stringify(valuesOf(av, "--setting-sources")));
+    // ── 显式拒绝清单与 --no-chrome(外部审核 2026-11-10):--disallowedTools 开头是工具名段
+    //    (拆解器 core/board-claude-cli.mjs 的同一份清单去掉审阅白名单),其后才是路径规则。
+    const { DENIED_TOOLS } = await import("../core/board-claude-cli.mjs");
+    const names = rules.filter((r) => !r.includes("("));
+    const wantNames = DENIED_TOOLS.filter((t) => !["Read", "Glob", "Grep", "Write"].includes(t));
+    ok("R4k ⭐--disallowedTools 以显式工具名段开头 = 拆解器清单去掉审阅白名单(Bash/Edit/联网/子代理在内,Write 不在)",
+       JSON.stringify(names) === JSON.stringify(wantNames) && JSON.stringify(rules.slice(0, names.length)) === JSON.stringify(names)
+       && names.includes("Bash") && names.includes("Edit") && names.includes("WebFetch") && !names.includes("Write"),
+       JSON.stringify(rules.slice(0, 6)));
+    ok("R4l ⭐不接浏览器集成(--no-chrome:它带进来的工具不在 --tools 管辖内)", av.includes("--no-chrome"));
   }
 
   console.log(NL + "[§3 机器产出闸:验收要机器、证据纯散文、模型说 approve → 机械降 escalate]");
