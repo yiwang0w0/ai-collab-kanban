@@ -1,7 +1,7 @@
 // 合成供应商:替身 Zcode bundle,只在测试里用。不联网、不调用任何模型。
 // 它按 headless-stream 解码器合同输出事件,并经真实的 cli/mcp.mjs stdio 桥
 // 调 get_task 与 report_result,从而证明「提示 → MCP → 回传 → 结算」这条链是通的。
-// 行为由同目录的 <本文件名>.mode.json 决定:{mode,wait_ms,marker}。
+// 行为由同目录的 <本文件名>.mode.json 决定:{mode,wait_ms,marker,capture}。
 //   success         读卡 → 按四节合同回传 → 最终回复同一份正文
 //   no-report       读卡,不回传;最终回复按四节写(宿主代报)
 //   bad-contract    读卡 → 回传一段不合四节的散文
@@ -52,9 +52,11 @@ function bridge(){
 }
 
 async function main(){
- const {mode="success",wait_ms=0,marker=null}=settings();
+ const {mode="success",wait_ms=0,marker=null,capture=null}=settings();
  if(marker)fs.appendFileSync(marker,String(process.pid)+"\n");
  const input=process.argv[process.argv.indexOf("--prompt")+1];
+ // 测试用:把收到的提示原样落盘,供断言「供应商看到的就是宿主给的」。
+ if(capture)fs.writeFileSync(capture,input);
  const bound=JSON.parse(input.slice(input.lastIndexOf("\n")+1));
  let seq=0;
  const out=value=>process.stdout.write(JSON.stringify(value)+"\n");
