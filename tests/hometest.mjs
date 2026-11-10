@@ -587,8 +587,12 @@ test("对话与计划卡：夹具进去，勾选、合计、已建卡三态、�
     ["消息1", "消息2", "计划1", "计划2*", "消息3"]);
 
   // 输入框上方那一行:协调线不可用的原因照服务端给的写;失败的一轮只有对话上的 error;一条消息最多 4000 字
-  const ok = { available: true }, down = { available: false, reason: "CLI 登录已过期。" };
-  assert.equal(C.chatStateLine({ coordinator: down }).text, "协调线现在不可用：CLI 登录已过期。可以先用「手动建卡」。");
+  // reason 用服务端真会给的一条(core/config-setup.mjs 的 resolveClaudeCli:找不到 Claude CLI)。GET /api/coordinator 只在
+  // 找不到 CLI 或当前版本没确认时给 available:false;登录失效不在这里,表现为那一轮 failed + error。句末的句号不叠。
+  const NO_CLI = "找不到 Claude CLI。先安装 Claude Code;装好仍找不到时,把 WORKER_CLAUDE_CLI 设成 claude 可执行文件的完整路径后重启看板";
+  const ok = { available: true }, down = { available: false, reason: NO_CLI };
+  for (const reason of [NO_CLI, NO_CLI + "。"])
+    assert.equal(C.chatStateLine({ coordinator: { ...down, reason } }).text, "协调线现在不可用：" + NO_CLI + "。可以先用「手动建卡」。");
   assert.deepEqual([C.chatCanSend({ coordinator: down, text: "做" }), C.chatCanSend({ coordinator: ok, text: "做" }), C.chatCanSend({ coordinator: ok, text: "  " })], [false, true, false]);
   const failed = C.chatStateLine({ coordinator: ok, conversation: { status: "failed", error: "协调线超时" } });
   assert.deepEqual([failed.text, failed.act], ["上一轮没有完成：协调线超时", "retry"]);
