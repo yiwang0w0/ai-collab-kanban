@@ -400,6 +400,13 @@ test("协作安全:共享 worker 令牌不能冒用已登记执行者的 id 领�
     assert.deepEqual([still.status, still.worker], ["in_progress", "agent-s1"], "卡没有被冒名改动");
     const own = await B.api("POST", `/api/tasks/${t.id}/report`, tok, { run_id: run, outcome: "done", evidence: "执行者自己的交付" });
     assert.equal(own.status, 200, JSON.stringify(own.body));
+    // 纯数字的执行者 id:worker 写成数字,落库时同样会变成这个 id
+    const num = await B.register("777");
+    const t3 = await B.card("数字 id 的卡", "ext");
+    const got3 = await B.take(num, t3.id);
+    assert.equal(got3.status, 200, JSON.stringify(got3.body));
+    const hb3 = await B.api("POST", `/api/tasks/${t3.id}/heartbeat`, B.worker, { worker: 777, run_id: got3.body.task.run_id });
+    assert.equal(hb3.status, 409, `worker 写成数字也不能冒名:${JSON.stringify(hb3.body).slice(0, 120)}`);
   } finally { await B.stop(); }
 });
 

@@ -171,7 +171,7 @@ function getRow(db, id) {
 }
 
 /** 这个名字是不是已登记的执行者 id(领卡身份检查用)。 */
-const isExecutor = (db, id) => typeof id === "string" && !!getRow(db, id);
+const isExecutor = (db, id) => (typeof id === "string" || typeof id === "number") && !!getRow(db, id);   // 数字落库时也会变成字符串
 
 /** 操作员登记执行者。返回明文令牌(只此一次)。rotate=true 时为已登记的执行者换发令牌,旧令牌立即失效。 */
 function register(db, { id, name, kind, rotate = false } = {}, now = Date.now()) {
