@@ -13,7 +13,7 @@ import {directoryIdentity,verifyDirectory} from '../artifacts/git-workspace.mjs'
 import {createTaskWorkspace} from '../artifacts/workspaces.mjs';
 import {prepareWorkspaceSession} from '../artifacts/workspace-session.mjs';
 import {allowedPaths,objectId} from '../artifacts/git-reader.mjs';
-import {prepareAdapter,ADAPTER_CONTRACTS} from './adapters.mjs';
+import {prepareAdapter,ADAPTER_CONTRACTS,requireZcodeReleased} from './adapters.mjs';
 import {pinFile} from './supervisor.mjs';
 import {prepareDispatch,quotaStatus,dispatchStatus,abandonPrepared} from './dispatch.mjs';
 import {executePreparedDispatch,reconcileExecutionJournal} from './runner.mjs';
@@ -102,6 +102,8 @@ export function openScheduler(db,{dbPath,sourceGate,config,environment=process.e
   let d=null;
   try{
    check();
+   // 环境钥匙在领取之前核对:缺钥匙时不领取、不占预算、不消耗卡的尝试次数。prepareAdapter 里是同一道门。
+   if(p.installation.runtime==='zcode')requireZcodeReleased(environment);
    const q=quotaStatus(db,p.quota_id);
    if(!q?.enabled||q.used+q.reserved>=q.limit_total)fail('BUDGET_EXHAUSTED','预算未启用或已用尽');
    const dir=join(c.root,a.assignment_id);checkDirectoryPath(dir);

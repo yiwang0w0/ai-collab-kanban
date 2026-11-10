@@ -45,7 +45,8 @@ if(WINDOWS){
  python=pinFile(execFileSync(HOST_ENV.PYTHON||'python',['-I','-S','-X','utf8','-c','import sys; print(sys.executable)'],{encoding:'utf8',windowsHide:true}).trim());
 }
 const environment=Object.fromEntries(Object.entries(HOST_ENV).filter(([k])=>['systemroot','windir','temp','tmp'].includes(k.toLowerCase())));
-// 第三把钥匙只在这里显式给出;测试进程自己的环境已被 harness-env 清过。
+// 环境钥匙只在这里显式给出;测试进程自己的环境已被 harness-env 清过。
+// 它在 dispatch 链里核对,所以不经包装层、直接开调度器的用例也要带它。
 const RELEASED={...environment,BOARD_ZCODE_RELEASED:'1'};
 after(async()=>{
  for(const close of closers.reverse())try{await close();}catch{}
@@ -129,7 +130,7 @@ test('调度器层:合成供应商经真实 MCP 桥读卡并回传,结算保留�
  const f=await fixture(),t=card(f);
  callTool(f.db,f.auth,'request_assignment',{request_id:randomUUID(),task_uid:t.task_uid,expected_version:t.aggregate_version});
  const server=await listenBroker(f.db,{port:f.port});closers.push(()=>closeServer(server));
- const s=openScheduler(f.db,{dbPath:f.dbPath,sourceGate:gate,config:f.scheduler,environment,onEvent:e=>f.events.push(e)});closers.push(()=>s.close());
+ const s=openScheduler(f.db,{dbPath:f.dbPath,sourceGate:gate,config:f.scheduler,environment:RELEASED,onEvent:e=>f.events.push(e)});closers.push(()=>s.close());
  const r=await s.tick();assert.equal(r.results[0].phase,'settled',JSON.stringify([r,f.events]));
  const d=dispatch(f),o=observation(f),result=JSON.parse(d.result_json),now=row(f,t.id);
  assert.equal(result.delivery,'existing_mcp_report_preserved');assert.equal(result.status,'success');assert.equal(result.usage,null);assert.equal(result.real_model_call_confirmed,false);
@@ -149,7 +150,7 @@ test('提示附录插在固定提示与运行标识之间;超限、含 NUL 或�
  }
  callTool(f.db,f.auth,'request_assignment',{request_id:randomUUID(),task_uid:t.task_uid,expected_version:t.aggregate_version});
  const server=await listenBroker(f.db,{port:f.port});closers.push(()=>closeServer(server));
- const s=openScheduler(f.db,{dbPath:f.dbPath,sourceGate:gate,config:f.scheduler,environment,promptAppendix:appendix});closers.push(()=>s.close());
+ const s=openScheduler(f.db,{dbPath:f.dbPath,sourceGate:gate,config:f.scheduler,environment:RELEASED,promptAppendix:appendix});closers.push(()=>s.close());
  const r=await s.tick();assert.equal(r.results[0].phase,'settled',JSON.stringify(r));
  const d=dispatch(f),expected=FIXED_PROMPT+appendix+'\n'+bound(d);
  assert.equal(launch(f).prompt_sha256,sha256(expected));assert.notEqual(launch(f).prompt_sha256,sha256(FIXED_PROMPT+bound(d)));
@@ -459,4 +460,26 @@ test('命令行:plan/status 只读,enqueue 登记,once 走同一条闸并只输�
  const repeat=cli(['setup','--db',f.dbPath,'--line','zline','--project','zcode-local','--out-dir',outDir]);assert.equal(repeat.status,1);assert.ok(repeat.err.includes('CONFLICT'));
  const unsafe=cli(['setup','--db',f.dbPath,'--line','zother','--project','zcode-local','--out-dir',source]);assert.equal(unsafe.status,1);assert.ok(unsafe.err.includes('UNSAFE_RUNTIME_PATH'));assert.equal(getRole(f.db,'zother'),null);
  assert.equal(used(f),1);assert.equal(launches(f),1);
+});
+
+// ── 只读复核后补的门:开关所在的层、对所有请求生效的拒收、队首阻塞、未结清的顺序与口径、补回执 ──
+const assignmentRow=(f,id)=>({...f.db.prepare('SELECT state,reason FROM broker_assignments WHERE assignment_id=?').get(id)});
+const request=(f,t)=>{const now=store.get(f.db,t.id);return callTool(f.db,f.auth,'request_assignment',{request_id:randomUUID(),task_uid:now.task_uid,expected_version:now.aggregate_version});};
+test('环境钥匙在 dispatch 链里:同一块 scheduler 配置不经包装层直接开调度器或跑 cli/scheduler.mjs,缺钥匙也启动不了,且不领取、不占预算',{skip},async()=>{
+ const f=await fixture(),t=card(f),a=request(f,t);
+ for(const env of [environment,{...environment,BOARD_ZCODE_RELEASED:'true'}]){
+  const s=openScheduler(f.db,{dbPath:f.dbPath,sourceGate:gate,config:f.scheduler,environment:env,onEvent:e=>f.events.push(e)});closers.push(()=>s.close());
+  const r=await s.tick();s.close();
+  assert.deepEqual(r.results.map(x=>[x.phase,x.code,x.dispatch_id]),[['waiting','ZCODE_LAUNCH_DISABLED',null]]);
+ }
+ const untouchedCard=()=>{
+  assert.equal(used(f),0);assert.equal(launches(f),0);assert.equal(count(f,'broker_dispatches'),0);assert.equal(count(f,'task_runs'),0);assert.equal(existsSync(f.marker),false);
+  assert.equal(row(f,t.id).status,'not_started');assert.equal(row(f,t.id).attempts,0);assert.equal(assignmentRow(f,a.assignment_id).state,'waiting_executor');
+ };
+ untouchedCard();assert.ok(f.events.some(e=>e.kind==='waiting'&&e.code==='ZCODE_LAUNCH_DISABLED'));
+ // 命令行:cli/scheduler.mjs once 拿这块配置原样另存的文件,没有钥匙同样过不去。
+ const file=join(f.base,'scheduler.json');writeFileSync(file,JSON.stringify(f.scheduler));
+ const run=spawnSync(process.execPath,[join(source,'cli','scheduler.mjs'),'once','--db',f.dbPath,'--config-file',file,'--accepted-rev',approval],{env:CLI_ENV,encoding:'utf8',windowsHide:true,timeout:90000});
+ assert.equal(run.status,0,run.stderr);assert.ok(run.stdout.includes('ZCODE_LAUNCH_DISABLED'),run.stdout);
+ untouchedCard();assert.equal(existsSync(schedulerLock(f)),false);
 });

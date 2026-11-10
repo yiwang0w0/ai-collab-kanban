@@ -33,7 +33,8 @@ git(source,['init','--quiet','--template=']);git(source,['config','core.autocrlf
 const approval=join(TMP,'accepted-fixture');writeFileSync(approval,git(source,['rev-parse','HEAD:']));
 const gate=createSourceGate({codeRoot:source,approvalFile:approval});
 const python=pinFile(execFileSync(process.env.BOARD_PYTHON||process.env.PYTHON||'python',['-I','-S','-X','utf8','-c','import sys; print(sys.executable)'],{encoding:'utf8',windowsHide:true}).trim());
-const environment=Object.fromEntries(Object.entries(process.env).filter(([k])=>['systemroot','windir','temp','tmp'].includes(k.toLowerCase())));
+// The synthetic executor in this suite is declared as runtime zcode, so the fixture carries the Zcode release key explicitly.
+const environment={...Object.fromEntries(Object.entries(process.env).filter(([k])=>['systemroot','windir','temp','tmp'].includes(k.toLowerCase()))),BOARD_ZCODE_RELEASED:'1'};
 after(()=>{for(const s of schedulers)try{s.close();}catch{}for(const d of dbs)try{d.close();}catch{}const rel=relative(resolve(tmpdir()),resolve(TMP));assert.ok(rel&&!rel.startsWith('..'));rmSync(TMP,{recursive:true,force:true});});
 function fixture({limit=5,max=1,wait=0,capability='board-tools'}={}){
  const base=mkdtempSync(join(TMP,'case-')),dbPath=join(base,'board.db'),setup=new DatabaseSync(dbPath);
@@ -84,6 +85,14 @@ test('disabled quota waits without claiming; explicit quota enable permits the s
  const s=open(f);await s.tick();assert.equal(used(f),0);assert.equal(launches(f),0);assert.equal(readdirSync(f.config.root).length,1);
  putQuota(f.db,{quota_id:f.q.quota_id,runtime:'zcode',execution_mode:'provider',projects:['demo'],limit_total:1,enabled:true},2);
  await s.tick();assert.equal(used(f),1);s.close();
+});
+test('a zcode profile without the release key waits without claiming; the key permits the same request',async()=>{
+ const f=fixture({limit:1}),{t}=card(f),{BOARD_ZCODE_RELEASED:key,...locked}=environment;assert.equal(key,'1');
+ const s=open(f,{environment:locked}),r=await s.tick();s.close();
+ assert.deepEqual(r.results.map(x=>[x.phase,x.code,x.dispatch_id]),[['waiting','ZCODE_LAUNCH_DISABLED',null]]);
+ assert.equal(used(f),0);assert.equal(launches(f),0);assert.equal(f.db.prepare('SELECT count(*) n FROM task_runs').get().n,0);assert.equal(store.get(f.db,t.id).attempts,0);assert.equal(existsSync(f.marker),false);
+ assert.equal(readdirSync(f.config.root).length,1);
+ const next=open(f),again=await next.tick();next.close();assert.equal(again.results[0].phase,'settled');assert.equal(used(f),1);assert.equal(launches(f),1);
 });
 test('unreleased tasks and revoked coordinators never become runnable by polling',async()=>{
  const f=fixture();card(f,{release:false});card(f);const s=open(f);revokePrincipal(f.db,{principalId:f.principal.principal_id,expectedVersion:1});
@@ -140,7 +149,7 @@ test('workspace profile provisions the registered Git baseline and binds its fil
 
 test('actual scheduler CLI executes a queued synthetic task with the same source gate and receipt contract',()=>{
  const f=fixture({limit:1});card(f);const configFile=join(f.base,'scheduler.json');writeFileSync(configFile,JSON.stringify(f.config));
- const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>['systemroot','windir','temp','tmp','path','pathext','pythonutf8'].includes(k.toLowerCase())));
+ const env={...Object.fromEntries(Object.entries(process.env).filter(([k])=>['systemroot','windir','temp','tmp','path','pathext','pythonutf8'].includes(k.toLowerCase()))),BOARD_ZCODE_RELEASED:'1'};
  const out=execFileSync(process.execPath,[join(source,'cli','scheduler.mjs'),'once','--db',f.dbPath,'--config-file',configFile,'--accepted-rev',approval],{env,encoding:'utf8',windowsHide:true,timeout:20000});
  const rows=out.trim().split('\n').map(x=>JSON.parse(x));assert.ok(rows.some(x=>x.kind==='settled'));assert.equal(used(f),1);assert.equal(launches(f),1);assert.ok(!out.includes('PRIVATE-TASK-BODY'));
 });
@@ -164,7 +173,7 @@ const request=(f,s,mode='drain',revision=1,id=randomUUID())=>requestSchedulerSto
 async function waitFor(check,label,timeout=10000){const end=Date.now()+timeout;for(;;){const value=check();if(value)return value;if(Date.now()>end)throw Error(label+' timed out');await delay(30);}}
 function cliWatch(f){
  const config=join(f.base,'scheduler.json');writeFileSync(config,JSON.stringify(f.config));
- const env=Object.fromEntries(Object.entries(process.env).filter(([k])=>['systemroot','windir','temp','tmp','path','pathext','pythonutf8'].includes(k.toLowerCase())));
+ const env={...Object.fromEntries(Object.entries(process.env).filter(([k])=>['systemroot','windir','temp','tmp','path','pathext','pythonutf8'].includes(k.toLowerCase()))),BOARD_ZCODE_RELEASED:'1'};
  const child=spawn(process.execPath,[join(source,'cli','scheduler.mjs'),'watch','--db',f.dbPath,'--config-file',config,'--accepted-rev',approval],{env,windowsHide:true,stdio:['ignore','pipe','pipe']});let out='',err='';child.stdout.on('data',b=>out+=b);child.stderr.on('data',b=>err+=b);const done=new Promise((resolve,reject)=>{child.once('error',reject);child.once('close',resolve);});
  return {child,done,output:()=>({out,err}),async close(){if(child.exitCode===null&&child.signalCode===null)child.kill();await done;}};
 }

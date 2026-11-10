@@ -6,6 +6,8 @@
 
 运行配置使用现有 dispatch execute 入口。installation.runtime 为 zcode、version 为 0.16.9；program 是固定 Node 原生程序，另需 bundle 和 builtin_config 两个 {path,sha256}。auth_home 指向常规登录目录 .zcode/v2；不读取、复制或解密令牌。安装版本及文件摘要由本机操作者核验，版本字符串本身不能证明程序身份。
 
+准备 Zcode 启动配置需要环境变量 BOARD_ZCODE_RELEASED=1（与 BOARD_CODEX_RELEASED 同形，只在要启动的那个终端里设）。这道门在 prepareAdapter 里，dispatch execute、调度器和独立执行循环都经过它；调度器还会在领取之前先核一次，缺钥匙时不领取、不占预算。没有它，在生成任何启动文件之前以 ZCODE_LAUNCH_DISABLED 拒绝。
+
 角色模型明确为 GLM-5.3 或 GLM-5.3-Flash，effort 为 low、high 或 max。这两个具体模型的公开规则覆盖了通用 disabled/enabled 规则，不能按通用规则映射。生成配置只保留 account:bigmodel-individual-coding-plan、一个模型和一个 reasoningLevel 值，个人模型/供应商列表为空，从注册表范围限制默认模型回退。只接受中国版订阅账号类型和公开官方端点，拒绝 API key、额外认证字段或端点覆盖。
 
 用户 HOME、USERPROFILE、AppData、临时目录、CLI 配置、存储及会话 DB 均在本次新建私有目录。ZCODE_DATA_BASE_DIR 单独指向现有常规账号仓的根；该路径的真实登录兼容性仍待最小真实任务验证。执行目录须为空，祖先含 .env、.mcp.json、zcode.json 或 .zcode/config.json 时拒绝。生成文件排他新建，失败时只清理本次新建内容。

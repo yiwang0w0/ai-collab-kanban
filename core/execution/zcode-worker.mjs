@@ -1,6 +1,10 @@
 // Zcode 独立执行循环(第一阶段:只接文字交付卡)。
 // 本模块只做三件事:把合格的卡送到「等待执行器」、调一轮既有调度器、事后记账。
 // 领取、一次性许可、预算扣减、Job 托管与失败不重启都在 dispatch 链里,这里不复制。
+// 哪道门在哪一层:
+//   dispatch 链(任何入口都要过):环境钥匙 BOARD_ZCODE_RELEASED、库内预算的启用与余量、一次性许可。
+//   本模块(只有经 cli/zcode-worker.mjs 才过):launch.enabled、authorization 时间窗、max_launches 与库内上限的
+//   交叉校验、拒收规则、四节提示附录。把 scheduler 配置块直接交给 cli/scheduler.mjs 时不经过这一层。
 import {existsSync,readdirSync,realpathSync,statSync,openSync,writeFileSync,fsyncSync,closeSync,appendFileSync,unlinkSync} from 'node:fs';
 import {join,dirname,basename,resolve,relative,isAbsolute,sep} from 'node:path';
 import {spawnSync} from 'node:child_process';
@@ -18,13 +22,14 @@ import {migrateDispatch,putQuota,quotaStatus,dispatchStatus} from './dispatch.mj
 import {executionResolution} from './resolutions.mjs';
 import {schedulerStatus} from './lifecycle.mjs';
 import {openScheduler} from './scheduler.mjs';
+import {ZCODE_RELEASE_VARIABLE,zcodeReleased} from './adapters.mjs';
 import {pinFile} from './supervisor.mjs';
 const store=createRequire(import.meta.url)('../store.js');
 
 export const ZCODE_WORKER_FORMAT='ai-fleet-zcode-worker/v1';
 /** 调用预算:缺省 1 次;代码内硬顶 20 次,配置写得再大也过不了校验。 */
 export const DEFAULT_MAX_LAUNCHES=1,HARD_MAX_LAUNCHES=20;
-const RELEASE_VARIABLE='BOARD_ZCODE_RELEASED',APPENDIX_LIMIT=2000;
+const APPENDIX_LIMIT=2000;
 const PREAMBLE='【本次运行】没有文件、命令或网络工具，只能使用 fleet MCP 的看板工具。先调用 get_task 读取任务；把下面四节正文作为 report_result 的 evidence 交付：做完用 done，做不了或需要人决定用 wait。最终回复输出同一份正文。不得输出凭据、令牌或个人隐私。';
 const record=x=>x!==null&&typeof x==='object'&&!Array.isArray(x);
 const within=(parent,child)=>{const r=relative(parent,child);return !r||r!=='..'&&!r.startsWith('..'+sep)&&!isAbsolute(r);};
@@ -79,9 +84,12 @@ export function validateZcodeWorkerConfig(input){
  const authorization=authorizationShape(input.launch.authorization,{maxLaunches,bundle:p.installation.bundle});
  return {...structuredClone(input),launch:{enabled,max_launches:maxLaunches,authorization},intake:{coordinator_credential_file:credentialFile,auto_enroll:autoEnroll},evidence:{max_chars:maxChars}};
 }
-/** 两把配置侧的钥匙:配置里 launch.enabled=true,且环境变量 BOARD_ZCODE_RELEASED=1。缺一把就抛。 */
+/**
+ * 本层的启动开关:配置里 launch.enabled=true,加上环境钥匙。缺一把就抛。
+ * 环境钥匙与 dispatch 链里那道门是同一个判定(adapters.mjs),这里只是提前到任何副作用之前再核一次。
+ */
 export function requireZcodeLaunchSwitch(config,environment=process.env){
- if(config?.launch?.enabled!==true||environment?.[RELEASE_VARIABLE]!=='1')fail('ZCODE_LAUNCH_DISABLED','Zcode 启动开关未打开:需要 launch.enabled=true 且环境变量 '+RELEASE_VARIABLE+'=1');
+ if(config?.launch?.enabled!==true||!zcodeReleased(environment))fail('ZCODE_LAUNCH_DISABLED','Zcode 启动开关未打开:需要 launch.enabled=true 且环境变量 '+ZCODE_RELEASE_VARIABLE+'=1');
 }
 
 // ── 门:打开时判一次,此后每轮复核 ──────────────────────────────────────────
@@ -188,7 +196,7 @@ export function enqueueZcodeTask(db,{taskId,expectedVersion,config}){
 
 /** 只读:开关、各道门、预算与候选卡的拒收码。不写库、不启动、不调用 Python。 */
 export function zcodeWorkerPlan(db,config,environment=process.env){
- const c=validateZcodeWorkerConfig(config),p=profileOf(c),sw={config_enabled:c.launch.enabled===true,environment_released:environment?.[RELEASE_VARIABLE]==='1'};
+ const c=validateZcodeWorkerConfig(config),p=profileOf(c),sw={config_enabled:c.launch.enabled===true,environment_released:zcodeReleased(environment)};
  const out={format:'ai-fleet-zcode-worker-plan/v1',configured:false,line:c.line,project_id:p.project_id,switch:{...sw,open:sw.config_enabled&&sw.environment_released},max_launches:c.launch.max_launches,hard_max_launches:HARD_MAX_LAUNCHES,launched:false};
  if(!['broker_roles','broker_task_projects','broker_assignments','broker_call_quotas','broker_dispatches'].every(name=>table(db,name)))return out;
  const gate=check=>{try{check();return null;}catch(e){return code(e);}};

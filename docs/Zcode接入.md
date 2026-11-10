@@ -103,7 +103,7 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 ## 怎么开真实调用
 
-默认全关。三把钥匙都由你亲手打开,缺一把就不启动:
+默认全关。经 `cli/zcode-worker.mjs` 启动要三把钥匙,都由你亲手打开,缺一把就不启动:
 
 1. **预算启用。** 把 setup 登记的预算改为 `enabled: true`(`node cli/dispatch.mjs quota`,先用 `quota-status` 看当前版本)。
 2. **配置。** `launch.enabled` 改为 `true`,`authorization` 换成 `real` 块:
@@ -121,7 +121,22 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 
 3. **环境变量。** 只在启动循环的那个终端里设 `BOARD_ZCODE_RELEASED=1`。
 
-配置侧的两把钥匙缺任何一把,程序在迁移、取锁、建目录、监听端口之前就以 `ZCODE_LAUNCH_DISABLED` 退出,不留任何痕迹。
+`launch.enabled` 或环境变量缺任何一个,`once` / `watch` 在迁移、取锁、建目录、监听端口之前就以 `ZCODE_LAUNCH_DISABLED` 退出,不留任何痕迹。
+
+### 哪道门在哪一层
+
+配置里的 `scheduler` 块本身是一份合法的调度配置,`cli/scheduler.mjs` 和 `cli/dispatch.mjs` 也认它。所以要分清每道门守的是哪个入口:
+
+| 门 | 在哪一层 | 换入口还过不过 |
+|---|---|---|
+| 环境变量 `BOARD_ZCODE_RELEASED=1` | dispatch 链:准备 Zcode 启动配置的那一步,以及调度器领取之前 | 过。`cli/scheduler.mjs once / watch`、`cli/dispatch.mjs execute` 没有它同样启动不了;调度器这一侧是不领取、不占预算、不消耗卡的尝试次数 |
+| 预算已启用且有余量、一次性许可 | dispatch 链(库内) | 过 |
+| `launch.enabled` | 只在 `cli/zcode-worker.mjs` | 不过 |
+| `authorization`(时间窗、调用次数、bundle 摘要) | 只在 `cli/zcode-worker.mjs` | 不过 |
+| 库内预算上限不得大于 `max_launches` | 只在 `cli/zcode-worker.mjs` | 不过 |
+| 接卡规则(拒收)与四节提示附录 | 只在 `cli/zcode-worker.mjs` | 不过 |
+
+也就是说:设着环境变量、预算又启用着的时候,直接跑 `cli/scheduler.mjs once / watch` 会绕过授权时间窗、次数交叉校验和拒收规则。真实调用只走 `cli/zcode-worker.mjs`;环境变量只在跑它的那个终端里设,用完关掉。
 
 额外的硬约束:
 
@@ -200,5 +215,6 @@ node cli/zcode-worker.mjs watch --db <看板DB> --config-file <配置> --accepte
 - 用量拿不到,只能事后对供应商账单。
 - 被操作者声明为「结果不明」的运行不产生账本行。
 - 已经在别的线上尝试过的卡,转到 Zcode 线后会以 `ATTEMPTS_EXHAUSTED` 被拒:尝试次数是累计的,从不清零。
+- 授权时间窗、次数交叉校验和拒收规则只守 `cli/zcode-worker.mjs` 这一个入口(见「哪道门在哪一层」)。
 
 更底层的启动合同、输出合同与进程监管见 [federation/zcode.md](federation/zcode.md)。

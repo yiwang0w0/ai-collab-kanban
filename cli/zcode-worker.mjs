@@ -1,4 +1,6 @@
-// Zcode 独立执行循环的本机命令。没有任何绕过开关启动模型的命令。
+// Zcode 独立执行循环的本机命令。本命令里没有绕过开关启动模型的入口。
+// 注意层次:环境钥匙与库内预算在 dispatch 链里,换别的入口(cli/scheduler.mjs)也要过;
+// launch.enabled、授权时间窗、次数交叉校验与拒收规则只在本命令这一层,换入口就不经过。
 import {fileURLToPath} from 'node:url';
 import {openPeerDatabase} from '../core/federation/peers.mjs';
 import {migrateSync} from '../core/federation/sync-store.mjs';
@@ -12,6 +14,7 @@ const usage=['node cli/zcode-worker.mjs plan|status --db <本机DB绝对路径> 
  'node cli/zcode-worker.mjs once|watch --db <本机DB绝对路径> --config-file <配置JSON> --accepted-rev <治理验收文件>',
  'node cli/zcode-worker.mjs reconcile --db <本机DB绝对路径> --config-file <配置JSON> --accepted-rev <治理验收文件> --assignment <请求ID>      只补交回执并补记账,不启动',
  'once / watch 需要三把钥匙:预算已启用;配置 launch.enabled=true 且 authorization 有效;环境变量 BOARD_ZCODE_RELEASED=1。',
+ '其中预算与环境变量在 dispatch 链里,任何入口都要过;launch.enabled、authorization 与拒收规则只在本命令这一层。',
  'watch 首次 Ctrl+C 等待在途结束;再次 Ctrl+C 或 SIGTERM 取消在途。已消费许可的任务不会自动重启,额度不退。',
  '异常退出残留锁:使用 cli/runtime-lock.mjs prepare/apply;结果不明的运行:cli/dispatch.mjs prepare-uncertain / record-uncertain。'].join('\n');
 const FIELDS={plan:['db','config-file'],status:['db','config-file'],setup:['db','line','project','out-dir'],enqueue:['db','task','version','config-file'],
