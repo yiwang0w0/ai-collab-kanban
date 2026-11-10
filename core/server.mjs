@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 import { dirname, join, resolve, relative } from "node:path";
 import { createRequire } from "node:module";
 import { nodeTooOld, backfillEnv, SEAT_KEYS } from "./env.mjs";
-import { buildConfig, writeNewConfig } from "./config-setup.mjs";
+import { buildConfig, writeNewConfig, resolveClaudeCli } from "./config-setup.mjs";
 import {readFleetView,readFleetTask,readFleetEvidencePage} from "./fleet-view.mjs";
 import {readFleetProgress} from "./fleet-progress.mjs";
 import {openFleetActions,loadFleetActionsConfig} from "./fleet-actions.mjs";
@@ -32,6 +32,8 @@ import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf} from "./board-claude-cli.mjs";
+import {coordinatorSystemPrompt,buildTurnContent,coordinatorCliArgs,coordinatorCliEnvironment,argsFingerprint,
+  coordinatorTurnOf,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -49,6 +51,7 @@ if (nodeTooOld()) {
 const store = require_("./store.js");
 const coord = require_("./coord.js");
 const approvals = require_("./approvals.js");
+const conversations = require_("./conversations.js");
 const decision = require_("./decision_lib.js");
 const decompose = require_("./decompose_lib.js");
 const dgate = require_("../gates/deliverable_gate.js");
@@ -418,6 +421,10 @@ const fpContext = () => {
 const db = store.open();
 coord.migrate(db);
 approvals.migrate(db);
+conversations.migrate(db);
+// 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
+{ const cut = conversations.recoverInterrupted(db);
+  if (cut.length) console.log(`对话 ${cut.map((id) => "#" + id).join(" ")} 的上一轮在看板重启时被中断,已标为失败`); }
 // Opt-in trusted local configuration; ordinary view-only startup performs no new migration.
 const fleetActions = process.env.BOARD_FLEET_ACTIONS_CONFIG
   ? openFleetActions(db,{config:loadFleetActionsConfig(process.env.BOARD_FLEET_ACTIONS_CONFIG)}) : null;
@@ -1074,6 +1081,30 @@ const DECOMPOSE_MODELS = CFG.decompose_models;
 // Natural language for GENERATED content (decomposed cards today; other generators
 // later). Empty = say nothing, and the generator mirrors the prompt's own language.
 const LANGUAGE = String(CFG.language || "").trim();
+// 对话式首页的协调线(core/coordinator-cli.mjs):模型、强度、每轮时限。缺省 = 拆解用的第一个模型、medium、180 秒。
+// 写了但写错就拒绝启动,与其他配置错误同一规则。
+const COORDINATOR = (() => {
+  const raw = CFG.coordinator ?? {};
+  try {
+    if (typeof raw !== "object" || Array.isArray(raw)) throw new Error("必须是对象 {model, effort, timeout_sec}");
+    const model = raw.model ?? DECOMPOSE_MODELS?.[0]?.id ?? BUILTIN_CONFIG.decompose_models[0].id;
+    const effort = raw.effort ?? "medium", timeout = raw.timeout_sec ?? 180;
+    if (typeof model !== "string" || !model.trim()) throw new Error("model 必须是非空字符串");
+    if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new Error("effort 只接受 low / medium / high / xhigh / max");
+    if (typeof timeout !== "number" || !(timeout > 0) || timeout > 3600) throw new Error("timeout_sec 必须是 0 到 3600 之间的秒数");
+    return { model: model.trim(), effort, timeout_sec: timeout };
+  } catch (e) { console.error(`拒绝启动:${CONFIG_FILE} 的 coordinator ${e.message}`); process.exit(1); }
+})();
+// 测试与 mock 用:整条基础命令由 JSON 数组给出(与 WORKER_CLI_ARGV、REVIEWER_CLI_ARGV 同一做法)。不设就找 Claude CLI。
+const COORDINATOR_ARGV = (() => {
+  const raw = process.env.BOARD_COORDINATOR_CLI_ARGV;
+  if (!raw) return null;
+  try {
+    const v = JSON.parse(raw);
+    if (!Array.isArray(v) || !v.length || !v.every((x) => typeof x === "string" && x)) throw new Error("必须是非空字符串数组");
+    return v;
+  } catch (e) { console.error(`拒绝启动:BOARD_COORDINATOR_CLI_ARGV 读不了(${e.message})`); process.exit(1); }
+})();
 
 // Seats. A seat may declare release_env (must be "1" to unlock) and cmd_env (host
 // must point it at the CLI). Locked seats are visible but refuse save/start —
@@ -1246,7 +1277,6 @@ try {
   for (const [k, v] of Object.entries(raw))
     if (!k.startsWith("_") && v && v.session) LINEAGE[k] = v;
 } catch { /* fine to be absent; the startup log says so */ }
-const CLAUDE_CLI = process.env.WORKER_CLAUDE_CLI || "claude";
 // BOARD_CLAUDE_PROJECTS: test-only escape hatch. A harness must never plant a transcript
 // under the operator's real ~/.claude/projects, so it points this at a temp dir instead.
 const PROJECTS = process.env.BOARD_CLAUDE_PROJECTS || join(homedir(), ".claude", "projects");
@@ -1403,6 +1433,12 @@ function contextOf(line) {
 }
 
 const runCli = (args, timeout = 600000) => new Promise((resolve) => {
+  // 用哪个可执行文件:与对话的协调线同一个帮助函数(config-setup.mjs 的 resolveClaudeCli,规则同执行线)。
+  // WORKER_CLAUDE_CLI 写了就以它为准;PATH 上只有 npm 的 .cmd 包装器时改用旁边的原生可执行文件;
+  // 都没有就不起进程,把写给人看的原因放进 stderr 交回(调用方会把它带进报错)。
+  const cli = resolveClaudeCli(process.env);
+  if (!cli.exe) return resolve({ code: 1, stdout: "", stderr: cli.reason });
+  const CLAUDE_CLI = cli.exe;
   // ⭐ The prompt rides argv (-p) on the claude seat, and Windows CreateProcess caps a
   //   command line at 32767 UTF-16 chars: over budget, execFile dies with an opaque
   //   spawn error. Same caliber as the zcode gate (zcode-profile.mjs) and the two loop
@@ -1427,6 +1463,62 @@ const boardCliCwd = () => BOARD_CLI_CWD || (BOARD_CLI_CWD = mkdtempSync(join(tmp
 const boardCliScope = () => ({ dataDir: resolve(store.DATA_DIR),
   registry: resolve(process.env.BOARD_VERIFY_REGISTRY || join(CODE_ROOT, "core", "verify_registry.json")),
   authHomes: EXECUTION_PROFILES.map((p) => resolve(p.auth_home)) });
+
+/**
+ * 按计划建子卡:一键拆解(decomposeGoal)与对话的按计划建卡(applyConversationPlan)共用这一段。
+ * 按顺序建,`after` 序号换成已建卡的卡号。调用方负责目标卡、事务与事件。
+ */
+function createPlanChildren(goalId, list, { actor = null } = {}) {
+  // Create in order; `after` indices translate to already-created ids.
+  const made = [];
+  // ⭐ This is a WRITE ROAD with no HTTP counterpart to 400 at — the line values come
+  //   from a MODEL's output. Out-of-domain lines fall to null (= no line): the
+  //   reversible failure. A stray value stored raw would never match claim's filter
+  //   and rot silently in not_started — the exact pathology the domain gate exists
+  //   for. ⚠ Three-state preserved: "model said unsure" (null) and "model emitted an
+  //   out-of-domain name" (typo) are DIFFERENT things — the latter is recorded on
+  //   the card face and counted in the response (never silently converted).
+  const demoted = [];
+  const held = [];   // 建好没放行的卡号(needs_confirm)
+  list.forEach((t, i) => {
+    const deps = (t.after || []).map((n) => made[Number(n) - 1]).filter((x) => x != null);
+    const want = t.line && t.line !== "null" ? String(t.line) : null;
+    // The domain is the implement lines (v0.22): a review line named here is out of
+    // domain exactly like a typo — the card is recorded, not silently converted.
+    const line = (want === null || IMPL_LINES.includes(want)) ? want : null;
+    let description = String(t.description || "");
+    if (want !== null && line === null) {
+      demoted.push({ n: i + 1, subject: String(t.subject || "(无题)"), line: want });
+      description += String.fromCharCode(10, 10) +
+        `⚠拆解时给的线名「${want}」不在实现线可选表内(${IMPL_LINES.join("/")};评审线不接实现卡),已落为「不指定线」` +
+        "——谁都能领,但没人被点名。请人工确认该派给哪条线。";
+    }
+    // 只有对话计划带 needs_confirm(拆解的 schema 里没有这个字段):这张卡建好不放行,线领不到;
+    //   操作者看过、确认后放行。不挂人工闸(人工闸是「等人裁定」,这里等的是放行这一下)。
+    const hold = t.needs_confirm === true;
+    if (hold)
+      description += String.fromCharCode(10, 10) +
+        "⚠这张卡涉及需要人确认的动作(生产数据、迁移、删除、推送或花钱),建卡时没有放行。要操作者确认后放行。";
+    made[i] = store.add(db, {
+      subject: String(t.subject || "(无题)"), description,
+      // 给人看的「要做什么」:拆解计划里带就带上,没带就是 null(退路在 store.cardBrief)。
+      //   schema 里它是可选项 —— 旧模型、旧计划不出这个字段也不该让整次拆解失败。
+      summary: t.summary,
+      acceptance: String(t.acceptance || ""), line,
+      needsBash: !!t.needs_bash, blockedBy: deps, kind: "task", parentId: goalId,
+      // The release valve moved to worker start/stop (ruling): decomposed children
+      // are claimable from birth; "not yet" is expressed by not starting that
+      // line's worker.
+      released: hold ? 0 : 1,
+      // v0.23: a decompose that overrode the review gate says so on every child's `add`
+      // event — "ran because the human forced it" must not read like a plain decompose.
+      // 对话的按计划建卡写 operator(人按下的)。
+      ...(actor ? { actor } : {}),
+    });
+    if (hold) held.push(made[i]);
+  });
+  return { made, demoted, held };
+}
 
 /**
  * Decompose a goal into child tasks.
@@ -1472,45 +1564,7 @@ async function decomposeGoal(goalId, model, forced = false) {
   //   that the goal was badly written (≠ BAD_INPUT).
   if (!list.length) throw store.err(store.ERR.INTERNAL, "拆解结果里没有子任务");
 
-  // Create in order; `after` indices translate to already-created ids.
-  const made = [];
-  // ⭐ This is a WRITE ROAD with no HTTP counterpart to 400 at — the line values come
-  //   from a MODEL's output. Out-of-domain lines fall to null (= no line): the
-  //   reversible failure. A stray value stored raw would never match claim's filter
-  //   and rot silently in not_started — the exact pathology the domain gate exists
-  //   for. ⚠ Three-state preserved: "model said unsure" (null) and "model emitted an
-  //   out-of-domain name" (typo) are DIFFERENT things — the latter is recorded on
-  //   the card face and counted in the response (never silently converted).
-  const demoted = [];
-  list.forEach((t, i) => {
-    const deps = (t.after || []).map((n) => made[Number(n) - 1]).filter((x) => x != null);
-    const want = t.line && t.line !== "null" ? String(t.line) : null;
-    // The domain is the implement lines (v0.22): a review line named here is out of
-    // domain exactly like a typo — the card is recorded, not silently converted.
-    const line = (want === null || IMPL_LINES.includes(want)) ? want : null;
-    let description = String(t.description || "");
-    if (want !== null && line === null) {
-      demoted.push({ n: i + 1, subject: String(t.subject || "(无题)"), line: want });
-      description += String.fromCharCode(10, 10) +
-        `⚠拆解时给的线名「${want}」不在实现线可选表内(${IMPL_LINES.join("/")};评审线不接实现卡),已落为「不指定线」` +
-        "——谁都能领,但没人被点名。请人工确认该派给哪条线。";
-    }
-    made[i] = store.add(db, {
-      subject: String(t.subject || "(无题)"), description,
-      // 给人看的「要做什么」:拆解计划里带就带上,没带就是 null(退路在 store.cardBrief)。
-      //   schema 里它是可选项 —— 旧模型、旧计划不出这个字段也不该让整次拆解失败。
-      summary: t.summary,
-      acceptance: String(t.acceptance || ""), line,
-      needsBash: !!t.needs_bash, blockedBy: deps, kind: "task", parentId: goalId,
-      // The release valve moved to worker start/stop (ruling): decomposed children
-      // are claimable from birth; "not yet" is expressed by not starting that
-      // line's worker.
-      released: 1,
-      // v0.23: a decompose that overrode the review gate says so on every child's `add`
-      // event — "ran because the human forced it" must not read like a plain decompose.
-      ...(forced ? { actor: "decompose(forced)" } : {}),
-    });
-  });
+  const { made, demoted } = createPlanChildren(goalId, list, forced ? { actor: "decompose(forced)" } : {});
   emit("goal.decomposed", { id: goalId, made });
   // demoted = children whose line name was dropped (empty = normal): the one
   // machine-readable mouth for "the model misspelled a line" — the card face has it
@@ -3174,6 +3228,194 @@ const closeRemote = () => Promise.all(remoteServers.map((s) => new Promise((r) =
   s.close(() => r()); s.closeAllConnections?.();
 })));
 
+// ── 对话式首页:对话、协调线一轮、按计划建卡(接口与安全边界见 docs/对话式首页.md)。
+//    只认面板会话或操作员令牌;执行者令牌、批准令牌、远程入口都进不来。
+//    协调线只有只读工具,计划经结构化输出交回(core/coordinator-cli.mjs);建卡只发生在 apply,由人按下。
+// 协调线的工作目录:专用空目录,不在工作仓、看板仓和数据目录里(dontAsk 下 cwd 范围内可读)。
+// 路径按数据目录固定,看板重启后不变:CLI 的系统提示里带 cwd,变了前缀缓存就失效。
+const COORDINATOR_CWD = join(tmpdir(), "kanban-coordinator-" + createHash("sha256").update(resolve(store.DATA_DIR)).digest("hex").slice(0, 16));
+function coordinatorCwd() {
+  mkdirSync(COORDINATOR_CWD, { recursive: true });
+  if (readdirSync(COORDINATOR_CWD).length)
+    throw new Error("协调线的工作目录里出现了文件,为避免被当成资料读进去,这一轮没有启动。清空该目录后重试");
+  return COORDINATOR_CWD;
+}
+/** 协调线现在能不能用。CLI 找不到、或当前版本还没确认(与执行线同一道源码闸)时不可用,reason 写给人看。 */
+function coordinatorState() {
+  const base = { runtime: "claude", model: COORDINATOR.model, effort: COORDINATOR.effort };
+  const cli = coordinatorCommand({ env: process.env, argv: COORDINATOR_ARGV });
+  if (!cli.ok) return { info: { available: false, reason: cli.reason, ...base }, cli: null };
+  if (process.env.BOARD_ALLOW_UNPINNED !== "1") {
+    const bl = blessStep();
+    if (bl.state !== "done")
+      return { info: { available: false, reason: `${bl.detail}。确认当前版本后协调线才能用`, ...base }, cli: null };
+  }
+  return { info: { available: true, ...base }, cli };
+}
+/** 给协调线的看板摘要:各实现线的运行状态与未完成卡数、未完成的目标标题。 */
+function coordinatorBoardFacts() {
+  const facts = conversations.boardFacts(db);
+  return { lines: IMPL_LINES.map((id) => ({ id, label: LINE_LABEL[id] || "", open: facts.open[id] || 0,
+             state: LINE_EXTERNAL[id] ? "external" : slotsOf(id).some((w) => w.proc) ? "running" : "stopped" })),
+           unassigned: facts.unassigned, goals: facts.goals };
+}
+const coordinatorRuns = new Map();   // 对话号 -> { stop, finished }:同一对话同一时刻只有一轮
+/** 起一轮(调用方已把对话置为运行中并写入用户消息)。结束时只有 finishCoordinatorTurn 一处写库。 */
+function startCoordinatorTurn(convId, userMessage, cli) {
+  const started = Date.now();
+  let run;
+  try {
+    const s = conversations.session(db, convId), cwd = coordinatorCwd();
+    const args = coordinatorCliArgs({
+      content: buildTurnContent({ board: coordinatorBoardFacts(), plan: conversations.latestPlan(db, convId),
+                                  pending: conversations.unanswered(db, convId, userMessage.id), message: userMessage.text }),
+      model: s.model, effort: s.effort, repoRoot: resolve(REPO_ROOT),
+      systemPrompt: coordinatorSystemPrompt({ lines: IMPL_LINES, hints: LINE_HINT, labels: LINE_LABEL, language: LANGUAGE }),
+      sessionId: s.session_id, resume: s.resume, ...boardCliScope() });
+    conversations.setSessionFacts(db, convId, { cwd, argsFp: argsFingerprint(args) });
+    run = runCoordinatorCli({ argv: [cli.exe, ...cli.prefix, ...args], cwd, timeoutMs: COORDINATOR.timeout_sec * 1000,
+                              env: coordinatorCliEnvironment({ env: process.env, profiles: EXECUTION_PROFILES }) });
+  } catch (e) {
+    run = { stop: async () => false, done: Promise.resolve({ refused: `协调线这一轮没有启动:${String(e?.message || e)}` }) };
+  }
+  const finished = run.done.then((r) => finishCoordinatorTurn(convId, r, Date.now() - started))
+    .catch((e) => {
+      console.error(`[内部失败] 对话 #${convId} 的一轮收尾出错:${String(e?.message || e).slice(0, 300)}`);
+      try { conversations.failTurn(db, convId, "看板内部出错,这一轮没有记录下来。重新发送即可"); } catch {}
+    })
+    .finally(() => { coordinatorRuns.delete(convId); emit("conversation.changed", { id: convId }); });
+  coordinatorRuns.set(convId, { stop: run.stop, finished });
+}
+function finishCoordinatorTurn(convId, r, wallMs) {
+  if (r.stopped) return conversations.stopTurn(db, convId);
+  if (r.refused) return conversations.failTurn(db, convId, r.refused);
+  if (r.spawnError) return conversations.failTurn(db, convId, `协调线没有启动:${redact(r.spawnError)}`);
+  if (r.timedOut)
+    return conversations.failTurn(db, convId, `协调线这一轮超过 ${COORDINATOR.timeout_sec} 秒没有结束,已停止。可以重新发送,或把问题拆小一些`);
+  if (r.overflow) return conversations.failTurn(db, convId, "协调线这一轮的输出太大,已停止。把问题拆小一些再发");
+  const parsed = coordinatorTurnOf(r.stdout);
+  const usage = parsed.usage ? { ...parsed.usage, wall_ms: wallMs } : null;
+  if (!parsed.ok) {
+    const tail = redact(String(r.stderr || "").replace(/\s+/g, " ").trim()).slice(-200);
+    // 续接失败(会话文件不在了):不悄悄另开新会话,那样会丢掉上文而人不知道。
+    const reason = /No conversation found/i.test(tail) ? "续接不到这次对话之前的会话记录,这次对话不能继续。请开新对话"
+      : redact(parsed.reason) + (r.code ? `(退出码 ${r.code}${tail ? ",输出尾部:" + tail : ""})` : "");
+    return conversations.failTurn(db, convId, reason, { usage });
+  }
+  if (parsed.usage?.denials) console.log(`对话 #${convId}:协调线这一轮有 ${parsed.usage.denials} 次工具调用被拒`);
+  conversations.completeTurn(db, convId, { reply: parsed.turn.reply, title: parsed.turn.title ?? null, plan: parsed.turn.plan,
+                                           tools: parsed.tools, usage });
+}
+/** 看板停止或重启前收掉在跑的协调线进程(留着就是没人看的模型进程)。 */
+const stopCoordinatorRuns = () => Promise.all([...coordinatorRuns.values()].map(async (run) => { try { await run.stop(); await run.finished; } catch {} }));
+
+/** 按计划建卡:同一对话只成功一次。目标卡、子卡、建卡标记与 system 消息在同一事务里,任何一步失败都不留半份。
+ *  子卡复用拆解的建卡段(createPlanChildren):线名不在实现线里就降为「不指定线」并记进 demoted;
+ *  needs_confirm 的子卡不放行,卡号记进 needs_release。 */
+function applyConversationPlan(convId, rev, expectedRev, by) {
+  let out;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const plan = conversations.planForApply(db, convId, rev, expectedRev);
+    const enabled = plan.tasks.filter((t) => t.enabled);
+    const position = new Map(enabled.map((t, i) => [t.n, i + 1]));
+    // 依赖指向已停用的卡:那张卡不会建,先后关系带不上,写进 system 消息让人看到。
+    const dropped = [];
+    const list = enabled.map((t) => ({ ...t,
+      after: t.after.filter((n) => position.has(n) || (dropped.push(`第 ${t.n} 张原本排在第 ${n} 张之后`), false)).map((n) => position.get(n)) }));
+    // 目标卡建好即放行:人按下「按计划建卡」就是放行这一批。祖先未放行时子卡一张都领不到
+    // (store 的祖先放行规则),而合同要求子卡建好即可领。要人确认的子卡各自不放行(createPlanChildren)。
+    const goalId = store.add(db, { subject: plan.goal.subject, description: plan.goal.description, kind: "goal", released: 1, actor: "operator" });
+    const made = createPlanChildren(goalId, list, { actor: "operator" });
+    const demoted = made.demoted.map((d) => ({ ...d, n: enabled[d.n - 1].n }));
+    conversations.markApplied(db, convId, rev, { by, goalId, taskIds: made.made });
+    conversations.addSystemMessage(db, convId, { kind: "applied", text:
+      `已按计划第 ${rev} 版建卡:目标 #${goalId},子卡 ${made.made.map((id) => "#" + id).join(" ")}。` +
+      (made.held.length ? `${made.held.map((id) => "#" + id).join(" ")} 涉及要人确认的动作,没有放行,要操作者确认后放行。` : "") +
+      demoted.map((d) => `第 ${d.n} 张的线名「${d.line}」不在实现线里,已改为不指定线。`).join("") +
+      (dropped.length ? `${dropped.join(";")},被依赖的卡已停用,这些先后关系没有带上。` : "") });
+    out = { goal_id: goalId, task_ids: made.made, demoted, needs_release: made.held };
+    db.exec("COMMIT");
+  } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
+  emit("task.created", { id: out.goal_id });
+  emit("goal.decomposed", { id: out.goal_id, made: out.task_ids });
+  emit("conversation.changed", { id: convId });
+  console.log(`对话 #${convId} 按计划第 ${rev} 版建卡:目标 #${out.goal_id},子卡 ${out.task_ids.length} 张(${by})`);
+  return out;
+}
+
+async function conversationsRoute(req, res, url, p, m, boardRole) {
+  if (boardRole !== "operator")
+    return json(res, 403, { error: "对话与协调线只属于操作员(面板会话或操作员令牌)", role: boardRole });
+  try {
+    if (m === "GET" && p === "/api/coordinator") return json(res, 200, coordinatorState().info);
+    const turn = async (start) => {
+      if (shuttingDown) return json(res, 503, { error: "看板正在停止,稍后再发" });
+      const state = coordinatorState();
+      if (!state.cli) return json(res, 409, { error: state.info.reason, code: "COORDINATOR_UNAVAILABLE" });
+      const b = await readBody(req);
+      return start(b, state.cli);
+    };
+    if (p === "/api/conversations") {
+      if (m === "GET") {
+        const archived = url.searchParams.get("archived") ?? "0";
+        if (!["0", "1"].includes(archived)) return json(res, 400, { error: "archived 必须是 0 或 1" });
+        return json(res, 200, { conversations: conversations.list(db, { archived: archived === "1" }) });
+      }
+      if (m === "POST") return await turn((b, cli) => {
+        const made = conversations.create(db, { message: b.message, model: COORDINATOR.model, effort: COORDINATOR.effort });
+        startCoordinatorTurn(made.conversation.id, made.turn, cli);
+        emit("conversation.changed", { id: made.conversation.id });
+        return json(res, 201, { conversation: made.conversation, turn: { id: made.turn.id, status: "running" } });
+      });
+      return json(res, 405, { error: "这个接口只接受 GET 和 POST" });
+    }
+    const mc = p.match(/^\/api\/conversations\/(\d+)(?:\/(messages|stop))?$/);
+    if (mc) {
+      const id = Number(mc[1]);
+      if (!mc[2] && m === "GET") return json(res, 200, conversations.detail(db, id));
+      if (!mc[2] && m === "PATCH") {
+        const b = await readBody(req);
+        const conversation = conversations.patch(db, id, { title: b.title, archived: b.archived });
+        emit("conversation.changed", { id });
+        return json(res, 200, { conversation });
+      }
+      if (mc[2] === "messages" && m === "POST") return await turn((b, cli) => {
+        const message = conversations.beginTurn(db, id, { message: b.message });
+        startCoordinatorTurn(id, message, cli);
+        emit("conversation.changed", { id });
+        return json(res, 202, { turn: { id: message.id, status: "running" } });
+      });
+      if (mc[2] === "stop" && m === "POST") {
+        conversations.get(db, id);                      // 不存在 → 404
+        const run = coordinatorRuns.get(id);
+        const stopped = run ? await run.stop() : false;
+        if (run) await run.finished;
+        return json(res, 200, { stopped: !!stopped });
+      }
+      return json(res, 405, { error: "这个接口不接受该方法" });
+    }
+    const mp = p.match(/^\/api\/conversations\/(\d+)\/plans\/(\d+)(\/apply)?$/);
+    if (mp && !mp[3] && m === "PUT") {
+      const b = await readBody(req);
+      const plan = conversations.editPlan(db, Number(mp[1]), Number(mp[2]), b, { implLines: IMPL_LINES });
+      emit("conversation.changed", { id: Number(mp[1]) });
+      return json(res, 200, { plan });
+    }
+    if (mp && mp[3] && m === "POST") {
+      const b = await readBody(req);
+      const via = isPanelCredential(req.headers["x-board-token"]) ? "panel" : "local";
+      return json(res, 201, applyConversationPlan(Number(mp[1]), Number(mp[2]), b.expected_rev, via));
+    }
+    return json(res, mp ? 405 : 404, { error: "未知的对话接口" });
+  } catch (e) {
+    // 合同里的机器码(TURN_RUNNING / PLAN_CONFLICT / PLAN_APPLIED)与逐项问题(issues)在这里带出;其余交给兜底。
+    if (!e?.conv_code && !e?.issues) throw e;
+    return json(res, statusFor(e, "conversations"), { error: String(e.message), ...(e.conv_code ? { code: e.conv_code } : {}),
+      ...(e.issues ? { issues: e.issues } : {}), ...(e.current_rev != null ? { current_rev: e.current_rev } : {}) });
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const p = url.pathname;
@@ -3695,6 +3937,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/coord" || p.startsWith("/api/coord/")) return await coordRoute(req, res, url, p, m, boardRole);
+    if (p === "/api/coordinator" || p === "/api/conversations" || p.startsWith("/api/conversations/"))
+      return await conversationsRoute(req, res, url, p, m, boardRole);
     if (p === "/api/approvals" || p.startsWith("/api/approvals/")) return await approvalsRoute(req, res, url, p, m, boardRole);
     if (p === "/api/approval-tokens" || p.startsWith("/api/approval-tokens/")) return await approvalTokensRoute(req, res, url, p, m);
 
@@ -4102,6 +4346,7 @@ async function stopWithBoard(trigger) {
   if (shuttingDown) return;
   shuttingDown = true;
   await stopFleetActions();
+  await stopCoordinatorRuns();
   const live = SUPERVISED.filter((l) => slotsOf(l).some((w) => w.proc));
   if (live.length) {
     console.log(`退出(${trigger}): 正在停止 worker ${live.join(" ")}(意图保留)…`);
@@ -4119,6 +4364,7 @@ async function restartBoard(trigger) {
   if (shuttingDown) return;
   shuttingDown = true;
   await stopFleetActions();
+  await stopCoordinatorRuns();
   const live = SUPERVISED.filter((l) => slotsOf(l).some((w) => w.proc));
   if (live.length) {
     console.log(`重启(${trigger}): 先停 worker ${live.join(" ")}(意图保留,新进程起来后照原样恢复)…`);

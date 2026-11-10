@@ -14,7 +14,7 @@
 // operator's — is never touched, whoever calls.
 import { readFileSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { CODE_ROOT } from "./env.mjs";
 
 const WIN = process.platform === "win32";
@@ -37,6 +37,40 @@ export function findOnPath(name, { env = process.env, exts = WIN ? [".exe", ".cm
 /** The claude CLI the worker loop would find (host env first, then PATH), or null. */
 export function detectClaude(env = process.env) {
   return env.WORKER_CLAUDE_CLI || findOnPath("claude", { env });
+}
+
+const isBatch = (p) => /\.(?:cmd|bat)$/i.test(String(p || ""));
+/** npm 的 .cmd 包装器旁边的原生可执行文件。候选与 loops/worker_loop.py 的 _npm_native_sibling 相同;
+ *  实测是文件才返回,找不到是 null。 */
+export function claudeNativeSibling(shim) {
+  const root = dirname(resolve(String(shim)));
+  const exe = basename(String(shim)).replace(/\.[^.]*$/, "") + (WIN ? ".exe" : "");
+  return [join(root, "node_modules", "@anthropic-ai", "claude-code", "bin", exe), join(root, exe)]
+    .find((p) => isFile(p) && !isBatch(p)) || null;
+}
+
+/** 看板自己起 Claude CLI(一键拆解、上下文压缩、对话的协调线)用哪个可执行文件。规则与执行线
+ *  (loops/worker_loop.py 的 resolve_cli 加批处理闸)相同:
+ *   · WORKER_CLAUDE_CLI 写了就以它为准;它不存在或指向 .cmd / .bat 时不可用,不另找。
+ *   · 否则走 PATH。PATH 上只有 npm 的 .cmd 包装器时,改用它旁边的原生可执行文件。
+ *   · .cmd / .bat 不能不经 shell 启动(Node 拒绝,也不该经 cmd.exe:参数会被重新解析)。
+ *  只查文件在不在,不运行 CLI。返回 {exe, note} 或 {exe:null, reason};reason 写给人看。 */
+export function resolveClaudeCli(env = process.env) {
+  const explicit = env.WORKER_CLAUDE_CLI;
+  if (explicit) {
+    const exe = isAbsolute(explicit) ? (isFile(explicit) ? explicit : null) : findOnPath(explicit, { env });
+    if (!exe) return { exe: null, reason: "WORKER_CLAUDE_CLI 指向的文件不存在。改成 claude 可执行文件的完整路径后重启看板" };
+    if (isBatch(exe))
+      return { exe: null, reason: "WORKER_CLAUDE_CLI 指向 .cmd 或 .bat 包装器,看板不能直接启动它。改成原生 claude 可执行文件的完整路径后重启看板" };
+    return { exe, note: null };
+  }
+  const found = findOnPath("claude", { env });
+  if (!found)
+    return { exe: null, reason: "找不到 Claude CLI。先安装 Claude Code;装好仍找不到时,把 WORKER_CLAUDE_CLI 设成 claude 可执行文件的完整路径后重启看板" };
+  if (!isBatch(found)) return { exe: found, note: null };
+  const native = claudeNativeSibling(found);
+  if (native) return { exe: native, note: "PATH 上的 claude 是 .cmd 包装器,已改用它旁边的原生可执行文件" };
+  return { exe: null, reason: "PATH 上的 claude 是 .cmd 包装器,旁边没有原生可执行文件,看板不能直接启动它。把 WORKER_CLAUDE_CLI 设成原生 claude 可执行文件的完整路径后重启看板" };
 }
 
 // The native codex.exe inside an npm install, next to the codex.cmd shim PATH offers. The

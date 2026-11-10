@@ -1339,3 +1339,12 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 
 - 2026-11-04 CI186补修：idle夹具先从真实宿主输出解出成功终态，再开启测试活动时钟，消除冷启动竞态；产品代码、300ms阈值、5000ms墙钟和原断言保持。
 - 原用例自然红0/1，修后定向1/0及初始静默关联1/0；独立增量审阅通过。未重跑整套dispatch、未调用模型，原样本记录保留。
+
+- 2026-11-10 对话式首页第 1 批服务端：对话／消息／计划版本三张表（消息与版本只追加），协调线一轮起订阅 Claude CLI（只读工具、dontAsk、`--json-schema` 交计划、首轮 session-id 之后 resume、超时与停止收进程树），对话接口按合同，按计划建卡与一键拆解共用建卡段，SSE conversation.changed，用量逐轮累计。
+- 新增 convtest 3/0；servertest 212/0、decomposetest 84/0、selftest 402/0、clitest 89/0、coordtest 11/0、approvaltest 3/0、test:channels 93/0。
+- 真实 CLI（2.1.312，haiku，假仓库）调用 1 次：参数全部被接受，init 里工具只有 Read／Glob／Grep 与 StructuredOutput、权限模式 dontAsk、MCP 与斜杠命令为 0；本机 CLI 登录已过期，没有到模型，费用 0。
+- 卡在操作者：重新登录 Claude CLI 后补两次调用（首轮交回 structured_output、第二轮 --resume 记得上文）。
+
+- 2026-11-10 对话式首页补两处：Claude CLI 定位与执行线同一规则（PATH 上只有 .cmd 包装器时改用旁边的原生可执行文件，协调线与一键拆解、压缩共用 resolveClaudeCli）；needs_confirm 的子卡建好不放行、不挂人工闸，卡号进 apply 响应的 needs_release。
+- 同时修正：按计划建卡的目标卡改为建好即放行。原先目标卡未放行，按祖先放行规则子卡实际领不到；convtest 现在用真实领取钉住「建好即可领」与「未放行领不到」。
+- convtest 3/0、servertest 212/0、decomposetest 84/0、clitest 89/0。真实 CLI 两轮验证待操作者重新登录后在整合阶段跑；阻塞：无。
