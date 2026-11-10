@@ -545,6 +545,46 @@ test("协作安全:不带 lease 的心跳只往后续租,不把长租约缩成�
   } finally { await B.stop(); }
 });
 
+test("协作安全:卡片级心跳不带 lease_minutes 时同样只往后续租,明确给值仍按给的值", { timeout: 60000 }, async () => {
+  const B = await board();
+  try {
+    const tok = await B.register("agent-k");
+    const long = await B.card("长租约的卡", "ext"), short = await B.card("短租约的卡", "ext");
+    const gl = await B.take(tok, long.id, { lease_minutes: 240 }), gs = await B.take(tok, short.id, { lease_minutes: 1 });
+    assert.deepEqual([gl.status, gs.status], [200, 200]);
+    const runL = gl.body.task.run_id, runS = gs.body.task.run_id;
+    /** 卡片级心跳,返回续完之后剩下的分钟数 */
+    const beat = async (token, id, body) => {
+      const r = await B.api("POST", `/api/tasks/${id}/heartbeat`, token, body);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      return (r.body.task.lease_until - Date.now()) / 60000;
+    };
+    let left = await beat(tok, long.id, { run_id: runL });
+    assert.ok(left > 235, `240 分钟领的卡,不带 lease_minutes 的卡片级心跳后不应变短:剩 ${left.toFixed(1)} 分`);
+    left = await beat(tok, short.id, { run_id: runS });
+    assert.ok(left > 29 && left < 31, `短租约续到默认 30 分:剩 ${left.toFixed(1)} 分`);
+    for (const bad of [null, 0, -5, "abc"]) {
+      left = await beat(tok, long.id, { run_id: runL, lease_minutes: bad });
+      assert.ok(left > 235, `lease_minutes 写成 ${JSON.stringify(bad)} 等于没给,不缩租:剩 ${left.toFixed(1)} 分`);
+    }
+    const viaCoord = await B.api("POST", "/api/coord/heartbeat", tok, { task_id: long.id, lease_minutes: null });
+    assert.ok((viaCoord.body.renewed[0].lease_until - Date.now()) / 60000 > 235, "协作心跳里 lease_minutes 写成 null 同样等于没给");
+    left = await beat(tok, long.id, { run_id: runL, lease_minutes: 60 });
+    assert.ok(left > 59 && left < 61, `明确给了 lease_minutes 就按给的值:剩 ${left.toFixed(1)} 分`);
+    left = await beat(tok, long.id, { run_id: runL, lease_minutes: 1000 });
+    assert.ok(left > 239 && left < 241, `执行者令牌的上限仍是 240 分:剩 ${left.toFixed(1)} 分`);
+    // 共享 worker 令牌走同一条路由:没给只往后续;每次都带 lease_minutes 的(worker 循环)按给的值,行为不变
+    await B.card("手工执行线的卡");
+    const cl = await B.api("POST", "/api/claim", B.worker, { worker: "manual-w", line: "alpha", lease_minutes: 120, worker_protocol_version: 2, agent_instance_id: randomUUID() });
+    assert.equal(cl.status, 200, JSON.stringify(cl.body));
+    const w = { worker: "manual-w", run_id: cl.body.task.run_id };
+    left = await beat(B.worker, cl.body.task.id, w);
+    assert.ok(left > 115, `worker 令牌不带 lease_minutes 也不缩租:剩 ${left.toFixed(1)} 分`);
+    left = await beat(B.worker, cl.body.task.id, { ...w, lease_minutes: 45 });
+    assert.ok(left > 44 && left < 46, `worker 带 lease_minutes 的心跳照旧按给的值:剩 ${left.toFixed(1)} 分`);
+  } finally { await B.stop(); }
+});
+
 test("协作安全:只追加的协作表挡住 REPLACE(整行替换),不只是 UPDATE 与 DELETE", () => {
   const db = memdb(), t0 = 1_800_000_000_000;
   coord.register(db, { id: "agent-p" }); coord.register(db, { id: "agent-q" });

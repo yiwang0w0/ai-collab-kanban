@@ -2267,7 +2267,12 @@ const readBody = (req) => new Promise((resolve, reject) => {
       if (isManagedSeatName(req.executor.id))
         return reject(store.err(store.ERR.CONFLICT, "执行者 id 与受管执行线的座位同名,不能以它领卡、续租或交付;请操作员用别的 id 重新登记"));
       body.worker = req.executor.id;
-      if (body.lease_minutes !== undefined) body.lease_minutes = coord.executorLease(body.lease_minutes);
+      // 正数按执行者上限截断;不是正数的当作没给(领卡用默认值,心跳只往后续)。在这里换成默认的 30 分钟的话,
+      // 下游分不出「明确给了 30」和「没给」,心跳会把长租约缩短。
+      if (body.lease_minutes !== undefined) {
+        const n = Number(body.lease_minutes);
+        body.lease_minutes = Number.isFinite(n) && n > 0 ? coord.executorLease(n) : undefined;
+      }
     }
     resolve(body);
   });
@@ -3928,7 +3933,16 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { task: taskOut(r.task) });
       }
       if (action === "heartbeat") {
-        const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: b.lease_minutes });
+        // 没给 lease_minutes(或给的不是正数)的心跳只往后续:取默认租约与这张卡现有剩余时间里较长的。store 在没给时
+        // 按默认 30 分钟改写,会把更长的租约缩短,到点被回收(与 coord.heartbeat 同一条规则)。明确给了正数就按给的值:
+        // worker 循环每次都带,行为不变。持有者与 run 的核对仍在 store.heartbeat 里。
+        let lease = b.lease_minutes;
+        if (!(Number.isFinite(Number(lease)) && Number(lease) > 0)) {
+          const left = (Number(db.prepare("SELECT lease_until FROM tasks WHERE id=?").get(id)?.lease_until) - Date.now()) / 60000;
+          lease = Math.max(store.DEFAULT_LEASE_MIN, Number.isFinite(left) ? left : 0);
+          if (boardRole === "executor") lease = Math.min(lease, coord.EXECUTOR_MAX_LEASE_MIN);
+        }
+        const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: lease });
         if (boardRole === "executor") coord.touch(db, req.executor.id);
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side
       }
