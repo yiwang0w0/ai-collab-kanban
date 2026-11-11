@@ -154,6 +154,15 @@ test("外部执行线:接口标出,看板拒绝启动", { timeout: 60000 }, asyn
     assert.equal(add.status, 201, JSON.stringify(add.body));
     assert.equal(add.body.line_external.ext2, true);
     assert.equal((await B.api("POST", "/api/config/lines", B.operator, { id: "ext3", external: "yes" })).status, 400);
+    // F11 补充:加线接口的显示名与本地会话登记同一个清洗 —— 换行 / ESC / 双向控制 / 零宽去掉,不进配置文件与日志
+    const cp = (...c) => String.fromCodePoint(...c);
+    const dirty = await B.api("POST", "/api/config/lines", B.operator, { id: "ext4", external: true, label: "a" + cp(0x0a) + "FAKE" + cp(0x1b) + "[31m" + cp(0x202e, 0x200b) + "b" });
+    assert.equal(dirty.status, 201, JSON.stringify(dirty.body));
+    assert.equal(dirty.body.line.label, "a FAKE[31mb");
+    const disk = JSON.parse(readFileSync(join(B.dir, "fleet.json"), "utf8")).lines.find((l) => l.id === "ext4");
+    assert.equal(disk.label, "a FAKE[31mb");
+    assert.ok(!B.logs().includes("\nFAKE"), "日志里没有被换行伪造出的独立行");
+    assert.equal((await B.api("POST", "/api/config/lines", B.operator, { id: "ext5", external: true, label: "字".repeat(25) })).status, 400, "超长仍报错,不悄悄截断");
   } finally { await B.stop(); }
 });
 

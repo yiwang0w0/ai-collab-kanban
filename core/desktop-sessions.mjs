@@ -237,10 +237,14 @@ export const LINE_LABEL_MAX = 24;
 const labelDrop = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x061c || c === 0x180e ||
   (c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2060 && c <= 0x206f) ||
   c === 0xfeff || (c >= 0xfff9 && c <= 0xfffb);
-export function cleanLineLabel(s) {
+/** 只清字符、不截断(加线入口 addLine 用它:超长要报错,不能悄悄截掉)。 */
+export function cleanLabelChars(s) {
   let t = "";
   for (const ch of String(s ?? "").replace(/[\t\n\r\v\f]/g, " ")) if (!labelDrop(ch.codePointAt(0))) t += ch;
-  t = t.replace(/\s+/g, " ").trim();
+  return t.replace(/\s+/g, " ").trim();
+}
+export function cleanLineLabel(s) {
+  const t = cleanLabelChars(s);
   let out = "";
   for (const ch of t) { if (out.length + ch.length > LINE_LABEL_MAX) break; out += ch; }
   return out.trim();

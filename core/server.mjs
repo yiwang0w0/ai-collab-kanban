@@ -42,7 +42,7 @@ import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorC
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX,
-        MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel} from "./desktop-sessions.mjs";
+        MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel,cleanLabelChars} from "./desktop-sessions.mjs";
 import {createFlow} from "./flow.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
 
@@ -623,7 +623,9 @@ const LINE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
 function addLine(idRaw, hintRaw, labelRaw, acceptRaw, roleRaw = null, externalRaw = false) {
   const id = String(idRaw ?? "").trim();
   const hint = String(hintRaw ?? "").trim();
-  const label = String(labelRaw ?? "").trim();
+  // 显示名会进 fleet.config.json、看板日志、效率分组与历史条目:所有加线入口(POST /api/config/lines、凭码建线、
+  // 本地会话登记)都在这里过同一个清洗(F11:换行/控制符/双向控制/零宽去掉),再按 24 字判长。
+  const label = cleanLabelChars(labelRaw ?? "");
   const accept = acceptRaw == null || acceptRaw === "" ? "human" : String(acceptRaw);
   if (label.length > 24) throw store.err(store.ERR.BAD_INPUT, "显示名最多 24 字");
   if (!["human", "auto"].includes(accept)) throw store.err(store.ERR.BAD_INPUT, `accept 只接受 human / auto —— 收到 ${JSON.stringify(acceptRaw)}`);
