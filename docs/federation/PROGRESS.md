@@ -1388,3 +1388,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - panelcopytest 37/0、hometest 43/0、panelsidetest 34/0、panelauth 11/0、panelcoordtest 9/0、tltest 1/0、progressdiagnostictest 7/0;渲染只在假数据(浏览器打桩)下看过,真数据联调留到整合。阻塞：无。
 - 2026-11-11 公告板 v3 合同 A「凭码接入」(claude/connect):新 `core/connect.mjs` 给 `POST /api/connect/codes`(一次性码,10 分钟,库里只存哈希;不给线就新建外部执行线)、`POST /api/connect/redeem`(只限回环,错 5 次全局锁 1 分钟)、`GET /api/executors`(online / state 四态 / holding / last_report)与撤销;桥 `cli/exec-mcp.mjs` 加 `--code` 兑换写令牌文件(只给 `--token-file` 的旧用法不变)、`wait_for_card`、`ask_operator`、`heartbeat` 的 `note`(`live_note`,临时、绑本轮 run);docs/多执行者协作.md 增「凭码接入」「值守」。
 - connecttest 3/0、execmcptest 3/0(真看板 + 真 stdio 子进程);没有调用模型。阻塞：无。
+- 2026-11-11 安全复审 F12(claude/flow):history 摘要的遮蔽补全带空格路径、`/c/Users` 与 `/mnt/c` 形、UNC、`%VAR%\`、`file://` 与 github_pat_ / ghp_ / gho_ / sk- / xoxb- / xoxp- / AKIA / JWT / 长混排串;`core/flow.mjs` 导出 `redactText`(不截断)供 live_note 等复用。
+- flowtest 5/0(新增逐类 20 例,旧实现下 15 例红,其余 5 例为回归保护);没有调用模型。阻塞：无。

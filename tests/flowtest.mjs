@@ -184,6 +184,43 @@ test("actor_kind 判定表、摘要清洗", () => {
   assert.deepEqual(["system", "migration", "lease-reaper", "cascade"].map((a) => k(a)), Array(4).fill("system"));
   assert.equal(F.safeText("看 /Users/x/a.md 与 D:\\w\\b.js,id 9f86d081884c7d659a2feaa0c55ad015,令牌 exe_abcdefghijk"), "看 … 与 …,id …,令牌 …");
   assert.equal(F.entryOf({ at: "x", kind: "evidence.recorded", actor: "a", detail: {} }), null);
+});
+
+// F12:逐类样例。令牌样串全是明显的假值,且用拼接生成(源码里不出现完整形,免得撞仓库的秘密扫描规则)。
+test("摘要清洗补全(F12):带空格路径、Git Bash / WSL 形、UNC、环境变量路径、常见令牌前缀", () => {
+  const j = (...p) => p.join("");
+  const cases = [
+    ["Windows 带空格路径", j("改 C:", "\\Users\\you\\My Documents\\私密 文件.txt 之后重跑"), ["Documents", "私密", "文件.txt"]],
+    ["Windows 正斜杠", j("看 D:", "/work/a b/c.md"), ["work", "c.md"]],
+    ["Git Bash /c/Users", j("改 ", "/c/Users/you/Documents/secret.txt"), ["Users", "secret"]],
+    ["WSL /mnt/c", j("在", "/mnt/c/Users/you/proj/x.env 里"), ["mnt", "proj"]],
+    ["UNC", j("放到 \\\\", "fileserver\\share\\财务 资料\\q3.xlsx"), ["fileserver", "share", "q3"]],
+    ["双斜杠 UNC", j("放到 //", "fileserver/share/q3.xlsx"), ["fileserver", "q3"]],
+    ["file URL", j("打开 file:", "///D:/work/x.txt"), ["work", "fil"]],
+    ["环境变量路径", j("读 %USERPROFILE%", "\\.ssh\\id_rsa"), ["ssh", "id_rsa", "USERPROFILE"]],
+    ["~用户 路径", j("见 ~", "someone/notes.md"), ["someone", "notes"]],
+    ["github_pat_", j("令牌 github", "_pat_", "11FAKEFAKE0000_fakefake"), ["github_pat", "FAKEFAKE"]],
+    ["ghp_", j("令牌 gh", "p_", "FAKEFAKEFAKE0000"), ["ghp_", "FAKE"]],
+    ["gho_", j("令牌 gh", "o_", "FAKEFAKEFAKE0000"), ["gho_", "FAKE"]],
+    ["JWT 三段", j("头 ey", "JhbGciOi", ".", "eyJzdWIi", ".", "c2lnbmF0"), ["eyJ", "c2ln"]],
+    ["AKIA", j("钥 AK", "IA", "FAKE0000FAKE"), ["AKIA", "FAKE"]],
+    ["xoxb-", j("bot xo", "xb-", "0000-fake-fake"), ["xoxb", "fake"]],
+    ["xoxp-", j("user xo", "xp-", "0000-fake-fake"), ["xoxp", "fake"]],
+    ["sk-ant", j("用 sk", "-ant-", "fakefake0000"), ["sk-", "fakefake"]],
+    ["sk-proj", j("用 sk", "-proj-", "FakeFake0000"), ["sk-", "Fake"]],
+    ["exe_", j("令牌 ex", "e_", "fakefakefake"), ["exe_", "fakefake"]],
+    ["长混排串", j("串 ", "FakeFakeFakeFakeFakeFakeFake"), ["FakeFake"]],
+  ];
+  for (const [name, input, leaks] of cases) {
+    const out = F.redactText(input);
+    for (const leak of leaks) assert.ok(!out.includes(leak), `${name}: 「${leak}」残留在 ${JSON.stringify(out)}`);
+    assert.ok(out.includes("…"), `${name}: 应有遮蔽号`);
+    assert.ok(!F.safeText(input, 200).includes(leaks[0]), `${name}: safeText 同源`);
+  }
+  // 不误伤:普通中文、短英文词、比例、版本号、纯小写长词、https 网址的主机名。
+  for (const ok of ["3/5 完成 · 已打回", "测试没过,重跑 npm test", "v2.3.1 版本", "internationalization 问题", "见 https://example.com/docs"])
+    assert.equal(F.redactText(ok), ok, `不应改动:${ok}`);
+  assert.equal(F.safeText("看 /Users/x/a.md 与 D:\\w\\b.js,id 9f86d081884c7d659a2feaa0c55ad015,令牌 exe_abcdefghijk"), "看 … 与 …,id …,令牌 …");
   assert.equal(F.entryOf({ at: "x", kind: "resolve", actor: "cascade", detail: { cause_task_id: 3 } }).step, "accepted");
   assert.equal(F.entryOf({ at: "x", kind: "resolve", actor: "human", detail: { status: "not_started" } }).step, "handed_back", "旧事件无 disposition 按状态判");
   assert.equal(F.entryOf({ at: "x", kind: "release", actor: "alpha", detail: { action: "release_held" } }).step, "reaped");
