@@ -44,6 +44,7 @@ import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX,
         MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel,cleanLabelChars} from "./desktop-sessions.mjs";
 import {createFlow} from "./flow.mjs";
+import {openMdHandoff} from "./md-handoff.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -472,6 +473,9 @@ const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVI
                           // 流转条行下那行字 = 行项自己的 live_note(connect 的表)。
                           heartbeatStarted: (t) => coord.isExecutor(db, t.worker) && connect.heartbeatSeen(t.run_id),
                           liveNote: (t) => connect.liveNote(t) });
+// md 交接(core/md-handoff.mjs):卡面导出成 md / md 队列文件批量挂卡(一律未放行)。线表在读时取(加线免重启)。
+const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [] });
+mdHandoff.migrate();
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
 { const cut = conversations.recoverInterrupted(db);
   if (cut.length) console.log(`对话 ${cut.map((id) => "#" + id).join(" ")} 的上一轮在看板重启时被中断,已标为失败`); }
@@ -4604,6 +4608,30 @@ const server = http.createServer(async (req, res) => {
       }
     }
 
+    // md 交接:导出 / 导入只给操作员(面板会话或操作员令牌);执行者、审阅、批准令牌一律 403。
+    const exportMdPath = p.match(/^\/api\/tasks\/(\d+)\/export-md$/);
+    if (exportMdPath) {
+      if (m !== "GET") return json(res, 405, { error: "方法不允许" });
+      if (boardRole !== "operator") return json(res, 403, { error: "md 导出只给操作员(面板会话或操作员令牌)", role: boardRole });
+      const md = mdHandoff.exportMd(Number(exportMdPath[1]));
+      if (md == null) return json(res, 404, { error: "不存在" });
+      res.writeHead(200, { "Content-Type": "text/markdown; charset=utf-8", "Cache-Control": "no-store" });
+      return res.end(md);
+    }
+    if (p === "/api/tasks/import-md") {
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      if (boardRole !== "operator") return json(res, 403, { error: "md 导入只给操作员(面板会话或操作员令牌)", role: boardRole });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "导入请求必须是 JSON 对象");
+      try {
+        const r = mdHandoff.importMd({ text: b.text, line: b.line ?? null, goal: b.goal ?? null, actor: "operator" });
+        for (const c of r.created) emit("task.created", { id: c.id });
+        return json(res, r.created.length ? 201 : 200, r);
+      } catch (e) {
+        if (Array.isArray(e.errors)) return json(res, e.code === store.ERR.NOT_FOUND ? 404 : 400, { error: String(e.message), errors: e.errors });
+        throw e;
+      }
+    }
     const historyPath=p.match(/^\/api\/tasks\/(\d+)\/(decisions|evidence)\/(\d+)$/);
     if(historyPath){
       if(m!=="GET")return json(res,405,{error:"方法不允许"});

@@ -23,6 +23,8 @@ Most agent boards solve *how to make a team of coding agents run*. This one solv
 - **Human gate + handoff boundary** — cards awaiting a human decision never enqueue (zero attempts burn), and hand-applied deliverables land only in operator-authorized directories, with an execution receipt. Irreversible acts stay human.
 - **Read-only probe runner** (standalone tool, not wired into the board) — production verification through a forced read-only, single-statement, self-checked channel. `Success. No rows returned` is not proof of an apply.
 - **Per-attempt usage ledger** — every model call accounted, per card, per attempt.
+- **公告板:挂 / 领 / 报** — 你把卡挂上去,接入的 AI(Claude Code、Codex、Zcode 桌面版、其它 bot)凭一次性接入码自己来领、干完回报,验收仍归你;只会读写文件的 AI 走 md 交接(`board.py export-md` / `import-md` / `report-md`)。步骤见 [docs/接入说明.md](docs/接入说明.md)。
+- **效率** — 本期对上期:完成数总和打回次数一起给,AI 干了多久、你操作了几次、平均几条线同时在跑;未知写「未知」,不当 0。口径见 [docs/效率口径.md](docs/效率口径.md)。
 - **The coordinator seat** — an LLM session sits in the ops chair: it diagnoses gate refusals, accepts and blesses deliveries, revives dead lines, and upgrades incidents into governance improvements. The system gets better *while being operated*.
 
 Each gate exists because a real incident demanded it. The docs open with incident anatomies, not feature lists.

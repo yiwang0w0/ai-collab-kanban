@@ -287,6 +287,11 @@ jobs:
         run: bash hrun.sh node --test tests/efficiencytest.mjs
         env:
           PYTHON: python
+      - name: "mdhandofftest (md handoff: export, queue import unreleased with dedup and line-numbered refusal, report-md, auth)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/mdhandofftest.mjs
+        env:
+          PYTHON: python
       - name: "approvaltest (pending approvals, decision routing, remote entry and approval tokens)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/approvaltest.mjs

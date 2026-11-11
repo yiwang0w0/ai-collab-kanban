@@ -55,6 +55,14 @@
   done / wait 可带 --usage <json文件>:外部执行者随交付自报用量(一个对象或数组;键 model、calls、in、cc、cr、out、
                                              #   duration_ms、cost_usd、cli_version、phase;不知道的项不写)。费用来源记为 external-reported
 
+md 交接(docs/接入说明.md「只会读写文件的 AI」;给只会读写文件的 AI 与代为提交的人):
+  $P export-md <卡号|目标号> [--out 文件]    # 卡面 + 已有回报 / 裁定导出成 md;目标号 = 目标 + 全部直接子卡,一卡一节;
+                                             #   令牌、长 ID、私有路径、反引号里的命令已遮掉。不给 --out 打到标准输出
+  $P import-md <文件> [--line 线] [--goal 目标号]   # md 队列文件批量挂卡,一律未放行(在面板放行);任何一节不合格 = 整份
+                                             #   不导入并逐条给行号;同一节再导一次不重复建卡,回已存在的卡号
+  $P report-md <卡号> <文件> --run <run_id> [--as 线] [--usage …]   # 把一份 md 当回报交付 = done <卡号> --file <文件>
+                                             #   (执行者令牌或操作员令牌,按现有规则;四节证据合同照旧)
+
 Task control writes (take/edit/approve/reject/reopen/release/hold/archive) require
 --version <aggregate_version from show>; a JSON edit payload may carry expected_version.
 
@@ -510,6 +518,40 @@ def efficiency_cmd():
     elif arg("--by"):
         print("  分解:这个区间里没有动静")
 
+def export_md_cmd():
+    tid = pos(2)
+    if not tid or not tid.isascii() or not tid.isdigit(): sys.exit("export-md <卡号|目标号> [--out 文件]")
+    s, text = call_text(f"/api/tasks/{tid}/export-md")
+    out = arg("--out")
+    if out:
+        with io.open(out, "w", encoding="utf-8", newline="") as f: f.write(text)
+        print(f"已导出 #{tid} 到 {out}({text.count(chr(10) + '## ')} 节)")
+    else:
+        sys.stdout.write(text)
+
+def import_md_cmd():
+    path = pos(2)
+    if not path: sys.exit("import-md <文件> [--line 线] [--goal 目标号]")
+    try: text = readfile(path)
+    except Exception as e: sys.exit(f"读不到 {path}:{e}")
+    body = {"text": text}
+    if arg("--line"): body["line"] = arg("--line")
+    g = arg("--goal")
+    if g is not None:
+        if not g.isascii() or not g.isdigit(): sys.exit("--goal 后面要跟目标的卡号")
+        body["goal"] = int(g)
+    s, d = call("POST", "/api/tasks/import-md", body)
+    if s >= 400:
+        if d.get("errors"):
+            lines = [f"{s} {vis(d.get('error'))}"] + [f"  第 {e.get('line')} 行:{vis(e.get('error'))}" for e in d["errors"]]
+            sys.exit(chr(10).join(lines))
+        die(s, d)
+    for c in d.get("created") or []:
+        print(f"已建 #{c['id']}(未放行):{vis(c['subject'])}  ← 第 {c['line_no']} 行")
+    for c in d.get("existing") or []:
+        print(f"已存在 #{c['id']}(同一内容导入过,未重复建卡):{vis(c['subject'])}  ← 第 {c['line_no']} 行")
+    print(f"— 新建 {len(d.get('created') or [])} 张 · 已存在 {len(d.get('existing') or [])} 张;新卡都未放行,核对后在面板放行")
+
 _META = None
 def meta():
     """GET /api/meta, once per process. The display labels for status / waiting_for have
@@ -543,6 +585,12 @@ def main():
 
     elif cmd == "efficiency":
         efficiency_cmd()
+
+    elif cmd == "export-md":
+        export_md_cmd()
+
+    elif cmd == "import-md":
+        import_md_cmd()
 
     elif cmd == "ls":
         qs = []
@@ -621,7 +669,12 @@ def main():
         print(f"已领 #{t['id']}(第 {t['attempts']}/{t['max_attempts']} 次): {t['subject']}")
         print(f"  租约到 {t.get('lease_until')};→ 交付: board.py done {t['id']} --as {t['worker']} --run {t['run_id']} --file <证据>")
 
-    elif cmd in ("done", "wait"):
+    elif cmd in ("done", "wait", "report-md"):
+        # report-md <卡号> <文件> = done <卡号> --file <文件>:给「只会写文件的 AI + 人代为提交」,同一条交付路径。
+        if cmd == "report-md":
+            fp = pos(3)
+            if not fp: sys.exit("report-md <卡号> <文件> --run <run_id> [--as 线]")
+            cmd = "done"
         run_id = arg("--run")
         if not run_id: sys.exit("交付必须带领取回执的 --run <run_id>，不能自动查找当前执行 ID")
         if not tid or not (who or arg("--token-file")): sys.exit(f"{cmd} <id> --as <线名> --file <证据/原因>")
