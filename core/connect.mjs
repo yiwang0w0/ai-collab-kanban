@@ -7,6 +7,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
+import { redactText } from "./flow.mjs";
 
 export const KINDS = ["claude", "codex", "zcode", "other"];
 export const ROLES = ["executor", "assistant"];        // assistant 留给以后(只读全板 + 挂未放行卡),现在拒绝
@@ -35,40 +36,8 @@ const chars = (s) => [...String(s)].length;
 const BREAK_CP = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029;
 const INVISIBLE_CP = (c) => (c >= 0x200b && c <= 0x200f) || (c >= 0x202a && c <= 0x202e) || (c >= 0x2060 && c <= 0x2064) ||
   (c >= 0x2066 && c <= 0x2069) || c === 0x061c || c === 0xfeff;
-// 路径 / 令牌样串的遮蔽:与 core/flow.mjs 的 redactText 同一口径(含 F12 补全的带空格路径、/c/Users 形、常见令牌前缀)。
-// ⚠ 本分支没有 flow.mjs,这里自带一份等价实现;整合后与 flow 的合一(改一处另一处同改,或 connect 改为 import flow 的)。
-const STOP = String.raw`\s"'<>|),，;；、。:：`;
-const SEG = `[^${STOP}]`;
-const MORE = String.raw`(?:\s+${SEG}*[\\/]${SEG}*|(?:\s+${SEG}+){0,3}?\s+${SEG}*\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9]))*`;
-const PATH_RES = [
-  new RegExp(String.raw`file:\/\/\/?[^\s"'<>]*` + MORE, "gi"),
-  new RegExp(String.raw`(?<![A-Za-z0-9])[A-Za-z]:[\\/]${SEG}*` + MORE, "g"),
-  new RegExp(String.raw`(?:\\\\|(?<![:\w/])\/\/)[A-Za-z0-9._$-]+[\\/]${SEG}*` + MORE, "g"),
-  new RegExp(String.raw`(?:%[A-Za-z_][A-Za-z0-9_]*%|\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*|~[A-Za-z0-9_.-]*)[\\/]${SEG}*` + MORE, "g"),
-  new RegExp(String.raw`(?<![A-Za-z0-9_.\-/])\/(?:[a-z]|mnt\/[a-z]|Users|home|tmp|var|mnt|opt|root|private|etc|srv|usr|Volumes|workspace|data|cygdrive)\/${SEG}*` + MORE, "g"),
-];
-const TOKEN_RES = [
-  /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{6,}/g,
-  /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{6,}/g,
-  /(?<![A-Za-z0-9])(?:exe|apr|tok|pat)_[A-Za-z0-9_-]{6,}/g,
-  /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{6,}/g,
-  /(?<![A-Za-z0-9])xox[abposr]-[A-Za-z0-9-]{6,}/g,
-  /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{8,}/g,
-  /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}/g,
-  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
-  /\b[0-9a-f]{12,}\b/gi,
-];
-const mixedLong = (m) => [/[a-z]/, /[A-Z]/, /\d/].filter((r) => r.test(m)).length >= 2 ? "…" : m;
-/** 遮掉私有路径、令牌样串、长 ID / 哈希、反引号里的命令与 shell 提示行(与 flow.redactText 同义)。 */
-export function redactText(s) {
-  let t = String(s ?? "").replace(/`[^`]*`/g, "…");
-  for (const re of PATH_RES) t = t.replace(re, "…");
-  for (const re of TOKEN_RES) t = t.replace(re, "…");
-  return t
-    .replace(/(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{20,}/g, mixedLong)
-    .replace(/^\s*(?:\$|PS>|>)\s.*$/gm, "…")
-    .replace(/(?:…\s*){2,}/g, "…");
-}
+// 路径 / 令牌样串的遮蔽只有一份实现:core/flow.mjs 的 redactText(F12 补全口径)。这里转出,旧的 import 不用改。
+export { redactText };
 /** 一行可显示的文字:去不可见字符、断行字符换空格、遮蔽路径/令牌、并空白、去首尾空白。 */
 export function cleanText(s) {
   let t = "";

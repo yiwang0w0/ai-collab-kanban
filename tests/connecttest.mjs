@@ -17,7 +17,8 @@ import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { isLoopback, normalizeCode, createWrongCodeGate, openConnect, checkNote, cleanText, psQuote, defaultTokenDir,
-         CODE_TTL_MS, PENDING_MAX } from "../core/connect.mjs";
+         CODE_TTL_MS, PENDING_MAX, redactText } from "../core/connect.mjs";
+import { redactText as flowRedactText } from "../core/flow.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const cp = (...c) => String.fromCodePoint(...c);
@@ -404,6 +405,8 @@ test("回环判定、码的正规形、note 清洗、PowerShell 引号、令牌�
                              ["令牌 exe_" + "0".repeat(48), /exe_/], ["github_pat_11ABCDEFG123456", /github_pat/], ["%USERPROFILE%\\.ssh\\id_rsa", /ssh|id_rsa/]]) {
     const out = cleanText(raw); assert.ok(!leak.test(out), `${raw} → ${out}`); assert.ok(out.includes("…"));
   }
+  // 遮蔽只有一份实现:connect 转出的 redactText 就是 flow 的那个函数(不是拷贝)
+  assert.equal(redactText, flowRedactText);
   // P3:每个参数单引号字面量,单引号(含弯单引号)写两遍
   assert.equal(psQuote("a b&c%d!e^f"), "'a b&c%d!e^f'");
   assert.equal(psQuote("it's"), "'it''s'");
