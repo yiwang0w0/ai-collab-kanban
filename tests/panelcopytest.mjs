@@ -1045,3 +1045,91 @@ test("流转相关的界面接线：容错与文案", () => {
   assert.ok(source.includes("if (flowBack(t.handed_back)) meta2.push("), "卡面打回次数徽标");
   assert.ok(source.includes('t.status === "in_progress" && typeof t.live_note === "string"'), "live_note 只在进行中显示");
 });
+
+// ── 第 2 波:接入的 AI / 本地会话 / 效率(合同 A / D / C;core/panel.html 的 wave2-copy 段) ──
+const w2Source = panelSection("// ── wave2-copy(pure;tests/panelcopytest.mjs)──", "// ── /wave2-copy ──");
+const w2 = new Function(w2Source + "\nreturn { AI_KINDS, aiKindName, aiState, aiReport, aiCodeLeft, deskSize, deskRows, deskMsg, deskLineError, EFF_METRICS, effValue, effDelta, effGroupName, effDaily, effQuery };")();
+
+test("接入的 AI：状态徽标六种，撤销优先，未知值写待核实", () => {
+  const t = (e) => w2.aiState(e).text;
+  assert.equal(t({ state: "working" }), "在做");
+  assert.equal(t({ state: "idle" }), "空闲");
+  assert.equal(t({ state: "stalled" }), "卡住");
+  assert.equal(t({ state: "offline" }), "离线");
+  assert.equal(t({ state: "working", revoked: true }), "已撤销", "撤销优先");
+  assert.equal(t({ state: "offline", pending_code: true, last_seen_at: null }), "等待接入");
+  assert.equal(t({ state: "offline", pending_code: true, last_seen_at: "2026-11-11T00:00:00Z" }), "离线", "接入过的再发码不算等待接入");
+  for (const e of [null, {}, { state: "constructor" }, { state: "future" }]) assert.equal(t(e), "状态待核实");
+  assert.equal(w2.aiState({ state: "stalled" }).tone, "warn", "卡住用警示色;强调色留给首页「待我处理」");
+  assert.ok(!["working", "idle", "offline"].some((s) => w2.aiState({ state: s }).tone === "need"), "设置页徽标不用强调色");
+  assert.equal(w2.aiKindName("zcode"), "Zcode"); assert.equal(w2.aiKindName("x"), "其他");
+  assert.equal(w2.aiReport(null), "还没回报");
+  assert.equal(w2.aiReport({ task_id: 12, at: "T", outcome: "done" }, (s) => "@" + s), "@T · 交付 #12");
+  assert.equal(w2.aiReport({ task_id: 12, outcome: "wait" }), "停下等你决定 #12");
+  const now = Date.parse("2026-11-11T00:00:00Z");
+  assert.equal(w2.aiCodeLeft("2026-11-11T00:09:41Z", now), "9:41");
+  assert.equal(w2.aiCodeLeft("2026-11-11T00:00:00Z", now), null, "到时 = 过期");
+  assert.equal(w2.aiCodeLeft("x", now), null);
+});
+
+test("本地会话：体量、筛选排序、看历史一条、登记的错误码", () => {
+  const c = (n) => n + "!";
+  assert.deepEqual(w2.deskSize({ approx_tokens: 1000 }, c), { text: "约 1000! 词元", large: false });
+  assert.equal(w2.deskSize({ approx_tokens: 200001 }, c).large, true, "阈值 200k");
+  assert.equal(w2.deskSize({ approx_tokens: null, size_bytes: 5 * 1048576 }).large, true, "无用量记录按文件 4MB 兜底");
+  assert.equal(w2.deskSize({ approx_tokens: null, size_bytes: 2048 }).text, "2 KB");
+  assert.deepEqual(w2.deskSize({}), { text: "体量待核实", large: false });
+  const list = [{ source: "claude", id: "a", title: "甲 报表", updated_at: "2026-11-01" }, { source: "codex", id: "b", title: "乙", updated_at: "2026-11-09" },
+                { source: "claude", id: "c", title: "丙 报表", updated_at: "2026-11-10" }, { source: "claude", id: "d", title: null, updated_at: "2026-11-11" }];
+  assert.deepEqual(w2.deskRows(list, { source: "claude" }).map((s) => s.id), ["d", "c", "a"], "只留这一家,新的在前");
+  assert.deepEqual(w2.deskRows(list, { source: "claude", q: "报表" }).map((s) => s.id), ["c", "a"]);
+  assert.deepEqual(w2.deskRows(null), []);
+  assert.deepEqual(w2.deskMsg({ role: "user", text: "做 X", tools: 0 }), { who: "你", text: "做 X", tools: "", at: "" });
+  assert.equal(w2.deskMsg({ role: "assistant", text: "", tools: 3 }).tools, "用了 3 次工具");
+  assert.equal(w2.deskLineError(404, { code: "SESSION_UNKNOWN" }), "这段会话读不到了");
+  assert.equal(w2.deskLineError(409, { code: "ALREADY_A_LINE", line: "claude-1a2b3c4d" }), "这个会话已经登记成线 claude-1a2b3c4d");
+  assert.equal(w2.deskLineError(409, { code: "LINEAGE_HANDWRITTEN", error: "写在手写配置里" }), "写在手写配置里", "照应答的原因写");
+  assert.equal(w2.deskLineError(500, {}), "没有完成，状态 500");
+});
+
+test("效率：八个指标、未知写待核实、升降用文字、逐日细条、时间范围", () => {
+  assert.deepEqual(w2.EFF_METRICS.map((m) => m[1]), ["完成", "打回", "一次通过率", "交付周期中位数", "等你的时长中位数", "你的操作次数", "AI 干活时长", "平均同时在跑"]);
+  assert.equal(w2.effValue(null, "count"), "待核实", "未知不当 0");
+  assert.equal(w2.effValue(0, "count", "张"), "0 张");
+  assert.equal(w2.effValue(0.5, "rate"), "50%");
+  assert.equal(w2.effValue(1.28, "avg", "条线"), "1.3 条线");
+  assert.equal(w2.effValue(120000, "dur"), "2 分");
+  assert.deepEqual(w2.effDelta(4, 1, "count", "张"), { dir: "up", text: "升 3 张" });
+  assert.deepEqual(w2.effDelta(0.5, 1, "rate"), { dir: "down", text: "降 50 个百分点" });
+  assert.deepEqual(w2.effDelta(2, 2, "count"), { dir: "flat", text: "持平" });
+  assert.deepEqual(w2.effDelta(5, null, "count"), { dir: null, text: "待核实" }, "上期未知 = 不比");
+  assert.deepEqual(w2.effDelta(90000, 60000, "dur").dir, "flat", "差不到一分钟算持平");
+  assert.equal(w2.effGroupName({ key: null, label: "未指定" }, "line"), "未指定");
+  assert.equal(w2.effGroupName({ key: "a" }, "line", (l) => "线" + l), "线a");
+  assert.equal(w2.effGroupName({ key: "codex", label: "Codex" }, "runtime"), "Codex");
+  const days = w2.effDaily([{ date: "2026-11-09", created: 0, done: 1 }, { date: "2026-11-10", created: 2, done: 4 }]);
+  assert.deepEqual(days.map((d) => [d.hc, d.hd, d.tip]), [[0, 25, "11-09 新挂 0 · 完成 1"], [50, 100, "11-10 新挂 2 · 完成 4"]]);
+  assert.deepEqual(w2.effDaily(null), []);
+  assert.equal(w2.effQuery("week", "line"), "/api/efficiency?by=line", "缺省 = 本周对上周");
+  assert.equal(w2.effQuery("d30", "runtime", new Date(2026, 10, 11)), "/api/efficiency?from=2026-10-13&to=2026-11-11&by=runtime", "近 30 天含今天");
+  assert.equal(w2.effQuery("week", ""), "/api/efficiency");
+});
+
+test("第 2 波的界面接线：新文案、旧代劳按钮留着、接口缺席写一句", () => {
+  for (const s of ['data-toc="set-ai">接入的 AI<', 'data-toc="set-desk">本地会话<', ">接入一个 AI<", "请协调席代劳(旧)",
+                   "勾选的会话可以登记成一条来领任务的线；领卡时用它的副本，原会话不动。",
+                   '"下一步：把配置粘到对方的 MCP 设置里，再把提示词发给它。"', '"要粘贴的配置"', '"开工提示词"', '"接入码已过期"', '"重新发码"',
+                   '"这个版本还没有接入功能"', '"这个版本还没有本地会话功能"', '"这个版本还没有效率统计"', '"这段会话读不到了"',
+                   '" · 还没启动"', '"去起线"', '"登记成线"', '"看历史"', '"更早"', '"本周对上周"', '"近 30 天对前 30 天"', '"按线"', '"按执行器"',
+                   "docs/效率口径.md「每个数怎么算」"])
+    assert.ok(source.includes(s), s);
+  for (const q of ["propose-lines", "mount-sentries", "install-worker-constraints", "enable-review", "board-briefing"])
+    assert.ok(source.includes(`data-quick="${q}"`), "旧代劳按钮保留:" + q);
+  assert.ok(/<details class="ai-legacy" id="ai-legacy">(?![^]*<details class="ai-legacy"[^>]*open)/.test(source), "旧代劳默认折叠");
+  assert.ok(!source.includes('id="set-quick"'), "旧一节的位置换成「接入的 AI」");
+  assert.ok(source.includes('if (d.type === "executor.changed") aiLoad();'), "executor.changed 重读");
+  assert.ok(source.includes('v.code === "NEEDS_CONFIRM_LARGE"') && source.includes("r = await send(true);"), "大体量先确认再带 confirm_large 重发");
+  assert.ok(source.includes('<p class="home-eff" id="home-eff" hidden></p>'), "首页效率一行读不到不出");
+  // 效率块不用强调色:箭头与差值都是 --dim
+  assert.match(source, /\.eff-d,\.eff-arrow\{color:var\(--dim\)\}/);
+});

@@ -1205,3 +1205,20 @@ test("执行者请求与逾期锁进「待我处理」，到设置页处理；�
   assert.ok(src.includes('document.title = c.waiting > 0 || asks > 0 ? `(${(c.waiting || 0) + asks} 待裁)AI 协作看板` : "AI 协作看板";'));
   assert.ok(src.includes("approvals: approvalData?.approvals || [],"), "首页把批准事项交给 homeLists");
 });
+
+test("接入的 AI 卡住了：进「待我处理」，写名称与手上的卡号，点开到设置里那一行；已撤销、在做、空闲的不进", () => {
+  // 形状照合同 A 的 GET /api/executors(state:working|idle|stalled|offline;revoked;holding:[{id,subject}])。
+  const executors = [
+    { id: "zcode-2", label: "Zcode 甲", state: "stalled", revoked: false, holding: [{ id: 12, subject: "改表" }, { id: 15, subject: "补测" }], last_seen_at: "2026-11-11T01:00:00Z" },
+    { id: "claude", label: "", state: "stalled", revoked: false, holding: [] },
+    { id: "codex", label: "Codex 乙", state: "stalled", revoked: true, holding: [{ id: 3 }] },
+    { id: "w1", label: "在做的", state: "working", holding: [{ id: 4 }] }, { id: "w2", state: "idle" }, null,
+  ];
+  const mine = M.homeLists({ tasks: [], executors }).mine;
+  assert.deepEqual(mine.map((r) => [r.action, r.id, r.title, r.state]),
+    [["executor", "claude", "claude 卡住了", "卡住"], ["executor", "zcode-2", "Zcode 甲 卡住了 · 手上有 #12、#15", "卡住"]], "同档按等待先后:没有时刻的排前");
+  assert.deepEqual(M.homeLists({ tasks: [], executors: null }).mine, [], "接口不在 = 不出这一类");
+  const open = src.slice(src.indexOf("function openHomeItem(item){"), src.indexOf("\n}", src.indexOf("function openHomeItem(item){")));
+  assert.ok(open.includes('if (item.action === "executor") { aiGo(item.id); return; }'));
+  assert.ok(src.includes('executors: (typeof aiSlot === "object" && aiSlot?.value?.executors) || [],'), "首页把接入的 AI 交给 homeLists");
+});

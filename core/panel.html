@@ -1113,7 +1113,7 @@
   #home-view > .home-status:not(:has(.hs-alert)){margin-top:var(--sp-1);border:0;border-radius:0;background:transparent;color:var(--dim);font-size:var(--fs-sm)}
   #home-view > .home-status:not(:has(.hs-alert)) .hs-line{padding:0}
   #home-view > .home-status:not(:has(.hs-alert)) .hs-fault{padding:0;border:0}
-  #home-view > .home-status:not(:has(.hs-alert)) + .chat-shell{margin-top:var(--sp-1)}
+  #home-view > .home-status:not(:has(.hs-alert)) ~ .chat-shell{margin-top:var(--sp-1)}
   .chat-shell{position:relative;flex:1;min-height:0;display:grid;grid-template-columns:248px minmax(0,1fr) 336px;grid-template-rows:minmax(0,1fr);
               margin-top:var(--sp-2);border-top:1px solid var(--line)}
   .chat-list{display:flex;flex-direction:column;min-width:0;min-height:0;border-right:1px solid var(--line);background:var(--bg2);
@@ -1410,6 +1410,126 @@
     .hand-row .cr-sum{white-space:normal}
     label.chk{min-height:40px}
   }
+
+  /* ── 第 2 波(style-guide §八):接入的 AI、本地会话、效率。无阴影;强调色只给「需要你」,数字等宽不上色。 */
+  #home-view > .home-eff{flex:none;margin:2px var(--sp-4) var(--sp-1);color:var(--dim);font-size:var(--fs-sm);font-variant-numeric:tabular-nums;
+                         white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .ai-body,.desk-body{display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3) var(--sp-4) var(--sp-4);min-width:0}
+  .ai-body .set-empty,.desk-body .set-empty{padding:var(--sp-1) 0}
+  .ai-acts{display:flex;gap:var(--sp-2)}
+  .ai-connect{display:flex;flex-wrap:wrap;align-items:flex-end;gap:var(--sp-2);padding:var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2)}
+  .ai-connect .fld{min-width:12em}
+  .ai-connect .note{color:var(--bad);font-size:var(--fs-sm)}
+  .ai-connect .note:empty{display:none}
+  .ai-code{display:flex;flex-direction:column;gap:var(--sp-2);padding:var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);min-width:0}
+  .ac-top{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2) var(--sp-3)}
+  .ac-code{font-family:var(--mono);font-size:var(--fs-xl);font-weight:600;letter-spacing:.08em;user-select:all}
+  .ac-left{font-family:var(--mono);font-variant-numeric:tabular-nums;color:var(--fg)}
+  .ac-line{margin-right:auto}
+  .ac-gone{margin-right:auto;color:var(--dim)}
+  .ac-next{margin:0}
+  .ac-snip{display:flex;flex-direction:column;gap:var(--sp-1);min-width:0}
+  .ac-h{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2);color:var(--dim);font-size:var(--fs-sm)}
+  .ac-snip pre{margin:0;padding:var(--sp-2);max-height:180px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-family:var(--mono);font-size:var(--fs-sm);
+               line-height:1.5;background:var(--bg);border:1px solid var(--line);border-radius:var(--r-sm)}
+  .ai-list{display:flex;flex-direction:column}
+  .ai-row{display:grid;grid-template-columns:minmax(9em,1fr) 7.5em minmax(0,1.6fr) minmax(10em,1fr) 4em;align-items:center;gap:var(--sp-1) var(--sp-3);
+          padding:var(--sp-2) 0;border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent);min-width:0}
+  .ai-row:last-child{border-bottom:0}
+  .ai-row[data-hi]{outline:1px solid var(--cc);outline-offset:2px;border-radius:var(--r-sm)}
+  .ai-who{display:flex;flex-direction:column;min-width:0}
+  .ai-who b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ai-row .dim,.desk-body .dim,.ai-legacy .dim{color:var(--dim);font-size:var(--fs-sm)}
+  .ai-row > .badge{justify-self:start}
+  .ai-hold{display:flex;flex-wrap:wrap;gap:var(--sp-1);min-width:0}
+  .ai-card{display:inline-flex;gap:var(--sp-1);max-width:100%;height:auto;min-height:var(--ctl-h);font-weight:400;text-align:left}
+  .ai-no{font-family:var(--mono);color:var(--dim)}
+  .ai-subj{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ai-rep{font-variant-numeric:tabular-nums}
+  .ai-legacy{border-top:1px solid var(--line);padding-top:var(--sp-2)}
+  .ai-legacy > summary{display:flex;align-items:center;gap:var(--sp-1);min-height:32px;cursor:pointer;color:var(--dim);font-size:var(--fs-sm);list-style:none}
+  .ai-legacy > summary::-webkit-details-marker{display:none}
+  .ai-legacy .fold-ic{transform:rotate(-90deg);transition:transform .15s}
+  .ai-legacy[open] .fold-ic{transform:none}
+  .ai-legacy .quick{padding:var(--sp-2) 0 0}
+  .ai-legacy > p{margin:var(--sp-1) 0 0}
+  .desk-ctl{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2)}
+  .desk-q{margin-left:0}
+  .desk-list{display:flex;flex-direction:column}
+  .desk-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;align-items:start;gap:var(--sp-1) var(--sp-3);padding:var(--sp-2) 0;
+            border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .desk-row > input[type=checkbox]{margin-top:3px}
+  .dr-main{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .dr-title{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dr-meta{display:flex;flex-wrap:wrap;gap:0 var(--sp-3);color:var(--dim);font-size:var(--fs-sm);font-variant-numeric:tabular-nums}
+  .dr-meta > span{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dr-size{display:inline-flex;align-items:center;gap:2px}
+  .dr-size .ic{width:13px;height:13px;color:var(--warn)}
+  .dr-line{font-size:var(--fs-sm)}
+  .dr-note{color:var(--warn);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .dr-acts{display:flex;align-items:center;gap:var(--sp-1)}
+  .more-menu{position:relative}
+  .more-menu > summary{display:inline-flex;align-items:center;min-height:var(--ctl-h);padding:0 var(--sp-3);border:1px solid var(--line);border-radius:var(--r-sm);
+                       cursor:pointer;list-style:none;font-size:var(--fs-md);background:var(--panel)}
+  .more-menu > summary::-webkit-details-marker{display:none}
+  .more-menu > summary:hover{background:var(--hover)}
+  .mm-body{position:absolute;right:0;top:calc(100% + 4px);z-index:5;display:flex;flex-direction:column;min-width:8em;padding:var(--sp-1);
+           background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm)}
+  .mm-body button{justify-content:flex-start;text-align:left}
+  .desk-hist{width:min(760px,96vw);max-width:96vw;height:86vh;max-height:86vh;padding:0;border:1px solid var(--line);border-radius:var(--r-md);background:var(--bg);color:var(--fg)}
+  .desk-hist[open]{display:flex;flex-direction:column}
+  .desk-hist::backdrop{background:rgba(0,0,0,.55)}
+  .dh-head{display:flex;align-items:center;gap:var(--sp-2);padding:var(--sp-2) var(--sp-3) var(--sp-2) var(--sp-4);border-bottom:1px solid var(--line)}
+  .dh-ro{margin-right:auto;color:var(--dim);font-size:var(--fs-sm)}
+  .dh-head h2{margin:0;font-size:var(--fs-lg);font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dh-body{flex:1 1 auto;overflow:auto;display:flex;flex-direction:column;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4)}
+  .dh-msg{display:flex;flex-direction:column;gap:2px;max-width:100%}
+  .dh-msg[data-who=user]{align-self:flex-end;max-width:85%;padding:var(--sp-2) var(--sp-3);background:var(--panel2);border-radius:var(--r-md)}
+  .dh-h{display:flex;flex-wrap:wrap;gap:var(--sp-2);font-size:var(--fs-sm)}
+  .dh-h .dim{color:var(--dim)}
+  .dh-text{margin:0;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.7}
+  #history-eff{margin-bottom:var(--sp-3)}
+  .eff-i{color:var(--dim);font-weight:400;cursor:help}
+  .eff-cmp,.eff-groups{padding:0 var(--sp-3) var(--sp-2);font-size:var(--fs-sm)}
+  .eff-r{display:grid;grid-template-columns:minmax(8em,14em) 9em 9em 12em;justify-content:start;align-items:center;gap:var(--sp-1) var(--sp-3);min-height:var(--ctl-h);
+         padding:var(--sp-1) var(--sp-2);border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .eff-r:last-child,.eff-g:last-child{border-bottom:0}
+  .eff-hd{min-height:0;color:var(--dim);border-bottom-color:var(--line)}
+  .eff-d,.eff-arrow{color:var(--dim)}
+  .eff-days{display:flex;flex-direction:column;gap:var(--sp-1);padding:var(--sp-2) var(--sp-3) var(--sp-3);border-top:1px solid var(--line)}
+  .eff-dlab{display:flex;gap:var(--sp-3);color:var(--dim);font-size:var(--fs-sm)}
+  .eff-k{display:inline-flex;align-items:center;gap:4px}
+  .eff-k::before{content:"";width:8px;height:8px;border-radius:2px}
+  .eff-kc::before{background:color-mix(in srgb,var(--dim) 45%,transparent)}
+  .eff-kd::before{background:var(--ok)}
+  .eff-bars{display:flex;align-items:flex-end;gap:2px;height:28px}
+  .eff-day{flex:1 1 0;display:flex;align-items:flex-end;gap:1px;height:100%;min-width:4px;max-width:24px}
+  .eff-day > span{flex:1 1 0;min-height:1px;border-radius:1px 1px 0 0}
+  .eff-bc{background:color-mix(in srgb,var(--dim) 45%,transparent)}
+  .eff-bd{background:var(--ok)}
+  .eff-groups{border-top:1px solid var(--line);padding-top:var(--sp-1);overflow-x:auto}
+  .eff-g{display:grid;grid-template-columns:minmax(6em,1fr) 4em 4em 6em 8em 8em;align-items:center;gap:var(--sp-1) var(--sp-3);min-height:var(--ctl-h);min-width:520px;
+         padding:var(--sp-1) var(--sp-2);border-bottom:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .eff-g > span,.eff-r > span{min-width:0;overflow-wrap:anywhere}
+  @media (prefers-reduced-motion: reduce){ .ai-legacy .fold-ic{transition:none} }
+  @media (max-width:860px){
+    .ai-row{grid-template-columns:minmax(0,1fr) auto;align-items:start}
+    .ai-row > .ai-hold,.ai-row > .ai-rep{grid-column:1 / -1}
+    .ai-row > button{grid-column:2;grid-row:1;justify-self:end}
+    .ai-row > .badge{grid-column:1;grid-row:2}
+    .ai-row > :last-child:empty{display:none}
+  }
+  @media (max-width:620px){
+    #home-view > .home-eff{margin:2px var(--sp-3) var(--sp-1);white-space:normal}
+    .desk-row{grid-template-columns:auto minmax(0,1fr)}
+    .dr-acts{grid-column:2}
+    .desk-q,.desk-q input{width:100%;max-width:none}
+    .eff-r{grid-template-columns:minmax(0,1fr) auto auto;padding-inline:0}
+    .eff-r > span:first-child{grid-column:1 / -1}
+    .eff-r.eff-hd{display:none}
+    .eff-r > .usage-num{text-align:left}
+    .ai-connect .fld{min-width:0;width:100%}
+  }
 </style>
 </head>
 <body>
@@ -1463,6 +1583,12 @@
   <button type="button" id="board-logout" class="ghost" title="退出连接（这台电脑不再记住授权）" aria-label="退出连接"><svg class="ic" aria-hidden="true"><use href="#i-logout"/></svg><span class="btn-txt">退出连接</span></button>
 </header>
 
+<!-- 看历史:只读查看本地会话的文字,不可编辑、不可发送。 -->
+<dialog id="desk-hist" class="desk-hist" aria-labelledby="desk-hist-title">
+  <div class="dh-head"><h2 id="desk-hist-title">会话历史</h2><span class="dh-ro" title="只给文字，工具调用只写个数；不能编辑、不能发送">只读</span>
+    <button type="button" class="icon-btn ghost" id="desk-hist-x" aria-label="关闭会话历史" title="关闭"><svg class="ic" aria-hidden="true"><use href="#i-close"/></svg></button></div>
+  <div class="dh-body" id="desk-hist-body"></div>
+</dialog>
 <dialog id="fleet-dialog" class="fleet-dialog" aria-labelledby="fleet-title">
   <div class="fleet-top"><h2 id="fleet-title">全局任务视图</h2><span class="fleet-badge">按终端归属</span><button type="button" id="fleet-refresh">刷新</button><button type="button" id="fleet-close" aria-label="关闭全局视图">关闭</button></div>
   <form id="fleet-filters" class="fleet-filters" role="search">
@@ -1520,6 +1646,8 @@
 
 <main class="home" id="home-view" data-view-panel="home">
   <section class="home-status" id="home-status" aria-live="polite"></section>
+  <!-- 效率一行(GET /api/efficiency 的 headline):读不到整行不出。 -->
+  <p class="home-eff" id="home-eff" hidden></p>
   <!-- 对话式首页(docs/style-guide.md §五 对话与计划卡):左 对话列表 / 中 对话 / 右 待我处理与正在执行。
        ≤1100px 对话列表收进抽屉;≤620px 单栏,任务两段收在顶部一行里,输入框吸底。 -->
   <div class="chat-shell" id="chat-shell">
@@ -1592,6 +1720,8 @@
 </main>
 <main class="home" id="history-view" data-view-panel="history" hidden>
   <!-- 用量汇总:接口读得到才出现(GET /api/usage?by=card),读不到整节不出。 -->
+  <!-- 效率(合同 C):本期对上期两列、分解表、逐日细条;接口不在时写一句,不报错。 -->
+  <section class="home-sec" id="history-eff" aria-label="效率" hidden></section>
   <section class="home-sec" id="history-usage" aria-label="用量" hidden></section>
   <section class="home-sec" data-lane="done" aria-labelledby="history-h">
     <h2 id="history-h"><svg class="ic" aria-hidden="true"><use href="#i-success"/></svg>已完成 <span class="n" id="history-n"></span></h2>
@@ -1599,11 +1729,11 @@
   </section>
 </main>
 
-<!-- 设置:上手引导、执行线(含齿轮里的执行器设置)、加线、请你的 Claude 代劳、最近会话。
+<!-- 设置:上手引导、执行线(含齿轮里的执行器设置)、加线、接入的 AI、本地会话、最近会话。
      「全部任务」只留按卡号定位、按标题筛选和看板列。 -->
 <main class="home page settings-view" id="settings-view" data-view-panel="settings" hidden>
   <div class="page-head"><h2>设置</h2>
-    <p>看板怎么跑在这里调:上手引导、执行线、加线和请你的 Claude 代劳。任务本身在「全部任务」。</p></div>
+    <p>看板怎么跑在这里调:上手引导、执行线、加线、接入的 AI 和本地会话。任务本身在「全部任务」。</p></div>
   <div class="set-layout">
   <!-- 左侧小目录(借鉴 Kandev 设置页的「左目录 + 右内容」版式):点哪一项滚到哪一块,滚动时高亮当前块。
        用按钮而不是 #锚点——地址栏的 # 留给「刷新后保留打开的任务」(#task=)。 -->
@@ -1612,7 +1742,8 @@
     <button type="button" data-toc="set-lines">执行线与自动拉取</button>
     <button type="button" data-toc="set-coord">协作</button>
     <button type="button" data-toc="set-add">加线</button>
-    <button type="button" data-toc="set-quick">请你的 Claude 代劳</button>
+    <button type="button" data-toc="set-ai">接入的 AI</button>
+    <button type="button" data-toc="set-desk">本地会话</button>
     <button type="button" data-toc="set-ctx">最近会话</button>
   </nav>
   <div class="set-main">
@@ -1676,12 +1807,31 @@
         <span class="note" id="line-add-note" aria-live="polite"></span></div>
     </form>
   </section>
-  <section class="set-sec set-target" id="set-quick" aria-labelledby="set-quick-h">
-    <div class="set-h"><h3 id="set-quick-h">请你的 Claude 代劳</h3>
-      <p>按下只是在板上留一条请求,由持续接收通知的那个 Claude 对话去做;没人接手就一直等着。</p></div>
-    <!-- v0.5: shortcut requests to the coordinator seat. A press writes a durable
-         row and wakes the seat through its SSE sentry; the seat acks/dones via
-         board.py and the list below shows the loop closing — or NOT closing. -->
+  <!-- 第 2 波:接入的 AI(合同 A)。列表与接入码各自重画自己的容器,表单是静态标记,refresh 不抹掉正在填的字。
+       原「请你的 Claude 代劳」五个按钮收进本节末尾默认折叠的「请协调席代劳(旧)」,data-quick 与 #quick-list 不变。 -->
+  <section class="set-sec set-target" id="set-ai" aria-labelledby="set-ai-h">
+    <div class="set-h"><h3 id="set-ai-h"><svg class="ic" aria-hidden="true"><use href="#i-send"/></svg>接入的 AI</h3>
+      <p>挂到板上的卡由它们来领，干完回报。</p></div>
+    <div class="ai-body">
+      <div class="ai-acts"><button type="button" class="pri" id="ai-connect-open"><svg class="ic" aria-hidden="true"><use href="#i-plus"/></svg>接入一个 AI</button></div>
+      <form class="ai-connect" id="ai-connect" autocomplete="off" hidden>
+        <div class="seg" role="radiogroup" aria-label="接入哪一种" id="ai-kind">
+          <label class="seg-o"><input type="radio" name="ai-kind" value="claude" checked><span>Claude</span></label>
+          <label class="seg-o"><input type="radio" name="ai-kind" value="codex"><span>Codex</span></label>
+          <label class="seg-o"><input type="radio" name="ai-kind" value="zcode"><span>Zcode</span></label>
+          <label class="seg-o"><input type="radio" name="ai-kind" value="other"><span>其他</span></label>
+        </div>
+        <label class="fld"><span>名称</span><input id="ai-label" maxlength="24" placeholder="可不填" aria-label="接入的 AI 的名称"></label>
+        <button type="submit" class="pri">发接入码</button>
+        <button type="button" id="ai-connect-cancel">取消</button>
+        <span class="note" id="ai-connect-note" aria-live="polite"></span>
+      </form>
+      <!-- 接入码只显示这一次:显示期间不随 refresh 重画,倒计时原位更新。 -->
+      <div class="ai-code" id="ai-code" hidden></div>
+      <div class="ai-list" id="ai-list"><p class="set-empty">正在读取…</p></div>
+      <details class="ai-legacy" id="ai-legacy">
+        <summary><svg class="ic fold-ic" aria-hidden="true"><use href="#i-chevron"/></svg>请协调席代劳(旧)</summary>
+        <p class="dim">按下只是在板上留一条请求，由持续接收通知的那个 Claude 对话去做；没人接手就一直等着。</p>
     <div class="quick" id="quick">
       <div class="quick-row">
         <button data-quick="propose-lines" title="点击=授权你的 Claude 只读检索你最近的会话(标题与相关片段,不外发),访谈后起草自动拉取线">根据我最近的对话起草线路</button>
@@ -1695,6 +1845,24 @@
       </div>
       <span class="note" id="quick-note" aria-live="polite"></span>
       <div id="quick-list"></div>
+    </div>
+      </details>
+    </div>
+  </section>
+  <!-- 第 2 波:本地会话(合同 D)。列表随 desktop-sessions.changed 重读;搜索框与切换是静态标记。 -->
+  <section class="set-sec set-target" id="set-desk" aria-labelledby="set-desk-h">
+    <div class="set-h"><h3 id="set-desk-h"><svg class="ic" aria-hidden="true"><use href="#i-chat"/></svg>本地会话</h3>
+      <p>勾选的会话可以登记成一条来领任务的线；领卡时用它的副本，原会话不动。</p></div>
+    <div class="desk-body">
+      <div class="desk-ctl">
+        <div class="seg" role="radiogroup" aria-label="哪一家的会话">
+          <label class="seg-o"><input type="radio" name="desk-src" value="claude" checked><span>Claude</span></label>
+          <label class="seg-o"><input type="radio" name="desk-src" value="codex"><span>Codex</span></label>
+        </div>
+        <label class="board-filter desk-q"><svg class="ic" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="desk-q" type="search" autocomplete="off" placeholder="按标题搜索" aria-label="按标题搜索本地会话"></label>
+      </div>
+      <div class="desk-list" id="desk-list"><p class="set-empty">正在读取…</p></div>
     </div>
   </section>
   <div class="ctxwrap set-target" id="set-ctx"><section class="ctx" id="ctx">
@@ -1993,6 +2161,114 @@ function historyPick(entries, all = false, cap = 20) {
   return all || rows.length <= cap ? { rows, hidden: 0 } : { rows: rows.slice(0, cap), hidden: rows.length - cap };
 }
 // ── /flow-copy ──
+// ── wave2-copy(pure;tests/panelcopytest.mjs)──
+// 第 2 波三块的文案与判定:设置 →「接入的 AI」(合同 A)、设置 →「本地会话」(合同 D)、效率(合同 C)。
+// 只读服务端给的字段;未知写「待核实」不当 0。时间、计数的格式化由调用方传进来(fmt),这一段不碰时钟和 DOM。
+const AI_KINDS = [["claude", "Claude"], ["codex", "Codex"], ["zcode", "Zcode"], ["other", "其他"]];
+const aiKindName = (k) => (AI_KINDS.find(([v]) => v === k) || [null, "其他"])[1];
+/** 接入的 AI 一行的状态徽标:{ key, text, tone, ic }。撤销优先;码发出去还没兑换过 = 等待接入;其余照 state。 */
+function aiState(e) {
+  if (!e || typeof e !== "object") return { key: "unknown", text: "状态待核实", tone: "quiet", ic: "wait" };
+  if (e.revoked) return { key: "revoked", text: "已撤销", tone: "quiet", ic: "close" };
+  if (e.pending_code && !e.last_seen_at) return { key: "pending", text: "等待接入", tone: "quiet", ic: "wait" };
+  const map = { working: ["在做", "run", "play"], idle: ["空闲", "ok", "check"], stalled: ["卡住", "warn", "warn"], offline: ["离线", "quiet", "stop"] };
+  const m = Object.hasOwn(map, String(e.state)) ? map[e.state] : null;
+  return m ? { key: e.state, text: m[0], tone: m[1], ic: m[2] } : { key: "unknown", text: "状态待核实", tone: "quiet", ic: "wait" };
+}
+/** 最近一次回报:「11-11 09:30 · 交付 #12」;没有回报写「还没回报」。fmt(iso) 给时间。 */
+function aiReport(r, fmt = (s) => s) {
+  if (!r || typeof r !== "object" || r.task_id == null) return "还没回报";
+  const what = r.outcome === "done" ? "交付 #" + r.task_id : r.outcome === "wait" ? "停下等你决定 #" + r.task_id : "回报 #" + r.task_id;
+  return (r.at ? fmt(r.at) + " · " : "") + what;
+}
+/** 接入码剩余时间「9:41」;过期或读不懂返回 null。 */
+function aiCodeLeft(expiresAt, nowMs) {
+  const t = Date.parse(expiresAt);
+  if (!Number.isFinite(t) || !Number.isFinite(nowMs) || t <= nowMs) return null;
+  const s = Math.ceil((t - nowMs) / 1000);
+  return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
+}
+const DESK_LARGE_TOKENS = 200000, DESK_LARGE_BYTES = 4 * 1024 * 1024;
+/** 体量:{ text, large }。有用量记录按词元,没有按文件大小;都没有写「待核实」。count(n) 给「1.3万」这样的数。 */
+function deskSize(s, count = String) {
+  const tk = Number.isFinite(s?.approx_tokens) ? s.approx_tokens : null, by = Number.isFinite(s?.size_bytes) ? s.size_bytes : null;
+  if (tk !== null) return { text: "约 " + count(tk) + " 词元", large: tk > DESK_LARGE_TOKENS };
+  if (by !== null) return { text: (by >= 1048576 ? (by / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(by / 1024)) + " KB"), large: by > DESK_LARGE_BYTES };
+  return { text: "体量待核实", large: false };
+}
+/** 本地会话列表:只留这一家、标题含搜索词的,新的在前。 */
+function deskRows(sessions, { source = "claude", q = "" } = {}) {
+  const needle = String(q || "").trim().toLowerCase();
+  return (Array.isArray(sessions) ? sessions : [])
+    .filter((s) => s && s.source === source && (!needle || String(s.title || "").toLowerCase().includes(needle)))
+    .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+}
+/** 看历史里的一条:谁、正文、工具调用个数。 */
+function deskMsg(m) {
+  const n = Number.isInteger(m?.tools) && m.tools > 0 ? m.tools : 0;
+  return { who: m?.role === "user" ? "你" : "助手", text: typeof m?.text === "string" ? m.text : "", tools: n ? "用了 " + n + " 次工具" : "", at: m?.at || "" };
+}
+/** 登记成线的错误应答 → 一句话。NEEDS_CONFIRM_LARGE 由调用方先弹确认,不走这里。 */
+function deskLineError(status, body) {
+  const code = body?.code;
+  if (code === "ALREADY_A_LINE") return "这个会话已经登记成线" + (body.line ? " " + body.line : "");
+  if (code === "SESSION_UNKNOWN") return "这段会话读不到了";
+  if (code === "LINEAGE_HANDWRITTEN") return body.error || "这条线写在手写配置里，面板解除不了";
+  return body?.error || "没有完成，状态 " + status;
+}
+// 效率:八个指标。kind 决定怎么写数与差值;up = 升是不是好事(只用来写 title,箭头本身不上色)。
+const EFF_METRICS = [
+  ["done", "完成", "count", "张"], ["handed_back", "打回", "count", "次"], ["first_pass_rate", "一次通过率", "rate"],
+  ["lead_ms_median", "交付周期中位数", "dur"], ["wait_human_ms_median", "等你的时长中位数", "dur"],
+  ["human_actions", "你的操作次数", "count", "次"], ["ai_work_ms", "AI 干活时长", "dur"], ["parallel_avg", "平均同时在跑", "avg", "条线"],
+];
+const effKnown = (v) => typeof v === "number" && Number.isFinite(v);
+/** 一个指标的值。dur(ms) 给时长文字。未知 = 「待核实」。 */
+function effValue(v, kind, unit = "", dur = (ms) => Math.round(ms / 60000) + " 分") {
+  if (!effKnown(v)) return "待核实";
+  if (kind === "rate") return Math.round(v * 100) + "%";
+  if (kind === "dur") return dur(v);
+  if (kind === "avg") return v.toFixed(1) + (unit ? " " + unit : "");
+  return v + (unit ? " " + unit : "");
+}
+/** 本期对上期:{ dir:"up"|"down"|"flat"|null, text }。任一边未知 → dir null、text「待核实」。 */
+function effDelta(now, prev, kind, unit = "", dur = (ms) => Math.round(ms / 60000) + " 分") {
+  if (!effKnown(now) || !effKnown(prev)) return { dir: null, text: "待核实" };
+  const d = now - prev;
+  const size = kind === "rate" ? Math.round(Math.abs(d) * 100) : kind === "avg" ? Math.round(Math.abs(d) * 10) / 10 : kind === "dur" ? Math.abs(d) : Math.abs(d);
+  if (!size || (kind === "dur" && size < 60000)) return { dir: "flat", text: "持平" };
+  const body = kind === "rate" ? size + " 个百分点" : kind === "dur" ? dur(size) : kind === "avg" ? size.toFixed(1) + (unit ? " " + unit : "") : size + (unit ? " " + unit : "");
+  return { dir: d > 0 ? "up" : "down", text: (d > 0 ? "升 " : "降 ") + body };
+}
+/** 分解表一行的名字:key 为 null 写服务端给的 label(「未指定」);按线时用线的显示名。 */
+function effGroupName(g, by, lineName = (l) => l) {
+  if (g?.key == null) return String(g?.label || "未指定");
+  if (by === "line") return lineName(String(g.key));
+  return String(g.label || g.key);
+}
+/** 逐日细条:每天 { date, created, done, hc, hd }(高度百分比,以本期最大值为满);title 给具体数。 */
+function effDaily(daily) {
+  const rows = (Array.isArray(daily) ? daily : []).filter((d) => d && typeof d.date === "string");
+  const max = Math.max(1, ...rows.map((d) => Math.max(Number(d.created) || 0, Number(d.done) || 0)));
+  return rows.map((d) => {
+    const c = Number.isInteger(d.created) ? d.created : 0, n = Number.isInteger(d.done) ? d.done : 0;
+    return { date: d.date, created: c, done: n, hc: Math.round(c / max * 100), hd: Math.round(n / max * 100),
+             tip: d.date.slice(5) + " 新挂 " + c + " · 完成 " + n };
+  });
+}
+/** 时间范围 → 查询串。week = 缺省(本周对上周);d30 = 今天往前 30 天(含今天)对前 30 天。today = 本地日期的 Date。 */
+function effQuery(range, by, today = new Date()) {
+  const p = new URLSearchParams();
+  if (range === "d30") {
+    const ymd = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+    const from = new Date(today.getFullYear(), today.getMonth(), today.getDate() - 29);
+    p.set("from", ymd(from)); p.set("to", ymd(today));
+  }
+  if (by) p.set("by", by);
+  const s = p.toString();
+  return "/api/efficiency" + (s ? "?" + s : "");
+}
+// ── /wave2-copy ──
 const COLS =["goal", "not_started", "in_progress", "waiting", "done"];
 // ⭐ Labels come from the server (GET /api/meta → status_labels / wf_labels): the ONE
 //   copy is core/store.js, and the CLI reads the same endpoint. This file used to carry
@@ -5557,6 +5833,8 @@ es.addEventListener("change", (e) => {
     if (d.type === "code.accepted") chatChanged();   // 版本确认了:协调线能不能用跟着变,对话区立即重读,不等 5 秒的读取间隔
     // 任务事件带卡号:给流转条那一行和首页那张卡一个约 4 秒的「刚更新」标记;刷新照旧整页走。
     if (typeof d.type === "string" && d.type.startsWith("task.") && d.id != null) flashMark(d.id);
+    if (d.type === "executor.changed") aiLoad();            // 接入的 AI 有变:重读列表(首页「卡住」也跟着变)
+    if (d.type === "desktop-sessions.changed" && homeView === "settings") deskLoad();
   } catch {}
   refresh();
 });
@@ -5812,7 +6090,7 @@ function homeResolved(t) {
  *  `remote` = /api/fleet rows (only other computers' cached copies are read from it);
  *  `actions` = /api/fleet/actions; `nodeNames` = node_id → display name;
  *  `approvals` = /api/approvals 的事项:执行者请求与逾期锁不是卡,从这里进「待我处理」;任务类的事项卡片已经在列表里,不重复进。 */
-function homeLists({ tasks = [], localName = "本机", remote = [], actions = null, nodeNames = {}, autoReview = false, approvals = [] } = {}) {
+function homeLists({ tasks = [], localName = "本机", remote = [], actions = null, nodeNames = {}, autoReview = false, approvals = [], executors = [] } = {}) {
   const mine = [], running = [], history = [], here = homeName(localName, "本机");
   const place = (row, s) => (s.lane === "mine" ? mine : running).push({ ...row, state: s.state, tone: s.tone, next: s.next, rank: s.rank });
   // 有委派记录的本机卡:状态与下一步用跨机流程的那一步;等对端的进「正在执行」。
@@ -5869,6 +6147,14 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
       title: String((request ? a.action || a.summary || a.title : a.title || a.summary) || (request ? "执行者请求" : "逾期锁")), computer: here,
       updated: String(a.created_at || ""), state: request ? "执行者请求" : "逾期锁", tone: "", next: "到设置页处理", rank: request ? 1 : 3,
       ...(request && a.action ? { fullTitle: true } : {}) });
+  }
+  // 接入的 AI 卡住了(手上有卡、心跳超时):进「待我处理」,点开到设置里那一行。已撤销的不算。
+  for (const e of Array.isArray(executors) ? executors : []) {
+    if (!e || e.revoked || e.state !== "stalled") continue;
+    const cards = (Array.isArray(e.holding) ? e.holding : []).map((h) => "#" + h.id).join("、");
+    mine.push({ key: "executor:" + e.id, uid: null, localId: null, action: "executor", id: e.id,
+      title: String(e.label || e.id || "接入的 AI") + " 卡住了" + (cards ? " · 手上有 " + cards : ""), computer: here,
+      updated: String(e.last_seen_at || ""), state: "卡住", tone: "", next: "到设置里查看", rank: 2, fullTitle: true });
   }
   const byWait = (a, b) => a.rank - b.rank || a.updated.localeCompare(b.updated);   // longest waiting first
   mine.sort(byWait); running.sort(byWait);
@@ -6476,11 +6762,12 @@ function setView(v){
   // The columns' shell (headers, goal box) is built once, from meta — never before the first
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); }
-  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); zcodeLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
+  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); zcodeLoad(); aiLoad(); deskLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
   else {
     homeSig.clear(); renderHomeViews(); loadHomeExtras(true);
     if (v === "home" && homeReady) chatLoad(true);
     if (v === "history") historyUsageLoad();   // 用量汇总:进入历史页时取一次
+    if (v === "history") effLoad();            // 效率:同上
   }
   window.scrollTo(0, 0);
 }
@@ -6523,6 +6810,7 @@ function locateOnBoard(id){
   document.getElementById("task-find").requestSubmit();
 }
 function openHomeItem(item){
+  if (item.action === "executor") { aiGo(item.id); return; }   // 卡住的接入 AI:到设置里那一行
   // 执行者请求与逾期锁在设置页的「待你批准」里处理:切过去并滚到那一块。
   if (item.action === "approval") {
     setView("settings");
@@ -7620,6 +7908,7 @@ function renderHomeViews(){
     nodeNames: Object.fromEntries((nodes || []).map((n) => [n.node_id, n.display_name])),
     autoReview: workers.some((w) => w.line === "review" && w.running),
     approvals: approvalData?.approvals || [],
+    executors: (typeof aiSlot === "object" && aiSlot?.value?.executors) || [],
   });
   if (homeView === "home"){
     const s = homeStatus({ localName: homeLocalName(), nodes, fleetError: homeFleetError, health: homeHealth,
@@ -7642,6 +7931,7 @@ function renderHomeViews(){
       }
       return rows;
     });
+    effHomeLine();
     homeLane("mine", lists.mine, ["没有需要你处理的事", "交付和提问到了会出现在这里。"]);
     homeLane("running", lists.running, ["没有正在执行的任务", "排队中的任务在「全部任务」里。", "play"]);
     // 手机顶部一行:两段的件数。有待处理的才用强调色。
@@ -7665,6 +7955,7 @@ function renderHomeViews(){
     note.textContent = partial.length ? partial.map((n) => "「" + n + "」").join("、") + "的缓存任务较多，这里只读取了前 1000 项；完整列表在全局视图。" : "";
   } else {
     const items = lists.history;
+    renderHistoryEff();
     renderHistoryUsage();
     document.getElementById("history-n").textContent = items.length ? String(items.length) : "";
     const partial = homeFleet?.partial || [];
@@ -7997,6 +8288,7 @@ async function loadHomeExtras(force = false, always = false){
 function homeAfterRefresh(){
   homeReady = true;
   try { renderHomeViews(); } catch (e) { console.error("home view", e); }
+  if (homeView === "settings") try { renderAi(); renderDesk(); } catch (e) { console.error("设置页接入/本地会话显示失败", e); }   // 线名、线在不在跑随刷新变
   loadHomeExtras();
   if (homeView === "home") chatLoad().catch((e) => console.error("对话读取失败", e));
 }
@@ -8551,6 +8843,433 @@ document.addEventListener("keydown", (e) => {
   else if (chatShell.classList.contains("work-open")) chatWork(false);
 });
 { const saved = chatStore(); chatId = saved.cur ?? null; chatInput.value = (saved.input || {})[chatKey()] || ""; }
+
+// ═══ 第 2 波:接入的 AI / 本地会话 / 效率 ═══════════════════════════════════════════
+// 接口(合同 A / C / D)可能还没随这块看板到位:404 = 这一块写一句「这个版本还没有…」,不报错。
+// ⭐ 服务端与本机文件里来的字(名称、会话标题、会话正文、配置片段)一律 textContent,不拼 HTML。
+// 状态用 var:renderHomeViews 可能在这一段执行前就被调用,那时读到 undefined 而不是抛错。
+var aiSlot = optionalSlot(), aiIssued = null, aiTick = 0, aiHi = null, aiAgain = false;
+var deskSlot = optionalSlot(), deskSrc = "claude", deskNotes = new Map(), deskCap = 50, deskAgain = false;
+var effHome = optionalSlot(), effHist = optionalSlot(), effRange = "week", effBy = "line";
+try { const s = JSON.parse(sessionStorage.getItem("kanban.history-eff") || "{}");
+      if (s.range === "week" || s.range === "d30") effRange = s.range; if (s.by === "line" || s.by === "runtime") effBy = s.by; } catch {}
+const aiFmt = (iso) => localTime(iso);
+const homeErrText = (e) => copyError(e) || "读取失败";
+
+// ── 接入的 AI ──
+async function aiLoad(){
+  if (aiSlot.busy) { aiAgain = true; return; }
+  const asked = await optionalLoad(aiSlot, "/api/executors", (v) => Array.isArray(v.executors));
+  if (aiAgain) { aiAgain = false; return aiLoad(); }
+  if (!asked) return;
+  renderAi();
+  try { renderHomeViews(); } catch (e) { console.error("首页显示失败", e); }
+}
+/** 首页「卡住」那一行点开:切到设置,滚到那一行并描边 4 秒。 */
+function aiGo(id){
+  aiHi = String(id); setView("settings"); renderAi();
+  requestAnimationFrame(() => {
+    const row = document.getElementById("ai-row-" + aiHi) || document.getElementById("set-ai");
+    row?.scrollIntoView({ block: "center", behavior: REDUCED.matches ? "auto" : "smooth" }); tocMark("set-ai");
+  });
+  setTimeout(() => { aiHi = null; renderAi(); }, 4000);
+}
+function renderAi(){
+  const box = document.getElementById("ai-list"); if (!box) return;
+  const v = aiSlot.value;
+  document.getElementById("ai-connect-open").hidden = aiSlot.missing;
+  homeFill(box, JSON.stringify([aiSlot.missing, aiSlot.error && homeErrText(aiSlot.error), v, LINE_LABELS, aiHi]), () => {
+    if (aiSlot.missing) return [homeEl("p", "这个版本还没有接入功能", "set-empty")];
+    if (!v) return [homeEl("p", aiSlot.error ? "暂时读不到：" + homeErrText(aiSlot.error) : "正在读取…", "set-empty")];
+    if (!v.executors.length) return [homeEl("p", "还没有接入的 AI", "set-empty")];
+    return v.executors.map(aiRow);
+  });
+}
+function aiRow(e){
+  const st = aiState(e), row = homeEl("div", undefined, "ai-row");
+  row.id = "ai-row-" + e.id; if (aiHi === String(e.id)) row.dataset.hi = "";
+  const who = homeEl("div", undefined, "ai-who");
+  who.append(homeEl("b", String(e.label || e.id || "接入的 AI")),
+             homeEl("span", aiKindName(e.kind) + (e.line ? " · 线 " + lineLabel(e.line) : ""), "dim"));
+  const badge = homeEl("span", st.text, "badge"); badge.dataset.tone = st.tone; badge.insertAdjacentHTML("afterbegin", icon(st.ic));
+  if (st.key === "stalled") badge.title = "手上有卡，但心跳超时";
+  if (e.last_seen_at) badge.title = (badge.title ? badge.title + "；" : "") + "最近一次请求 " + aiFmt(e.last_seen_at);
+  const hold = homeEl("div", undefined, "ai-hold");
+  const cards = Array.isArray(e.holding) ? e.holding : [];
+  if (!cards.length) hold.append(homeEl("span", "手上没有卡", "dim"));
+  for (const h of cards) {
+    const b = homeEl("button", undefined, "ghost ai-card"); b.type = "button";
+    b.append(homeEl("span", "#" + h.id, "ai-no"), homeEl("span", String(h.subject || ""), "ai-subj"));
+    b.title = "打开这张卡";
+    b.addEventListener("click", () => openSide({ id: Number(h.id), uid: null, item: null }));
+    hold.append(b);
+  }
+  const rep = homeEl("span", aiReport(e.last_report, aiFmt), "ai-rep dim");
+  rep.title = "最近一次回报";
+  row.append(who, badge, hold, rep);
+  if (!e.revoked) {
+    const x = homeEl("button", "撤销", "ghost"); x.type = "button";
+    x.title = "令牌立即失效；手上的卡放回去等重新领取";
+    x.addEventListener("click", () => aiRevoke(e, x));
+    row.append(x);
+  } else row.append(homeEl("span"));
+  return row;
+}
+async function aiRevoke(e, b){
+  const name = String(e.label || e.id);
+  if (!confirm("撤销「" + name + "」？\n\n它的令牌立即失效，手上的卡放回去等重新领取。")) return;
+  b.disabled = true;
+  try { await post("/api/executors/" + encodeURIComponent(e.id) + "/revoke", {}); await aiLoad(); }
+  catch (err) { alert("撤销没有完成：" + copyError(err)); b.disabled = false; }
+}
+// 接入:选种类、可填名称 → POST /api/connect/codes → 接入码 + 两段要复制的字。
+const aiForm = document.getElementById("ai-connect"), aiNote = document.getElementById("ai-connect-note");
+document.getElementById("ai-connect-open").addEventListener("click", () => {
+  aiForm.hidden = false; aiNote.textContent = "";
+  aiForm.querySelector("input[name=ai-kind]:checked")?.focus();
+});
+document.getElementById("ai-connect-cancel").addEventListener("click", () => { aiForm.hidden = true; aiForm.reset(); });
+aiForm.addEventListener("submit", async (ev) => {
+  ev.preventDefault();
+  const kind = aiForm.querySelector("input[name=ai-kind]:checked")?.value || "claude", label = document.getElementById("ai-label").value.trim();
+  await aiIssue({ kind, ...(label ? { label } : {}) }, aiForm.querySelector("button[type=submit]"));
+});
+async function aiIssue(body, b){
+  if (b) b.disabled = true; aiNote.textContent = "";
+  try {
+    const r = await fetch("/api/connect/codes", { method: "POST", headers: WH, body: JSON.stringify(body) });
+    const v = await r.json().catch(() => ({}));
+    if (r.status === 404 && !v.code) { aiNote.textContent = "这个版本还没有接入功能"; return; }
+    if (!r.ok) { aiNote.textContent = "没有发出接入码：" + (v.error || "状态 " + r.status); return; }
+    aiIssued = { ...v, kind: body.kind, label: body.label || null };
+    aiForm.hidden = true; aiForm.reset();
+    renderAiCode();
+    aiLoad();
+  } catch (err) { aiNote.textContent = "没有发出接入码：" + copyError(err); }
+  finally { if (b) b.disabled = false; }
+}
+function aiCopyBtn(text){
+  const b = homeEl("button", "复制"); b.type = "button";
+  b.addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(text); b.textContent = "已复制"; }
+    catch { b.textContent = "复制不了，请手动选中"; }
+    setTimeout(() => { b.textContent = "复制"; }, 2000);
+  });
+  return b;
+}
+/** 接入码一块:显示期间不随刷新重画;倒计时每秒原位改字,到时换成「已过期」+「重新发码」。 */
+function renderAiCode(){
+  const box = document.getElementById("ai-code"); clearInterval(aiTick);
+  if (!aiIssued) { box.hidden = true; box.replaceChildren(); return; }
+  box.hidden = false;
+  const left = aiCodeLeft(aiIssued.expires_at, Date.now());
+  const top = homeEl("div", undefined, "ac-top"), close = homeEl("button", "收起", "ghost"); close.type = "button";
+  close.addEventListener("click", () => { aiIssued = null; renderAiCode(); });
+  if (left === null) {
+    const again = homeEl("button", "重新发码", "pri"); again.type = "button";
+    again.addEventListener("click", () => aiIssue({ kind: aiIssued.kind, line: aiIssued.line, ...(aiIssued.label ? { label: aiIssued.label } : {}) }, again));
+    top.append(homeEl("span", "接入码已过期", "ac-gone"), again, close);
+    box.replaceChildren(top);
+    return;
+  }
+  const code = homeEl("code", String(aiIssued.code || ""), "ac-code"); code.tabIndex = 0; code.setAttribute("aria-label", "接入码");
+  const time = homeEl("span", "还剩 " + left, "ac-left"); time.title = "一次性，10 分钟内有效";
+  top.append(homeEl("span", "接入码", "dim"), code, time, homeEl("span", "线 " + lineLabel(aiIssued.line || ""), "dim ac-line"), close);
+  const next = homeEl("p", "下一步：把配置粘到对方的 MCP 设置里，再把提示词发给它。", "ac-next");
+  const snip = (title, text) => {
+    const s = homeEl("div", undefined, "ac-snip"), h = homeEl("div", undefined, "ac-h");
+    h.append(homeEl("span", title), aiCopyBtn(text));
+    s.append(h, homeEl("pre", text));
+    return s;
+  };
+  const sn = aiIssued.snippets || {};
+  box.replaceChildren(top, next, snip("要粘贴的配置", String(sn.mcp_config || "")), snip("开工提示词", String(sn.prompt || "")));
+  aiTick = setInterval(() => {
+    const l = aiCodeLeft(aiIssued?.expires_at, Date.now());
+    if (l === null) renderAiCode(); else time.textContent = "还剩 " + l;
+  }, 1000);
+}
+
+// ── 本地会话 ──
+async function deskLoad(){
+  if (deskSlot.busy) { deskAgain = true; return; }
+  const asked = await optionalLoad(deskSlot, "/api/desktop-sessions?limit=200", (v) => Array.isArray(v.sessions));
+  if (deskAgain) { deskAgain = false; return deskLoad(); }
+  if (asked) renderDesk();
+}
+for (const r of document.querySelectorAll("input[name=desk-src]"))
+  r.addEventListener("change", () => { if (r.checked) { deskSrc = r.value; deskCap = 50; renderDesk(); } });
+document.getElementById("desk-q").addEventListener("input", () => { deskCap = 50; renderDesk(); });
+const deskKey = (s) => s.source + ":" + s.id;
+function renderDesk(){
+  const box = document.getElementById("desk-list"); if (!box) return;
+  const v = deskSlot.value, q = document.getElementById("desk-q").value;
+  const running = Object.fromEntries((workers || []).map((w) => [w.line, !!w.running]));
+  document.querySelector("#set-desk .desk-ctl").style.display = deskSlot.missing ? "none" : "";
+  homeFill(box, JSON.stringify([deskSlot.missing, deskSlot.error && homeErrText(deskSlot.error), v, deskSrc, q, deskCap, [...deskNotes], LINE_LABELS, running]), () => {
+    if (deskSlot.missing) return [homeEl("p", "这个版本还没有本地会话功能", "set-empty")];
+    if (!v) return [homeEl("p", deskSlot.error ? "暂时读不到：" + homeErrText(deskSlot.error) : "正在读取…", "set-empty")];
+    const out = [];
+    const gone = (v.unavailable || []).find((u) => u && u.source === deskSrc);
+    if (gone) out.push(homeEl("p", String(gone.reason || "这一家的会话目录读不了"), "set-empty"));
+    const rows = deskRows(v.sessions, { source: deskSrc, q });
+    if (!rows.length && !gone) out.push(homeEl("p", q.trim() ? "没有标题含这个词的会话" : "没有找到会话", "set-empty"));
+    out.push(...rows.slice(0, deskCap).map((s) => deskRow(s, running)));
+    if (rows.length > deskCap) {
+      const more = homeEl("button", "还有 " + (rows.length - deskCap) + " 个 · 显示更多", "home-more"); more.type = "button";
+      more.addEventListener("click", () => { deskCap += 50; renderDesk(); });
+      out.push(more);
+    }
+    if (v.truncated) out.push(homeEl("p", "只列出了最近的 200 个", "set-empty"));
+    return out;
+  });
+}
+function deskRow(s, running){
+  const row = homeEl("div", undefined, "desk-row"), key = deskKey(s);
+  if (s.selected) row.dataset.sel = "";
+  const box = homeEl("input"); box.type = "checkbox"; box.checked = !!s.selected;
+  box.setAttribute("aria-label", "勾选「" + String(s.title || "未命名会话") + "」");
+  box.addEventListener("change", () => deskPick(s, box));
+  const main = homeEl("div", undefined, "dr-main");
+  main.append(homeEl("span", String(s.title || "未命名会话"), "dr-title"));
+  const meta = homeEl("span", undefined, "dr-meta");
+  if (s.project) { const p = homeEl("span", String(s.project).split(/[\\/]/).filter(Boolean).pop() || String(s.project)); p.title = String(s.project); meta.append(p); }
+  if (s.updated_at) meta.append(homeEl("span", localTime(s.updated_at)));
+  const size = deskSize(s, formatCount), sz = homeEl("span", size.text, "dr-size");
+  if (size.large) { sz.insertAdjacentHTML("afterbegin", icon("warn")); sz.title = "体量大：登记成线后，每次干活都会带上整段上下文"; }
+  meta.append(sz);
+  if (s.missing) meta.append(homeEl("span", "本机已找不到这个会话"));
+  main.append(meta);
+  if (s.line) {
+    const ln = homeEl("span", "已登记为线 " + lineLabel(s.line) + (running[s.line] ? "" : " · 还没启动"), "dr-line");
+    ln.title = "领卡时用这个会话的副本，原会话不动";
+    main.append(ln);
+  }
+  const note = deskNotes.get(key);
+  if (note) main.append(homeEl("span", note, "dr-note"));
+  row.append(box, main);
+  if (s.selected && !s.missing) {
+    const acts = homeEl("div", undefined, "dr-acts");
+    if (!s.line) {
+      const reg = homeEl("button", "登记成线"); reg.type = "button";
+      reg.title = "建一条来领任务的线；第一次领卡时以这个会话的副本为起点";
+      reg.addEventListener("click", () => deskRegister(s, reg));
+      acts.append(reg);
+    } else if (!running[s.line]) {
+      const go = homeEl("button", "去起线"); go.type = "button";
+      go.addEventListener("click", () => goLines());
+      acts.append(go);
+    }
+    const more = homeEl("details", undefined, "more-menu"), list = homeEl("div", undefined, "mm-body");
+    more.append(homeEl("summary", "其他"), list);
+    const hist = homeEl("button", "看历史", "ghost"); hist.type = "button";
+    hist.addEventListener("click", () => { more.open = false; deskHistOpen(s); });
+    list.append(hist);
+    if (s.line) {
+      const un = homeEl("button", "解除", "ghost"); un.type = "button";
+      un.title = "停线并解除和这个会话的关联；已建的卡与历史保留";
+      un.addEventListener("click", () => { more.open = false; deskUnlink(s, un); });
+      list.append(un);
+    }
+    acts.append(more);
+    row.append(acts);
+  }
+  return row;
+}
+async function deskPick(s, box){
+  const want = box.checked, key = deskKey(s);
+  box.disabled = true;
+  try {
+    const r = await fetch("/api/desktop-sessions/selection", { method: "PUT", headers: WH,
+      body: JSON.stringify(want ? { add: [{ source: s.source, id: s.id }] } : { remove: [{ source: s.source, id: s.id }] }) });
+    const v = await r.json().catch(() => ({}));
+    if (!r.ok) throw Error(v.error || "状态 " + r.status);
+    deskNotes.delete(key);
+    s.selected = want;
+  } catch (err) { box.checked = !want; deskNotes.set(key, "勾选没有保存：" + copyError(err)); }
+  finally { box.disabled = false; }
+  renderDesk(); deskLoad();
+}
+async function deskRegister(s, b){
+  const key = deskKey(s), send = (confirm_large) => fetch("/api/desktop-sessions/lines", { method: "POST", headers: WH,
+    body: JSON.stringify({ source: s.source, id: s.id, ...(confirm_large ? { confirm_large: true } : {}) }) });
+  b.disabled = true;
+  try {
+    let r = await send(false), v = await r.json().catch(() => ({}));
+    if (r.status === 400 && v.code === "NEEDS_CONFIRM_LARGE") {
+      const size = deskSize({ approx_tokens: v.approx_tokens, size_bytes: v.size_bytes }, formatCount).text;
+      const cap = Number.isFinite(v.threshold_tokens) ? "，超过 " + formatCount(v.threshold_tokens) + " 词元" : "";
+      if (!confirm("这个会话体量" + size + cap + "。\n\n登记后这条线每次干活都会带上整段上下文，费用高，第一轮可能先压缩。\n\n仍要登记？")) { b.disabled = false; return; }
+      r = await send(true); v = await r.json().catch(() => ({}));
+    }
+    if (r.status === 404 && !v.code) deskNotes.set(key, "这个版本还没有登记成线功能");
+    else if (!r.ok) deskNotes.set(key, deskLineError(r.status, v));
+    else { deskNotes.delete(key); s.line = v.line?.id || s.line; }
+  } catch (err) { deskNotes.set(key, "没有登记：" + copyError(err)); }
+  b.disabled = false;
+  renderDesk(); deskLoad();
+}
+async function deskUnlink(s, b){
+  const key = deskKey(s);
+  if (!confirm("解除线「" + lineLabel(s.line) + "」和这个会话的关联？\n\n这条线会停下；已建的卡与历史保留。")) return;
+  b.disabled = true;
+  try {
+    const r = await fetch("/api/desktop-sessions/lines/" + encodeURIComponent(s.line), { method: "DELETE", headers: WH });
+    const v = await r.json().catch(() => ({}));
+    if (!r.ok) deskNotes.set(key, deskLineError(r.status, v)); else { deskNotes.delete(key); s.line = null; }
+  } catch (err) { deskNotes.set(key, "没有解除：" + copyError(err)); }
+  b.disabled = false;
+  renderDesk(); deskLoad();
+}
+// 看历史:只读。分页「更早」往前接;工具调用只写个数。
+const deskHist = document.getElementById("desk-hist"), deskHistBody = document.getElementById("desk-hist-body");
+let deskHistRef = null;
+document.getElementById("desk-hist-x").addEventListener("click", () => deskHist.close());
+async function deskHistOpen(s){
+  deskHistRef = { s, msgs: [], before: null, done: false, note: "" };
+  document.getElementById("desk-hist-title").textContent = String(s.title || "未命名会话");
+  deskHistBody.replaceChildren(homeEl("p", "正在读取…", "set-empty"));
+  if (!deskHist.open) deskHist.showModal();
+  await deskHistMore();
+  deskHistBody.scrollTop = deskHistBody.scrollHeight;
+}
+async function deskHistMore(){
+  const ref = deskHistRef; if (!ref) return;
+  const qs = "?limit=50" + (ref.before != null ? "&before=" + encodeURIComponent(ref.before) : "");
+  try {
+    const r = await fetch("/api/desktop-sessions/" + ref.s.source + "/" + encodeURIComponent(ref.s.id) + "/messages" + qs, { headers: WH, cache: "no-store" });
+    const v = await r.json().catch(() => ({}));
+    if (r.status === 404) ref.note = v.code === "SESSION_UNKNOWN" ? "这段会话读不到了" : "这个版本还没有看历史功能";
+    else if (!r.ok) ref.note = "暂时读不到：" + (v.error || "状态 " + r.status);
+    else { ref.msgs = [...(v.messages || []), ...ref.msgs]; ref.before = v.next_before ?? null; ref.done = v.next_before == null; ref.note = ""; }
+  } catch (err) { ref.note = "暂时读不到：" + copyError(err); }
+  if (deskHistRef !== ref) return;
+  const out = [];
+  if (!ref.done && !ref.note && ref.msgs.length) {
+    const more = homeEl("button", "更早", "home-more"); more.type = "button";
+    more.addEventListener("click", async () => { more.disabled = true; const h = deskHistBody.scrollHeight; await deskHistMore(); deskHistBody.scrollTop = deskHistBody.scrollHeight - h; });
+    out.push(more);
+  }
+  if (ref.note) out.push(homeEl("p", ref.note, "set-empty"));
+  else if (!ref.msgs.length) out.push(homeEl("p", "这段会话没有文字", "set-empty"));
+  for (const m of ref.msgs.map(deskMsg)) {
+    const el = homeEl("div", undefined, "dh-msg"); el.dataset.who = m.who === "你" ? "user" : "assistant";
+    const head = homeEl("div", undefined, "dh-h");
+    head.append(homeEl("b", m.who));
+    if (m.at) head.append(homeEl("span", localTime(m.at), "dim"));
+    if (m.tools) head.append(homeEl("span", m.tools, "dim"));
+    el.append(head);
+    if (m.text) el.append(homeEl("p", m.text, "dh-text"));
+    out.push(el);
+  }
+  deskHistBody.replaceChildren(...out);
+}
+
+// ── 效率 ──
+const EFF_TIP = "口径见 docs/效率口径.md「每个数怎么算」；未知写待核实，不当 0";
+async function effLoadSlot(slot, path){
+  slot.want = path;
+  if (slot.busy) return false;
+  const asked = await optionalLoad(slot, path, (v) => !!v && typeof v.now === "object" && v.now && typeof v.prev === "object" && v.prev);
+  if (asked && !slot.error && slot.value) slot.got = path;
+  if (slot.want !== path) return effLoadSlot(slot, slot.want);
+  return asked;
+}
+/** 首页那一行:最多每分钟读一次。 */
+function effHomeLine(){
+  const el = document.getElementById("home-eff"); if (!el) return;
+  const text = typeof effHome === "object" && effHome.value && typeof effHome.value.headline === "string" ? effHome.value.headline.trim() : "";
+  el.hidden = !text; el.textContent = text; el.title = EFF_TIP;
+  if (typeof effHome === "object" && !effHome.busy && !effHome.missing && Date.now() - effHome.at > 60000)
+    effLoadSlot(effHome, "/api/efficiency").then((asked) => { if (asked) effHomeLine(); });
+}
+async function effLoad(){
+  const asked = await effLoadSlot(effHist, effQuery(effRange, effBy));
+  if (asked) try { renderHomeViews(); } catch (e) { console.error("历史页效率显示失败", e); }
+}
+function effPick(kind, value){
+  if (kind === "range") effRange = value; else effBy = value;
+  try { sessionStorage.setItem("kanban.history-eff", JSON.stringify({ range: effRange, by: effBy })); } catch {}
+  try { renderHomeViews(); } catch (e) { console.error("历史页效率显示失败", e); }
+  effLoad();
+}
+function renderHistoryEff(){
+  const sec = document.getElementById("history-eff"); if (!sec || typeof effHist !== "object") return;
+  const v = effHist.value, fresh = !!v && effHist.got === effHist.want;
+  sec.hidden = !v && !effHist.missing && !effHist.error;
+  const model = { range: effRange, by: effBy, missing: effHist.missing, err: !v && effHist.error ? homeErrText(effHist.error) : "", fresh, stale: effHist.stale, v: fresh ? v : null };
+  homeFill(sec, JSON.stringify([model, LINE_LABELS]), () => {
+    const head = homeEl("div", undefined, "usage-head"), ctl = homeEl("div", undefined, "usage-ctl");
+    const seg = (kind, label, list, current) => {
+      const box = homeEl("div", undefined, "seg"); box.setAttribute("role", "radiogroup"); box.setAttribute("aria-label", label);
+      for (const [key, text] of list) {
+        const o = homeEl("label", undefined, "seg-o"), input = homeEl("input");
+        input.type = "radio"; input.name = "eff-" + kind; input.value = key; input.checked = key === current;
+        input.addEventListener("change", () => { if (input.checked) effPick(kind, key); });
+        o.append(input, homeEl("span", text)); box.append(o);
+      }
+      return box;
+    };
+    const h2 = homeEl("h2", "效率"), info = homeEl("span", "ⓘ", "eff-i"); info.title = EFF_TIP + "。吞吐和返工一起看，不做排名"; info.tabIndex = 0;
+    h2.append(" ", info);
+    head.append(h2);
+    if (model.missing) return [head, homeEl("p", "这个版本还没有效率统计", "usage-empty")];
+    ctl.append(seg("range", "时间范围", [["week", "本周对上周"], ["d30", "近 30 天对前 30 天"]], model.range),
+               seg("by", "分解", [["line", "按线"], ["runtime", "按执行器"]], model.by));
+    head.append(ctl);
+    const out = [head];
+    if (!model.v) { out.push(homeEl("p", model.err ? "暂时读不到：" + model.err : "正在读取", "usage-empty")); return out; }
+    if (model.stale) out.push(homeEl("p", "暂时读不到，下面是上一次的数", "usage-empty"));
+    const x = model.v, week = model.range === "week";
+    const cols = week ? ["本周", "上周"] : ["近 30 天", "前 30 天"];
+    const cmp = homeEl("div", undefined, "eff-cmp"), hr = homeEl("div", undefined, "eff-r eff-hd");
+    hr.append(homeEl("span", "指标"), homeEl("span", cols[0], "usage-num"), homeEl("span", cols[1], "usage-num"), homeEl("span", "变化", "usage-num"));
+    cmp.append(hr);
+    if (x.period?.from) cmp.title = cols[0] + " " + String(x.period.from).slice(0, 10) + " 起 · " + cols[1] + " " + String(x.previous?.from || "").slice(0, 10) + " 起";
+    for (const [key, label, kind, unit] of EFF_METRICS) {
+      const r = homeEl("div", undefined, "eff-r"), d = effDelta(x.now[key], x.prev[key], kind, unit, usageDuration);
+      const dir = homeEl("span", undefined, "usage-num eff-d");
+      if (d.dir === "up" || d.dir === "down") dir.append(homeEl("span", d.dir === "up" ? "↑" : "↓", "eff-arrow"), " ");
+      dir.append(d.text);
+      r.append(homeEl("span", label), homeEl("span", effValue(x.now[key], kind, unit, usageDuration), "usage-num"),
+               homeEl("span", effValue(x.prev[key], kind, unit, usageDuration), "usage-num"), dir);
+      cmp.append(r);
+    }
+    out.push(cmp);
+    const days = effDaily(x.daily);
+    if (days.length) {
+      const strip = homeEl("div", undefined, "eff-days"), lab = homeEl("div", undefined, "eff-dlab");
+      lab.append(homeEl("span", cols[0] + "逐日"), homeEl("span", "新挂", "eff-k eff-kc"), homeEl("span", "完成", "eff-k eff-kd"));
+      const bars = homeEl("div", undefined, "eff-bars"); bars.setAttribute("role", "img");
+      bars.setAttribute("aria-label", days.map((d) => d.tip).join("；"));
+      for (const d of days) {
+        const cell = homeEl("span", undefined, "eff-day"); cell.title = d.tip;
+        const c = homeEl("span", undefined, "eff-bc"), n = homeEl("span", undefined, "eff-bd");
+        c.style.height = d.hc + "%"; n.style.height = d.hd + "%";
+        cell.append(c, n); bars.append(cell);
+      }
+      strip.append(lab, bars);
+      out.push(strip);
+    }
+    const groups = Array.isArray(x.groups) ? x.groups : [];
+    const tbl = homeEl("div", undefined, "eff-groups"), gh = homeEl("div", undefined, "eff-g eff-hd");
+    gh.append(homeEl("span", model.by === "line" ? "执行线" : "执行器"), homeEl("span", "完成", "usage-num"), homeEl("span", "打回", "usage-num"),
+              homeEl("span", "一次通过率", "usage-num"), homeEl("span", "交付周期中位数", "usage-num"), homeEl("span", "AI 干活时长", "usage-num"));
+    tbl.append(gh);
+    for (const g of groups) {
+      const r = homeEl("div", undefined, "eff-g");
+      r.append(homeEl("span", effGroupName(g, model.by, lineLabel)), homeEl("span", effValue(g.done, "count"), "usage-num"),
+               homeEl("span", effValue(g.handed_back, "count"), "usage-num"), homeEl("span", effValue(g.first_pass_rate, "rate"), "usage-num"),
+               homeEl("span", effValue(g.lead_ms_median, "dur", "", usageDuration), "usage-num"), homeEl("span", effValue(g.ai_work_ms, "dur", "", usageDuration), "usage-num"));
+      tbl.append(r);
+    }
+    if (!groups.length) tbl.append(homeEl("p", "这段时间没有可分解的卡", "usage-empty"));
+    tbl.title = "没有卡号的协调、拆解只进总计，不进分组";
+    out.push(tbl);
+    return out;
+  });
+}
+aiLoad();
 
 homeNarrow.addEventListener("change", () => renderHomeViews());
 setView(homeView);
