@@ -624,9 +624,10 @@ const LINE_ID_RE = /^[a-z0-9][a-z0-9_-]{0,31}$/;
  *  caller announces. Throws store.err on refusal (unknown/duplicate/role/shape). */
 function addLine(idRaw, hintRaw, labelRaw, acceptRaw, roleRaw = null, externalRaw = false) {
   const id = String(idRaw ?? "").trim();
-  const hint = String(hintRaw ?? "").trim();
-  // 显示名会进 fleet.config.json、看板日志、效率分组与历史条目:所有加线入口(POST /api/config/lines、凭码建线、
-  // 本地会话登记)都在这里过同一个清洗(F11:换行/控制符/双向控制/零宽去掉),再按 24 字判长。
+  // 显示名与 hint 都会进 fleet.config.json、看板日志(还有协调席的系统提示词、效率分组与历史条目):所有加线入口
+  // (POST /api/config/lines、凭码建线、本地会话登记)都在这里过同一个清洗(F11:换行/控制符/双向控制/零宽去掉,
+  // 只清字符、不改语义),再判长 —— 超长照旧报错,不悄悄截断。
+  const hint = cleanLabelChars(hintRaw ?? "");
   const label = cleanLabelChars(labelRaw ?? "");
   const accept = acceptRaw == null || acceptRaw === "" ? "human" : String(acceptRaw);
   if (label.length > 24) throw store.err(store.ERR.BAD_INPUT, "显示名最多 24 字");
@@ -4903,13 +4904,13 @@ server.listen(PORT, HOST, () => {
     if (reaped) {
       console.log(`  ⚠ 租约已过期的 ${reaped} 件回收至未开始(worker 在上次运行中失联):`);
       for (const t of inflight.filter((t) => !still.some((s) => s.id === t.id)))
-        console.log(`     #${t.id} [${t.worker}] ${t.subject.slice(0, 46)}`);
+        console.log(`     #${t.id} [${t.worker}] ${cleanLabelChars(t.subject).slice(0, 46)}`);   // 卡标题是自由文本:进日志前同一清洗
     }
     if (still.length) {
       console.log(`  租约仍在有效期内的 ${still.length} 件保持进行中(可能是别处还活着的 worker):`);
       for (const t of still) {
         const left = Math.round(((t.lease_until || 0) - Date.now()) / 1000);
-        console.log(`     #${t.id} [${t.worker}] 租约还剩 ${left}s — ${t.subject.slice(0, 40)}`);
+        console.log(`     #${t.id} [${t.worker}] 租约还剩 ${left}s — ${cleanLabelChars(t.subject).slice(0, 40)}`);
       }
       console.log("     若机器刚重启过,这些 worker 其实已经死了,等租约到期会自动回收。");
     }

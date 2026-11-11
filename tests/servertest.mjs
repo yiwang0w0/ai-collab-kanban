@@ -1185,6 +1185,12 @@ try {
        `${bad.status}/${dup.status}/${role.status}`);
     const wk = await apiAs(WK, "POST", "/api/config/lines", { id: "rogue" });
     ok("Q6 worker 令牌加线 → 403(治理动作只属于 operator)", wk.status === 403, `HTTP ${wk.status}`);
+    // hint 与显示名同一套控制字符清洗(只清洗、不改语义):换行 / ESC / 双向控制 / 零宽不进配置文件与日志。
+    const dirty = await B.api("POST", "/api/config/lines", { id: "hintc", hint: "文档\nFAKE 日志行\u001b[31m\u202e整理\u200b", label: "清洗" });
+    const hintOnDisk = (JSON.parse(readFileSync(CFGQ, "utf8")).lines || []).find((l) => l.id === "hintc")?.hint;
+    ok("Q6b hint 过加线入口同一清洗:配置里没有换行与控制字符,文字本身不变;日志不出现伪造行",
+       dirty.status === 201 && hintOnDisk === "文档 FAKE 日志行[31m整理" && !/\nFAKE/.test(B.out()) && !B.out().includes("\u001b") && !B.out().includes("\u202e"),
+       `HTTP ${dirty.status} hint=${JSON.stringify(hintOnDisk)}`);
     // The new line is a first-class destination at once: card creation passes
     // badRoutable, a claim on it succeeds, and the supervisor can start it.
     const c = await B.api("POST", "/api/tasks", { subject: "q-docs", line: "docs", humanGate: false });
