@@ -1400,3 +1400,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - desksessionstest 6/0、worker_loop --codex-selftest 39/0、verificationrepairtest 19/0;没有调用模型。阻塞：无。
 - 2026-11-11 安全复审 F10 / F11 / P6 与面板接口补充(claude/desk-sessions):会话历史每页至多读 16MB、单行超 4MB 给「这条太长,已省略」占位且游标严格前进;登记成线的 label 清掉控制符 / 零宽 / 双向控制符并限 24 字;解除后同一会话可重新登记(接回原线);清单顶层带 threshold_tokens / threshold_bytes,列表项 line = {id,label}、登记接口与列表项带 start_blocked(座席未解禁等现有判据)。
 - desksessionstest 8/0(每条修复单独还原均变红)、worker_loop --codex-selftest 39/0;没有调用模型。阻塞：无。
+- 2026-11-11 面板第 2 波(claude/v3-ui2):设置页「接入的 AI」(列表 + 撤销 + 发接入码,倒计时与两段复制;旧代劳五按钮收进默认折叠的「请协调席代劳(旧)」)、「本地会话」(勾选、登记成线含大体量确认、去起线、解除、只读看历史);首页效率一行与「卡住」进待我处理;历史页「效率」对照表 + 逐日细条 + 按线/按执行器分解。接口 404 只写一句。style-guide §八 同步。
+- panelcopytest 41/0、hometest 44/0、panelsidetest 34/0、panelcoordtest 9/0、panelauth+panelclient 20/0、coordtest 25/0;新接口只在浏览器打桩的合同形状假数据下看过。阻塞：无。
