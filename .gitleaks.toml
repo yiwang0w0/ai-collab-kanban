@@ -38,6 +38,13 @@ secretGroup = 1
   commits = ["abe045d6a47cf2885fd4287f299438fe4ca3a298"]
   paths = ['''^tests[\\/]cliversionstest\.mjs$''']
 
+  # 4908518：tests/flowtest.mjs 打回原因夹具里的合成占位名(不是真人用户名),4e35888 已改为 you；已推上远端,历史按协调裁定保留,不改写。
+  [[rules.allowlists]]
+  description = "4908518: synthetic placeholder name in a tests/flowtest.mjs fixture path, changed to you in 4e35888; history kept. Exempt from this rule only, and only for this commit AND this file - the default secret rules still scan the commit."
+  condition = "AND"
+  commits = ["4908518c954127347cf92ce2c9b779a202b4cbb2"]
+  paths = ['''^tests[\\/]flowtest\.mjs$''']
+
 [[rules]]
 id = "claude-desktop-session-id"
 description = "A local Claude desktop session id."

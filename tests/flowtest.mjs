@@ -226,6 +226,18 @@ test("摘要清洗补全(F12):带空格路径、Git Bash / WSL 形、UNC、环�
   assert.equal(F.entryOf({ at: "x", kind: "release", actor: "alpha", detail: { action: "release_held" } }).step, "reaped");
 });
 
+test("gitleaks 历史例外:4908518 的本文件只放行这一提交 + 这一文件(合成占位名,4e35888 已改为 you)", () => {
+  const toml = readFileSync(join(ROOT, ".gitleaks.toml"), "utf8");
+  const at = toml.indexOf('commits = ["4908518c954127347cf92ce2c9b779a202b4cbb2"]');
+  assert.ok(at > 0, "例外按完整提交号写");
+  const block = toml.slice(toml.lastIndexOf("[[rules.allowlists]]", at), toml.indexOf("\n\n", at) > 0 ? toml.indexOf("\n\n", at) : undefined);
+  assert.match(block, /condition = "AND"/, "提交与文件同时满足才放行");
+  assert.match(block, /paths = \['''\^tests\[\\\\\/\]flowtest\\\.mjs\$'''\]/, "只限本文件");
+  assert.ok(!/regexes|stopwords/.test(block), "不按内容宽放行");
+  // 当前树里已经没有那个占位名
+  assert.ok(!readFileSync(fileURLToPath(import.meta.url), "utf8").includes("Users\\\\" + "someone"));
+});
+
 test("性能:500 张卡 / 5000 条事件下的派生字段", (t) => {
   const { db, flow } = memory(t);
   const ins = db.prepare("INSERT INTO task_events(at,task_id,kind,actor,detail) VALUES(?,?,?,?,?)");
