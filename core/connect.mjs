@@ -188,7 +188,18 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     let mcp;
     if (kind === "claude") mcp = JSON.stringify({ mcpServers: { "fleet-board": server } }, null, 2);
     else if (kind === "zcode") mcp = JSON.stringify({ mcp: { servers: { "fleet-board": { type: "stdio", protocolVersion: "legacy", command: node, args } } } }, null, 2);
-    else if (kind === "codex") mcp = `[mcp_servers.fleet-board]\ncommand = ${JSON.stringify(node)}\nargs = [${args.map((a) => JSON.stringify(a)).join(", ")}]\n`;
+    // codex:非交互(codex exec)下 MCP 工具默认要批准,批准策略为 never 时第一次调工具就失败(真实端到端实测)。
+    //   只给 fleet-board 这一个服务放行(default_tools_approval_mode),不动全局 approval_policy;
+    //   config.toml 形之外,注释里另给一次性的 -c 覆盖形(PowerShell 单引号字面量),两种写法同一组键。
+    else if (kind === "codex") {
+      const argsToml = `[${args.map((a) => JSON.stringify(a)).join(", ")}]`;
+      const over = [`mcp_servers.fleet-board.command=${JSON.stringify(node)}`, `mcp_servers.fleet-board.args=${argsToml}`,
+                    `mcp_servers.fleet-board.default_tools_approval_mode="approve"`];
+      mcp = `[mcp_servers.fleet-board]\ncommand = ${JSON.stringify(node)}\nargs = ${argsToml}\n` +
+        `# 只对 fleet-board 这一个 MCP 服务的工具免批准(不改全局 approval_policy);没有这一行,codex exec 第一次调工具就停在批准上\n` +
+        `default_tools_approval_mode = "approve"\n` +
+        `# 不改 config.toml、只这一次用:codex exec ${over.map((o) => "-c " + psQuote(o)).join(" ")}\n`;
+    }
     // other = 贴进 PowerShell 的一行命令(P3):每个参数都用单引号字面量,路径里的 & ^ % ! 空格引号都不会把命令切开。
     else mcp = "& " + [node, ...args].map(psQuote).join(" ");
     const prompt = `你已接入看板的线「${line}」。照这个循环值守:wait_for_card(timeout_sec 50)等卡 → 有卡就 get_card 读卡面 → ` +

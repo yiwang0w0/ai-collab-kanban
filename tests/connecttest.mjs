@@ -119,7 +119,11 @@ test("发码、兑换、重放 410、未知码 404、撤销、线绑定、四态
     assert.equal(c2.body.line, "zcode-2", "冲突加序号(待兑换的名字也占着)");
     const ids = [];
     for (const [kind, check] of [["claude", (s) => JSON.parse(s).mcpServers["fleet-board"].command],
-                                 ["codex", (s) => /^\[mcp_servers\.fleet-board\]\ncommand = ".+"\nargs = \[/.test(s)],
+                                 // codex:只给 fleet-board 免批准(config.toml 形与 -c 覆盖形都带),不碰全局 approval_policy
+                                 ["codex", (s) => /^\[mcp_servers\.fleet-board\]\ncommand = ".+"\nargs = \[/.test(s) &&
+                                   /^default_tools_approval_mode = "approve"$/m.test(s) && (s.match(/^\[/gm) || []).length === 1 &&
+                                   /-c 'mcp_servers\.fleet-board\.default_tools_approval_mode="approve"'/.test(s) &&
+                                   /-c 'mcp_servers\.fleet-board\.args=\[.*"--code".*\]'/.test(s) && !/approval_policy\s*=/.test(s)],
                                  ["other", (s) => s.startsWith("& '") && s.includes("'--code'")]]) {
       const c = await B.api("POST", "/api/connect/codes", B.operator, { kind, line: "ext" });
       assert.equal(c.status, 201); assert.ok(check(c.body.snippets.mcp_config), kind);
