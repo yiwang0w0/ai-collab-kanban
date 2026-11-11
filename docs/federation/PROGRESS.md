@@ -1380,3 +1380,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - convtest 4/0、servertest 228/0、decomposetest 84/0、selftest 402/0、hometest 41/0、clitest 116/0；没有调用模型。阻塞：无。
 - 2026-11-11 执行者令牌的 MCP stdio 桥(claude/zcode-gui):`cli/exec-mcp.mjs` 把执行者的读卡、领卡、续租、交付接口包成 5 个 MCP 工具,供 Zcode 桌面版这类客户端以外部执行线的执行者身份领卡交付;只接本机回环地址与 `exe_` 执行者令牌,`--line` 限定只看一条线;docs/多执行者协作.md 写明接法。
 - execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
+- 2026-11-11 本机桌面对话清单与勾选(claude/desk-sessions):`GET /api/desktop-sessions` 只读列出 Claude 与 Codex 桌面端对话(标题、项目、最后活动、体量、来源;不返回正文,Codex 子代理/审阅线程不列);`PUT /api/desktop-sessions/selection` 存操作者勾选(上限 50,只收本机存在的对话,重启保留,推 `desktop-sessions.changed`);只认操作员。docs/多执行者协作.md 写接口,docs/桌面对话续接_CLI能力.md 记两家 CLI 续接 / fork / 限工具 / 结构化输出的事实与限制。
+- desksessionstest 4/0(合成夹具);没有调用模型。阻塞：无。
