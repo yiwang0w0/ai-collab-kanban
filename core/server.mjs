@@ -40,6 +40,7 @@ import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorC
   coordinatorTurnOf,mergeTools,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
+import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX} from "./desktop-sessions.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -1282,6 +1283,10 @@ try {
 // BOARD_CLAUDE_PROJECTS: test-only escape hatch. A harness must never plant a transcript
 // under the operator's real ~/.claude/projects, so it points this at a temp dir instead.
 const PROJECTS = process.env.BOARD_CLAUDE_PROJECTS || join(homedir(), ".claude", "projects");
+// BOARD_CODEX_HOME: 同上,测试把 Codex 根目录(含 session_index.jsonl 与 sessions/)指到临时目录。
+const CODEX_HOME = process.env.BOARD_CODEX_HOME || process.env.CODEX_HOME || join(homedir(), ".codex");
+// 桌面端对话清单(只读)与操作者勾选;勾选存在数据目录(不进 git)。见 core/desktop-sessions.mjs。
+const deskSessions = createDesktopSessions({ claudeRoot: PROJECTS, codexRoot: CODEX_HOME, dataDir: store.DATA_DIR });
 let settings = {};
 try { settings = JSON.parse(readFileSync(SETTINGS_FILE, "utf8")); } catch {}
 // One-time migration: legacy {model,effort,window,parallel,runtime} → agents[]
@@ -3599,6 +3604,42 @@ function applyConversationPlan(convId, rev, expectedRev, by) {
   return out;
 }
 
+/** 桌面端对话清单与勾选:只属于操作员(面板会话或操作员令牌),与 /api/coordinator 同一档。
+ *  远程批准入口只路由批准接口,到不了这里;批准令牌在本机接口上不认(401)。 */
+async function desktopSessionsRoute(req, res, url, p, m, boardRole) {
+  if (boardRole !== "operator")
+    return json(res, 403, { error: "桌面对话清单只属于操作员(面板会话或操作员令牌)", role: boardRole });
+  if (p === "/api/desktop-sessions" && m === "GET") {
+    const qs = url.searchParams;
+    const source = qs.get("source") || "all";
+    if (source !== "all" && !DESK_SOURCES.includes(source)) return json(res, 400, { error: "source 只接受 claude / codex / all" });
+    let days = null;
+    if (qs.get("days") !== null) {
+      days = Number(qs.get("days"));
+      if (!Number.isFinite(days) || days <= 0 || days > 3650) return json(res, 400, { error: "days 要是 1〜3650 的数" });
+    }
+    let limit = DESK_LIMIT_DEFAULT;
+    if (qs.get("limit") !== null) {
+      limit = Number(qs.get("limit"));
+      if (!Number.isInteger(limit) || limit < 1) return json(res, 400, { error: `limit 要是正整数(上限 ${DESK_LIMIT_MAX})` });
+      limit = Math.min(limit, DESK_LIMIT_MAX);
+    }
+    const q = (qs.get("q") || "").trim();
+    if (q.length > 200) return json(res, 400, { error: "q 最长 200 字" });
+    return json(res, 200, deskSessions.list({ source, days, q: q || null, limit, selectedOnly: qs.get("selected") === "1" }));
+  }
+  if (p === "/api/desktop-sessions/selection" && m === "PUT") {
+    const b = await readBody(req);
+    if (!b || typeof b !== "object" || Array.isArray(b)) return json(res, 400, { error: "正文要是 {add:[…], remove:[…]}" });
+    let r;
+    try { r = deskSessions.select({ add: b.add ?? [], remove: b.remove ?? [] }); }
+    catch (e) { if (e.status) return json(res, e.status, { error: e.message, ...(e.code ? { code: e.code } : {}) }); throw e; }
+    if (r.changed) emit("desktop-sessions.changed", { selected: r.selected });
+    return json(res, 200, { selected: r.selected });
+  }
+  return json(res, p === "/api/desktop-sessions" || p === "/api/desktop-sessions/selection" ? 405 : 404, { error: "没有这个接口或不接受该方法" });
+}
+
 async function conversationsRoute(req, res, url, p, m, boardRole) {
   if (boardRole !== "operator")
     return json(res, 403, { error: "对话与协调线只属于操作员(面板会话或操作员令牌)", role: boardRole });
@@ -4245,6 +4286,8 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (p === "/api/coord" || p.startsWith("/api/coord/")) return await coordRoute(req, res, url, p, m, boardRole);
+    if (p === "/api/desktop-sessions" || p.startsWith("/api/desktop-sessions/"))
+      return await desktopSessionsRoute(req, res, url, p, m, boardRole);
     if (p === "/api/coordinator" || p === "/api/conversations" || p.startsWith("/api/conversations/"))
       return await conversationsRoute(req, res, url, p, m, boardRole);
     if (p === "/api/approvals" || p.startsWith("/api/approvals/")) return await approvalsRoute(req, res, url, p, m, boardRole);
