@@ -35,19 +35,50 @@ const WAIT_TEXT = { review: "待验收", confirm: "待选择方案", decision: "
 const chars = (s) => [...String(s)];
 export const cut = (s, max) => { const c = chars(String(s ?? "").replace(/\s+/g, " ").trim()); return c.length > max ? c.slice(0, max - 1).join("") + "…" : c.join(""); };
 
-/** 给人看的短句:去掉私有路径、长 ID / 哈希、令牌样的串、反引号里的命令,再截断。 */
-export function safeText(s, max = 60) {
-  const t = String(s ?? "")
-    .replace(/`[^`]*`/g, "…")
-    .replace(/[A-Za-z]:[\\/][^\s"'<>|),，;；、]*/g, "…")
-    .replace(/(^|[\s(「"'])(?:~|\/(?:Users|home|tmp|var|mnt|opt|root|private))\/[^\s"'<>|),，;；、]*/g, "$1…")
-    .replace(/\\\\[^\s"'<>|),，;；、]+/g, "…")
-    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "…")
-    .replace(/\b(?:exe|apr|tok|pat|sk|ghp|gho)[-_][A-Za-z0-9_-]{8,}/g, "…")
-    .replace(/\b[0-9a-f]{12,}\b/gi, "…")
+// ── 路径 / 令牌样串的遮蔽(redactText;safeText = 遮蔽 + 截断)────────────────────────────
+// 宁可多遮:遮掉的是给人看的摘要里的一段,不影响任何判定。可被别的模块复用(如 live_note)。
+//   路径:X:\ 与 X:/(含 file:///)、UNC(\\主机\ 与 //主机/)、%VAR%\ 与 $VAR/ $env:VAR\、~ 与 ~用户/、
+//         /c/… /mnt/c/… /Users/… /home/… 等绝对路径。路径段后面若紧跟「含 \ 或 / 的词」或「带扩展名的词」
+//         (最多隔 3 个词),视为带空格的同一路径一起遮掉。
+//   令牌:github_pat_ / gh[pousr]_ / exe_ apr_ tok_ pat_ / sk-(含 sk-ant- sk-proj-)/ xox[abposr]- / AKIA ASIA /
+//         JWT 三段式(eyJ….….…)/ UUID / ≥12 位十六进制 / ≥20 位且含两类以上字符(大写、小写、数字)的串。
+const STOP = String.raw`\s"'<>|),，;；、。:：`;
+const SEG = `[^${STOP}]`;
+const MORE = String.raw`(?:\s+${SEG}*[\\/]${SEG}*|(?:\s+${SEG}+){0,3}?\s+${SEG}*\.[A-Za-z0-9]{1,8}(?![A-Za-z0-9]))*`;
+const PATH_RES = [
+  new RegExp(String.raw`file:\/\/\/?[^\s"'<>]*` + MORE, "gi"),
+  new RegExp(String.raw`(?<![A-Za-z0-9])[A-Za-z]:[\\/]${SEG}*` + MORE, "g"),
+  new RegExp(String.raw`(?:\\\\|(?<![:\w/])\/\/)[A-Za-z0-9._$-]+[\\/]${SEG}*` + MORE, "g"),
+  new RegExp(String.raw`(?:%[A-Za-z_][A-Za-z0-9_]*%|\$(?:env:)?[A-Za-z_][A-Za-z0-9_]*|~[A-Za-z0-9_.-]*)[\\/]${SEG}*` + MORE, "g"),
+  new RegExp(String.raw`(?<![A-Za-z0-9_.\-/])\/(?:[a-z]|mnt\/[a-z]|Users|home|tmp|var|mnt|opt|root|private|etc|srv|usr|Volumes|workspace|data|cygdrive)\/${SEG}*` + MORE, "g"),
+];
+const TOKEN_RES = [
+  /(?<![A-Za-z0-9])github_pat_[A-Za-z0-9_]{6,}/g,
+  /(?<![A-Za-z0-9])gh[pousr]_[A-Za-z0-9_]{6,}/g,
+  /(?<![A-Za-z0-9])(?:exe|apr|tok|pat)_[A-Za-z0-9_-]{6,}/g,
+  /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{6,}/g,
+  /(?<![A-Za-z0-9])xox[abposr]-[A-Za-z0-9-]{6,}/g,
+  /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{8,}/g,
+  /(?<![A-Za-z0-9])eyJ[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}\.[A-Za-z0-9_-]{3,}/g,
+  /\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi,
+  /\b[0-9a-f]{12,}\b/gi,
+];
+const mixedLong = (m) => [/[a-z]/, /[A-Z]/, /\d/].filter((r) => r.test(m)).length >= 2 ? "…" : m;
+
+/** 遮掉私有路径、令牌样串、长 ID / 哈希、反引号里的命令与 shell 提示行;不截断、不并空白。 */
+export function redactText(s) {
+  let t = String(s ?? "").replace(/`[^`]*`/g, "…");
+  for (const re of PATH_RES) t = t.replace(re, "…");
+  for (const re of TOKEN_RES) t = t.replace(re, "…");
+  return t
+    .replace(/(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{20,}/g, mixedLong)
     .replace(/^\s*(?:\$|PS>|>)\s.*$/gm, "…")
     .replace(/(?:…\s*){2,}/g, "…");
-  return cut(t, max);
+}
+
+/** 给人看的短句:redactText 之后并空白、截断到 max 字。 */
+export function safeText(s, max = 60) {
+  return cut(redactText(s), max);
 }
 
 /** actor_kind 判定(见文件头)。eventKind 用来认出「领取/启动/交付」里的执行方。 */

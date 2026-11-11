@@ -1382,3 +1382,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
 - 2026-11-11 公告板 v3 合同 B「流转」后端(claude/flow):新 `core/flow.mjs` 给 `GET /api/tasks/:id/history`(人话条目 + step / actor_kind,打回带裁定原文摘要)、任务对象 `handed_back` / `last_actor` / `last_actor_kind`(事件表增量缓存)、建卡对话的 `conversation.progress` 与唯一一条原位更新的 `kind:"progress"` 消息(子卡变化 2 秒合并推 `conversation.changed`,重启按库重算);server.mjs 只接线,convtest 看建卡消息时略过进度消息。
 - flowtest 4/0(500 卡 / 5000 事件:热读 500 次约 1ms)、convtest 5/0、hometest 43/0、taskexecutionhttp 1/0;没有调用模型。阻塞：无。
+- 2026-11-11 安全复审 F12(claude/flow):history 摘要的遮蔽补全带空格路径、`/c/Users` 与 `/mnt/c` 形、UNC、`%VAR%\`、`file://` 与 github_pat_ / ghp_ / gho_ / sk- / xoxb- / xoxp- / AKIA / JWT / 长混排串;`core/flow.mjs` 导出 `redactText`(不截断)供 live_note 等复用。
+- flowtest 5/0(新增逐类 20 例,旧实现下 15 例红,其余 5 例为回归保护);没有调用模型。阻塞：无。
