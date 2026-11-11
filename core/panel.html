@@ -2203,13 +2203,38 @@ function aiCodeLeft(expiresAt, nowMs) {
   const s = Math.ceil((t - nowMs) / 1000);
   return Math.floor(s / 60) + ":" + String(s % 60).padStart(2, "0");
 }
-const DESK_LARGE_TOKENS = 200000, DESK_LARGE_BYTES = 4 * 1024 * 1024;
-/** 体量:{ text, large }。有用量记录按词元,没有按文件大小;都没有写「待核实」。count(n) 给「1.3万」这样的数。 */
-function deskSize(s, count = String) {
+/** 体量:{ text, large }。有用量记录按词元,没有按文件大小;都没有写「待核实」。count(n) 给「1.3万」这样的数。
+ *  阈值用服务端给的(GET /api/desktop-sessions 顶层 threshold_tokens / threshold_bytes);没给就不标大,由登记时服务端判。 */
+function deskSize(s, count = String, th = {}) {
   const tk = Number.isFinite(s?.approx_tokens) ? s.approx_tokens : null, by = Number.isFinite(s?.size_bytes) ? s.size_bytes : null;
-  if (tk !== null) return { text: "约 " + count(tk) + " 词元", large: tk > DESK_LARGE_TOKENS };
-  if (by !== null) return { text: (by >= 1048576 ? (by / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(by / 1024)) + " KB"), large: by > DESK_LARGE_BYTES };
+  const capT = Number.isFinite(th?.tokens) ? th.tokens : null, capB = Number.isFinite(th?.bytes) ? th.bytes : null;
+  if (tk !== null) return { text: "约 " + count(tk) + " 词元", large: capT !== null && tk > capT };
+  if (by !== null) return { text: (by >= 1048576 ? (by / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(by / 1024)) + " KB"), large: capB !== null && by > capB };
   return { text: "体量待核实", large: false };
+}
+/** 列表项 / 登记应答里的 line:{ id, label } 或 null。服务端给 {id,label};label 缺或等于 id 时退到面板的线名。 */
+function deskLineRef(line, lineName = (l) => l) {
+  const id = line && typeof line === "object" ? line.id : line;
+  if (typeof id !== "string" || !id) return null;
+  const label = line && typeof line === "object" && typeof line.label === "string" && line.label.trim() && line.label !== id ? line.label.trim() : lineName(id);
+  return { id, label: String(label || id) };
+}
+/** 登记了但起不来的原因(start_blocked)→ 一句;没有 = ""。 */
+function deskBlocked(sb) {
+  return sb && typeof sb === "object" && typeof sb.message === "string" && sb.message.trim() ? "起不来：" + sb.message.trim() : "";
+}
+/** 登记成线的确认框。large 时补体量那一句。 */
+function deskRegisterConfirm(size, cap, large) {
+  return "把这个会话登记成一条来领任务的线？\n\n这条线带着那段会话的全部内容，它交付的证据其它执行者读得到。" +
+    (large ? "\n\n这个会话体量" + size + (cap ? "，超过 " + cap : "") + "：登记后每次干活都会带上整段上下文，费用高，第一轮可能先压缩。" : "") +
+    "\n\n仍要登记？";
+}
+/** 发接入码的错误应答 → 一句话。 */
+function aiIssueError(status, body) {
+  const code = body?.code;
+  if (code === "TOO_MANY_PENDING_CODES") return "已有 5 个接入码在等对方使用。等它们用掉或过期再发，或在列表里撤销不要的。";
+  if (code === "ROLE_NOT_AVAILABLE") return "这种身份还没开放，现在只能接成来领任务的执行者。";
+  return "没有发出接入码：" + (body?.error || "状态 " + status);
 }
 /** 本地会话列表:只留这一家、标题含搜索词的,新的在前。 */
 function deskRows(sessions, { source = "claude", q = "" } = {}) {
@@ -2225,11 +2250,14 @@ function deskMsg(m) {
 }
 /** 登记成线的错误应答 → 一句话。NEEDS_CONFIRM_LARGE 由调用方先弹确认,不走这里。 */
 function deskLineError(status, body) {
-  const code = body?.code;
+  // 应答里有文案就照它写(服务端知道具体原因);没有才按错误码给一句。
+  const code = body?.code, said = typeof body?.error === "string" && body.error.trim() ? body.error.trim() : "";
+  if (said) return said;
   if (code === "ALREADY_A_LINE") return "这个会话已经登记成线" + (body.line ? " " + body.line : "");
   if (code === "SESSION_UNKNOWN") return "这段会话读不到了";
-  if (code === "LINEAGE_HANDWRITTEN") return body.error || "这条线写在手写配置里，面板解除不了";
-  return body?.error || "没有完成，状态 " + status;
+  if (code === "LINEAGE_HANDWRITTEN") return "这条线写在手写配置里，面板解除不了";
+  if (code === "NOT_A_DESKTOP_LINE") return "这条线不是从本地会话登记的";
+  return "没有完成，状态 " + status;
 }
 // 效率:八个指标。kind 决定怎么写数与差值;up = 升是不是好事(只用来写 title,箭头本身不上色)。
 const EFF_METRICS = [
@@ -5173,7 +5201,7 @@ async function refresh(){
     //   have changed). Reload once; the new page pins the new revision.
     if (sres?.version){
       if (seenRev && seenRev !== sres.version && !revBarShown){
-        if (hasUnsavedInput()){ revBarShown = true; showRevBar(sres.version); }
+        if (holdReload()){ revBarShown = true; showRevBar(sres.version); }
         else { location.reload(); return; }
       }
       if (!seenRev) seenRev = sres.version;
@@ -5549,6 +5577,8 @@ const fieldChanged = (el) => el.type === "checkbox" || el.type === "radio" ? el.
 //   协作区:批准行里写了一半的备注、刚生成且只显示一次的批准令牌(#apt-new 还开着)、展开中的强制释放理由,也都算。
 const hasUnsavedInput = () => [...document.querySelectorAll("textarea, #line-add input, #line-add select, #home-new input, #approvals input")].some(fieldChanged)
   || !!document.querySelector("#apt-new:not([hidden]), #coord [data-lock-form]");
+// 自动刷新拦不拦:没保存的输入,或接入码正在显示(没过期)—— 码只在发码应答里出现一次,刷新就丢 → 改出「刷新页面」条由人决定。
+const holdReload = () => hasUnsavedInput() || !!document.querySelector("#ai-code:not([hidden]) .ac-code");
 function showRevBar(rev, why){
   const el = document.getElementById("rev-bar");
   if (!el) return;
@@ -5818,13 +5848,54 @@ function flashApply(){
     else if (!until && el.classList.contains("just")) { el.classList.remove("just"); el.style.animationDelay = ""; }
   }
 }
+// ── task.live_note:同一张卡 300ms 内的事件合成一次 GET /api/tasks/:id;改 byId 里那张卡与对话进度里那一项,
+//    再就地换掉看板卡面的 .live-note 与流转条行下的 .fr-note。卡不在当前列表里就不管(下次整页读取自然带上)。
+const liveNoteWait = new Map();
+function liveNoteChanged(raw){
+  const id = Number(raw);
+  if (!Number.isInteger(id) || liveNoteWait.has(id)) return;
+  liveNoteWait.set(id, setTimeout(async () => {
+    liveNoteWait.delete(id);
+    let t = null;
+    try { const r = await fetch("/api/tasks/" + id, { cache: "no-store" }); if (r.ok) t = (await r.json()).task; } catch {}
+    const cur = byId.get(id);
+    if (!t || !cur) return;
+    cur.live_note = t.live_note ?? null; cur.live_note_at = t.live_note_at ?? null; cur.status = t.status ?? cur.status;
+    for (const it of chatData?.conversation?.progress?.items || [])
+      if (Number(it?.id) === id && Object.prototype.hasOwnProperty.call(it, "live_note")) { it.live_note = cur.live_note; it.live_note_at = cur.live_note_at; }
+    liveNotePaint(id, cur);
+  }, 300));
+}
+function liveNotePaint(id, t){
+  const text = t.status === "in_progress" && typeof t.live_note === "string" ? t.live_note.trim() : "";
+  const tip = t.live_note_at ? "执行者 " + localTime(t.live_note_at) + " 报的进度；下一条覆盖上一条" : "执行者报的进度；下一条覆盖上一条";
+  for (const card of document.querySelectorAll(`.card[data-id="${id}"]`)) {
+    let p = card.querySelector(":scope > .live-note");
+    if (!text) { p?.remove(); continue; }
+    if (!p) {
+      p = document.createElement("p"); p.className = "live-note";
+      const after = card.querySelector(":scope > .meta") || card.querySelector(":scope > .subj");
+      if (after) after.after(p); else card.prepend(p);
+    }
+    p.title = tip; p.innerHTML = icon("play"); p.append(document.createTextNode(text));
+  }
+  for (const row of document.querySelectorAll(`[data-flow-id="${id}"]`)) {
+    const li = row.parentElement; if (!li) continue;
+    const item = (chatData?.conversation?.progress?.items || []).find((x) => Number(x?.id) === id);
+    const note = flowItemNote(item, t);
+    let n = li.querySelector(":scope > .fr-note");
+    if (!note) { n?.remove(); continue; }
+    if (!n) { n = homeEl("p", undefined, "fr-note"); n.title = "执行者报的进度；下一条覆盖上一条"; li.append(n); }
+    n.textContent = note;
+  }
+}
 // SSE: pushed on change only; heartbeat/lease countdowns are computed locally
 // (1s redraw, zero server load)
 const es = window.boardSession.events("/api/events");
 es.onopen = () => {
   liveOpen = true;
   if (restartPending){
-    if (hasUnsavedInput()){ showRevBar(null, "看板已重启"); restartPending = null; live(true, "实时"); return; }
+    if (holdReload()){ showRevBar(null, "看板已重启"); restartPending = null; live(true, "实时"); return; }
     location.reload(); return;
   }
   live(true, "实时");
@@ -5851,6 +5922,8 @@ es.addEventListener("change", (e) => {
     if (typeof d.type === "string" && d.type.startsWith("task.") && d.id != null) flashMark(d.id);
     if (d.type === "executor.changed") aiLoad();            // 接入的 AI 有变:重读列表(首页「卡住」也跟着变)
     if (d.type === "desktop-sessions.changed" && homeView === "settings") deskLoad();
+    // live_note(执行者的临时进度):只读这一张卡、只改流转条那一行与卡面那一句,不整页重读(F4)。
+    if (d.type === "task.live_note" && d.id != null) { liveNoteChanged(d.id); return; }
   } catch {}
   refresh();
 });
@@ -8951,7 +9024,7 @@ async function aiIssue(body, b){
     const r = await fetch("/api/connect/codes", { method: "POST", headers: WH, body: JSON.stringify(body) });
     const v = await r.json().catch(() => ({}));
     if (r.status === 404 && !v.code) { aiNote.textContent = "这个版本还没有接入功能"; return; }
-    if (!r.ok) { aiNote.textContent = "没有发出接入码：" + (v.error || "状态 " + r.status); return; }
+    if (!r.ok) { aiNote.textContent = aiIssueError(r.status, v); return; }
     aiIssued = { ...v, kind: body.kind, label: body.label || null };
     aiForm.hidden = true; aiForm.reset();
     renderAiCode();
@@ -9012,6 +9085,8 @@ for (const r of document.querySelectorAll("input[name=desk-src]"))
   r.addEventListener("change", () => { if (r.checked) { deskSrc = r.value; deskCap = 50; renderDesk(); } });
 document.getElementById("desk-q").addEventListener("input", () => { deskCap = 50; renderDesk(); });
 const deskKey = (s) => s.source + ":" + s.id;
+/** 大体量阈值:列表应答顶层给的;没读到 = 不标大。 */
+const deskTh = () => ({ tokens: deskSlot.value?.threshold_tokens, bytes: deskSlot.value?.threshold_bytes });
 function renderDesk(){
   const box = document.getElementById("desk-list"); if (!box) return;
   const v = deskSlot.value, q = document.getElementById("desk-q").value;
@@ -9046,27 +9121,31 @@ function deskRow(s, running){
   const meta = homeEl("span", undefined, "dr-meta");
   if (s.project) { const p = homeEl("span", String(s.project).split(/[\\/]/).filter(Boolean).pop() || String(s.project)); p.title = String(s.project); meta.append(p); }
   if (s.updated_at) meta.append(homeEl("span", localTime(s.updated_at)));
-  const size = deskSize(s, formatCount), sz = homeEl("span", size.text, "dr-size");
+  const size = deskSize(s, formatCount, deskTh()), sz = homeEl("span", size.text, "dr-size");
   if (size.large) { sz.insertAdjacentHTML("afterbegin", icon("warn")); sz.title = "体量大：登记成线后，每次干活都会带上整段上下文"; }
   meta.append(sz);
   if (s.missing) meta.append(homeEl("span", "本机已找不到这个会话"));
   main.append(meta);
-  if (s.line) {
-    const ln = homeEl("span", "已登记为线 " + lineLabel(s.line) + (running[s.line] ? "" : " · 还没启动"), "dr-line");
+  const ref = deskLineRef(s.line, lineLabel);
+  if (ref) {
+    const ln = homeEl("span", "已登记为线 " + ref.label + (running[ref.id] ? "" : " · 还没启动"), "dr-line");
     ln.title = "领卡时用这个会话的副本，原会话不动";
     main.append(ln);
+    // 登记了但起不来(座席未解禁 / 缺命令路径 / 执行配置未就绪):原因就写在这一行下面
+    const why = running[ref.id] ? "" : deskBlocked(s.start_blocked);
+    if (why) { const b = homeEl("span", why, "dr-note"); b.insertAdjacentHTML("afterbegin", icon("warn")); main.append(b); }
   }
   const note = deskNotes.get(key);
   if (note) main.append(homeEl("span", note, "dr-note"));
   row.append(box, main);
   if (s.selected && !s.missing) {
     const acts = homeEl("div", undefined, "dr-acts");
-    if (!s.line) {
+    if (!ref) {
       const reg = homeEl("button", "登记成线"); reg.type = "button";
       reg.title = "建一条来领任务的线；第一次领卡时以这个会话的副本为起点";
       reg.addEventListener("click", () => deskRegister(s, reg));
       acts.append(reg);
-    } else if (!running[s.line]) {
+    } else if (!running[ref.id] && !deskBlocked(s.start_blocked)) {
       const go = homeEl("button", "去起线"); go.type = "button";
       go.addEventListener("click", () => goLines());
       acts.append(go);
@@ -9076,7 +9155,7 @@ function deskRow(s, running){
     const hist = homeEl("button", "看历史", "ghost"); hist.type = "button";
     hist.addEventListener("click", () => { more.open = false; deskHistOpen(s); });
     list.append(hist);
-    if (s.line) {
+    if (ref) {
       const un = homeEl("button", "解除", "ghost"); un.type = "button";
       un.title = "停线并解除和这个会话的关联；已建的卡与历史保留";
       un.addEventListener("click", () => { more.open = false; deskUnlink(s, un); });
@@ -9104,30 +9183,38 @@ async function deskPick(s, box){
 async function deskRegister(s, b){
   const key = deskKey(s), send = (confirm_large) => fetch("/api/desktop-sessions/lines", { method: "POST", headers: WH,
     body: JSON.stringify({ source: s.source, id: s.id, ...(confirm_large ? { confirm_large: true } : {}) }) });
+  // 先确认(P1:这条线带着整段会话);大体量按列表给的阈值一并说明,确认过就直接带 confirm_large。
+  const size = deskSize(s, formatCount, deskTh());
+  const capOf = (v) => Number.isFinite(v?.threshold_tokens) ? formatCount(v.threshold_tokens) + " 词元" : "";
+  if (!confirm(deskRegisterConfirm(size.text, capOf(deskSlot.value), size.large))) return;
   b.disabled = true;
   try {
-    let r = await send(false), v = await r.json().catch(() => ({}));
+    let r = await send(size.large), v = await r.json().catch(() => ({}));
     if (r.status === 400 && v.code === "NEEDS_CONFIRM_LARGE") {
-      const size = deskSize({ approx_tokens: v.approx_tokens, size_bytes: v.size_bytes }, formatCount).text;
-      const cap = Number.isFinite(v.threshold_tokens) ? "，超过 " + formatCount(v.threshold_tokens) + " 词元" : "";
-      if (!confirm("这个会话体量" + size + cap + "。\n\n登记后这条线每次干活都会带上整段上下文，费用高，第一轮可能先压缩。\n\n仍要登记？")) { b.disabled = false; return; }
+      // 列表里的体量旧了(会话又变长了):按应答里的数再问一次
+      const big = deskSize({ approx_tokens: v.approx_tokens, size_bytes: v.size_bytes }, formatCount).text;
+      if (!confirm(deskRegisterConfirm(big, capOf(v), true))) { b.disabled = false; return; }
       r = await send(true); v = await r.json().catch(() => ({}));
     }
     if (r.status === 404 && !v.code) deskNotes.set(key, "这个版本还没有登记成线功能");
     else if (!r.ok) deskNotes.set(key, deskLineError(r.status, v));
-    else { deskNotes.delete(key); s.line = v.line?.id || s.line; }
+    else {
+      deskNotes.delete(key);
+      // 显示名直接用 201 里的(线清单刷新前 lineLabel 只认得线 id);起不来的原因随这一行显示
+      s.line = deskLineRef(v.line, lineLabel) || s.line; s.start_blocked = v.start_blocked ?? null;
+    }
   } catch (err) { deskNotes.set(key, "没有登记：" + copyError(err)); }
   b.disabled = false;
   renderDesk(); deskLoad();
 }
 async function deskUnlink(s, b){
-  const key = deskKey(s);
-  if (!confirm("解除线「" + lineLabel(s.line) + "」和这个会话的关联？\n\n这条线会停下；已建的卡与历史保留。")) return;
+  const key = deskKey(s), ref = deskLineRef(s.line, lineLabel); if (!ref) return;
+  if (!confirm("解除线「" + ref.label + "」和这个会话的关联？\n\n这条线会停下；已建的卡与历史保留。")) return;
   b.disabled = true;
   try {
-    const r = await fetch("/api/desktop-sessions/lines/" + encodeURIComponent(s.line), { method: "DELETE", headers: WH });
+    const r = await fetch("/api/desktop-sessions/lines/" + encodeURIComponent(ref.id), { method: "DELETE", headers: WH });
     const v = await r.json().catch(() => ({}));
-    if (!r.ok) deskNotes.set(key, deskLineError(r.status, v)); else { deskNotes.delete(key); s.line = null; }
+    if (!r.ok) deskNotes.set(key, deskLineError(r.status, v)); else { deskNotes.delete(key); s.line = null; s.start_blocked = null; }
   } catch (err) { deskNotes.set(key, "没有解除：" + copyError(err)); }
   b.disabled = false;
   renderDesk(); deskLoad();
@@ -9151,7 +9238,7 @@ async function deskHistMore(){
     const r = await fetch("/api/desktop-sessions/" + ref.s.source + "/" + encodeURIComponent(ref.s.id) + "/messages" + qs, { headers: WH, cache: "no-store" });
     const v = await r.json().catch(() => ({}));
     if (r.status === 404) ref.note = v.code === "SESSION_UNKNOWN" ? "这段会话读不到了" : "这个版本还没有看历史功能";
-    else if (!r.ok) ref.note = "暂时读不到：" + (v.error || "状态 " + r.status);
+    else if (!r.ok) ref.note = "暂时读不到：" + deskLineError(r.status, v);
     else { ref.msgs = [...(v.messages || []), ...ref.msgs]; ref.before = v.next_before ?? null; ref.done = v.next_before == null; ref.note = ""; }
   } catch (err) { ref.note = "暂时读不到：" + copyError(err); }
   if (deskHistRef !== ref) return;

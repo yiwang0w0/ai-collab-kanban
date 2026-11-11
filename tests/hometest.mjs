@@ -310,7 +310,7 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
       els.push({ scope, tagName: "TEXTAREA", id: attr(s, "id"), type: "textarea", value: body });
   }
   // 协作区的三样:批准行的备注(#approvals input)、只显示一次的新令牌(#apt-new 没带 hidden)、展开中的强制释放理由。
-  const coord = { notes: [], tokenShown: false, lockForm: false };
+  const coord = { notes: [], tokenShown: false, lockForm: false, codeShown: false };
   const document = { querySelectorAll: (sel) => sel.split(",").flatMap((part) => {
     part = part.trim();
     if (part === "textarea") return els.filter((e) => e.tagName === "TEXTAREA");
@@ -322,11 +322,12 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
     const hit = sel.split(",").map((part) => part.trim()).some((part) => {
       if (part === "#apt-new:not([hidden])") return coord.tokenShown;
       if (part === "#coord [data-lock-form]") return coord.lockForm;
+      if (part === "#ai-code:not([hidden]) .ac-code") return coord.codeShown;
       assert.fail("选择器多了没造过的部分:" + part);
     });
     return hit ? {} : null;
   } };
-  const hasUnsavedInput = new Function("document", src.slice(a, b) + "\nreturn hasUnsavedInput;")(document);
+  const [hasUnsavedInput, holdReload] = new Function("document", src.slice(a, b) + "\nreturn [hasUnsavedInput, holdReload];")(document);
   const el = (id) => { const e = els.find((x) => x.id === id); assert.ok(e, id); return e; };
   assert.equal(el("line-add-ro").type, "checkbox"); assert.equal(el("line-add-auto").value, "on");
   assert.equal(hasUnsavedInput(), false, "空表单:两个勾选框的 value 恒为 on,不算没保存的输入");
@@ -355,6 +356,12 @@ test("换版本自动刷新只被真没保存的输入拦下:空表单不拦,勾
   assert.equal(hasUnsavedInput(), true, "强制释放的理由框开着,空着也算");
   coord.lockForm = false;
   assert.equal(hasUnsavedInput(), false);
+  // 接入码正在显示(没过期):码只在发码应答里出现一次 → 自动刷新同样拦下(holdReload),两处刷新判定都用它
+  assert.equal(holdReload(), false); coord.codeShown = true;
+  assert.equal(holdReload(), true, "接入码显示期间不自动刷新");
+  coord.codeShown = false; coord.tokenShown = true;
+  assert.equal(holdReload(), true, "没保存的输入照旧拦"); coord.tokenShown = false;
+  assert.equal(src.split("if (holdReload()){").length - 1, 2, "换版本与重启后两处都用 holdReload");
   // 新令牌显示框是文本块不是输入框:不被 textarea / input 的判定带走,靠 #apt-new 的显隐判。
   assert.match(src, /<code class="apt-token" id="apt-new-token" tabindex="0" aria-label="新生成的批准令牌"><\/code>/);
   assert.ok(src.includes('document.getElementById("apt-new-token").textContent = r.token;') && src.includes('document.getElementById("apt-new").hidden = true;'));

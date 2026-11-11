@@ -1060,7 +1060,7 @@ test("流转相关的界面接线：容错与文案", () => {
 
 // ── 第 2 波:接入的 AI / 本地会话 / 效率(合同 A / D / C;core/panel.html 的 wave2-copy 段) ──
 const w2Source = panelSection("// ── wave2-copy(pure;tests/panelcopytest.mjs)──", "// ── /wave2-copy ──");
-const w2 = new Function(w2Source + "\nreturn { AI_KINDS, aiKindName, aiState, aiReport, aiCodeLeft, deskSize, deskRows, deskMsg, deskLineError, EFF_METRICS, effValue, effDelta, effGroupName, effDaily, effQuery };")();
+const w2 = new Function(w2Source + "\nreturn { AI_KINDS, aiKindName, aiState, aiReport, aiCodeLeft, deskSize, deskLineRef, deskBlocked, deskRegisterConfirm, aiIssueError, deskRows, deskMsg, deskLineError, EFF_METRICS, effValue, effDelta, effGroupName, effDaily, effQuery };")();
 
 test("接入的 AI：状态徽标六种，撤销优先，未知值写待核实", () => {
   const t = (e) => w2.aiState(e).text;
@@ -1086,9 +1086,27 @@ test("接入的 AI：状态徽标六种，撤销优先，未知值写待核实",
 
 test("本地会话：体量、筛选排序、看历史一条、登记的错误码", () => {
   const c = (n) => n + "!";
-  assert.deepEqual(w2.deskSize({ approx_tokens: 1000 }, c), { text: "约 1000! 词元", large: false });
-  assert.equal(w2.deskSize({ approx_tokens: 200001 }, c).large, true, "阈值 200k");
-  assert.equal(w2.deskSize({ approx_tokens: null, size_bytes: 5 * 1048576 }).large, true, "无用量记录按文件 4MB 兜底");
+  const th = { tokens: 200000, bytes: 4 * 1048576 };
+  assert.deepEqual(w2.deskSize({ approx_tokens: 1000 }, c, th), { text: "约 1000! 词元", large: false });
+  assert.equal(w2.deskSize({ approx_tokens: 200001 }, c, th).large, true, "阈值用服务端给的 threshold_tokens");
+  assert.equal(w2.deskSize({ approx_tokens: 200001 }, c, { tokens: 300000 }).large, false, "阈值不写死:服务端给多少按多少");
+  assert.equal(w2.deskSize({ approx_tokens: null, size_bytes: 5 * 1048576 }, String, th).large, true, "无用量记录按 threshold_bytes");
+  assert.equal(w2.deskSize({ approx_tokens: 9e9 }).large, false, "服务端没给阈值就不标大(登记时服务端再判)");
+  assert.ok(!source.includes("DESK_LARGE_TOKENS") && !source.includes("4 * 1024 * 1024"), "面板里没有硬编码的 200k / 4MB");
+  // 列表项 line 的最终形 {id,label};label 缺或等于 id 时用面板线名
+  assert.deepEqual(w2.deskLineRef({ id: "claude-1a2b3c4d", label: "Claude 会话 1a2b3c4d" }), { id: "claude-1a2b3c4d", label: "Claude 会话 1a2b3c4d" });
+  assert.deepEqual(w2.deskLineRef({ id: "x", label: "x" }, (l) => "线" + l), { id: "x", label: "线x" });
+  assert.deepEqual(w2.deskLineRef("x", (l) => "线" + l), { id: "x", label: "线x" }, "旧服务端给字符串也认");
+  assert.equal(w2.deskLineRef(null), null); assert.equal(w2.deskLineRef({}), null);
+  assert.equal(w2.deskBlocked({ code: "SEAT_LOCKED", message: "codex 座席未解禁" }), "起不来：codex 座席未解禁");
+  assert.equal(w2.deskBlocked(null), "");
+  const ask = w2.deskRegisterConfirm("约 30万 词元", "20万 词元", true);
+  assert.ok(ask.includes("这条线带着那段会话的全部内容，它交付的证据其它执行者读得到"), "P1:确认框写明数据外流面");
+  assert.ok(ask.includes("约 30万 词元") && ask.includes("超过 20万 词元"));
+  assert.ok(!w2.deskRegisterConfirm("约 1千 词元", "", false).includes("体量"), "小会话不提体量");
+  assert.match(w2.aiIssueError(409, { code: "TOO_MANY_PENDING_CODES", error: "x" }), /^已有 5 个接入码在等对方使用/);
+  assert.match(w2.aiIssueError(400, { code: "ROLE_NOT_AVAILABLE" }), /还没开放/);
+  assert.equal(w2.aiIssueError(500, {}), "没有发出接入码：状态 500");
   assert.equal(w2.deskSize({ approx_tokens: null, size_bytes: 2048 }).text, "2 KB");
   assert.deepEqual(w2.deskSize({}), { text: "体量待核实", large: false });
   const list = [{ source: "claude", id: "a", title: "甲 报表", updated_at: "2026-11-01" }, { source: "codex", id: "b", title: "乙", updated_at: "2026-11-09" },
@@ -1099,6 +1117,7 @@ test("本地会话：体量、筛选排序、看历史一条、登记的错误�
   assert.deepEqual(w2.deskMsg({ role: "user", text: "做 X", tools: 0 }), { who: "你", text: "做 X", tools: "", at: "" });
   assert.equal(w2.deskMsg({ role: "assistant", text: "", tools: 3 }).tools, "用了 3 次工具");
   assert.equal(w2.deskLineError(404, { code: "SESSION_UNKNOWN" }), "这段会话读不到了");
+  assert.equal(w2.deskLineError(404, { code: "NOT_A_DESKTOP_LINE", error: "线 x 不是从桌面会话登记的线" }), "线 x 不是从桌面会话登记的线", "解除被拒照应答文案");
   assert.equal(w2.deskLineError(409, { code: "ALREADY_A_LINE", line: "claude-1a2b3c4d" }), "这个会话已经登记成线 claude-1a2b3c4d");
   assert.equal(w2.deskLineError(409, { code: "LINEAGE_HANDWRITTEN", error: "写在手写配置里" }), "写在手写配置里", "照应答的原因写");
   assert.equal(w2.deskLineError(500, {}), "没有完成，状态 500");
@@ -1144,4 +1163,19 @@ test("第 2 波的界面接线：新文案、旧代劳按钮留着、接口缺�
   assert.ok(source.includes('<p class="home-eff" id="home-eff" hidden></p>'), "首页效率一行读不到不出");
   // 效率块不用强调色:箭头与差值都是 --dim
   assert.match(source, /\.eff-d,\.eff-arrow\{color:var\(--dim\)\}/);
+});
+
+test("接真接口后的收口:live_note 只改那一处、登记确认框、刚登记的线用 201 的显示名", () => {
+  // F4 面板部分:task.live_note 在整页 refresh() 之前返回,只读那一张卡
+  const h = source.slice(source.indexOf('es.addEventListener("change"'), source.indexOf("// Worker stdout arrives per line"));
+  const at = h.indexOf('d.type === "task.live_note"');
+  assert.ok(at > 0 && h.slice(at, at + 120).includes("liveNoteChanged(d.id); return;") && at < h.lastIndexOf("refresh();"), "live_note 不走整页刷新");
+  const fn = source.slice(source.indexOf("function liveNoteChanged("), source.indexOf("// SSE: pushed on change only"));
+  assert.ok(fn.includes('fetch("/api/tasks/" + id') && !fn.includes("refresh()") && !fn.includes("render()"), "只读一张卡,不重读、不重画整页");
+  assert.ok(fn.includes(".live-note") && fn.includes(".fr-note") && fn.includes("createTextNode(text)"), "卡面与流转条行就地换字(文本通道)");
+  // 登记成线:先确认(P1),确认过大体量就直接带 confirm_large;201 的 label 与 start_blocked 直接用
+  const reg = source.slice(source.indexOf("async function deskRegister("), source.indexOf("async function deskUnlink("));
+  assert.ok(reg.indexOf("confirm(deskRegisterConfirm(") < reg.indexOf("await send("), "先确认再发");
+  assert.ok(reg.includes("s.line = deskLineRef(v.line, lineLabel)") && reg.includes("s.start_blocked = v.start_blocked"));
+  assert.ok(source.includes("aiNote.textContent = aiIssueError(r.status, v);"), "发码错误码给人话");
 });
