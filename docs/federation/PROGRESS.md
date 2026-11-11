@@ -1382,3 +1382,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
 - 2026-11-11 公告板 v3 合同 B「流转」后端(claude/flow):新 `core/flow.mjs` 给 `GET /api/tasks/:id/history`(人话条目 + step / actor_kind,打回带裁定原文摘要)、任务对象 `handed_back` / `last_actor` / `last_actor_kind`(事件表增量缓存)、建卡对话的 `conversation.progress` 与唯一一条原位更新的 `kind:"progress"` 消息(子卡变化 2 秒合并推 `conversation.changed`,重启按库重算);server.mjs 只接线,convtest 看建卡消息时略过进度消息。
 - flowtest 4/0(500 卡 / 5000 事件:热读 500 次约 1ms)、convtest 5/0、hometest 43/0、taskexecutionhttp 1/0;没有调用模型。阻塞：无。
+- 2026-11-11 公告板 v3 合同 C「效率」后端(claude/efficiency):新 `core/efficiency.mjs` 给 `GET /api/efficiency`(本周对上周或指定区间对紧邻等长区间;done/lead/cycle/返工/一次通过率/自动通过占比/人的操作与等待/AI 持卡时长/并行均值与峰值/卡住/模型耗时与费用;未知一律 null 并列进 unknown;by=day|week|line|runtime 分解;按事件水位 + 区间缓存),事件归类复用 core/flow.mjs;`board.py efficiency`;docs/效率口径.md。
+- efficiencytest 7/0(2000 卡 / 2 万事件:冷算约 135ms、热读约 1ms)、flowtest 4/0;没有调用模型。阻塞：无。

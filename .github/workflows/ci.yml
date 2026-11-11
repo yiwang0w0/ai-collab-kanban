@@ -276,6 +276,11 @@ jobs:
       - name: "flowtest (card history, derived hand-back fields, conversation progress)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/flowtest.mjs
+      - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/efficiencytest.mjs
+        env:
+          PYTHON: python
       - name: "approvaltest (pending approvals, decision routing, remote entry and approval tokens)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/approvaltest.mjs

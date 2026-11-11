@@ -41,6 +41,7 @@ import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorC
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 import {createFlow} from "./flow.mjs";
+import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -1046,6 +1047,9 @@ function settleUsage() {
       "WHERE status='done' AND resolved_at IS NOT NULL AND resolved_at>=? ORDER BY resolved_at, id").all(usageLedger.watermark()));
   } catch (e) { console.error("用量结算失败:", e.message); }
 }
+// 合同 C「效率」:本期对上期的汇总(core/efficiency.mjs,只读;卡死判定沿用 COORD_STALE_MS)。
+const efficiency = createEfficiency({ db, ledger: usageLedger, lines: () => SUPERVISED || [], labels: () => LINE_LABEL || {},
+                                     isExecutor: coord.isExecutor, staleMs: () => COORD_STALE_MS });
 const MAX_PARALLEL = Math.max(1, Number(CFG.max_parallel) || 3);
 const DEFAULT_AGENT = { ...CFG.default_agent };
 const DEFAULT_SET = { agents: [{ ...DEFAULT_AGENT }], rev: 0 };
@@ -3838,6 +3842,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { events: evs, last_id: evs.length ? evs[evs.length - 1].id : after });
     }
 
+    if (m === "GET" && p === "/api/efficiency") { const r = efficiencyHttp(efficiency, url.searchParams, boardRole); return json(res, r.status, r.body); }
     // ── Per-card token usage (panel card faces). Read-only aggregation.
     if (m === "GET" && (p === "/api/usage" || p.startsWith("/api/usage/"))) {
       const r = usageHttp(usageLedger, p, url.searchParams);

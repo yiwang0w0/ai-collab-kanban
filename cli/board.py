@@ -50,6 +50,8 @@
   $P usage ls [--by card|line|model|phase] [--from 2026-11-01] [--to 2026-11-10]   # 分组汇总;未知显示为「未知」,不当 0
   $P usage card <id>                         # 一张卡的结算:阶段 × 模型、失败尝试单列、已写下的结算事件
   $P usage csv [--by …] [--from …] [--to …] [--card <id>] [--out 文件]             # 导出 CSV;不给 --out 打到标准输出
+效率(docs/效率口径.md):
+  $P efficiency [--from 2026-11-01 --to 2026-11-07] [--by day|week|line|runtime]   # 主句 + 本期/上期对照 + 分解;未知显示「未知」,不当 0
   done / wait 可带 --usage <json文件>:外部执行者随交付自报用量(一个对象或数组;键 model、calls、in、cc、cr、out、
                                              #   duration_ms、cost_usd、cli_version、phase;不知道的项不写)。费用来源记为 external-reported
 
@@ -473,6 +475,41 @@ def usage_cmd():
     else:
         sys.exit("usage ls [--by card|line|model|phase] [--from …] [--to …] | usage card <id> | usage csv [--card <id>] [--out 文件]")
 
+def efficiency_cmd():
+    """GET /api/efficiency:一段主句 + 本期 / 上期对照表 + 分解表。未知显示「未知」,不当 0。"""
+    qs = [f"{k}={urllib.parse.quote(arg('--' + k), safe='')}" for k in ("from", "to", "by") if arg("--" + k)]
+    s, d = call("GET", "/api/efficiency" + ("?" + "&".join(qs) if qs else ""))
+    if s >= 400: die(s, d)
+    def dur(v):
+        if v is None: return "未知"
+        m = int(round(v / 60000))
+        return f"{m // 60}h{m % 60:02d}m" if m >= 60 else f"{m}m"
+    def pct(v): return "未知" if v is None else f"{v * 100:.0f}%"
+    def num(v): return "未知" if v is None else f"{v:,}"
+    def flt(v): return "未知" if v is None else f"{v:.2f}"
+    def usd(v): return "未知" if v is None else f"${v:.4f}"
+    rows = (("done", "完成(张)", num), ("handed_back", "打回(次)", num), ("first_pass_rate", "一次通过率", pct),
+            ("auto_accept_rate", "自动通过占比", pct), ("lead_ms_median", "从挂出到完成(中位)", dur),
+            ("cycle_ms_median", "从首次领取到完成(中位)", dur), ("ai_work_ms", "AI 持卡时长", dur),
+            ("model_ms", "模型墙钟", dur), ("parallel_avg", "平均同时在跑", flt), ("parallel_peak", "最多同时在跑", num),
+            ("wait_human_ms_total", "等你裁定(合计)", dur), ("wait_human_ms_median", "等你裁定(中位)", dur),
+            ("human_actions", "你操作(次)", num), ("stalled", "卡住(心跳超时)", num), ("cost_usd", "费用", usd))
+    print(d["headline"])
+    print(f"  本期 {d['period']['from'][:16]} ~ {d['period']['to'][:16]}    上期 {d['previous']['from'][:16]} ~ {d['previous']['to'][:16]}")
+    print(f"  {'指标':<20}{'本期':>12}{'上期':>12}")
+    for key, label, f in rows:
+        print(f"  {label:<20}{f(d['now'].get(key)):>12}{f(d['prev'].get(key)):>12}")
+    if d.get("daily"):
+        print("  逐日 新挂/完成:" + " · ".join(f"{x['date'][5:]} {x['created']}/{x['done']}" for x in d["daily"]))
+    if d.get("groups"):
+        print(f"  分解(--by {arg('--by')};只列有动静的组,不做排名):")
+        for g in d["groups"]:
+            print(f"    {str(g['label'])[:20]:<20} 完成 {num(g['done'])}  打回 {num(g['handed_back'])}  一次通过 {pct(g['first_pass_rate'])}"
+                  f"  AI {dur(g['ai_work_ms'])}  模型 {dur(g['model_ms'])}  等你 {dur(g['wait_human_ms_median'])}"
+                  f"  操作 {num(g['human_actions'])}  并行 {flt(g['parallel_avg'])}")
+    elif arg("--by"):
+        print("  分解:这个区间里没有动静")
+
 _META = None
 def meta():
     """GET /api/meta, once per process. The display labels for status / waiting_for have
@@ -503,6 +540,9 @@ def main():
 
     elif cmd == "usage":
         usage_cmd()
+
+    elif cmd == "efficiency":
+        efficiency_cmd()
 
     elif cmd == "ls":
         qs = []
