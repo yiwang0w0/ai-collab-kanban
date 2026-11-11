@@ -1386,3 +1386,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - flowtest 4/0(500 卡 / 5000 事件:热读 500 次约 1ms)、convtest 5/0、hometest 43/0、taskexecutionhttp 1/0;没有调用模型。阻塞：无。
 - 2026-11-11 面板第 1 波「流转」(claude/flow-ui):对话里已建卡的计划换成流转条(每张子卡一行:卡号/标题/线·执行器/五步点/状态短语/打回次数/live_note,顶上 d/n 细进度条,只有等你的行用强调色);SSE task.* 带卡号时对应行与首页卡标 4 秒「刚更新」;首页「正在执行」按目标归组;卡详情加默认折叠的「历史」(最近 20 条 + 显示全部,404 写暂无记录);卡面「已打回 n 次」与进行中的 live_note。字段缺失一律不显示。docs/style-guide.md §七 同步。
 - panelcopytest 37/0、hometest 43/0、panelsidetest 34/0、panelauth 11/0、panelcoordtest 9/0、tltest 1/0、progressdiagnostictest 7/0;渲染只在假数据(浏览器打桩)下看过,真数据联调留到整合。阻塞：无。
+- 2026-11-11 公告板 v3 合同 A「凭码接入」(claude/connect):新 `core/connect.mjs` 给 `POST /api/connect/codes`(一次性码,10 分钟,库里只存哈希;不给线就新建外部执行线)、`POST /api/connect/redeem`(只限回环,错 5 次全局锁 1 分钟)、`GET /api/executors`(online / state 四态 / holding / last_report)与撤销;桥 `cli/exec-mcp.mjs` 加 `--code` 兑换写令牌文件(只给 `--token-file` 的旧用法不变)、`wait_for_card`、`ask_operator`、`heartbeat` 的 `note`(`live_note`,临时、绑本轮 run);docs/多执行者协作.md 增「凭码接入」「值守」。
+- connecttest 3/0、execmcptest 3/0(真看板 + 真 stdio 子进程);没有调用模型。阻塞：无。
