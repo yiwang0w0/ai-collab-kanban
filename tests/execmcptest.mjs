@@ -119,7 +119,8 @@ test("桥:--code 凭码接入、wait_for_card、heartbeat note、ask_operator", 
   try {
     const code = await B.api("POST", "/api/connect/codes", B.operator, { kind: "zcode", line: "ext" });
     assert.equal(code.status, 201, JSON.stringify(code.body));
-    const tokenFile = join(B.dir, "creds", "ext.token");          // 目录还不存在:桥建成仅当前账户可访问
+    // 目录还不存在(缺 3 级,与发码给的缺省路径 %LOCALAPPDATA%/ai-fleet-board/executors/<看板>/ 同形):桥逐级建成仅当前账户可访问
+    const tokenFile = join(B.dir, "appdata", "ai-fleet-board", "executors", "ext.token");
     const M = bridge(["--url", B.base, "--line", "ext", "--code", code.body.code, "--token-file", tokenFile]);
     try {
       const init = await M.request("initialize", INIT);
@@ -185,7 +186,11 @@ test("桥的启动参数:只接回环地址和 exe_ 执行者令牌,错误文案
     assert.equal(run("--url", "http://127.0.0.1:47914").status, 1, "缺 --token-file");
     const badCode = run("--url", "http://127.0.0.1:47914", "--token-file", join(dir, "new.token"), "--code", "not a code");
     assert.equal(badCode.status, 1); assert.match(badCode.stderr, /BAD_INPUT/);
-    const down = run("--url", "http://127.0.0.1:9", "--token-file", join(dir, "new.token"), "--code", "ABCD-EFGH");
-    assert.equal(down.status, 1); assert.match(down.stderr, /BOARD_UNREACHABLE/); assert.ok(!down.stderr.includes("ABCD"), "不回显码");
+    const old8 = run("--url", "http://127.0.0.1:9", "--token-file", join(dir, "new.token"), "--code", "ABCD-EFGH");
+    assert.equal(old8.status, 1); assert.match(old8.stderr, /BAD_INPUT/, "码长 10 位,旧的 8 位形在桥里就拒");
+    const down = run("--url", "http://127.0.0.1:9", "--token-file", join(dir, "new.token"), "--code", "ABCDE-FGHJK");
+    assert.equal(down.status, 1); assert.match(down.stderr, /BOARD_UNREACHABLE/); assert.ok(!down.stderr.includes("ABCDE"), "不回显码");
+    const deep = run("--url", "http://127.0.0.1:9", "--token-file", join(dir, "a", "b", "c", "d", "e", "x.token"), "--code", "ABCDE-FGHJK");
+    assert.equal(deep.status, 1); assert.match(deep.stderr, /TOKEN_FILE_UNWRITABLE/, "缺的目录超过 4 级不建");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

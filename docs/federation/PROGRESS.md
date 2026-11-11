@@ -1390,3 +1390,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - connecttest 3/0、execmcptest 3/0(真看板 + 真 stdio 子进程);没有调用模型。阻塞：无。
 - 2026-11-11 安全复审 F12(claude/flow):history 摘要的遮蔽补全带空格路径、`/c/Users` 与 `/mnt/c` 形、UNC、`%VAR%\`、`file://` 与 github_pat_ / ghp_ / gho_ / sk- / xoxb- / xoxp- / AKIA / JWT / 长混排串;`core/flow.mjs` 导出 `redactText`(不截断)供 live_note 等复用。
 - flowtest 5/0(新增逐类 20 例,旧实现下 15 例红,其余 5 例为回归保护);没有调用模型。阻塞：无。
+- 2026-11-11 连接器安全复审修复(claude/connect,F1–F9/F13/P3):绑线执行者只领只看本线(读接口白名单,别的线 404,别人的 live_note 为空);撤销断 SSE 并放锁;live_note 去重 + 每卡 5 秒节流 + 清洗;兑换取消锁定改错码延迟 200ms/并发 20;码 10 位;建线推迟到兑换、待兑换 ≤5;令牌文件缺省移到 %LOCALAPPDATA%;远程摘要去掉凭码执行者;other 片段改 PowerShell 引号。
+- connecttest 9/0(12 处还原变异全红)、execmcptest 3/0、coordtest 25/0、approvaltest 20/0、selftest 402/0、fourchannel-store 7/0、servertest 228/0;没有调用模型。阻塞:面板侧 task.live_note 局部刷新属 UI 线。

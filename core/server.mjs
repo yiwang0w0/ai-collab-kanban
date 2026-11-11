@@ -33,7 +33,7 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
-import {openConnect,isLoopback} from "./connect.mjs";
+import {openConnect,isLoopback,defaultTokenDir} from "./connect.mjs";
 import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliResult} from "./board-claude-cli.mjs";
@@ -455,7 +455,8 @@ const connect = openConnect({ db, coord, store, emit: (type, data) => emit(type,
   addExternalLine: (id, label) => { const added = addLine(id, "", label, null, null, true); emit("config.lines", { line: added.id });
     console.log(`线已加入: ${added.id}「${added.label}」· 外部执行(凭码接入)—— 已写入 ${CONFIG_FILE},无需重启`); },
   snippetBase: () => ({ node: process.execPath, bridge: join(__dirname, "..", "cli", "exec-mcp.mjs"), url: `http://127.0.0.1:${PORT}`,
-                        tokenDir: join(store.DATA_DIR, "credentials") }),
+                        // 令牌文件缺省放在当前用户应用数据目录下的看板专用子目录,不在看板数据目录里(F5;board_token 在数据目录)。
+                        tokenDir: defaultTokenDir(store.DATA_DIR) }),
 } });
 connect.migrate();
 approvals.migrate(db);
@@ -2329,6 +2330,19 @@ const sentries = new Map();   // res -> { rev, at }
 //   (`change`), the type rides in the data — new types arrive by construction.
 //   Worker stdout is high-frequency, so it gets its own frame (`log`) for
 //   receiver-side throttling.
+// 每条 SSE 连接记着它建立时用的凭据(只记哈希与种类)。凭据被撤销 / 注销 / 换发 / 面板会话退出或过期后,
+// dropRevokedSse() 把这条连接从服务端关掉(F3):HTTP 请求立即 401,长连接也不能继续收全板事件。
+const sseAuth = new Map();   // res -> { kind:"panel"|"executor"|"static", hash }
+function sseStillValid(a) {
+  if (a.kind === "panel") { const v = panelSessions.get(a.hash); return !!v && panelLive(v); }
+  if (a.kind === "executor") return !!db.prepare("SELECT 1 FROM coord_executors WHERE token_hash=? AND removed_at IS NULL").get(a.hash);
+  return true;               // board_token / worker / review 令牌:进程内不撤销
+}
+function dropRevokedSse() {
+  let n = 0;
+  for (const [res, a] of sseAuth) if (!sseStillValid(a)) { sseAuth.delete(res); clients.delete(res); sentries.delete(res); try { res.end(); } catch {} n++; }
+  return n;
+}
 function emit(type, data = {}) {
   const wire = String(type).endsWith(".log") ? "log" : "change";
   if (wire === "change") settleUsage();          // 卡变成 done 的每条路都经过这里
@@ -2510,6 +2524,7 @@ function savePanelSessions() {
 function mintPanelCredential() {
   for (const [h, v] of panelSessions) if (!panelLive(v)) panelSessions.delete(h);
   while (panelSessions.size >= PANEL_MAX) panelSessions.delete(panelSessions.keys().next().value);
+  dropRevokedSse();          // 被挤掉 / 过期的面板会话,它的 SSE 一并断开
   const credential = randomUUID().replace(/-/g, "") + randomUUID().replace(/-/g, "");
   panelSessions.set(sha256(credential), { issued_at: new Date().toISOString() });
   savePanelSessions();
@@ -2617,6 +2632,22 @@ function closeGateOrThrow(t) {
         `\n  ⚠若这些改动不属于本卡(共享工作树上别的线在途),在 resolve 时带 allow_uncommitted:true 并写明归属。`);
 }
 
+// ── 绑线执行者(凭码接入)的读接口白名单(F2)。只有桥用得到的这几条;卡与它的子资源再按线核,别的线一律 404。
+const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|decisions\/\d+|evidence\/\d+))?$/;
+function boundExecutorMayRead(req, p) {
+  if (p === "/api/coord" || p === "/api/tasks") return true;
+  const mt = BOUND_TASK_READ.exec(p);
+  if (mt) return store.get(db, Number(mt[1]))?.line === req.boundLine;
+  // 自己发起的批准请求可以查结果;别的事项不给。
+  const ma = /^\/api\/approvals\/request:(\d{1,15}):[A-Za-z0-9_.-]{1,200}$/.exec(p);
+  if (ma) return db.prepare("SELECT executor FROM approval_requests WHERE id=?").get(Number(ma[1]))?.executor === req.executor.id;
+  return false;
+}
+/** 给绑线执行者的卡:别人的 live_note 不给(只给持卡者本人与操作员)。其它读者原样。 */
+function forReader(req, t) {
+  if (!t || !req.boundLine || t.worker === req.executor.id) return t;
+  return { ...t, live_note: null, live_note_at: null };
+}
 function guardAuthentication(req, res) {
   const origin = req.headers.origin;
   if (origin && !ALLOWED_ORIGINS.has(origin)) {
@@ -2713,6 +2744,14 @@ function noteForceRelease(lock) {
 const lockChangedText = (l) => `锁已变化，没有释放:${l.resource} 现在是 ${l.holder_name} 持有的锁记录 #${l.lock_id}。刷新后再决定`;
 async function coordRoute(req, res, url, p, m, boardRole) {
   const now = Date.now();
+  // 绑线执行者(凭码接入):只看到自己——自己的登记、自己的锁、自己写的流水、自己的交接;外部线只列本线(F2)。
+  if (m === "GET" && p === "/api/coord" && req.boundLine) {
+    const me = req.executor.id;
+    return json(res, 200, { executors: coord.listExecutors(db).filter((e) => e.id === me), locks: coord.listLocks(db, { holder: me }, now, COORD_GRACE_MS),
+                            journal: coord.journal(db, { executor: me, limit: 30 }), handoffs: coord.listHandoffs(db, { pending: true }).filter((h) => h.executor === me),
+                            stale_min: COORD_STALE_MS / 60000, overdue_grace_min: COORD_GRACE_MS / 60000, external_lines: [req.boundLine],
+                            executor_max_lease_min: coord.EXECUTOR_MAX_LEASE_MIN, status_limits: coord.STATUS_LIMITS, now: Date.now() });
+  }
   if (m === "GET" && p === "/api/coord")
     return json(res, 200, { executors: coord.listExecutors(db), locks: coord.listLocks(db, {}, now, COORD_GRACE_MS),
                             journal: coord.journal(db, { limit: 30 }), handoffs: coord.listHandoffs(db, { pending: true }),
@@ -2726,6 +2765,7 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     if (isManagedSeatName(String(b.id ?? "").trim()))
       throw store.err(store.ERR.CONFLICT, `执行者 id ${String(b.id).trim()} 与受管执行线(或角色座席)同名;换一个 id,或把那条线配成外部执行线`);
     const r = coord.register(db, { id: b.id, name: b.name, kind: b.kind ?? undefined, rotate: b.rotate === true });
+    if (r.rotated) dropRevokedSse();      // 换发:旧令牌建立的 SSE 断开
     emit("coord.executor", { id: r.executor.id });
     return json(res, r.rotated ? 200 : 201, r);
   }
@@ -2737,6 +2777,7 @@ async function coordRoute(req, res, url, p, m, boardRole) {
     try { id = decodeURIComponent(mx[1]); } catch { throw store.err(store.ERR.BAD_INPUT, "执行者 id 的 URL 编码无效"); }
     // id 与受管座位同名的(修复前登记的)执行者领不了卡:这个名字下进行中的卡是座位的,不挡注销。锁只可能是执行者自己的。
     const r = coord.unregister(db, id, { cardsBelongToSeat: isManagedSeatName(id) }, now);
+    dropRevokedSse();                     // 注销:它的 SSE 断开
     console.log(`协作:操作员注销执行者 ${r.executor.id}`);
     emit("coord.executor", { id: r.executor.id, op: "unregister" });
     return json(res, 200, r);
@@ -3351,8 +3392,12 @@ const remoteStatus = () => REMOTE.enabled
 function remoteSummary() {
   const now = Date.now();
   return { board: { counts: store.counts(db), version: BOOT_REV, uptime_sec: Math.floor((now - STARTED) / 1000) },
-           approvals: approvalEntries().length, executors: coord.listExecutors(db),
-           locks: coord.listLocks(db, {}, now, COORD_GRACE_MS), journal: coord.journal(db, { limit: 20 }), now: new Date(now).toISOString() };
+           // 凭码接入的执行者明细与撤销记录不进远程摘要(F13):批准令牌持有者只看到个数。
+           approvals: approvalEntries().length, executors: coord.listExecutors(db).filter((e) => !connect.isCodeExecutor(e.id)),
+           code_executors: coord.listExecutors(db).filter((e) => connect.isCodeExecutor(e.id)).length,
+           locks: coord.listLocks(db, {}, now, COORD_GRACE_MS),
+           journal: coord.journal(db, { limit: 40 }).filter((j) => j.kind !== "executor.revoke" && !connect.isCodeExecutor(j.executor)).slice(-20),
+           now: new Date(now).toISOString() };
 }
 async function remoteHandler(req, res) {
   const ip = approvals.normalizeIp(req.socket.remoteAddress), m = String(req.method || "");
@@ -3782,7 +3827,7 @@ const server = http.createServer(async (req, res) => {
       if (req.headers.origin && !ALLOWED_ORIGINS.has(req.headers.origin)) return json(res, 403, { error: "跨来源的看板请求被拒绝" });
       const b = await readSmallJson(req, 1024);
       if (!b || typeof b !== "object" || Array.isArray(b)) return json(res, 400, { code: "BAD_INPUT", error: "请求正文必须是 1KB 以内的 JSON 对象 {code}" });
-      const r = connect.redeem(b.code, req.socket.remoteAddress);
+      const r = await connect.redeem(b.code);     // 对的码立即成功;错码延迟 200ms,同时在等的错码满 20 个就 429(不按来源)
       if (r.headers) for (const [k, v] of Object.entries(r.headers)) res.setHeader(k, v);
       if (r.status === 200) console.log(`接入:执行者 ${r.body.executor_id} 已凭码换到令牌(线 ${r.body.line})`);
       return json(res, r.status, r.body);
@@ -3790,6 +3835,11 @@ const server = http.createServer(async (req, res) => {
     // Authenticate every other request, including SSE and future read endpoints.
     const boardRole = m === "GET" || m === "HEAD" ? guardAuthentication(req,res) : guardWrite(req,res,p);
     if (!boardRole) return;
+    // 凭码接入的执行者(绑线):读接口只开桥用得到的几条,且按线过滤;别的读接口(含 SSE、全量历史、设置、用量)一律 404(F2)。
+    //   用令牌直接登记的执行者不绑线,行为不变。表见 docs/多执行者协作.md「绑线执行者能看到什么」。
+    req.boundLine = boardRole === "executor" ? connect.lineOf(req.executor.id) : null;
+    if (req.boundLine && (m === "GET" || m === "HEAD") && !boundExecutorMayRead(req, p))
+      return json(res, 404, { error: "不存在" });
     if (m === "GET" && p === "/api/auth") {
       if (boardRole !== "operator") return json(res,403,{error:"管理面板需要操作员身份"});
       return json(res,200,{role:"operator"});
@@ -3804,7 +3854,7 @@ const server = http.createServer(async (req, res) => {
       if (b.all === true) panelSessions.clear();
       else panelSessions.delete(sha256(req.headers["x-board-token"]));
       const revoked = before - panelSessions.size;
-      if (revoked) savePanelSessions();
+      if (revoked) { savePanelSessions(); dropRevokedSse(); }
       return json(res, 200, { revoked });
     }
 
@@ -3868,7 +3918,8 @@ const server = http.createServer(async (req, res) => {
       const mr = p.match(/^\/api\/executors\/([a-z0-9][a-z0-9_-]{0,31})\/revoke$/);
       if (m === "POST" && mr) {
         const r = connect.revoke(mr[1]);
-        console.log(`接入:操作员撤销执行者 ${mr[1]}${r.released.length ? `,放回卡 ${r.released.join(",")}` : ""}`);
+        dropRevokedSse();         // 它已建立的 SSE 一并断开(F3)
+        console.log(`接入:操作员撤销执行者 ${mr[1]}${r.released.length ? `,放回卡 ${r.released.join(",")}` : ""}${r.released_locks.length ? `,释放锁 ${r.released_locks.join(",")}` : ""}`);
         if (r.released.length) emit("task.reaped", { count: r.released.length });
         return json(res, 200, r);
       }
@@ -3883,6 +3934,8 @@ const server = http.createServer(async (req, res) => {
       });
       res.write("retry: 2000\n\n");
       clients.add(res);
+      { const tok = String(req.headers["x-board-token"] ?? "");
+        sseAuth.set(res, { kind: boardRole === "executor" ? "executor" : isPanelCredential(tok) ? "panel" : "static", hash: sha256(tok) }); }
       // ⭐ A sentry announces itself (`?as=sentry`) so "is the coordinator seat
       //   actually listening" becomes MEASURABLE — the setup guide and the
       //   request alarm both need it, and a panel tab is not a sentry. An older
@@ -3899,8 +3952,9 @@ const server = http.createServer(async (req, res) => {
         if (rev && now && rev !== now)
           try { res.write(`event: change\ndata: ${JSON.stringify({ type: "sentry.stale", your_rev: rev, board_rev: now })}\n\n`); } catch {}
       }
-      const ka = setInterval(() => { try { res.write(": ka\n\n"); } catch {} }, 25000);
-      req.on("close", () => { clearInterval(ka); clients.delete(res); sentries.delete(res); });
+      // 保活时顺带复核凭据:面板会话 30 天到期这类没有撤销动作的失效,至多 25 秒后也断开。
+      const ka = setInterval(() => { dropRevokedSse(); try { res.write(": ka\n\n"); } catch {} }, 25000);
+      req.on("close", () => { clearInterval(ka); clients.delete(res); sentries.delete(res); sseAuth.delete(res); });
       return;
     }
 
@@ -4017,11 +4071,15 @@ const server = http.createServer(async (req, res) => {
         return json(res, 400, { error: "archived 必须是 true/false/all" });
       if (q.status && !store.VALID_STATUS.has(q.status))
         return json(res, 400, { error: `status 必须是 ${store.STATUS.join("/")}` });
-      const r = store.list(db, q);
+      // 绑线执行者只看本线:line 参数被改写成本线;问别的线 = 空表。
+      const otherLine = !!(req.boundLine && q.line && q.line !== req.boundLine);
+      if (req.boundLine) q.line = req.boundLine;
+      const r = otherLine ? { tasks: [], archived_count: 0 } : store.list(db, q);
+      if (req.boundLine) delete r.archived_count;                       // 全板计数不给绑线执行者
       // ⭐ The panel's claimable/frozen segmentation must share claim's criteria —
       //   numbers written twice rot once (the frozen segment rotted when the
       //   lifetime cap changed shape).
-      return json(res, 200, { ...r, tasks: r.tasks.map(taskOut), server_now: Date.now(),
+      return json(res, 200, { ...r, tasks: r.tasks.map((t) => forReader(req, taskOut(t))), server_now: Date.now(),
         caps: { lifetime_dispatch: store.LIFETIME_DISPATCH_CAP, wip_per_root: store.WIP_PER_ROOT } });
     }
 
@@ -4367,8 +4425,9 @@ const server = http.createServer(async (req, res) => {
       // Reset on every server claim so an unknown new run cannot inherit an old badge.
       const rt = stampedRuntime(req, boardRole, b.worker, b.runtime);
       const identity = claimIdentity(b, boardRole,req.workerSeat);
+      // 绑线执行者:只领 line 恰好等于本线的卡(line 为空的卡不算,F1);受管线与旧执行者仍是「本线 或 未指定线」。
       const got = store.claim(db, b.worker, b.lease_minutes || store.DEFAULT_LEASE_MIN,
-                              { route: b.route, line: b.line, runtime: rt, resetRuntime:true, ...identity, ...fpContext() });
+                              { route: b.route, line: b.line, strictLine: !!req.boundLine, runtime: rt, resetRuntime:true, ...identity, ...fpContext() });
       noteClaim(b.worker, { route: b.route, line: b.line }, !!got);
       if (!got) {
         // ⭐ Empty-handed, but WHY. Same rule the pool gate follows (503 must not wear
@@ -4378,7 +4437,8 @@ const server = http.createServer(async (req, res) => {
         //   `held` list means "there are cards, and none of them has anything new".
         //   Clients already branch on `!body.task`, so this adds a reason without
         //   changing what anyone must handle.
-        const held = store.heldByNoProgress(db, { route: b.route, line: b.line }, fpContext());
+        const held = store.heldByNoProgress(db, { route: b.route, line: b.line }, fpContext())
+          .filter((hid) => !req.boundLine || store.get(db, hid)?.line === req.boundLine);   // 绑线执行者不看别处的卡号
         if (held.length) return json(res, 200, { task: null, held: held.length, held_ids: held.slice(0, 20) });
         res.writeHead(204); return res.end();
       }
@@ -4438,7 +4498,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (m === "GET" && !action) {
         const t = store.get(db, id);
-        return t ? json(res, 200, { task: taskOut(t) }) : json(res, 404, { error: "不存在" });
+        return t ? json(res, 200, { task: forReader(req, taskOut(t)) }) : json(res, 404, { error: "不存在" });
       }
       if (m !== "POST") return json(res, 405, { error: "方法不允许" });
       const b = await readBody(req);
@@ -4487,7 +4547,8 @@ const server = http.createServer(async (req, res) => {
           if (connect.markHeartbeat(id, b.run_id)) emit("task.started", { id });
         }
         // note = 临时进度(live_note):覆盖上一条,不进历史;只有它变时才推一个事件给面板。
-        if (note !== undefined) { connect.setNote(id, b.run_id, note); emit("task.live_note", { id }); }
+        //   没变不推;同一张卡至多 5 秒推一次,窗口内的变化合并(F4,connect.noteChanged)。
+        if (note !== undefined && connect.setNote(id, b.run_id, note)) connect.noteChanged(id);
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side
       }
       if (action === "process-started") {

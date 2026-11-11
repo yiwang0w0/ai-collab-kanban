@@ -56,23 +56,28 @@ function boardRequest(base,token,method,path,body){
 }
 const HTTP_CODE={400:"BAD_INPUT",403:"FORBIDDEN",404:"NOT_FOUND",409:"CONFLICT",413:"TOO_LARGE",503:"UNAVAILABLE"};
 
-const CODE_SHAPE=/^[A-Za-z0-9]{4}-?[A-Za-z0-9]{4}$/;
+const CODE_SHAPE=/^[A-Za-z0-9]{5}-?[A-Za-z0-9]{5}$/;   // 10 位(XXXXX-XXXXX),看板侧再按码表核
 /**
- * 凭码接入:令牌文件不存在 → 用码兑换并写入(目录不存在就新建成仅当前账户可访问,文件同样);已存在 → 不兑换,返回 {redeemed:false}。
+ * 凭码接入:令牌文件不存在 → 用码兑换并写入(目录不存在就逐级新建成仅当前账户可访问,至多 4 级;文件同样);已存在 → 不兑换,返回 {redeemed:false}。
+ * 发码给的缺省路径在当前用户应用数据目录下(%LOCALAPPDATA%\ai-fleet-board\executors\<看板>\),第一次接入时这几级目录都还没有。
  * 码只用一次:兑换成功但写文件失败时令牌不落地也不回显,只能请操作员重新发码。错误文案不带码、令牌或路径。
  */
 export async function redeemToFile({url,code,tokenFile,line=null,send=boardRequest}){
  const base=boardEndpoint(url);
  if(existsSync(tokenFile))return {redeemed:false};
- if(typeof code!=="string"||!CODE_SHAPE.test(code))fail("BAD_INPUT","--code 的格式是 XXXX-XXXX");
+ if(typeof code!=="string"||!CODE_SHAPE.test(code))fail("BAD_INPUT","--code 的格式是 XXXXX-XXXXX");
  if(line!==null&&!LINE_RE.test(String(line)))fail("BAD_INPUT","--line 不是合法线名");
  const full=resolvePath(tokenFile),dir=dirname(full);
- if(!existsSync(dir)){try{privateDirectory(dir);}catch{fail("TOKEN_FILE_UNWRITABLE","令牌文件的目录建不起来(要求父目录已存在,新目录只给当前账户);换一个 --token-file 路径");}}
+ if(!existsSync(dir)){
+  const chain=[];for(let d=dir;!existsSync(d)&&dirname(d)!==d&&chain.length<=4;d=dirname(d))chain.unshift(d);
+  try{if(chain.length>4)throw Error();for(const d of chain)privateDirectory(d);}
+  catch{fail("TOKEN_FILE_UNWRITABLE","令牌文件的目录建不起来(缺的目录至多 4 级,新目录只给当前账户);换一个 --token-file 路径");}
+ }
  let r;
  try{r=await send(base,null,"POST","/api/connect/redeem",{code});}
  catch(e){if(e instanceof BridgeError)throw e;fail("BOARD_UNREACHABLE",`看板没有应答(${base}):先确认看板在运行`);}
  if(r.status!==200){
-  const known=["CODE_USED","CODE_EXPIRED","CODE_UNKNOWN","RATE_LIMITED","LOOPBACK_ONLY"];
+  const known=["CODE_USED","CODE_EXPIRED","CODE_UNKNOWN","RATE_LIMITED","LOOPBACK_ONLY","LINE_TAKEN"];
   const c=known.includes(r.body?.code)?r.body.code:"HTTP_"+r.status;
   fail(c,typeof r.body?.error==="string"?r.body.error.slice(0,300):`兑换失败:看板返回 HTTP ${r.status}`);
  }
