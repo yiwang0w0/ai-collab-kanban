@@ -270,6 +270,9 @@ jobs:
       - name: "coordtest (executors, locks, journal, handoffs)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/coordtest.mjs
+      - name: "execmcptest (executor-token MCP stdio bridge for desktop clients)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/execmcptest.mjs
       - name: "approvaltest (pending approvals, decision routing, remote entry and approval tokens)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/approvaltest.mjs

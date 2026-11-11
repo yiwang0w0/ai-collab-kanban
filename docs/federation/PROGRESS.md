@@ -1378,3 +1378,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - clitest 116/0、cliversionstest 52/0、upgradeclitest 27/0、coordtest 25/0、approvaltest 20/0、servertest 228/0、usagetest 4/0、convtest 3/0、selftest 402/0、synctest 31/0、fleetactionstest 28/0、zcodeworkertest 27/0；阻塞：无。
 - 2026-11-10 并入协调线提示收紧与就地修正(claude/home-v2-coordprompt,3 个提交;只有 core/server.mjs 两边都改,自动合并,两边改动逐行都在);协调线没配 effort 时缺省改为 high(模型缺省 claude-opus-5、时限 420 秒),依据两轮拆解评测,docs/对话式首页.md 同步。
 - convtest 4/0、servertest 228/0、decomposetest 84/0、selftest 402/0、hometest 41/0、clitest 116/0；没有调用模型。阻塞：无。
+- 2026-11-11 执行者令牌的 MCP stdio 桥(claude/zcode-gui):`cli/exec-mcp.mjs` 把执行者的读卡、领卡、续租、交付接口包成 5 个 MCP 工具,供 Zcode 桌面版这类客户端以外部执行线的执行者身份领卡交付;只接本机回环地址与 `exe_` 执行者令牌,`--line` 限定只看一条线;docs/多执行者协作.md 写明接法。
+- execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
