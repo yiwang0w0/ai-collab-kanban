@@ -96,14 +96,17 @@ export function actorKindOf(actor, eventKind, { lines = [], isExecutor = () => f
   return "system";
 }
 
-/** 显示用的执行方名字:人 →「你」,自动审阅 →「自动审阅」,看板自己 →「看板」,线 → 线的显示名(并行槽号去掉)。 */
-export function actorLabel(actor, kind, labels = {}) {
+/** 显示用的执行方名字:人 →「你」,自动审阅 →「自动审阅」,看板自己 →「看板」,线 → 线的显示名(并行槽号去掉);
+ *  执行者 → 登记时的显示名(nameOf),没有再用同名线的显示名,都没有才用 id。 */
+export function actorLabel(actor, kind, labels = {}, nameOf = null) {
   const a = String(actor ?? "");
   if (kind === "human") return a.startsWith("approval-token:") ? "你(远程批准)" : "你";
   if (kind === "auto") return "自动审阅";
   if (kind === "system") return "看板";
   const base = a.replace(/@\d+$/, "");
-  return cut((kind === "line" && labels[base]) || (a === "worker" ? "执行线" : a === "executor" ? "执行者" : base), 32);
+  let name = null;
+  if (kind === "executor") { try { name = nameOf?.(base) || null; } catch {} name = name || labels[base] || null; }
+  return cut(name || (kind === "line" && labels[base]) || (a === "worker" ? "执行线" : a === "executor" ? "执行者" : base), 32);
 }
 
 const dispositionOf = (d) => d.disposition || (d.status === "done" ? "close" : d.status === "not_started" ? "hand_back" : "hold");
@@ -115,7 +118,9 @@ export function entryOf(e, ctx = {}) {
   if (e.kind === "decision.recorded" && d.source !== "autoreview") return null;
   // 执行方停下时把卡放回(release_held)的 actor 也是执行方,与领取同一判法。
   const actor_kind = actorKindOf(e.actor, e.kind === "release" && d.action === "release_held" ? "claim" : e.kind, ctx);
-  const who = actorLabel(e.actor, actor_kind, ctx.labels);
+  const who0 = actorLabel(e.actor, actor_kind, ctx.labels, ctx.executorName);
+  // 执行方(线 / 执行者)的名字与动作之间空一格(「Claude 无头 领取」);「你」「看板」「自动审阅」照旧紧连。
+  const who = actor_kind === "line" || actor_kind === "executor" ? who0 + " " : who0;
   const runtime = d.runtime || (d.run_id && ctx.runtimeOf ? ctx.runtimeOf(d.run_id) : null);
   const rt = runtime ? `(${cut(runtime, 16)})` : "";
   let step = "other", summary;
@@ -152,7 +157,7 @@ export function entryOf(e, ctx = {}) {
     case "node_recovery": summary = "节点恢复"; break;
     default: summary = `记录:${cut(e.kind, 24)}`;
   }
-  return { at: e.at, kind: e.kind, actor: who, actor_kind, step, summary: cut(summary, 120) };
+  return { at: e.at, kind: e.kind, actor: who0, actor_kind, step, summary: cut(summary, 120) };
 }
 
 /** 一张卡的事件(旧→新)→ 条目。resolve 之后紧跟的 decision.recorded(source=resolve)里的 note 是裁定原文,并进打回条目当原因。 */
@@ -181,12 +186,14 @@ export function stepOf(t, started) {
 }
 
 // heartbeatStarted(t) → 外部执行者这一轮是否已心跳过;liveNote(t) → { live_note, live_note_at }(connect 的表)。都由 server 注入,缺省不改行为。
+// executorName(id) → 执行者登记时的显示名;selfStarts(taskId) → [{ run_id, at }] 每一轮第一次执行者心跳(connect 的表)。
 export function createFlow({ db, isExecutor = () => false, lines = () => [], labels = () => ({}), emit = () => {}, coalesceMs = FLOW_COALESCE_MS,
-                             heartbeatStarted = () => false, liveNote = () => ({ live_note: null, live_note_at: null }) } = {}) {
+                             heartbeatStarted = () => false, liveNote = () => ({ live_note: null, live_note_at: null }),
+                             executorName = () => null, selfStarts = () => [] } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS conversation_progress (
     conversation_id INTEGER PRIMARY KEY, after_message_id INTEGER, text TEXT NOT NULL, sig TEXT NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
-  const ctx = () => ({ lines: lines() || [], labels: labels() || {}, isExecutor: (a) => isExecutor(db, a) });
+  const ctx = () => ({ lines: lines() || [], labels: labels() || {}, isExecutor: (a) => isExecutor(db, a), executorName });
   const runtimeStmt = db.prepare("SELECT runtime FROM task_runs WHERE run_id=?");
   const runtimeOf = (runId) => { try { return runtimeStmt.get(String(runId))?.runtime ?? null; } catch { return null; } };
   const parse = (s) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
@@ -229,7 +236,22 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
   /** GET /api/tasks/:id/history:旧→新,最多 limit 条(取最近的 limit 条)。 */
   function history(taskId, limit = 100) {
     const evs = evStmt.all(Number(taskId)).map((r) => ({ at: r.at, kind: r.kind, actor: r.actor, detail: parse(r.detail) }));
-    const entries = entriesOf(evs, { ...ctx(), runtimeOf });
+    const cx = { ...ctx(), runtimeOf };
+    const entries = entriesOf(evs, cx);
+    // 外部执行者没有 process_started:每一轮领取后第一次心跳补一条「<名称> 自报开始」(step=started),写明看板没有观察到进程。
+    //   只认这一轮的领取方是执行者的心跳(受管线的心跳不算启动);按时刻插到对应位置(同一时刻排在已有条目之后)。
+    let starts = []; try { starts = selfStarts(Number(taskId)) || []; } catch {}
+    for (const hb of starts) {
+      const claim = evs.find((e) => e.kind === "claim" && String(e.detail?.run_id ?? "") === String(hb.run_id));
+      if (!claim || actorKindOf(claim.actor, "claim", cx) !== "executor" || !hb.at) continue;
+      const name = actorLabel(claim.actor, "executor", cx.labels, cx.executorName);
+      const en = { at: hb.at, kind: "self_report_started", actor: name, actor_kind: "executor", step: "started",
+                   summary: cut(`${name} 自报开始(看板没有观察到进程)`, 120) };
+      const t = Date.parse(hb.at);
+      let i = entries.length;
+      while (i > 0 && Date.parse(entries[i - 1].at) > t) i--;
+      entries.splice(i, 0, en);
+    }
     return { task_id: Number(taskId), entries: entries.slice(Math.max(0, entries.length - limit)) };
   }
 
@@ -264,7 +286,7 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
         worker = lc ? lc.actor : t.worker || null;
         runtime = t.last_runtime || (lc && parse(lc.detail).runtime) || null;
       }
-      const wk = worker == null ? null : actorLabel(worker, actorKindOf(worker, "claim", cx), cx.labels);
+      const wk = worker == null ? null : actorLabel(worker, actorKindOf(worker, "claim", cx), cx.labels, cx.executorName);
       return { id: Number(t.id), n: nOf.get(Number(t.id)) ?? null, subject: cut(t.subject, 80), line: t.line ?? null,
                status: t.status, waiting_for: t.status === "waiting" ? (t.waiting_for ?? null) : null, released: !!t.released,
                step: stepOf(t, started), started_via: observed ? "process" : selfReported ? "self_report" : null, worker: wk, runtime: runtime ? String(runtime) : null,

@@ -116,9 +116,11 @@ async function extSetup(t) {
   const { openConnect } = await import(pathToFileURL(join(ROOT, "core", "connect.mjs")).href);
   const connect = openConnect({ db, coord, store }); connect.migrate();
   const flow = F.createFlow({ db, lines: () => ["alpha"], isExecutor: coord.isExecutor, coalesceMs: 50,
-    heartbeatStarted: (x) => coord.isExecutor(db, x.worker) && connect.heartbeatSeen(x.run_id), liveNote: (x) => connect.liveNote(x) });
+    heartbeatStarted: (x) => coord.isExecutor(db, x.worker) && connect.heartbeatSeen(x.run_id), liveNote: (x) => connect.liveNote(x),
+    executorName: (id) => coord.isExecutor(db, id) ? db.prepare("SELECT name FROM coord_executors WHERE id=?").get(String(id))?.name : null,
+    selfStarts: (id) => connect.heartbeatStartsOf(id) });
   t.after(() => flow.stop());
-  coord.register(db, { id: "zc", name: "zc", kind: "external" });
+  coord.register(db, { id: "zc", name: "Z 助手", kind: "external" });
   const goal = store.add(db, { subject: "目标", kind: "goal", released: 1, actor: "operator" });
   const ext = store.add(db, { subject: "外部卡", parentId: goal, line: "zc", released: 1, actor: "operator" });
   const man = store.add(db, { subject: "受管卡", parentId: goal, line: "alpha", released: 1, actor: "operator" });
@@ -139,7 +141,7 @@ test("外部执行者:领取之后有过心跳 = 已启动;受管线仍只认 pr
   assert.equal(item(ext).started_via, "self_report", "依据是对方自报(面板写「在做 · 对方自报」)");
   assert.ok(!Number.isNaN(Date.parse(connect.heartbeatStartedAt(c.run_id))), "第一次心跳的时刻(侧栏「启动」取它)");
   const text = () => flow.progressText(flow.progressOf(conv));
-  assert.ok(text().includes(`#${ext} zc 在做(自报)`), "进度消息与三处「对方自报」同口径:" + text());
+  assert.ok(text().includes(`#${ext} Z 助手 在做(自报)`), "进度消息与三处「对方自报」同口径:" + text());
   db.prepare("INSERT INTO task_events (task_id, at, kind, actor, detail) VALUES (?, ?, 'process_started', 'alpha', ?)")
     .run(man, new Date().toISOString(), JSON.stringify({ run_id: m.run_id }));
   assert.ok(text().includes(`#${man} alpha 在做`) && !text().includes(`#${man} alpha 在做(`), "受管线看板观察到进程:只写「在做」:" + text());
@@ -147,6 +149,12 @@ test("外部执行者:领取之后有过心跳 = 已启动;受管线仍只认 pr
   connect.markHeartbeat(man, m.run_id);
   assert.equal(item(man).step, 2, "受管线只认 process_started");
   assert.equal(item(man).started_via, null);
+  // 卡历史:执行者用登记时的显示名、名字后空一格;领取后第一次心跳补一条「自报开始」(step=started),排在领取之后
+  const h = flow.history(ext).entries;
+  assert.deepEqual(h.map((e) => e.step), ["created", "claimed", "started"]);
+  assert.equal(h[1].summary, "Z 助手 领取(zcode)"); assert.equal(h[1].actor, "Z 助手");
+  assert.deepEqual([h[2].kind, h[2].actor_kind, h[2].summary], ["self_report_started", "executor", "Z 助手 自报开始(看板没有观察到进程)"]);
+  assert.ok(!flow.history(man).entries.some((e) => e.step === "started"), "受管线的心跳不补「自报开始」");
   store.report(db, { id: ext, worker: "zc", runId: c.run_id, outcome: "done", evidence: "好了" });
   store.resolve(db, { id: ext, verdict: "reject", note: "再改", resolvedBy: "human", expectedVersion: version(db, ext) });
   claim(ext, "zc", "zcode");

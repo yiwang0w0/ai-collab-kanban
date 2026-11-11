@@ -472,7 +472,10 @@ const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVI
                           // 外部执行者的「已启动」= 这一轮领取后有过心跳(合同 B 订正;受管线仍只认 process_started);
                           // 流转条行下那行字 = 行项自己的 live_note(connect 的表)。
                           heartbeatStarted: (t) => coord.isExecutor(db, t.worker) && connect.heartbeatSeen(t.run_id),
-                          liveNote: (t) => connect.liveNote(t) });
+                          liveNote: (t) => connect.liveNote(t),
+                          // 卡历史:执行者用登记时的显示名;外部执行者每一轮第一次心跳补一条「自报开始」。
+                          executorName: (id) => coord.isExecutor(db, id) ? (db.prepare("SELECT name FROM coord_executors WHERE id=?").get(String(id))?.name || null) : null,
+                          selfStarts: (taskId) => connect.heartbeatStartsOf(taskId) });
 // md 交接(core/md-handoff.mjs):卡面导出成 md / md 队列文件批量挂卡(一律未放行)。线表在读时取(加线免重启)。
 const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [] });
 mdHandoff.migrate();

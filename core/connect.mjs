@@ -412,6 +412,9 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
   /** 这一轮第一次执行者心跳的时刻(ISO);没有 = null。侧栏「启动」一步取它(外部执行者自报)。 */
   const heartbeatStartedAt = (runId) => runId == null || runId === "" ? null :
     iso(db.prepare("SELECT at FROM task_run_heartbeats WHERE run_id=?").get(String(runId))?.at ?? null);
+  /** 一张卡每一轮第一次执行者心跳 [{ run_id, at(ISO) }](卡历史补「自报开始」一条用)。 */
+  const heartbeatStartsOf = (taskId) => db.prepare("SELECT run_id, at FROM task_run_heartbeats WHERE task_id=? ORDER BY at")
+    .all(Number(taskId)).map((r) => ({ run_id: r.run_id, at: iso(r.at) }));
   const heartbeatSeen = (runId) => runId != null && runId !== "" &&
     !!db.prepare("SELECT 1 FROM task_run_heartbeats WHERE run_id=?").get(String(runId));
 
@@ -430,6 +433,6 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     return h;
   }
 
-  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, heartbeatStartedAt, watch,
+  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, heartbeatStartedAt, heartbeatStartsOf, watch,
            checkNote: (v) => checkNote(v, bad) };
 }
