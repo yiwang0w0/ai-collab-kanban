@@ -130,7 +130,7 @@ async function extSetup(t) {
 }
 
 test("外部执行者:领取之后有过心跳 = 已启动;受管线仍只认 process_started", async (t) => {
-  const { db, connect, ext, man, item, claim } = await extSetup(t);
+  const { db, connect, flow, conv, ext, man, item, claim } = await extSetup(t);
   const c = claim(ext, "zc", "zcode"), m = claim(man, "alpha", "claude");
   assert.deepEqual([item(ext).step, item(man).step], [2, 2], "刚领取:都还是 2");
   assert.equal(connect.markHeartbeat(ext, c.run_id), true, "本轮第一次心跳");
@@ -138,6 +138,12 @@ test("外部执行者:领取之后有过心跳 = 已启动;受管线仍只认 pr
   assert.equal(item(ext).step, 3, "外部执行者领取后心跳过 = 已启动");
   assert.equal(item(ext).started_via, "self_report", "依据是对方自报(面板写「在做 · 对方自报」)");
   assert.ok(!Number.isNaN(Date.parse(connect.heartbeatStartedAt(c.run_id))), "第一次心跳的时刻(侧栏「启动」取它)");
+  const text = () => flow.progressText(flow.progressOf(conv));
+  assert.ok(text().includes(`#${ext} zc 在做(自报)`), "进度消息与三处「对方自报」同口径:" + text());
+  db.prepare("INSERT INTO task_events (task_id, at, kind, actor, detail) VALUES (?, ?, 'process_started', 'alpha', ?)")
+    .run(man, new Date().toISOString(), JSON.stringify({ run_id: m.run_id }));
+  assert.ok(text().includes(`#${man} alpha 在做`) && !text().includes(`#${man} alpha 在做(`), "受管线看板观察到进程:只写「在做」:" + text());
+  db.prepare("DELETE FROM task_events WHERE task_id=? AND kind='process_started'").run(man);
   connect.markHeartbeat(man, m.run_id);
   assert.equal(item(man).step, 2, "受管线只认 process_started");
   assert.equal(item(man).started_via, null);

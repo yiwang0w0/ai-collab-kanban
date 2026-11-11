@@ -274,7 +274,7 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
     return { goal_id: goalId, goal_status: goal?.status ?? null, total: items.length, done: items.filter((i) => i.step === 5).length, items };
   }
 
-  /** 进度消息的一句话:「3/5 完成 · #12 待验收 · #13 Zcode 在做」。要人做的排前面,最多列 3 项。 */
+  /** 进度消息的一句话:「3/5 完成 · #12 待验收 · #13 Zcode 在做(自报)」。要人做的排前面,最多列 3 项。 */
   function progressText(p) {
     if (!p.total) return "目标下暂时没有子卡";
     const head = p.goal_status === "done" ? `全部完成 · ${p.done}/${p.total}` : `${p.done}/${p.total} 完成`;
@@ -282,7 +282,8 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
       : i.step >= 2 ? 2 : i.step === 0 ? 3 : 4;
     const open = p.items.filter((i) => i.step < 5).sort((a, b) => rank(a) - rank(b) || a.id - b.id);
     const say = (i) => i.step === 4 ? `#${i.id} ${WAIT_TEXT[i.waiting_for] || "等待中"}`
-      : i.step >= 2 ? `#${i.id} ${i.worker || "执行方"}${i.step === 3 ? "在做" : "已领取"}`
+      // 外部执行者的「在做」依据是它领卡后的心跳 → 写「在做(自报)」,与流转条/首页/侧栏的「对方自报」同一口径(合同 B 裁定)
+      : i.step >= 2 ? `#${i.id} ${i.worker || "执行方"} ${i.step === 3 ? (i.started_via === "self_report" ? "在做(自报)" : "在做") : "已领取"}`
       : i.step === 0 ? `#${i.id} 未放行` : i.handed_back ? `#${i.id} 已打回,等重领` : `#${i.id} 等领取`;
     const shown = open.slice(0, 3).map(say);
     if (open.length > 3) shown.push(`另 ${open.length - 3} 张未完`);
