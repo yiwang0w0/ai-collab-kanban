@@ -1992,6 +1992,14 @@ function historyPick(entries, all = false, cap = 20) {
   const rows = (Array.isArray(entries) ? entries : []).slice().reverse();
   return all || rows.length <= cap ? { rows, hidden: 0 } : { rows: rows.slice(0, cap), hidden: rows.length - cap };
 }
+/** 流转条行下那行字:读 progress 行项自己的 live_note(服务端给了这个键就用它,哪怕是 null);
+ *  只有旧服务端的行项没有这个键时,才退到看板上这张卡(card)的。只在进行中显示。 */
+function flowItemNote(item, card){
+  const own = item != null && Object.prototype.hasOwnProperty.call(item, "live_note");
+  const status = own ? item.status : item?.status ?? card?.status;
+  const note = own ? item.live_note : card?.live_note;
+  return status === "in_progress" && typeof note === "string" && note.trim() ? note.trim() : "";
+}
 // ── /flow-copy ──
 const COLS =["goal", "not_started", "in_progress", "waiting", "done"];
 // ⭐ Labels come from the server (GET /api/meta → status_labels / wf_labels): the ONE
@@ -8196,12 +8204,8 @@ function chatFlowFor(v, appliedRev){
   if (p.goal_id != null && v.applied.goalId != null) return chatSame(p.goal_id, v.applied.goalId) ? p : null;
   return chatSame(v.rev, appliedRev) ? p : null;
 }
-/** 行下面那行小字:progress 行自带 live_note 就用它,否则用看板上这张卡的;只在进行中显示。 */
-function flowLiveNote(item){
-  const t = byId.get(Number(item?.id)), status = item?.status ?? t?.status;
-  const note = typeof item?.live_note === "string" ? item.live_note : t?.live_note;
-  return status === "in_progress" && typeof note === "string" && note.trim() ? note.trim() : "";
-}
+/** 行下面那行小字:见 flowItemNote(flow-copy 段)。 */
+function flowLiveNote(item){ return flowItemNote(item, byId.get(Number(item?.id))); }
 function chatFlowStrip(p){
   const box = homeEl("div", undefined, "flow"), sum = flowTotal(p);
   const head = homeEl("div", undefined, "flow-h");

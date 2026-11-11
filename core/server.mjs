@@ -462,8 +462,10 @@ conversations.migrate(db);
 // 合同 B「流转」:卡历史、任务派生字段、建卡对话的进度(core/flow.mjs)。线名与显示名在读时取(配置可热改)。
 const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVISED || [], labels: () => LINE_LABEL || {},
                           emit: (type, data) => emit(type, data),
-                          // 外部执行者的「已启动」= 这一轮领取后有过心跳(合同 B 订正;受管线仍只认 process_started)。
-                          heartbeatStarted: (t) => coord.isExecutor(db, t.worker) && connect.heartbeatSeen(t.run_id) });
+                          // 外部执行者的「已启动」= 这一轮领取后有过心跳(合同 B 订正;受管线仍只认 process_started);
+                          // 流转条行下那行字 = 行项自己的 live_note(connect 的表)。
+                          heartbeatStarted: (t) => coord.isExecutor(db, t.worker) && connect.heartbeatSeen(t.run_id),
+                          liveNote: (t) => connect.liveNote(t) });
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
 { const cut = conversations.recoverInterrupted(db);
   if (cut.length) console.log(`对话 ${cut.map((id) => "#" + id).join(" ")} 的上一轮在看板重启时被中断,已标为失败`); }

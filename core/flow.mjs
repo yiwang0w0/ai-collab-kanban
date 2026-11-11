@@ -149,9 +149,9 @@ export function stepOf(t, started) {
   return t.released ? 1 : 0;
 }
 
-// heartbeatStarted(t) → 外部执行者这一轮是否已心跳过(connect 的表)。由 server 注入,缺省不改行为。
+// heartbeatStarted(t) → 外部执行者这一轮是否已心跳过;liveNote(t) → { live_note, live_note_at }(connect 的表)。都由 server 注入,缺省不改行为。
 export function createFlow({ db, isExecutor = () => false, lines = () => [], labels = () => ({}), emit = () => {}, coalesceMs = FLOW_COALESCE_MS,
-                             heartbeatStarted = () => false } = {}) {
+                             heartbeatStarted = () => false, liveNote = () => ({ live_note: null, live_note_at: null }) } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS conversation_progress (
     conversation_id INTEGER PRIMARY KEY, after_message_id INTEGER, text TEXT NOT NULL, sig TEXT NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
@@ -222,6 +222,8 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
     const items = kidsStmt.all(goalId).map((t) => {
       const started = t.status === "in_progress" && t.run_id
         ? !!startedStmt.get(t.id, String(t.run_id)) || !!heartbeatStarted(t) : false;
+      let note = { live_note: null, live_note_at: null };
+      try { const n = liveNote(t) || {}; note = { live_note: n.live_note ?? null, live_note_at: n.live_note_at ?? null }; } catch {}
       let worker = null, runtime = null;
       if (t.status === "in_progress") { worker = t.worker; runtime = (t.run_id && runtimeOf(t.run_id)) || t.last_runtime || null; }
       else if (t.status !== "not_started") {
@@ -233,7 +235,7 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
       return { id: Number(t.id), n: nOf.get(Number(t.id)) ?? null, subject: cut(t.subject, 80), line: t.line ?? null,
                status: t.status, waiting_for: t.status === "waiting" ? (t.waiting_for ?? null) : null, released: !!t.released,
                step: stepOf(t, started), worker: wk, runtime: runtime ? String(runtime) : null,
-               handed_back: fields.get(Number(t.id))?.handed_back ?? 0, updated_at: t.updated_at };
+               handed_back: fields.get(Number(t.id))?.handed_back ?? 0, ...note, updated_at: t.updated_at };
     });
     const goal = goalStmt.get(goalId);
     return { goal_id: goalId, goal_status: goal?.status ?? null, total: items.length, done: items.filter((i) => i.step === 5).length, items };
@@ -253,7 +255,8 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
     if (open.length > 3) shown.push(`另 ${open.length - 3} 张未完`);
     return cut([head, ...shown].join(" · "), 200);
   }
-  const sigOf = (p) => JSON.stringify([p.goal_status, p.items.map(({ updated_at, ...rest }) => rest)]);
+  // live_note 进签名(换了一句要推给面板),live_note_at 不进(同一句重报不推)。
+  const sigOf = (p) => JSON.stringify([p.goal_status, p.items.map(({ updated_at, live_note_at, ...rest }) => rest)]);
 
   const rowStmt = db.prepare("SELECT * FROM conversation_progress WHERE conversation_id=?");
   const appliedMsgStmt = db.prepare("SELECT id FROM conversation_messages WHERE conversation_id=? AND kind='applied' ORDER BY id DESC LIMIT 1");

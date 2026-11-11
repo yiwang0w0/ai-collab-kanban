@@ -144,6 +144,22 @@ test("外部执行者:领取之后有过心跳 = 已启动;受管线仍只认 pr
   assert.equal(item(ext).step, 2, "新一轮领取:还没心跳");
 });
 
+test("progress.items 带 live_note / live_note_at(connect 的表,绑本轮 run);换一句会改签名、同一句重报不改", async (t) => {
+  const { db, connect, flow, ext, conv, item, claim } = await extSetup(t);
+  const c = claim(ext, "zc", "zcode");
+  assert.deepEqual([item(ext).live_note, item(ext).live_note_at], [null, null]);
+  connect.setNote(ext, c.run_id, "读第二章");
+  assert.equal(item(ext).live_note, "读第二章"); assert.ok(item(ext).live_note_at);
+  const s1 = flow.sync(conv).sig;
+  connect.setNote(ext, c.run_id, "读第二章");
+  assert.equal(flow.sync(conv).sig, s1, "同一句重报不改签名(不推)");
+  connect.setNote(ext, c.run_id, "改第三章");
+  assert.notEqual(flow.sync(conv).sig, s1, "换一句要推给面板");
+  store.report(db, { id: ext, worker: "zc", runId: c.run_id, outcome: "done", evidence: "好了" });
+  connect.clearNote(ext);
+  assert.deepEqual([item(ext).live_note, item(ext).live_note_at], [null, null], "交付后清空");
+});
+
 test("actor_kind 判定表、摘要清洗", () => {
   const ctx = { lines: ["alpha"], isExecutor: (a) => a === "zc-1" };
   const k = (a, kind = "resolve") => F.actorKindOf(a, kind, ctx);
@@ -241,7 +257,8 @@ test("建卡对话:progress、唯一的进度消息原位更新、2 秒合并推
     let p = d.conversation.progress;
     assert.deepEqual([p.goal_id, p.total, p.done], [applied.body.goal_id, 4, 0]);
     assert.deepEqual(p.items.map((i) => [i.id, i.n, i.step, i.released]), [[ids[0], 1, 1, true], [ids[1], 2, 1, true], [ids[2], 3, 0, false], [ids[3], 4, 1, true]]);
-    for (const i of p.items) assert.deepEqual(Object.keys(i).sort(), ["handed_back", "id", "line", "n", "released", "runtime", "status", "step", "subject", "updated_at", "waiting_for", "worker"]);
+    for (const i of p.items) assert.deepEqual(Object.keys(i).sort(), ["handed_back", "id", "line", "live_note", "live_note_at", "n", "released", "runtime", "status", "step", "subject", "updated_at", "waiting_for", "worker"]);
+    assert.ok(p.items.every((i) => i.live_note === null && i.live_note_at === null), "没人报进度时 live_note 为 null");
     const progressMsgs = (dd) => dd.messages.filter((m) => m.kind === "progress");
     let pm = progressMsgs(d);
     assert.equal(pm.length, 1);
