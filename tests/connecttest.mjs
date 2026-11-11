@@ -281,6 +281,12 @@ test("绑线执行者(F1/F2):随手领不领未指定线的卡;读接口按线�
     assert.deepEqual((await B.api("GET", "/api/tasks?archived=all", X.token)).body.tasks.map((t) => t.id), [E.id]);
     assert.equal((await B.api("GET", `/api/tasks/${E.id}`, X.token)).body.task.live_note, "在核对验收", "持卡者看得到自己的 live_note");
     assert.equal((await B.api("GET", `/api/tasks/${E.id}/runs`, X.token)).status, 200);
+    // N9:本线卡的 history / export-md 是「无权」不是「不存在」:回 403 并说明只给操作员;别的线的卡仍 404(上面)
+    for (const [sub, re] of [["history", /只给操作员/], ["export-md", /md 导出只给操作员/]]) {
+      const own = await B.api("GET", `/api/tasks/${E.id}/${sub}`, X.token);
+      assert.equal(own.status, 403, `X GET 本线 ${sub}:${own.status} ${JSON.stringify(own.body)}`); assert.match(own.body.error, re);
+    }
+    assert.equal((await B.api("GET", `/api/tasks/${O.id}/export-md`, X.token)).status, 404, "别的线的卡导出 404");
     const yv = (await B.api("GET", `/api/tasks/${E.id}`, Y.token)).body.task;
     assert.deepEqual([yv.id, yv.live_note, yv.live_note_at], [E.id, null, null], "同线别人的 live_note 不给");
     assert.equal((await B.api("GET", "/api/tasks?status=in_progress", Y.token)).body.tasks[0].live_note, null);

@@ -43,6 +43,7 @@ PROTECTED = (
     "board.db*",                                     # 状态本体(含 -wal / -shm)
     "accepted_rev", "restart_from",                  # 源码闸的记录 / 重启标记
     "worker_settings.json", "lineage.json",          # 座席设置;个人会话 id
+    "desktop_lineage.json", "desktop_forks.json",    # 面板登记的桌面会话继承表 / 看板 fork 出的副本清单(都是完整会话 id)
     "pool_state.json", "pool_global_stop.json",      # 池状态(pool-quota skill:改标记≠额度回来)
     "spend_ledger.jsonl", "usage_ledger.jsonl",      # 账本
     "board.log",
@@ -220,6 +221,48 @@ def auth_home_deny_rules(env=None):
     return rules
 
 
+TOKEN_DIRS_ENV = "WORKER_TOKEN_DIRS"
+
+
+def executor_token_dirs(env=None):
+    """外部执行者令牌的目录(N2,v0.24 起不在数据目录里)。server 下传 WORKER_TOKEN_DIRS(JSON 数组);
+    另外**总是**加上缺省根 <应用数据>/ai-fleet-board/executors(与 core/connect.mjs defaultTokenDir 的根同一算法,
+    手动起线、没有下传时也覆盖)。清单无法解析 = ValueError(未知值落拒绝侧,调用方拒绝启动)。"""
+    env = os.environ if env is None else env
+    dirs = []
+    raw = env.get(TOKEN_DIRS_ENV)
+    if raw:
+        try:
+            value = json.loads(raw)
+        except ValueError:
+            value = None
+        if not isinstance(value, list) or not all(isinstance(item, str) and item.strip() and os.path.isabs(item) for item in value):
+            raise ValueError(f"{TOKEN_DIRS_ENV} 必须是令牌目录绝对路径的 JSON 数组")
+        dirs += value
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        root = env.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+    elif sys.platform == "darwin":
+        root = os.path.join(home, "Library", "Application Support")
+    else:
+        root = env.get("XDG_STATE_HOME") or os.path.join(home, ".local", "state")
+    dirs.append(os.path.join(root, "ai-fleet-board", "executors"))
+    return dirs
+
+
+def token_dir_deny_rules(env=None):
+    """执行者令牌目录的 Read／Edit 拒绝规则(Claude 座席,worker 与审阅共用;与 auth_home_deny_rules 同一形)。
+    整目录 `/**`:目录里只放令牌,不会盖住证据目录。"""
+    rules, seen = [], set()
+    for d in executor_token_dirs(env):
+        path = deny_path(d).rstrip("/")
+        if path in seen:
+            continue
+        seen.add(path)
+        rules += [f"Read({path}/**)", f"Edit({path}/**)"]
+    return rules
+
+
 def readonly_edit_rules(repo, data_dir):
     """只读工具档(v0.22.0,`lines[].role.tools = "read-only"`)的 Edit deny 规则 —— Claude 座席的
     「不许改工作仓」是这组 argv,不是提示词。返回 None = 列不出仓库条目(不是 git 仓 / git 不在),
@@ -337,7 +380,7 @@ _PROVIDER_ENV = re.compile(r"^(?:ANTHROPIC_|OPENAI_|AZURE_OPENAI_|CLAUDE_CODE_(?
                            r"CODEX_(?:API_KEY|HOME)$|KANBAN_.*(?:KEY|TOKEN)$)", re.I)
 _SECRET_SUFFIX = re.compile(r"(?:_API_KEY|_AUTH_TOKEN|_ACCESS_TOKEN|_SECRET_KEY|_PASSWORD)$", re.I)
 _LOOP_PREFIX = re.compile(r"^(?:BOARD_|WORKER_|REVIEWER_)")
-_AUTH_POINTERS = frozenset(("WORKER_PROFILE_AUTH_HOME", "WORKER_PROTECTED_PATHS", AUTH_HOMES_ENV))
+_AUTH_POINTERS = frozenset(("WORKER_PROFILE_AUTH_HOME", "WORKER_PROTECTED_PATHS", AUTH_HOMES_ENV, "WORKER_TOKEN_DIRS"))
 
 
 def verify_environment(env):

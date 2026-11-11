@@ -44,7 +44,7 @@ import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorC
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX,
-        MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel,cleanLabelChars} from "./desktop-sessions.mjs";
+        MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel,cleanLabelChars,loadDeskForks,addDeskForks} from "./desktop-sessions.mjs";
 import {createFlow} from "./flow.mjs";
 import {openMdHandoff} from "./md-handoff.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
@@ -1092,6 +1092,10 @@ const MAX_PARALLEL = Math.max(1, Number(CFG.max_parallel) || 3);
 const DEFAULT_AGENT = { ...CFG.default_agent };
 const DEFAULT_SET = { agents: [{ ...DEFAULT_AGENT }], rev: 0 };
 const EXECUTION_PROFILES = loadExecutionProfiles(CFG.execution_profiles,{dataDir:store.DATA_DIR});
+// N2:外部执行者令牌的缺省根目录(<应用数据>/ai-fleet-board/executors;下面按数据目录哈希分子目录,只放令牌)。
+//   受管线对它的禁读与数据目录同在:API/SDK 通道(WORKER_PROTECTED_PATHS)、Claude CLI 座席(WORKER_TOKEN_DIRS)、看板自起的 CLI(boardCliScope)。
+//   取根而不取本板子目录:同机别的看板的令牌也不给受管线读。
+const EXECUTOR_TOKEN_ROOT = resolve(dirname(defaultTokenDir(store.DATA_DIR)));
 const profileOf = agent => getExecutionProfile(EXECUTION_PROFILES,agent?.execution_profile_id,agent?.runtime);
 const profileForAgent = (agent,line) => {
   const p=profileOf(agent);if(!p)return null;
@@ -1389,6 +1393,9 @@ function markForked(line, newSessionId) {
                      forked_from: LINEAGE[line]?.session || null,
                      forked_at: new Date().toISOString() };
   writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 1), "utf8");
+  // W1:fork 出的副本记进只增不减的清单(解除登记不清它),副本永远不回到「本地会话」清单、也登记不成线。
+  if (LINEAGE[line]) try { addDeskForks(store.DATA_DIR, [`${LINEAGE[line].source || "claude"}:${newSessionId}`]); }
+                     catch (e) { console.error(`fork 副本清单写不进去(${e.code || e.message});本次照常`); }
   emit("worker.changed", { line });
   return settings[line];
 }
@@ -1520,7 +1527,8 @@ const boardCliCwd = () => BOARD_CLI_CWD || (BOARD_CLI_CWD = mkdtempSync(join(tmp
 // 两个调用共用的路径拒绝范围:整个数据目录、验证登记簿、全部执行配置的认证目录(与 slotEnv 下传的同一组)。
 const boardCliScope = () => ({ dataDir: resolve(store.DATA_DIR),
   registry: resolve(process.env.BOARD_VERIFY_REGISTRY || join(CODE_ROOT, "core", "verify_registry.json")),
-  authHomes: EXECUTION_PROFILES.map((p) => resolve(p.auth_home)) });
+  // N2:执行者令牌目录与认证目录同一形(整目录 Read／Edit 拒绝),跟在认证目录后面。
+  authHomes: [...EXECUTION_PROFILES.map((p) => resolve(p.auth_home)), EXECUTOR_TOKEN_ROOT] });
 
 /**
  * 按计划建子卡:一键拆解(decomposeGoal)与对话的按计划建卡(applyConversationPlan)共用这一段。
@@ -1921,7 +1929,9 @@ function slotEnv(line, k, ag, isReview) {
            ...(!process.env.WORKER_HOST_GIT && CFG.host_git ? { WORKER_HOST_GIT: String(CFG.host_git) } : {}),
            ...(!process.env.WORKER_HOST_COMMIT_TIMEOUT_SEC && CFG.host_commit_timeout_sec != null
              ? { WORKER_HOST_COMMIT_TIMEOUT_SEC: String(CFG.host_commit_timeout_sec) } : {}),
-           WORKER_PROTECTED_PATHS:JSON.stringify([store.DATA_DIR,CONFIG_FILE,
+           // N2:外部执行者令牌的缺省目录(数据目录之外)与数据目录同样禁读;Claude CLI 座席按 WORKER_TOKEN_DIRS 整目录拒绝。
+           WORKER_TOKEN_DIRS:JSON.stringify([EXECUTOR_TOKEN_ROOT]),
+           WORKER_PROTECTED_PATHS:JSON.stringify([store.DATA_DIR,CONFIG_FILE,EXECUTOR_TOKEN_ROOT,
              process.env.BOARD_VERIFY_REGISTRY||join(CODE_ROOT,"core","verify_registry.json"),
              ...EXECUTION_PROFILES.map(p=>p.auth_home),process.env.BOARD_FLEET_ACTIONS_CONFIG,
              process.env.BOARD_PROGRESS_CONFIG].filter(Boolean).map(p=>resolve(p))),
@@ -2664,7 +2674,8 @@ function closeGateOrThrow(t) {
 }
 
 // ── 绑线执行者(凭码接入)的读接口白名单(F2)。只有桥用得到的这几条;卡与它的子资源再按线核,别的线一律 404。
-const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|decisions\/\d+|evidence\/\d+))?$/;
+//   history / export-md 在这里放过(本线的卡),由各自的处理段按角色回 403「只给操作员」(N9:无权不说成不存在)。
+const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|export-md|decisions\/\d+|evidence\/\d+))?$/;
 function boundExecutorMayRead(req, p) {
   if (p === "/api/coord" || p === "/api/tasks" || p === "/api/connect/me") return true;
   const mt = BOUND_TASK_READ.exec(p);
@@ -3744,8 +3755,11 @@ const DESK_LARGE_TOKENS = 200000, DESK_LARGE_BYTES = 4 * 1024 * 1024;
 const sessionHash = (id) => createHash("sha256").update(String(id).toLowerCase()).digest("hex").slice(0, 8);
 /** 看板自己 fork 出来的会话副本:登记成线的会话第一次领卡时 fork,之后这条线沿用副本(settings 里的 session_id)。
  *  键 = 「来源:会话 id」。清单默认不列它们(GET /api/desktop-sessions?include_forks=1 才列)。 */
-const deskForkCopies = () => new Set(Object.entries(LINEAGE).filter(([line]) => settings[line]?.forked_from && settings[line]?.session_id)
-  .map(([line, v]) => `${v.source || "claude"}:${String(settings[line].session_id).toLowerCase()}`));
+//  W1:另并上数据目录里只增不减的 fork 副本清单(desktop_forks.json)—— 解除登记(删 LINEAGE 项)后副本也不回来。
+const deskForkCopies = () => new Set([...loadDeskForks(store.DATA_DIR), ...Object.entries(LINEAGE).filter(([line]) => settings[line]?.forked_from && settings[line]?.session_id)
+  .map(([line, v]) => `${v.source || "claude"}:${String(settings[line].session_id).toLowerCase()}`)]);
+// 升级前就 fork 过的线:启动时把现有继承里的副本补进清单(只增)。
+try { addDeskForks(store.DATA_DIR, [...deskForkCopies()]); } catch {}
 const deskLineIndex = () => new Map(Object.entries(LINEAGE).map(([line, v]) => [`${v.source || "claude"}:${String(v.session).toLowerCase()}`, line]));
 const deskLineageEntries = () => Object.fromEntries(Object.entries(LINEAGE).filter(([k, v]) => !LINEAGE_HAND.has(k) && v.via === "desktop")
   .map(([k, v]) => [k, { session: v.session, source: v.source, label: v.label, created_at: v.created_at }]));
@@ -3787,6 +3801,9 @@ function deskLineAdd(b) {
   if (!seatOf(source) || seatOf(source).id !== source) return [400, { error: `看板没有配置 ${source} 运行时`, code: "RUNTIME_UNAVAILABLE" }];
   const s = deskSessions.info(source, id);
   if (!s) return [400, { error: "本机没有这个会话(或它是子代理线程)", code: "SESSION_UNKNOWN" }];
+  // W1:看板自己 fork 出来的副本不能再登记成线(与原会话同内容,会成第二条线);清单隐藏之外,这里按 id 直接拒。
+  if (deskForkCopies().has(`${source}:${String(s.id).toLowerCase()}`))
+    return [409, { error: "这是看板从已登记的会话 fork 出来的副本,不能再登记成线", code: "FORK_COPY" }];
   const hash = sessionHash(s.id), lineId = `${source}-${hash}`;
   const taken = deskLineIndex().get(`${source}:${s.id}`);
   // P6:解除继承后线还在(卡与历史保留)。同一会话再登记 = 把继承接回这条线,不新建、不改显示名。

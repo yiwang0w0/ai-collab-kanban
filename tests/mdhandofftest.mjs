@@ -24,7 +24,10 @@ const PY = HOST_ENV.PYTHON || "python";
 
 // 合成的敏感样串在运行时拼出来,源码里不出现它们的完整形状。
 const BS = String.fromCharCode(92);
-const PRIVATE_PATH = ["D:", "work", "private", "plan.txt"].join(BS);
+// 家目录下的路径:导出时家目录前缀换成 ~(N3);用户名用 .gitleaks.toml 放行的夹具名。
+const HOME_DIR = ["C:", "Users", "fixture"].join(BS);
+const PRIVATE_PATH = [HOME_DIR, "work", "plan.txt"].join(BS);
+const HOME_REDACTED = ["~", "work", "plan.txt"].join(BS);
 const TOKEN_LIKE = "gh" + "p_" + "Ab1".repeat(8);
 const LONG_ID = "0123abcd".repeat(2);
 const ESC = String.fromCharCode(27), RLO = String.fromCharCode(0x202e), ZW = String.fromCharCode(0x200b);
@@ -90,6 +93,18 @@ test("解析:畸形的节逐条给行号", () => {
   assert.match(at(22), /标题是空的/);
   assert.ok(errors.some((e) => /没有闭合/.test(e.error)));
   assert.match(M.parseQueueMd("只有说明,没有节").errors[0].error, /没有任何「## 标题」节/);
+});
+
+test("解析(N7):``` 与 ~~~ 分开计;同种且不短于开围栏才关;标题以 \\# 起头去掉一个反斜杠(N4)", () => {
+  const BT = "`".repeat(3), TL = "~".repeat(3);
+  const md = ["## " + BS + "#12 修复", "### 说明", BT, TL, "## 代码块里", BT, "### 验收", "ok", ""].join("\n");
+  const { sections, errors } = M.parseQueueMd(md);
+  assert.deepEqual(errors, []); assert.equal(sections.length, 1);
+  assert.equal(sections[0].subject, "#12 修复");
+  assert.equal(sections[0].description, [BT, TL, "## 代码块里", BT].join("\n"), "~~~ 关不了 ``` 开的代码块");
+  const long = M.parseQueueMd(["## a", "### 说明", "````", BT, "## 仍在块里", "````", "### 验收", "ok"].join("\n"));
+  assert.deepEqual([long.errors, long.sections[0].description], [[], ["````", BT, "## 仍在块里", "````"].join("\n")], "短于开围栏不关");
+  assert.match(M.parseQueueMd(["## a", "### 说明", TL, "x"].join("\n")).errors.at(-1).error, /~~~.*没有闭合/);
 });
 
 test("清洗:控制字符、双向控制、零宽去掉,换行保留", () => {
@@ -163,10 +178,10 @@ test("导出:遮掉令牌 / 长 ID / 私有路径、清控制字符;目标号 = 
   store.resolve(db, { id: a, verdict: "reject", note: "再补一段", resolvedBy: "human", expectedVersion: store.get(db, a).aggregate_version });
 
   const one = md.exportMd(a);
-  for (const secret of [PRIVATE_PATH, TOKEN_LIKE, LONG_ID, ESC, RLO]) assert.ok(!one.includes(secret), `导出里不含 ${JSON.stringify(secret.slice(0, 6))}`);
+  for (const secret of [PRIVATE_PATH, HOME_DIR, TOKEN_LIKE, ESC, RLO]) assert.ok(!one.includes(secret), `导出里不含 ${JSON.stringify(secret.slice(0, 6))}`);
   assert.match(one, /^## 整理文档\[2J$/m);
   assert.match(one, /^\\# 以井号开头的一行$/m, "正文里的 # 行转义");
-  assert.match(one, /### 回报\n\n#### 第 1 次 · .* · alpha · 交付\n\n改了 …/);
+  assert.ok(one.includes(`### 回报\n\n`) && one.includes(`· alpha · 交付\n\n改了 ${HOME_REDACTED}`), one);
   assert.match(one, /### 裁定\n\n#### 第 1 次 · .* · human · 打回\n\n再补一段/);
   assert.equal(md.exportMd(424242), null);
 
@@ -181,10 +196,84 @@ test("导出:遮掉令牌 / 长 ID / 私有路径、清控制字符;目标号 = 
   assert.equal(r.created.length, 2);
   const [a2, b2] = r.created.map((c) => store.get(db, c.id));
   assert.equal(a2.subject, "整理文档[2J"); assert.equal(a2.line, "alpha"); assert.equal(a2.acceptance, "文档齐全");
-  assert.match(a2.description, /^见 … 与 …,编号 …\n# 以井号开头的一行$/);
+  assert.equal(a2.description, `见 ${HOME_REDACTED} 与 …,编号 ${LONG_ID}\n# 以井号开头的一行`, "家目录换成 ~、令牌遮掉、长 ID 原样(N3)");
   assert.equal(b2.description, "加用例"); assert.deepEqual(b2.blocked_by, [a], "依赖写的是卡号,照原卡号接");
   assert.equal(a2.released, false);
   assert.deepEqual(md.importMd({ text: whole, goal: g2 }).existing.map((c) => c.id), [a2.id, b2.id]);
+});
+
+const claimReport = (db, id, worker, evidence) => {
+  const run = store.claimById(db, { id, worker, runtime: "claude", agentInstanceId: randomUUID(), expectedVersion: store.get(db, id).aggregate_version }).task.run_id;
+  store.report(db, { id, worker, runId: run, outcome: "done", evidence });
+};
+const h2Count = (md) => (md.match(/^## /gm) || []).length;
+
+test("导出(N1):执行方名带换行与 ## / ### 也只占一行;导出再导入卡数不变", (t) => {
+  const { db, md } = fixture(t);
+  const goal = store.add(db, { subject: "目标", kind: "goal", released: 1, actor: "operator" });
+  const a = store.add(db, { subject: "正常卡", parentId: goal, released: 1, actor: "operator", description: "x", acceptance: "y" });
+  const evil = "w\n## 伪造的卡\n### 说明\n被注入\n### 验收\n无\n### 回报\n#### z";
+  claimReport(db, a, evil, "交了");
+  const one = md.exportMd(a), whole = md.exportMd(goal);
+  assert.equal(h2Count(one), 1, one); assert.equal(h2Count(whole), 1, whole);
+  assert.ok(!/^### 说明\n\n被注入/m.test(whole) && !/^## 伪造的卡/m.test(whole), whole);
+  assert.match(one, /^#### 第 1 次 · .* · w ## 伪造的卡 ### 说明 被注入 ### 验收 无 ### 回报 #### z · 交付$/m);
+  const g2 = store.add(db, { subject: "目标(副本)", kind: "goal", released: 1, actor: "operator" });
+  const r = md.importMd({ text: whole, goal: g2 });
+  assert.deepEqual(r.created.map((c) => c.subject), ["正常卡"], "只建出原有的那一张");
+});
+
+test("导出(N3/N4/N7):代码块、$ 命令、引用、反引号、URL、提交号、长标识符、空行原样往返;只遮令牌、家目录换成 ~", (t) => {
+  const { db, md } = fixture(t);
+  const BT = "`".repeat(3), TL = "~".repeat(3), SHA = "0123456789abcdef".repeat(2) + "01234567";
+  const desc = [
+    "  缩进的第一行", "> 注意:不要动 main", "$ npm test", "跑 `npm test` 看 https://github.com/org/repo/pull/12",
+    `提交 ${SHA},函数 boundExecutorMayReadAndMore 要改名`, "", "", BT + "js", "# 代码里的注释", "### 验收", "", "", "## 伪造节", BT,
+    BS + "#tag 原文就带反斜杠", BS + BS + "## 两个反斜杠", TL + " 波浪围栏", BT, TL,
+    `令牌 ${TOKEN_LIKE} 与路径 ${PRIVATE_PATH} 换掉`].join("\n");
+  const subj = "#12 修复 `x`";
+  const goal = store.add(db, { subject: "目标", kind: "goal", released: 1, actor: "operator" });
+  const a = store.add(db, { subject: subj, parentId: goal, released: 1, actor: "operator", description: desc, acceptance: "跑\n$ npm test\n全绿" });
+  const b = store.add(db, { subject: "#13 第二张", parentId: goal, released: 1, actor: "operator", description: "未闭合\n" + BT + "\n## 这不是节", acceptance: "ok" });
+  const one = md.exportMd(a);
+  assert.match(one, /^## \\#12 修复 `x`$/m, "标题以 # 开头转义");
+  const want = desc.replace(TOKEN_LIKE, "…").replace(PRIVATE_PATH, HOME_REDACTED);
+  // 单卡往返
+  const r1 = md.importMd({ text: one });
+  assert.equal(r1.created.length, 1, JSON.stringify(r1));
+  const a1 = store.get(db, r1.created[0].id);
+  assert.equal(a1.subject, subj); assert.equal(a1.description, want); assert.equal(a1.acceptance, "跑\n$ npm test\n全绿");
+  assert.equal(a1.description.split("\n").length, desc.split("\n").length, "行数不变");
+  // 目标往返:两张都以 # 起头;第二张的代码块没闭合也不吞后面的节
+  const whole = md.exportMd(goal);
+  assert.equal(h2Count(whole), 2, whole);
+  const g2 = store.add(db, { subject: "目标(副本)", kind: "goal", released: 1, actor: "operator" });
+  const r = md.importMd({ text: whole, goal: g2 });
+  assert.deepEqual(r.created.map((c) => c.subject), [subj, "#13 第二张"]);
+  assert.equal(store.get(db, r.created[0].id).description, want);
+  assert.equal(store.get(db, r.created[1].id).description, "未闭合\n" + BT + "\n## 这不是节");
+});
+
+test("导入(N5):同内容的卡已归档 → 重新建一张并点名旧卡;未归档照旧回已存在", (t) => {
+  const { db, md } = fixture(t);
+  const first = md.importMd({ text: QUEUE }).created;
+  assert.deepEqual(md.importMd({ text: QUEUE }).existing.map((c) => c.id), first.map((c) => c.id));
+  store.archive(db, { id: first[0].id, force: true });
+  const again = md.importMd({ text: QUEUE });
+  assert.equal(again.created.length, 2, JSON.stringify(again)); assert.equal(again.created[0].replaces_archived, first[0].id);
+  assert.notEqual(again.created[0].id, first[0].id);
+  assert.equal(again.created[1].replaces_archived, undefined, "依赖它的那一节内容(依赖卡号)变了,是普通新建");
+  assert.deepEqual(again.existing, []);
+});
+
+test("导入(N6):--goal 只收目标卡的正整数卡号", (t) => {
+  const { db, md, count } = fixture(t);
+  const goal = store.add(db, { subject: "目标", kind: "goal", released: 1, actor: "operator" });
+  const plain = store.add(db, { subject: "普通卡", released: 1, actor: "operator" });
+  const before = count();
+  for (const g of [plain, true, "1e0", 1.5, "01", -1, " 1"]) assert.throws(() => md.importMd({ text: QUEUE, goal: g }), (e) => e.code === store.ERR.BAD_INPUT, JSON.stringify(g));
+  assert.equal(count(), before);
+  assert.equal(md.importMd({ text: QUEUE, goal: String(goal) }).created.length, 2, "纯数字串可以");
 });
 
 // ── 服务层:真看板上的鉴权与 board.py 三个子命令 ─────────────────────────────────────────

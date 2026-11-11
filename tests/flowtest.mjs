@@ -241,6 +241,27 @@ test("摘要清洗补全(F12):带空格路径、Git Bash / WSL 形、UNC、环�
   assert.equal(F.entryOf({ at: "x", kind: "resolve", actor: "cascade", detail: { cause_task_id: 3 } }).step, "accepted");
   assert.equal(F.entryOf({ at: "x", kind: "resolve", actor: "human", detail: { status: "not_started" } }).step, "handed_back", "旧事件无 disposition 按状态判");
   assert.equal(F.entryOf({ at: "x", kind: "release", actor: "alpha", detail: { action: "release_held" } }).step, "reaped");
+  // N11:认证头后的串(含全小写)、内网地址(四段私网 + 端口 / URL 主机)、「密码 / password / passwd / secret」后的值;邮箱不遮
+  const ip = (...o) => o.join(".");
+  const more = [
+    ["Bearer 全小写", j("头 Bea", "rer ", "abcdefghijklmnopqrstuvwxyz"), ["abcdefghij"]],
+    ["Basic", j("头 Bas", "ic ", "ZmFrZTpmYWtl"), ["ZmFrZT"]],
+    ["192.168 带端口", j("连 ", ip(192, 168, 1, 20), ":8080 再试"), ["192.168", "8080"]],
+    ["10/8 URL", j("调 http://", ip(10, 0, 0, 5), "/api"), ["10.0.0.5"]],
+    ["172.16/12", j("在 ", ip(172, 20, 3, 4), " 上"), ["172.20"]],
+    ["100.64/10", j("走 ", ip(100, 100, 9, 9)), ["100.100"]],
+    ["密码 空格", j("密", "码 hunter2hunter2"), ["hunter2"]],
+    ["password=", j("pass", "word=fakefake"), ["fakefake"]],
+    ["passwd:", j("pass", "wd: fakefake"), ["fakefake"]],
+    ["secret 冒号", j("sec", "ret：fakefake"), ["fakefake"]],
+  ];
+  for (const [name, input, leaks] of more) {
+    const out = F.redactText(input);
+    for (const leak of leaks) assert.ok(!out.includes(leak), `${name}: 「${leak}」残留在 ${JSON.stringify(out)}`);
+    assert.ok(out.includes("…"), `${name}: 应有遮蔽号`);
+  }
+  for (const ok of [j("邮件发 someone", "@example.com"), j("公网 ", ip(8, 8, 8, 8)), j("版本 ", ip(10, 2), " 发布"), j("非私网 ", ip(172, 32, 0, 1))])
+    assert.equal(F.redactText(ok), ok, `不应改动:${ok}`);
 });
 
 test("gitleaks 历史例外:4908518 的本文件只放行这一提交 + 这一文件(合成占位名,4e35888 已改为 you)", () => {

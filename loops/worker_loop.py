@@ -58,7 +58,7 @@ from pool_state import RATE_LIMIT_PAT, report_exhausted
 from prompt_items import whole_text, retrieval_hint
 from verify_lib import (run_verify, fmt_verify, save_verify_log, VERIFY_TIMEOUT, cli_deny_rules, readonly_edit_rules,  # noqa: F401
                         deny_path, REGISTRY, auth_home_deny_rules, cli_write_allow_rules, cli_denied_tools,
-                        git_dir_deny_rules)
+                        git_dir_deny_rules, token_dir_deny_rules, executor_token_dirs)
 
 # BOARD_PORT is honoured as a fallback — the preflight recommends it on a port
 # clash, and ignoring it here would aim this client at the DEFAULT port's board.
@@ -1178,20 +1178,48 @@ def prompt_selftest():
     # ⭐ 防「忘了列」:源码里每个写进 <data> 的字面文件名都要归入 PROTECTED 或 MODEL_OUTPUT。
     #   归不进去 = 一个新文件躺在模型伸手可及处而没人决定它是谁的。这是结构,不是注释。
     _lit = re.compile(r'(?:join\(store\.DATA_DIR|path\.join\(DATA_DIR|os\.path\.join\(DATA), f?"([^"]+)"\)')
+    # N8:用常量拼的写法(join 数据目录变量与一个大写常量)也认:常量名按同一文件里的 `NAME = "…"` 取值;取不到值 = 归不进表(红)。
+    _const_use = re.compile(r'(?:join\((?:store\.DATA_DIR|dataDir|DATA_DIR)|os\.path\.join\((?:DATA|data_dir)), ([A-Z][A-Z0-9_]*)\)')
+    _const_def = re.compile(r'(?:\b(?:const|let|var)\s+|^)([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)"', re.M)
     stray = []
     for sub, exts in (("core", (".js", ".mjs")), ("loops", (".py",)), ("cli", (".py", ".mjs")),
                       ("watchers", (".py",)), ("probe", (".py",))):
         d = os.path.join(CODE_ROOT, sub)
         for fn in sorted(os.listdir(d)) if os.path.isdir(d) else []:
             if not fn.endswith(exts): continue
-            for i, line in enumerate(io.open(os.path.join(d, fn), encoding="utf-8", errors="replace"), 1):
-                for name in _lit.findall(line):
+            src = io.open(os.path.join(d, fn), encoding="utf-8", errors="replace").read()
+            consts = dict(_const_def.findall(src))
+            for i, line in enumerate(src.splitlines(), 1):
+                names = _lit.findall(line) + [consts.get(c, f"<常量 {c} 取不到值>") for c in _const_use.findall(line)]
+                for name in names:
                     plain = re.sub(r"\{[^}]*\}", "x", name)      # f-string 的洞按一个字面量算
                     # 子目录形的规则(probes/**)按目录名认;其余按文件名通配认。
                     if plain in MODEL_OUTPUT or any(_fn.fnmatch(plain, p) or ("/" in p and plain == p.split("/")[0])
                                                     for p in PROTECTED): continue
                     stray.append(f"{sub}/{fn}:{i} {name}")
     ok("⭐源码里写进 <data> 的每个文件名都已归类(PROTECTED 或 MODEL_OUTPUT)", not stray, " · ".join(stray[:4]))
+    ok("N8 扫描认得常量拼的路径:desktop-sessions.mjs 的 DESK_LINEAGE_FILE / DESK_FORKS_FILE 被扫到",
+       all(x in _const_use.findall(io.open(os.path.join(CODE_ROOT, "core", "desktop-sessions.mjs"), encoding="utf-8").read())
+           for x in ("DESK_LINEAGE_FILE", "DESK_FORKS_FILE")))
+    ok("N8 桌面会话继承表与 fork 副本清单(完整会话 id)禁读禁写",
+       all(f"{tool}({deny_path(DATA)}/{n})" in rules for tool in ("Read", "Edit") for n in ("desktop_lineage.json", "desktop_forks.json")))
+    from verify_lib import executor_token_dirs, token_dir_deny_rules
+    _la = os.path.abspath(os.path.join(os.sep, "kanban-selftest-appdata"))
+    _tk = token_dir_deny_rules({"WORKER_TOKEN_DIRS": json.dumps([os.path.abspath(os.path.join(os.sep, "kanban-selftest-tok"))]), "LOCALAPPDATA": _la})
+    _root = deny_path(executor_token_dirs({"LOCALAPPDATA": _la})[-1]).rstrip("/")
+    ok("N2 执行者令牌目录:下传的与缺省根各一对 Read／Edit 整目录拒绝",
+       len(_tk) == 4 and f"Read({_root}/**)" in _tk and f"Edit({_root}/**)" in _tk, str(_tk))
+    try:
+        token_dir_deny_rules({"WORKER_TOKEN_DIRS": "[\"relative\"]"}); _bad = False
+    except ValueError:
+        _bad = True
+    ok("N2 令牌目录清单不是绝对路径 = ValueError(拒绝启动)", _bad)
+    _tsample = deny_path(os.path.join(_root, "abcd1234", "zcode.token"))
+    ok("N2 令牌文件被 Read 规则盖住、证据路径没被盖住",
+       any(_fn.fnmatch(_tsample, r.split("(", 1)[1][:-1]) for r in _tk if r.startswith("Read("))
+       and not any(_fn.fnmatch(ev_sample, r.split("(", 1)[1][:-1]) for r in token_dir_deny_rules()))
+    ok("N2 Claude CLI 座席 argv 带令牌目录拒绝规则",
+       all(r in cli_argv("提示词", ["--session-id", "x"], "claude-opus-5", "high") for r in token_dir_deny_rules()))
     av = cli_argv("提示词", ["--session-id", "x"], "claude-opus-5", "high")
 
     def _vals(argv, flag):
@@ -1212,7 +1240,7 @@ def prompt_selftest():
     deny_names = cli_denied_tools(WORKER_TOOLS)
     ok("⭐主座席 argv 带 --disallowedTools:开头是显式工具名段,其后紧跟全部路径规则",
        "--disallowedTools" in av and av[av.index("--disallowedTools") + 1:]
-       == deny_names + rules + [verify_log_rule] + auth_home_deny_rules() + git_dir_deny_rules(REPO),
+       == deny_names + rules + [verify_log_rule] + auth_home_deny_rules() + token_dir_deny_rules() + git_dir_deny_rules(REPO),
        str(av[av.index("--disallowedTools") + 1:][:4]) if "--disallowedTools" in av else "(无)")
     ok("⭐显式工具名段 = DENIED_TOOLS 去掉 write 档白名单:Bash/PowerShell/联网/子代理在内,Write/Edit 不在",
        deny_names == [n for n in DENIED_TOOLS if n not in WORKER_TOOLS]
@@ -1857,6 +1885,8 @@ def cli_argv(prompt, sargs, model, effort):
         # 全部执行配置的认证目录(可自定义到数据目录之外,不在 PROTECTED 的 auth/** 里):旧线与显式配置
         #   一样,文件工具对每个目录都不读不写(verify_lib.auth_home_deny_rules)。
         *auth_home_deny_rules(),
+        # N2:外部执行者令牌目录(数据目录之外)整目录不读不写(verify_lib.token_dir_deny_rules)。
+        *token_dir_deny_rules(),
         # 工作仓的 git 元数据只读不写(拒绝胜过上面 `Edit(<工作仓>/**)` 的放行)。
         *git_dir_deny_rules(REPO),
         *((READONLY_RULES or []) if TOOL_PROFILE == "read-only" else []),
@@ -1998,7 +2028,7 @@ def sdk_protected_paths():
     if not isinstance(extra, list) or len(extra) > 500 or any(not isinstance(path, str) or "\0" in path or not os.path.isabs(path) for path in extra):
         raise ValueError("SDK_PROTECTED_PATHS_INVALID")
     paths = [DATA, REGISTRY, os.environ.get("BOARD_CONFIG") or os.path.join(CODE_ROOT, "fleet.config.json"),
-             os.environ.get("WORKER_PROFILE_AUTH_HOME"), *extra]
+             os.environ.get("WORKER_PROFILE_AUTH_HOME"), *executor_token_dirs(), *extra]
     return sorted({os.path.normcase(os.path.realpath(path)) for path in paths if path})
 
 
