@@ -1384,3 +1384,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - desksessionstest 4/0(合成夹具);没有调用模型。阻塞：无。
 - 2026-11-11 本地会话登记成来领任务的线(claude/desk-sessions,合同 D 节):只读历史 `GET /api/desktop-sessions/:source/:id/messages`(只给文字、工具折叠成个数、字节游标分页);`POST/DELETE /api/desktop-sessions/lines` 登记 / 解除,继承表存数据目录、运行时增删,手写 lineage.json 照旧生效;体量阈值 200k 要 confirm_large;Codex 线首次领卡 `exec fork`、之后 `exec resume` 自己的会话。
 - desksessionstest 6/0、worker_loop --codex-selftest 39/0、verificationrepairtest 19/0;没有调用模型。阻塞：无。
+- 2026-11-11 安全复审 F10 / F11 / P6 与面板接口补充(claude/desk-sessions):会话历史每页至多读 16MB、单行超 4MB 给「这条太长,已省略」占位且游标严格前进;登记成线的 label 清掉控制符 / 零宽 / 双向控制符并限 24 字;解除后同一会话可重新登记(接回原线);清单顶层带 threshold_tokens / threshold_bytes,列表项 line = {id,label}、登记接口与列表项带 start_blocked(座席未解禁等现有判据)。
+- desksessionstest 8/0(每条修复单独还原均变红)、worker_loop --codex-selftest 39/0;没有调用模型。阻塞：无。

@@ -184,7 +184,10 @@ function codexMeta(f, titles) {
 }
 
 // ── 历史消息(只读)
-const MSG_TEXT_MAX = 4000, MSG_CHUNK = 1024 * 1024, MSG_SCAN_MAX = 32 * 1024 * 1024;
+// 每页至多读 MSG_SCAN_MAX 字节;单行超过 MSG_LINE_MAX 不再攒进内存,只往前找它的行首,给一条「这条太长,已省略」占位。
+const MSG_TEXT_MAX = 4000;
+export const MSG_READ_LIMITS = { chunk: 1024 * 1024, line: 4 * 1024 * 1024, scan: 16 * 1024 * 1024 };
+export const MSG_OMITTED_TEXT = "这条太长,已省略";
 export const MSG_LIMIT_DEFAULT = 50, MSG_LIMIT_MAX = 200;
 function readBuf(path, start, len) {
   const fd = openSync(path, "r");
@@ -226,6 +229,23 @@ function codexMsg(d) {
   return text ? { role: p.role, text: msgText(text), at: stamp(d), tools: 0 } : null;
 }
 
+// ── 登记成线时的显示名(F11):显示名会进 fleet.config.json、看板日志、效率分组名与历史条目。
+//   换行 / 制表 → 空格;控制字符(C0、DEL、C1)、行/段分隔符、双向控制符(061C、200E/200F、202A-202E、2066-2069)、
+//   零宽与不可见格式符(180E、200B-200D、2060-2065、FEFF、FFF9-FFFB)一律去掉;空白并成一个;限 24 个 UTF-16 单位
+//   (addLine 按 .length 判 24),不切开代理对。码点用数字写,源码里不出现这些字符本身。
+export const LINE_LABEL_MAX = 24;
+const labelDrop = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x061c || c === 0x180e ||
+  (c >= 0x200b && c <= 0x200f) || (c >= 0x2028 && c <= 0x202e) || (c >= 0x2060 && c <= 0x206f) ||
+  c === 0xfeff || (c >= 0xfff9 && c <= 0xfffb);
+export function cleanLineLabel(s) {
+  let t = "";
+  for (const ch of String(s ?? "").replace(/[\t\n\r\v\f]/g, " ")) if (!labelDrop(ch.codePointAt(0))) t += ch;
+  t = t.replace(/\s+/g, " ").trim();
+  let out = "";
+  for (const ch of t) { if (out.length + ch.length > LINE_LABEL_MAX) break; out += ch; }
+  return out.trim();
+}
+
 // ── 桌面会话登记成线的继承表:数据目录(不进 git),运行时增删;手写的 lineage.json 由看板另读、照旧生效
 export const DESK_LINEAGE_FILE = "desktop_lineage.json";
 /** → { <线 id>: { session, source, label, created_at } };坏文件 / 坏项一律忽略。 */
@@ -250,7 +270,9 @@ export function saveDeskLineage(dataDir, lines) {
  * opts: { claudeRoot, codexRoot, dataDir }
  * 返回 { list, select }。
  */
-export function createDesktopSessions({ claudeRoot, codexRoot, dataDir }) {
+export function createDesktopSessions({ claudeRoot, codexRoot, dataDir, readLimits = MSG_READ_LIMITS }) {
+  const RL = { ...MSG_READ_LIMITS, ...readLimits };
+  RL.scan = Math.max(RL.scan, RL.line + RL.chunk);   // 每页读取上限必须大于单行上限:不然游标可能原地不动
   const cache = new Map();   // path -> { mtimeMs, size, meta }
   const SEL_FILE = join(dataDir, "desktop_sessions_selected.json");
 
@@ -367,34 +389,63 @@ export function createDesktopSessions({ claudeRoot, codexRoot, dataDir }) {
     const out = [];                       // 倒序收集
     let pending = 0;                      // 已见到、还没归到某条 assistant 上的工具调用数
     const flush = () => { if (pending) { out.push({ role: "assistant", text: "", at: null, tools: pending }); pending = 0; } };
-    let pos = before ?? f.size, tail = Buffer.alloc(0), scanned = 0;
-    for (;;) {
-      if (scanned >= MSG_SCAN_MAX) { flush(); return { messages: out.reverse(), next_before: pos + tail.length || null }; }
-      const start = Math.max(0, pos - MSG_CHUNK);
-      const buf = Buffer.concat([readBuf(f.path, start, pos - start), tail]);
-      scanned += pos - start;
-      const segs = [];
-      let s0 = 0;
-      for (let i = buf.indexOf(10); i >= 0; i = buf.indexOf(10, i + 1)) { segs.push([s0, i]); s0 = i + 1; }
-      segs.push([s0, buf.length]);
-      const first = start > 0 ? 1 : 0;    // start>0 时第一段是半行,留到下一块拼完整
-      for (let k = segs.length - 1; k >= first; k--) {
-        const [a, b] = segs[k];
-        if (b <= a) continue;
-        const d = parse(buf.subarray(a, b).toString("utf8"));
-        const m = d ? conv(d) : null;
-        if (!m) continue;
-        if (!m.role) { pending += m.tools; continue; }
-        if (m.role === "assistant") { out.push({ ...m, tools: m.tools + pending }); pending = 0; }
-        else { flush(); out.push(m); }
-        if (out.length >= limit) {
-          const lineStart = start + a;
-          return { messages: out.slice(0, limit).reverse(), next_before: lineStart > 0 ? lineStart : null };
-        }
+    const page = (next) => { flush(); return { messages: out.reverse(), next_before: next > 0 ? next : null }; };
+    /** 一条消息(或工具计数)入列;凑够 limit 返回 true。 */
+    const take = (m) => {
+      if (!m) return false;
+      if (!m.role) { pending += m.tools; return false; }
+      if (m.role === "assistant") { out.push({ ...m, tools: m.tools + pending }); pending = 0; }
+      else { flush(); out.push(m); }
+      return out.length >= limit;
+    };
+    /** 超长行:读它的头 64KB 判断本来会不会显示、是谁说的;会显示就给占位(正文一律不给)。 */
+    const omitted = (lineStart) => {
+      const h = readBuf(f.path, lineStart, HEAD).toString("utf8");
+      if (/"isSidechain"\s*:\s*true|"isMeta"\s*:\s*true|"tool_result"|"function_call_output"/.test(h)) return null;
+      let role = null;
+      if (source === "claude") role = (h.match(/"type"\s*:\s*"(user|assistant)"/) || [])[1] || null;
+      else if (/"type"\s*:\s*"response_item"/.test(h)) role = (h.match(/"role"\s*:\s*"(user|assistant)"/) || [])[1] || null;
+      if (!role) return null;
+      const at = (h.match(/"timestamp"\s*:\s*"([0-9T:.+\-Z]{10,40})"/) || [])[1] || null;
+      return { role, text: MSG_OMITTED_TEXT, at, tools: 0, omitted: true };
+    };
+    // 状态:[0,pos) 还没读;当前行 = [pos, lineEnd),其中已读到的部分在 carry(超长后 over=true、carry 丢弃)。
+    let pos = before ?? f.size, lineEnd = pos, carry = Buffer.alloc(0), over = false, scanned = 0;
+    // 游标落在一行中间(上一页读到上限时停在超长行内):这行剩下的部分照超长行处理,找到行首再给占位。
+    if (before != null && before < f.size) {
+      const b2 = readBuf(f.path, before - 1, 2);
+      if (b2[0] !== 10 && b2[1] !== 10) over = true;
+    }
+    /** 当前行在 lineStart 处结束(往前看到了它的行首)。 */
+    const finish = (part, lineStart) => {
+      if (!over && part.length + carry.length > RL.line) over = true;
+      let m = null;
+      if (over) m = omitted(lineStart);
+      else {
+        const bytes = carry.length ? Buffer.concat([part, carry]) : part;
+        const d = bytes.length ? parse(bytes.toString("utf8")) : null;
+        m = d ? conv(d) : null;
       }
-      // 到这里 out 不足 limit 条,flush 最多补 1 条,不会超
-      if (start === 0) { flush(); return { messages: out.reverse(), next_before: null }; }
-      tail = buf.subarray(segs[0][0], segs[0][1]);
+      carry = Buffer.alloc(0); over = false;
+      return take(m);
+    };
+    for (;;) {
+      if (pos === 0) { finish(Buffer.alloc(0), 0); return page(null); }
+      // 每页读取量的上限:超长行内停下 → 游标就停在这里(严格小于本页的 before);否则停在当前行的行尾。
+      if (scanned >= RL.scan) return page(over ? pos : lineEnd);
+      const start = Math.max(0, pos - RL.chunk);
+      const buf = readBuf(f.path, start, pos - start);
+      scanned += buf.length;
+      let end = buf.length;
+      for (let i = end > 0 ? buf.lastIndexOf(10, end - 1) : -1; i >= 0; i = end > 0 ? buf.lastIndexOf(10, end - 1) : -1) {
+        const lineStart = start + i + 1;
+        if (finish(buf.subarray(i + 1, end), lineStart)) return page(lineStart);
+        end = i; lineEnd = start + i;
+      }
+      if (!over) {
+        if (carry.length + end > RL.line) { over = true; carry = Buffer.alloc(0); }
+        else carry = carry.length ? Buffer.concat([buf.subarray(0, end), carry]) : Buffer.from(buf.subarray(0, end));
+      }
       pos = start;
     }
   }

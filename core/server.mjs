@@ -41,7 +41,7 @@ import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorC
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX,
-        MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage} from "./desktop-sessions.mjs";
+        MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel} from "./desktop-sessions.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -3626,6 +3626,27 @@ function deskAgent(source) {
   const efforts = md?.efforts || seat.efforts || EFFORTS;
   return agentOf({ runtime: source, model: md?.id, effort: efforts.includes("high") ? "high" : efforts[efforts.length - 1] });
 }
+/** 登记了但这条线起不来的原因(面板要说清楚):只用现有判定 —— 座席未解禁(seat.disabled,与保存闸同一判据)、
+ *  座席缺命令路径(seatCmdOk,与 workerStart 同一判据)、执行配置未就绪(profileFacts)。判不出 → null,不猜。 */
+function deskStartBlocked(line) {
+  if (!LINES.includes(line) || LINE_EXTERNAL?.[line]) return null;
+  for (const ag of settingsOf(line).agents || []) {
+    const profile = profileOf(ag);
+    if (profile) {
+      const fact = profileFacts().find((p) => p.id === profile.id);
+      if (fact && !fact.ready) return { code: "PROFILE_NOT_READY", message: fact.reason || "执行配置尚未就绪" };
+      continue;
+    }
+    const seat = seatOf(ag.runtime);
+    if (!seat) continue;
+    if (seat.disabled)
+      return { code: "SEAT_LOCKED", message: `${seat.id} 座席未解禁(宿主设 ${seat.release_env}=1 后重启看板才能起这条线);登记已保存` };
+    if (!seatCmdOk(seat))
+      return { code: "SEAT_CMD_MISSING", message: `${seat.id} 座席缺命令路径(宿主没有配置 ${seat.cmd_env});登记已保存` };
+  }
+  return null;
+}
+const deskLineRef = (line) => (line ? { id: line, label: LINE_LABEL?.[line] || line } : null);
 /** POST /api/desktop-sessions/lines → [status, body] */
 function deskLineAdd(b) {
   if (!b || typeof b !== "object" || Array.isArray(b)) return [400, { error: "正文要是 {source, id, label?, confirm_large?}" }];
@@ -3638,25 +3659,33 @@ function deskLineAdd(b) {
   if (!s) return [400, { error: "本机没有这个会话(或它是子代理线程)", code: "SESSION_UNKNOWN" }];
   const hash = sessionHash(s.id), lineId = `${source}-${hash}`;
   const taken = deskLineIndex().get(`${source}:${s.id}`);
-  if (taken || LINES.includes(lineId))
+  // P6:解除继承后线还在(卡与历史保留)。同一会话再登记 = 把继承接回这条线,不新建、不改显示名。
+  //    线 id 由会话 id 的哈希定,同名线就是这个会话当初建的;外部执行线 / 角色座席不会是这个形,保险起见也拒。
+  const reattach = !taken && LINES.includes(lineId) && !LINEAGE[lineId] && !LINE_EXTERNAL?.[lineId] && !ROLES.includes(lineId);
+  if (taken || (LINES.includes(lineId) && !reattach))
     return [409, { error: `这个会话已经登记成线 ${taken || lineId}`, code: "ALREADY_A_LINE", line: taken || lineId }];
   const size = { approx_tokens: s.approx_tokens, size_bytes: s.size_bytes, threshold_tokens: DESK_LARGE_TOKENS };
   const large = s.approx_tokens != null ? s.approx_tokens > DESK_LARGE_TOKENS : s.size_bytes > DESK_LARGE_BYTES;
   if (large && b.confirm_large !== true)
     return [400, { error: `这个会话体量约 ${s.approx_tokens ?? "未知"} token(阈值 ${DESK_LARGE_TOKENS}):副本的第一轮要把整段历史送进模型,费用高、可能先压缩。确认后带 confirm_large:true 再提交`,
                    code: "NEEDS_CONFIRM_LARGE", ...size }];
-  // ⚠ 缺省显示名不用会话标题:标题会写进 fleet.config.json(可能进仓库)
-  const label = (b.label || "").trim() || `${source === "claude" ? "Claude" : "Codex"} 会话 ${hash}`;
-  const added = addLine(lineId, "", label, null, null, false);
-  settings[lineId] = { ...settingsOf(lineId), agents: [deskAgent(source)] };
-  writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 1), "utf8");
+  // ⚠ 缺省显示名不用会话标题:标题会写进 fleet.config.json(可能进仓库)。显示名先清洗(F11)再限长。
+  const label = cleanLineLabel(b.label || "") || `${source === "claude" ? "Claude" : "Codex"} 会话 ${hash}`;
+  let added;
+  if (reattach) added = { label: LINE_LABEL?.[lineId] || lineId };
+  else {
+    added = addLine(lineId, "", label, null, null, false);
+    settings[lineId] = { ...settingsOf(lineId), agents: [deskAgent(source)] };
+    writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 1), "utf8");
+  }
   LINEAGE[lineId] = { session: s.id, source, label: added.label, created_at: new Date().toISOString(), via: "desktop" };
   saveDeskLineage(store.DATA_DIR, deskLineageEntries());
   emit("config.lines", { line: lineId });
   emit("desktop-sessions.changed", { line: lineId });
-  console.log(`线已从桌面会话登记: ${lineId}「${added.label}」(${source},首次领卡以会话副本为起点;未启动)`);
+  console.log(`线已从桌面会话${reattach ? "重新登记(接回原线)" : "登记"}: ${lineId}「${added.label}」(${source},首次领卡以会话副本为起点;未启动)`);
   return [201, { line: { id: lineId, label: added.label, runtime: source,
-                         lineage: { source, session_id_hash: hash, forked: false } }, ...size }];
+                         lineage: { source, session_id_hash: hash, forked: !!lineageOf(lineId)?.forked } }, ...size,
+                 start_blocked: deskStartBlocked(lineId), ...(reattach ? { reattached: true } : {}) }];
 }
 
 /** 桌面端对话清单与勾选:只属于操作员(面板会话或操作员令牌),与 /api/coordinator 同一档。
@@ -3682,8 +3711,11 @@ async function desktopSessionsRoute(req, res, url, p, m, boardRole) {
     const q = (qs.get("q") || "").trim();
     if (q.length > 200) return json(res, 400, { error: "q 最长 200 字" });
     const lineOf = deskLineIndex();
-    return json(res, 200, deskSessions.list({ source, days, q: q || null, limit, selectedOnly: qs.get("selected") === "1",
-                                              lineOf: (s, id) => lineOf.get(`${s}:${id}`) || null }));
+    const r = deskSessions.list({ source, days, q: q || null, limit, selectedOnly: qs.get("selected") === "1",
+                                  lineOf: (s, id) => lineOf.get(`${s}:${id}`) || null });
+    // 面板要用:顶层带大体量阈值;每项 line = {id,label}|null,start_blocked = 登记了但起不来的原因|null
+    return json(res, 200, { ...r, threshold_tokens: DESK_LARGE_TOKENS, threshold_bytes: DESK_LARGE_BYTES,
+                            sessions: r.sessions.map((x) => ({ ...x, line: deskLineRef(x.line), start_blocked: x.line ? deskStartBlocked(x.line) : null })) });
   }
   const mm = p.match(/^\/api\/desktop-sessions\/(claude|codex)\/([0-9a-fA-F-]{36})\/messages$/);
   if (mm && m === "GET") {
