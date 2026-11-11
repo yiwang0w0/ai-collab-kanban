@@ -11,3 +11,9 @@ export function loadHomeModel(file = join(CODE_ROOT, "core", "panel.html")) {
   if (a < 0 || b < a) throw new Error(`${file} 里找不到首页模型(home-model 标记)`);
   return new Function(src.slice(src.indexOf("\n", a) + 1, b) + ";return { homeStatus, homeName, homeLineFaults, homeLogLines };")();
 }
+/** 看板简报(core/brief.mjs)用:首页「待我处理」的分栏(homeLists)与执行线故障(homeLineFaults),同一个切片。 */
+export function loadAttentionModel(file = join(CODE_ROOT, "core", "panel.html")) {
+  const src = readFileSync(file, "utf8"), a = src.indexOf(B0), b = src.indexOf(B1);
+  if (a < 0 || b < a) throw new Error(`${file} 里找不到首页模型(home-model 标记)`);
+  return new Function(src.slice(src.indexOf("\n", a) + 1, b) + ";return { homeLists, homeLineFaults };")();
+}

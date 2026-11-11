@@ -1441,6 +1441,7 @@
   .ai-row[data-hi]{outline:1px solid var(--cc);outline-offset:2px;border-radius:var(--r-sm)}
   .ai-who{display:flex;flex-direction:column;min-width:0}
   .ai-who b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .ai-who .ai-role{font-weight:400;vertical-align:1px}
   .ai-row .dim,.desk-body .dim,.ai-legacy .dim{color:var(--dim);font-size:var(--fs-sm)}
   .ai-row > .badge{justify-self:start}
   .ai-hold{display:flex;flex-wrap:wrap;gap:var(--sp-1);min-width:0}
@@ -1823,6 +1824,11 @@
           <label class="seg-o"><input type="radio" name="ai-kind" value="zcode"><span>Zcode</span></label>
           <label class="seg-o"><input type="radio" name="ai-kind" value="other"><span>其他</span></label>
         </div>
+        <!-- 角色(合同 E):来领任务 = 绑一条外部执行线;助手 = 不绑线,只看和挂卡。说明只在 title。 -->
+        <div class="seg" role="radiogroup" aria-label="接入成什么角色" id="ai-role">
+          <label class="seg-o" title="领板上已放行的卡，干完交付；接到一条外部执行线上"><input type="radio" name="ai-role" value="executor" checked><span>来领任务</span></label>
+          <label class="seg-o" title="给聊天机器人、可穿戴设备背后的 AI 用：看近况、挂卡（等你放行）、有事时提醒；不领卡、不交付"><input type="radio" name="ai-role" value="assistant"><span>助手（只看和挂卡）</span></label>
+        </div>
         <label class="fld"><span>名称</span><input id="ai-label" maxlength="24" placeholder="可不填" aria-label="接入的 AI 的名称"></label>
         <button type="submit" class="pri">发接入码</button>
         <button type="button" id="ai-connect-cancel">取消</button>
@@ -1832,8 +1838,7 @@
       <div class="ai-code" id="ai-code" hidden></div>
       <div class="ai-list" id="ai-list"><p class="set-empty">正在读取…</p></div>
       <details class="ai-legacy" id="ai-legacy">
-        <summary><svg class="ic fold-ic" aria-hidden="true"><use href="#i-chevron"/></svg>请协调席代劳(旧)</summary>
-        <p class="dim">按下只是在板上留一条请求，由持续接收通知的那个 Claude 对话去做；没人接手就一直等着。</p>
+        <summary title="按下只是在板上留一条请求，由持续接收通知的那个 Claude 对话去做；没人接手就一直等着。"><svg class="ic fold-ic" aria-hidden="true"><use href="#i-chevron"/></svg>请协调席代劳(旧)</summary>
     <div class="quick" id="quick">
       <div class="quick-row">
         <button data-quick="propose-lines" title="点击=授权你的 Claude 只读检索你最近的会话(标题与相关片段,不外发),访谈后起草自动拉取线">根据我最近的对话起草线路</button>
@@ -2240,6 +2245,20 @@ function deskRegisterConfirm(size, cap, large) {
   return "把这个会话登记成一条来领任务的线？\n\n这条线带着那段会话的全部内容，它交付的证据其它执行者读得到。" +
     (large ? "\n\n这个会话体量" + size + (cap ? "，超过 " + cap : "") + "：登记后每次干活都会带上整段上下文，费用高，第一轮可能先压缩。" : "") +
     "\n\n仍要登记？";
+}
+/** 角色徽标(合同 E):助手 → { text, tip };来领任务的执行者 → null(不加徽标)。 */
+function aiRoleBadge(e) {
+  return e && e.role === "assistant" ? { text: "助手", tip: "只看和挂卡：看近况、挂未放行的卡、有事时提醒；不领卡、不交付" } : null;
+}
+/** 接入码那一行写它接到哪:助手不绑线。 */
+function aiCodeWhere(issued, lineName = (l) => l) {
+  return issued && issued.role === "assistant" ? "助手 · 不绑线" : "线 " + lineName((issued && issued.line) || "");
+}
+/** 发码请求体:角色是助手时带 role,不带 line;来领任务的照旧(可带原线重发)。 */
+function aiIssueBody({ kind = "claude", role = "executor", label = "", line = null } = {}) {
+  const name = String(label || "").trim();
+  if (role === "assistant") return { kind, role: "assistant", ...(name ? { label: name } : {}) };
+  return { kind, ...(line ? { line } : {}), ...(name ? { label: name } : {}) };
 }
 /** 发接入码的错误应答 → 一句话。 */
 function aiIssueError(status, body) {
@@ -6154,7 +6173,9 @@ function homeStep(t, { autoReview = false, remoteName = null } = {}) {
     if (t.human_gate && !remoteName) return { lane: "mine", state: "待人工裁定", tone: "", rank: 4,
       next: said(blockers.find((b) => b.code === "HUMAN_GATE"), "裁定或解除人工闸") };
     // 只差放行:排在别的待办后面,放行前的核对在侧栏里做。
-    if (!remoteName && homeAwaitsRelease(t, blockers)) return { lane: "mine", state: "待放行", tone: "", next: "核对后放行", rank: 5 };
+    // 助手(合同 E)挂上的卡一律未放行:写明是谁挂的。
+    const by = t.posted_by && typeof t.posted_by.label === "string" && t.posted_by.label.trim() ? t.posted_by.label.trim() : "";
+    if (!remoteName && homeAwaitsRelease(t, blockers)) return { lane: "mine", state: by ? by + " 挂上 · 待你放行" : "待放行", tone: "", next: "核对后放行", rank: 5 };
     return { lane: null };
   }
   if (t.status !== "waiting") return { lane: null };
@@ -8999,14 +9020,15 @@ function aiRow(e){
   const st = aiState(e), row = homeEl("div", undefined, "ai-row");
   row.id = "ai-row-" + e.id; if (aiHi === String(e.id)) row.dataset.hi = "";
   const who = homeEl("div", undefined, "ai-who");
-  who.append(homeEl("b", String(e.label || e.id || "接入的 AI")),
-             homeEl("span", aiKindName(e.kind) + (e.line ? " · 线 " + lineLabel(e.line) : ""), "dim"));
+  const rb = aiRoleBadge(e), name = homeEl("b", String(e.label || e.id || "接入的 AI"));
+  if (rb) { const r = homeEl("span", rb.text, "badge ai-role"); r.dataset.tone = "quiet"; r.title = rb.tip; name.append(" ", r); }
+  who.append(name, homeEl("span", aiKindName(e.kind) + (e.line ? " · 线 " + lineLabel(e.line) : ""), "dim"));
   const badge = homeEl("span", st.text, "badge"); badge.dataset.tone = st.tone; badge.insertAdjacentHTML("afterbegin", icon(st.ic));
   if (st.key === "stalled") badge.title = "手上有卡，但心跳超时";
   if (e.last_seen_at) badge.title = (badge.title ? badge.title + "；" : "") + "最近一次请求 " + aiFmt(e.last_seen_at);
   const hold = homeEl("div", undefined, "ai-hold");
-  const cards = Array.isArray(e.holding) ? e.holding : [];
-  if (!cards.length) hold.append(homeEl("span", "手上没有卡", "dim"));
+  const cards = rb ? [] : Array.isArray(e.holding) ? e.holding : [];   // 助手不领卡:没有「手上的卡」这一栏
+  if (!cards.length && !rb) hold.append(homeEl("span", "手上没有卡", "dim"));
   for (const h of cards) {
     const b = homeEl("button", undefined, "ghost ai-card"); b.type = "button";
     b.append(homeEl("span", "#" + h.id, "ai-no"), homeEl("span", String(h.subject || ""), "ai-subj"));
@@ -9014,7 +9036,7 @@ function aiRow(e){
     b.addEventListener("click", () => openSide({ id: Number(h.id), uid: null, item: null }));
     hold.append(b);
   }
-  const rep = homeEl("span", aiReport(e.last_report, aiFmt), "ai-rep dim");
+  const rep = homeEl("span", rb ? "" : aiReport(e.last_report, aiFmt), "ai-rep dim");
   rep.title = "最近一次回报";
   row.append(who, badge, hold, rep);
   if (!e.revoked) {
@@ -9034,15 +9056,21 @@ async function aiRevoke(e, b){
 }
 // 接入:选种类、可填名称 → POST /api/connect/codes → 接入码 + 两段要复制的字。
 const aiForm = document.getElementById("ai-connect"), aiNote = document.getElementById("ai-connect-note");
+/** 表单开着时入口按钮降为普通按钮:同屏只有表单里的「发接入码」一个主按钮(style-guide §八)。 */
+function aiFormShown(open){
+  aiForm.hidden = !open;
+  document.getElementById("ai-connect-open").classList.toggle("pri", !open);
+}
 document.getElementById("ai-connect-open").addEventListener("click", () => {
-  aiForm.hidden = false; aiNote.textContent = "";
+  aiFormShown(true); aiNote.textContent = "";
   aiForm.querySelector("input[name=ai-kind]:checked")?.focus();
 });
-document.getElementById("ai-connect-cancel").addEventListener("click", () => { aiForm.hidden = true; aiForm.reset(); });
+document.getElementById("ai-connect-cancel").addEventListener("click", () => { aiFormShown(false); aiForm.reset(); });
 aiForm.addEventListener("submit", async (ev) => {
   ev.preventDefault();
   const kind = aiForm.querySelector("input[name=ai-kind]:checked")?.value || "claude", label = document.getElementById("ai-label").value.trim();
-  await aiIssue({ kind, ...(label ? { label } : {}) }, aiForm.querySelector("button[type=submit]"));
+  const role = aiForm.querySelector("input[name=ai-role]:checked")?.value === "assistant" ? "assistant" : "executor";
+  await aiIssue(aiIssueBody({ kind, role, label }), aiForm.querySelector("button[type=submit]"));
 });
 async function aiIssue(body, b){
   if (b) b.disabled = true; aiNote.textContent = "";
@@ -9051,8 +9079,8 @@ async function aiIssue(body, b){
     const v = await r.json().catch(() => ({}));
     if (r.status === 404 && !v.code) { aiNote.textContent = "这个版本还没有接入功能"; return; }
     if (!r.ok) { aiNote.textContent = aiIssueError(r.status, v); return; }
-    aiIssued = { ...v, kind: body.kind, label: body.label || null };
-    aiForm.hidden = true; aiForm.reset();
+    aiIssued = { ...v, kind: body.kind, role: v.role || body.role || "executor", label: body.label || null };
+    aiFormShown(false); aiForm.reset();
     renderAiCode();
     aiLoad();
   } catch (err) { aiNote.textContent = "没有发出接入码：" + copyError(err); }
@@ -9076,15 +9104,15 @@ function renderAiCode(){
   const top = homeEl("div", undefined, "ac-top"), close = homeEl("button", "收起", "ghost"); close.type = "button";
   close.addEventListener("click", () => { aiIssued = null; renderAiCode(); });
   if (left === null) {
-    const again = homeEl("button", "重新发码", "pri"); again.type = "button";
-    again.addEventListener("click", () => aiIssue({ kind: aiIssued.kind, line: aiIssued.line, ...(aiIssued.label ? { label: aiIssued.label } : {}) }, again));
+    const again = homeEl("button", "重新发码"); again.type = "button";   // 入口「接入一个 AI」已是这屏的主按钮
+    again.addEventListener("click", () => aiIssue(aiIssueBody({ kind: aiIssued.kind, role: aiIssued.role, line: aiIssued.line, label: aiIssued.label }), again));
     top.append(homeEl("span", "接入码已过期", "ac-gone"), again, close);
     box.replaceChildren(top);
     return;
   }
   const code = homeEl("code", String(aiIssued.code || ""), "ac-code"); code.tabIndex = 0; code.setAttribute("aria-label", "接入码");
   const time = homeEl("span", "还剩 " + left, "ac-left"); time.title = "一次性，10 分钟内有效";
-  top.append(homeEl("span", "接入码", "dim"), code, time, homeEl("span", "线 " + lineLabel(aiIssued.line || ""), "dim ac-line"), close);
+  top.append(homeEl("span", "接入码", "dim"), code, time, homeEl("span", aiCodeWhere(aiIssued, lineLabel), "dim ac-line"), close);
   const next = homeEl("p", "下一步：把配置粘到对方的 MCP 设置里，再把提示词发给它。", "ac-next");
   const snip = (title, text) => {
     const s = homeEl("div", undefined, "ac-snip"), h = homeEl("div", undefined, "ac-h");

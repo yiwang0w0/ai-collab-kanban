@@ -33,7 +33,9 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
-import {openConnect,isLoopback,defaultTokenDir} from "./connect.mjs";
+import {openConnect,isLoopback,defaultTokenDir,cardText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
+import {briefOf,maxCharsOf} from "./brief.mjs";
+import {loadAttentionModel} from "./home-model.mjs";
 import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliResult} from "./board-claude-cli.mjs";
@@ -342,6 +344,8 @@ const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),rep
   ...connect.liveNote(t),
   // 外部执行者「已启动」的依据(合同 B 裁定):最近这一轮(run_id)领取后第一次心跳的时刻 —— 对方自报,看板没有观察到进程。交付/完成后仍保留(侧栏五步条要显示);受管线恒 null。
   self_reported_started_at: t.status !== "not_started" && t.run_id && coord.isExecutor(db, t.worker) ? connect.heartbeatStartedAt(t.run_id) : null,
+  // 助手(合同 E)挂的卡:{executor_id,label};别的卡 null。首页「待我处理」写「<名称> 挂上 · 待你放行」。
+  posted_by: connect.postedBy(t.id),
   // Zcode 线的卡:最近一个分派请求的状态、拒收码与白话及其来源、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
   ...zcodeTaskField(db, t, CFG.zcode_worker_config ?? null),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
@@ -2582,6 +2586,10 @@ const EXECUTOR_WRITES = (p) =>
   /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
   /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p) ||
   p === "/api/approvals/request";
+// 助手令牌(合同 E):写只有挂未放行卡这一条。领卡、交付、裁定、放行、改配置都不在这里。
+const ASSISTANT_WRITES = (p) => p === "/api/assistant/cards";
+// 助手令牌的读:简报、卡面与卡的历史摘要、自己的身份。SSE、运行记录、裁定附件、证据、会话、设置、协作、别人的令牌相关接口一律拒绝。
+const ASSISTANT_READS = (p) => p === "/api/brief" || p === "/api/tasks" || p === "/api/connect/me" || /^\/api\/tasks\/\d+(?:\/history)?$/.test(p);
 const REVIEW_WRITES = (p) =>
   p === "/api/pools/exhausted" ||
   /^\/api\/tasks\/\d+\/(?:resolve|autoreview)$/.test(p);
@@ -2658,7 +2666,7 @@ function closeGateOrThrow(t) {
 // ── 绑线执行者(凭码接入)的读接口白名单(F2)。只有桥用得到的这几条;卡与它的子资源再按线核,别的线一律 404。
 const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|decisions\/\d+|evidence\/\d+))?$/;
 function boundExecutorMayRead(req, p) {
-  if (p === "/api/coord" || p === "/api/tasks") return true;
+  if (p === "/api/coord" || p === "/api/tasks" || p === "/api/connect/me") return true;
   const mt = BOUND_TASK_READ.exec(p);
   if (mt) return store.get(db, Number(mt[1]))?.line === req.boundLine;
   // 自己发起的批准请求可以查结果;别的事项不给。
@@ -2666,8 +2674,17 @@ function boundExecutorMayRead(req, p) {
   if (ma) return db.prepare("SELECT executor FROM approval_requests WHERE id=?").get(Number(ma[1]))?.executor === req.executor.id;
   return false;
 }
-/** 给绑线执行者的卡:别人的 live_note 不给(只给持卡者本人与操作员)。其它读者原样。 */
+// 助手看到的卡(合同 E):只给卡面、状态与来源这几项(允许清单);交付证据(result)、裁定附件、运行轨迹、live_note 不给。
+const ASSISTANT_CARD = ["id", "kind", "subject", "summary", "description", "acceptance", "status", "waiting_for", "line", "released", "human_gate",
+  "parent_id", "created_at", "updated_at", "archived_at", "handed_back", "children_done", "children_total", "posted_by"];
+function assistantCard(t) {
+  const out = Object.fromEntries(ASSISTANT_CARD.filter((k) => Object.hasOwn(t, k)).map((k) => [k, t[k]]));
+  out.blockers = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).slice(0, 10).map((b) => ({ code: b?.code ?? null, message: b?.message ?? null }));
+  return out;
+}
+/** 给绑线执行者的卡:别人的 live_note 不给(只给持卡者本人与操作员)。助手只给允许清单里的几项。其它读者原样。 */
 function forReader(req, t) {
+  if (t && req.boardRole === "assistant") return assistantCard(t);
   if (!t || !req.boundLine || t.worker === req.executor.id) return t;
   return { ...t, live_note: null, live_note_at: null };
 }
@@ -2686,7 +2703,13 @@ function guardAuthentication(req, res) {
              : tok === REVIEW_TOKEN ? "review" : null;
   // 执行者令牌:只按哈希查登记表;只有上面三类都不匹配时才查。
   req.executor = role ? null : coord.byToken(db, tok);
-  if (req.executor) { role = "executor"; connect.seen(req.executor.id); }   // last_seen_at:每次执行者请求都算
+  req.assistant = null;
+  if (req.executor) {
+    connect.seen(req.executor.id);                                          // last_seen_at:每次执行者请求都算
+    // 助手(合同 E)也是 exe_ 令牌,但角色不同:另走 ASSISTANT_READS / ASSISTANT_WRITES,执行者的分支一概够不着。
+    if (connect.roleOf(req.executor.id) === "assistant") { role = "assistant"; req.assistant = req.executor; req.executor = null; }
+    else role = "executor";
+  }
   req.boardRole = role;
   if (!role) {
     // ⚠ Echoing TOKEN_FILE raw would hand an unauthenticated caller an absolute
@@ -2701,7 +2724,7 @@ function guardWrite(req, res, p) {
   const role = guardAuthentication(req, res);
   if (!role) return null;
   const allowed = role === "operator" || (role === "worker" ? WORKER_WRITES(p)
-                : role === "executor" ? EXECUTOR_WRITES(p) : REVIEW_WRITES(p));
+                : role === "executor" ? EXECUTOR_WRITES(p) : role === "assistant" ? ASSISTANT_WRITES(p) : REVIEW_WRITES(p));
   if (!allowed) {
     json(res, 403, { error: `${role} 令牌无权执行此操作 —— 裁定/编辑/治理动作只属于 operator 令牌(board_token)`,
                      role, path: p });
@@ -3153,6 +3176,23 @@ function requestApprovalEntry(r) {
                    action: approvals.oneLine(r.action, approvals.ACTION_MAX), risk: r.risk, executor: r.executor, detail_ref: { type: "request", id: r.id, api: `/api/approvals/${r.approval_id}` },
                    created_at: r.created_at, expected_version: 1, actions: [...APPROVE_REJECT], labels: { approve: "批准", reject: "拒绝" } },
            route: { requestId: r.id } };
+}
+// ── 看板简报(合同 E):「等你处理」= 首页「待我处理」(panel.html home-model 区的 homeLists)+ 执行线故障(homeLineFaults),
+//    同一份切片在这里跑,不另写判定;文字由 core/brief.mjs 的纯函数生成。
+const attentionModel = loadAttentionModel();
+function briefNow(maxChars) {
+  const now = Date.now();
+  const tasks = store.list(db, { archived: "false" }).tasks.map((t) => {
+    const o = taskOut(t);
+    const who = o.status === "in_progress" ? (coord.isExecutor(db, o.worker) ? connect.nameOf(o.worker) : (LINE_LABEL[o.line] || o.line || o.worker || null)) : null;
+    return { ...o, hb: "", who };
+  });
+  const workersNow = (SUPERVISED || []).map((line) => { try { return workerInfo(line); } catch { return null; } }).filter(Boolean);
+  const lists = attentionModel.homeLists({ tasks, autoReview: workersNow.some((w) => w.line === "review" && w.running),
+    approvals: approvalEntries().map((e) => e.item), executors: connect.list() });
+  const faults = attentionModel.homeLineFaults(workersNow, LINE_LABEL || {});
+  let headline = null; try { headline = efficiency.compute({}).headline ?? null; } catch { headline = null; }
+  return briefOf({ lists, faults, tasks, headline, now }, maxChars);
 }
 function approvalEntries() {
   const now = Date.now(), out = [];
@@ -3988,6 +4028,9 @@ const server = http.createServer(async (req, res) => {
     req.boundLine = boardRole === "executor" ? connect.lineOf(req.executor.id) : null;
     if (req.boundLine && (m === "GET" || m === "HEAD") && !boundExecutorMayRead(req, p))
       return json(res, 404, { error: "不存在" });
+    // 助手令牌(合同 E):读只有简报、卡面、卡历史、自己的身份;SSE 也不给——它只通过 get_brief / wait_for_attention 获知变化。
+    if (boardRole === "assistant" && (m === "GET" || m === "HEAD") && !ASSISTANT_READS(p))
+      return json(res, 403, { code: "ASSISTANT_FORBIDDEN", error: "助手令牌只能看简报与卡面、挂未放行的卡", role: boardRole, path: p });
     if (m === "GET" && p === "/api/auth") {
       if (boardRole !== "operator") return json(res,403,{error:"管理面板需要操作员身份"});
       return json(res,200,{role:"operator"});
@@ -4053,6 +4096,48 @@ const server = http.createServer(async (req, res) => {
     if (m === "GET" && p === "/api/zcode/status") {
       if (!guardWrite(req, res, p)) return;
       return json(res, 200, zcodeStatus(db, { configFile: CFG.zcode_worker_config ?? null }));
+    }
+    // ── 看板简报(合同 E,core/brief.mjs):面板会话 / 操作员令牌与助手令牌可读,同一份。
+    if (m === "GET" && p === "/api/brief") {
+      if (boardRole !== "operator" && boardRole !== "assistant") return json(res, 403, { error: "简报只给操作员与助手", role: boardRole });
+      let max; try { max = maxCharsOf(url.searchParams.get("max_chars")); } catch (e) { return json(res, 400, { code: "BAD_INPUT", error: e.message }); }
+      return json(res, 200, briefNow(max));
+    }
+    // 令牌自己是谁(桥握手时按角色给工具组):执行者与助手令牌可读,只回自己。
+    if (m === "GET" && p === "/api/connect/me") {
+      const me = req.executor ?? req.assistant;
+      if (!me) return json(res, 403, { error: "只给执行者与助手令牌", role: boardRole });
+      return json(res, 200, { executor_id: me.id, role: boardRole, line: req.boundLine ?? null });
+    }
+    // 助手挂卡(合同 E):一律未放行、记来源 posted_by、同时在板上的未放行卡至多 20 张(超出 409)。
+    if (m === "POST" && p === "/api/assistant/cards") {
+      if (boardRole !== "assistant") return json(res, 403, { error: "只给助手令牌;操作员用 POST /api/tasks 建卡", role: boardRole });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象");
+      for (const k of Object.keys(b)) if (!["subject", "description", "acceptance", "line"].includes(k)) throw store.err(store.ERR.BAD_INPUT, `不认识的字段 ${k}`);
+      for (const k of ["subject", "description", "acceptance"]) if (typeof b[k] !== "string") throw store.err(store.ERR.BAD_INPUT, `${k} 要字符串`);
+      const subject = cardText(b.subject), description = cardText(b.description, { multiline: true }), acceptance = cardText(b.acceptance, { multiline: true });
+      if (!subject) throw store.err(store.ERR.BAD_INPUT, "subject 不能为空");
+      if ([...subject].length > 120) throw store.err(store.ERR.BAD_INPUT, "subject 最多 120 字");
+      if ([...description].length > 4000) throw store.err(store.ERR.BAD_INPUT, "description 最多 4000 字");
+      if ([...acceptance].length > 2000) throw store.err(store.ERR.BAD_INPUT, "acceptance 最多 2000 字");
+      const fields = { subject, description, acceptance, released: 0, actor: req.assistant.id };
+      if (b.line !== undefined && b.line !== null) {
+        if (typeof b.line !== "string") throw store.err(store.ERR.BAD_INPUT, "line 要字符串");
+        fields.line = b.line;
+      }
+      if (badRoutable(res, fields)) return;
+      const me = req.assistant.id;
+      const id = connect.tx("assistant_post", () => {
+        if (connect.openPostsOf(me) >= ASSISTANT_OPEN_MAX) return null;
+        const nid = store.add(db, fields);
+        connect.recordPost(nid, me);
+        return nid;
+      });
+      if (id == null) return json(res, 409, { code: "TOO_MANY_POSTED", error: `你挂的未放行卡已有 ${ASSISTANT_OPEN_MAX} 张(上限);等操作者放行或处理掉一些再挂` });
+      emit("task.created", { id });
+      console.log(`助手 ${me} 挂上 #${id}(未放行,等操作者放行)`);
+      return json(res, 201, { id, released: !!store.get(db, id).released });
     }
     // ── 凭码接入的管理面(core/connect.mjs):读写都只给操作员(面板会话或 board_token);执行者、worker、审阅令牌 403。
     if (p === "/api/connect/codes" || p === "/api/executors" || p.startsWith("/api/executors/")) {
@@ -4659,7 +4744,8 @@ const server = http.createServer(async (req, res) => {
 
       // 合同 B:按卡的历史(人话条目,旧→新)。只给操作员(面板会话或操作员令牌)。
       if (m === "GET" && action === "history") {
-        if (boardRole !== "operator") return json(res, 403, { error: "卡的历史只给操作员(面板会话或操作员令牌)", role: boardRole });
+        // 助手(合同 E)读得到历史摘要(get_card 用;摘要本身已遮蔽路径与令牌样串);别的令牌不给。
+        if (boardRole !== "operator" && boardRole !== "assistant") return json(res, 403, { error: "卡的历史只给操作员(面板会话或操作员令牌)与助手", role: boardRole });
         const raw = url.searchParams.get("limit"), limit = raw == null ? 100 : Number(raw);
         if (!Number.isInteger(limit) || limit < 1 || limit > 1000) return json(res, 400, { error: "limit 必须是 1..1000" });
         if (!store.get(db, id)) return json(res, 404, { error: "不存在" });

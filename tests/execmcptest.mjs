@@ -169,22 +169,52 @@ test("桥:--code 凭码接入、wait_for_card、heartbeat note、ask_operator", 
   } finally { await B.stop(); }
 });
 
+test("桥按令牌的角色给工具组:执行者七个(无助手工具),助手五个(无领卡/交付)", { timeout: 90000 }, async () => {
+  const B = await board();
+  const EXEC = ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator"];
+  const ASST = ["get_brief", "list_cards", "get_card", "post_card", "wait_for_attention"];
+  try {
+    const names = async (args) => {
+      const M = bridge(args);
+      try {
+        const init = await M.request("initialize", INIT);
+        assert.ok(init.result, JSON.stringify(init) + M.stderr());
+        M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+        const list = (await M.request("tools/list")).result.tools.map((t) => t.name);
+        const probe = await M.request("tools/call", { name: list.includes("post_card") ? "claim_card" : "post_card", arguments: {} });
+        return { list, server: init.result.serverInfo.name, refused: probe.error?.message };
+      } finally { await M.end(); }
+    };
+    const ec = await B.api("POST", "/api/connect/codes", B.operator, { kind: "other", line: "ext" });
+    const ex = await names(["--url", B.base, "--line", "ext", "--code", ec.body.code, "--token-file", join(B.dir, "e.token")]);
+    assert.deepEqual([ex.list, ex.server, ex.refused], [EXEC, "ai-fleet-board-executor", "Unknown tool"]);
+    const ac = await B.api("POST", "/api/connect/codes", B.operator, { kind: "other", role: "assistant" });
+    const as = await names(["--url", B.base, "--code", ac.body.code, "--token-file", join(B.dir, "a.token")]);
+    assert.deepEqual([as.list, as.server, as.refused], [ASST, "ai-fleet-board-assistant", "Unknown tool"]);
+    // 用令牌直接登记的旧执行者(只给 --token-file 的旧用法)照旧拿执行者工具
+    const reg = await B.api("POST", "/api/coord/executors", B.operator, { id: "old-desk", name: "旧桌面", kind: "external" });
+    assert.equal(reg.status, 201, JSON.stringify(reg.body));
+    writeFileSync(join(B.dir, "old.token"), reg.body.token);
+    assert.deepEqual((await names(["--url", B.base, "--token-file", join(B.dir, "old.token")])).list, EXEC);
+  } finally { await B.stop(); }
+});
+
 test("桥的启动参数:只接回环地址和 exe_ 执行者令牌,错误文案不带令牌", { timeout: 30000 }, () => {
   const dir = mkdtempSync(join(tmpdir(), "execmcpargs-"));
   try {
     const exe = join(dir, "exe.token"), op = join(dir, "op.token");
     writeFileSync(exe, "exe_" + "a".repeat(48) + "\n"); writeFileSync(op, "f".repeat(32) + "\n");
     const run = (...a) => spawnSync(process.execPath, [BRIDGE, ...a], { input: "", encoding: "utf8", windowsHide: true, env: HOST_ENV, timeout: 20000 });
-    for (const url of ["http://example.com:47914", "http://127.0.0.1:47914/api", "https://127.0.0.1:47914"]) {
+    for (const url of ["http://example.com:47824", "http://127.0.0.1:47824/api", "https://127.0.0.1:47824"]) {
       const r = run("--url", url, "--token-file", exe);
       assert.equal(r.status, 1); assert.match(r.stderr, /BAD_ENDPOINT/, url);
     }
-    const o = run("--url", "http://127.0.0.1:47914", "--token-file", op);
+    const o = run("--url", "http://127.0.0.1:47824", "--token-file", op);
     assert.equal(o.status, 1); assert.match(o.stderr, /BAD_CREDENTIAL/); assert.ok(!o.stderr.includes("f".repeat(32)), "不回显令牌文件内容");
-    const missing = run("--url", "http://127.0.0.1:47914", "--token-file", join(dir, "nope.token"));
+    const missing = run("--url", "http://127.0.0.1:47824", "--token-file", join(dir, "nope.token"));
     assert.equal(missing.status, 1); assert.match(missing.stderr, /BAD_CREDENTIAL/); assert.ok(!missing.stderr.includes(dir), "不回显路径");
-    assert.equal(run("--url", "http://127.0.0.1:47914").status, 1, "缺 --token-file");
-    const badCode = run("--url", "http://127.0.0.1:47914", "--token-file", join(dir, "new.token"), "--code", "not a code");
+    assert.equal(run("--url", "http://127.0.0.1:47824").status, 1, "缺 --token-file");
+    const badCode = run("--url", "http://127.0.0.1:47824", "--token-file", join(dir, "new.token"), "--code", "not a code");
     assert.equal(badCode.status, 1); assert.match(badCode.stderr, /BAD_INPUT/);
     const old8 = run("--url", "http://127.0.0.1:9", "--token-file", join(dir, "new.token"), "--code", "ABCD-EFGH");
     assert.equal(old8.status, 1); assert.match(old8.stderr, /BAD_INPUT/, "码长 10 位,旧的 8 位形在桥里就拒");

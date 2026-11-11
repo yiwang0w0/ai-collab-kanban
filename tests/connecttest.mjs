@@ -100,8 +100,9 @@ const until = async (fn, ms) => { const end = Date.now() + ms; while (Date.now()
 test("发码、兑换、重放 410、未知码 404、撤销、线绑定、四态、鉴权", { timeout: 120000 }, async () => {
   const B = await board({ BOARD_COORD_STALE_MIN: "0.05", BOARD_CONNECT_WATCH_MS: "500" });
   try {
-    // ── 角色:assistant 留着但现在拒绝;不认识的 kind 400
-    assert.deepEqual([(await B.api("POST", "/api/connect/codes", B.operator, { kind: "claude", role: "assistant" })).body.code], ["ROLE_NOT_AVAILABLE"]);
+    // ── 角色:不认识的 role 400;助手不绑线(带 line 400,助手本身见 tests/assistanttest.mjs);不认识的 kind 400
+    assert.equal((await B.api("POST", "/api/connect/codes", B.operator, { kind: "claude", role: "boss" })).status, 400);
+    assert.equal((await B.api("POST", "/api/connect/codes", B.operator, { kind: "claude", role: "assistant", line: "ext" })).status, 400);
     assert.equal((await B.api("POST", "/api/connect/codes", B.operator, { kind: "gpt" })).status, 400);
     assert.equal((await B.api("POST", "/api/connect/codes", B.operator, { kind: "zcode", line: "alpha" })).status, 409, "受管执行线不接码");
 
@@ -468,6 +469,13 @@ test("过期、建线推迟与回收、待兑换上限、错码闸门(临时库 
     assert.equal((await C.redeem(a2.body.code)).status, 200);
     assert.ok(lines.has("codex"), "兑换成功时才建线");
     assert.equal(C.lineOf("codex"), "codex");
+    // 助手(合同 E)的码过期没兑换:登记同样收回,列表里不留一行「离线」
+    const s1 = C.issueCode({ kind: "other", role: "assistant" });
+    assert.deepEqual([s1.body.executor_id, s1.body.line, s1.body.role], ["asst-bot", null, "assistant"]);
+    now += CODE_TTL_MS + 1;
+    assert.equal(C.issueCode({ kind: "other", role: "assistant" }).body.executor_id, "asst-bot", "过期没兑换的助手被收回,名字再用");
+    assert.equal(C.list().filter((e) => e.role === "assistant").length, 1);
+    now += CODE_TTL_MS + 1;                                             // 让它也过期,不占后面的待兑换名额
     const b = C.issueCode({ kind: "other", line: "ext" });
     assert.equal(b.body.executor_id, "ext");
     now += CODE_TTL_MS - 1;

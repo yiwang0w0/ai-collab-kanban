@@ -282,6 +282,9 @@ jobs:
       - name: "connecttest (one-time connect codes, executor list and revoke)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/connecttest.mjs
+      - name: "assistanttest (assistant role: permission matrix, unreleased post_card with cap, pure brief, wait_for_attention, revoke)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/assistanttest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

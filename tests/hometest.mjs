@@ -19,6 +19,16 @@ const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
 const card = (id, extra) => ({ id, task_uid: "u" + id, subject: "卡 " + id, kind: "task", status: "waiting", updated_at: at(id), hb: "", ...extra });
 const ids = (rows) => rows.map((r) => r.localId ?? r.key);
 
+test("助手挂上的未放行卡:「待我处理」写「<名称> 挂上 · 待你放行」,排在待放行那一档;没有来源的照旧写「待放行」", () => {
+  const nr = [{ code: "NOT_RELEASED", message: "NOT_RELEASED", next_action: "核对任务后显式放行" }];
+  const tasks = [card(1, { status: "not_started", released: 0, progress_blockers: nr, posted_by: { executor_id: "asst-bot", label: "手表助手" } }),
+                 card(2, { status: "not_started", released: 0, progress_blockers: nr, posted_by: { executor_id: "asst-bot", label: "  " } }),
+                 card(3, { status: "waiting", waiting_for: "review", posted_by: { executor_id: "asst-bot", label: "手表助手" } })];
+  assert.deepEqual(M.homeLists({ tasks }).mine.map((r) => [r.localId, r.state, r.next, r.rank]),
+    [[3, "待你验收", "通过或打回", 2], [1, "手表助手 挂上 · 待你放行", "核对后放行", 5], [2, "待放行", "核对后放行", 5]],
+    "放行之后就是普通的卡,来源不再改状态文案");
+});
+
 test("decisions and answers wait for me; a delivery waits for me only when no reviewer will take it", () => {
   const tasks = [
     card(4, { waiting_for: "review" }), card(3, { waiting_for: "review", review_hold: "same_family" }),

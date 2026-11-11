@@ -1077,7 +1077,33 @@ test("流转相关的界面接线：容错与文案", () => {
 
 // ── 第 2 波:接入的 AI / 本地会话 / 效率(合同 A / D / C;core/panel.html 的 wave2-copy 段) ──
 const w2Source = panelSection("// ── wave2-copy(pure;tests/panelcopytest.mjs)──", "// ── /wave2-copy ──");
-const w2 = new Function(w2Source + "\nreturn { AI_KINDS, aiKindName, aiState, aiReport, aiCodeLeft, deskSize, deskLineRef, deskLineState, deskBlocked, deskRegisterConfirm, aiIssueError, deskRows, deskMsg, deskLineError, EFF_METRICS, effValue, effDelta, effGroupName, effDaily, effQuery };")();
+const w2 = new Function(w2Source + "\nreturn { AI_KINDS, aiKindName, aiState, aiReport, aiCodeLeft, aiRoleBadge, aiCodeWhere, aiIssueBody, deskSize, deskLineRef, deskLineState, deskBlocked, deskRegisterConfirm, aiIssueError, deskRows, deskMsg, deskLineError, EFF_METRICS, effValue, effDelta, effGroupName, effDaily, effQuery };")();
+
+test("接入的 AI · 助手角色(合同 E):表单两种角色说明在 title、助手徽标、不绑线、发码请求体", () => {
+  assert.deepEqual(w2.aiRoleBadge({ role: "assistant" }).text, "助手");
+  assert.match(w2.aiRoleBadge({ role: "assistant" }).tip, /只看和挂卡/);
+  assert.equal(w2.aiRoleBadge({ role: "executor" }), null, "来领任务的不加徽标");
+  assert.equal(w2.aiRoleBadge(null), null);
+  assert.equal(w2.aiCodeWhere({ role: "assistant", line: null }), "助手 · 不绑线");
+  assert.equal(w2.aiCodeWhere({ line: "ext" }, (l) => "外部" + l), "线 外部ext");
+  assert.deepEqual(w2.aiIssueBody({ kind: "other", role: "assistant", label: " 手表 ", line: "ext" }), { kind: "other", role: "assistant", label: "手表" }, "助手不带 line");
+  assert.deepEqual(w2.aiIssueBody({ kind: "zcode", line: "ext" }), { kind: "zcode", line: "ext" }, "来领任务的照旧,可按原线重发");
+  assert.deepEqual(w2.aiIssueBody({ kind: "claude" }), { kind: "claude" });
+  const form = source.slice(source.indexOf('id="ai-connect"'), source.indexOf("</form>", source.indexOf('id="ai-connect"')));
+  const roles = [...form.matchAll(/<label class="seg-o" title="([^"]+)"><input type="radio" name="ai-role" value="(\w+)"( checked)?><span>([^<]+)<\/span>/g)]
+    .map((m) => [m[2], m[4], !!m[3], m[1]]);
+  assert.deepEqual(roles.map((r) => r.slice(0, 3)), [["executor", "来领任务", true], ["assistant", "助手（只看和挂卡）", false]], "两种角色,缺省来领任务");
+  assert.match(roles[1][3], /聊天机器人、可穿戴设备/); assert.match(roles[1][3], /不领卡、不交付/);
+  assert.match(roles[0][3], /外部执行线/);
+  // 列表里助手没有「手上的卡」与回报;首页待放行写「<名称> 挂上 · 待你放行」
+  assert.match(source, /const cards = rb \? \[\] :/);
+  assert.match(source, /by \? by \+ " 挂上 · 待你放行" : "待放行"/);
+  // 同屏主按钮至多一个:表单开着时入口降为普通按钮;过期的「重新发码」是普通按钮;旧代劳区的机制说明只在 title
+  assert.match(source, /classList\.toggle\("pri", !open\)/);
+  assert.ok(!/homeEl\("button", "重新发码", "pri"\)/.test(source));
+  assert.ok(!source.includes('<p class="dim">按下只是在板上留一条请求'));
+  assert.equal((form.match(/class="pri"/g) || []).length, 1, "表单里只有「发接入码」一个主按钮");
+});
 
 test("接入的 AI：状态徽标六种，撤销优先，未知值写待核实", () => {
   const t = (e) => w2.aiState(e).text;
