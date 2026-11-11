@@ -44,6 +44,7 @@ PROTECTED = (
     "accepted_rev", "restart_from",                  # 源码闸的记录 / 重启标记
     "worker_settings.json", "lineage.json",          # 座席设置;个人会话 id
     "desktop_lineage.json", "desktop_forks.json",    # 面板登记的桌面会话继承表 / 看板 fork 出的副本清单(都是完整会话 id)
+    "desktop_sessions_selected.json*",               # 「本地会话」的勾选清单(会话 id,个人信息;含写入时的 .tmp)
     "pool_state.json", "pool_global_stop.json",      # 池状态(pool-quota skill:改标记≠额度回来)
     "spend_ledger.jsonl", "usage_ledger.jsonl",      # 账本
     "board.log",

@@ -1410,3 +1410,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-11 进 main 前总复审修正(claude/premain-fix):md 导出结构行单行化、正文 # 与未闭合围栏转义、标题 # 往返、~~~ / ``` 分开计,导出改轻量遮蔽(只遮令牌样串、家目录写成 ~);已归档的同内容卡重新建、--goal 只收目标卡正整数;
   执行者令牌目录进受管线禁读(SDK / Claude 座席 / 看板自起 CLI;Codex 座席照旧无路径禁读),desktop_lineage / desktop_forks 归 PROTECTED、扫描认常量路径;fork 副本清单只增不减;摘要清洗补 Bearer / 内网地址 / 口令值;绑线执行者读 export-md 回 403;文档 C1–C6。
 - 受影响测试全绿(mdhandofftest 13/0、flowtest 9/0、desksessionstest 8/0、connecttest 9/0、fourchannelhttp 9/0、servertest 229/0、prompt-selftest 88/0 等),每条修复做过还原变红核对;没有调用模型。阻塞:无。
+- 2026-11-11 公告板 v3 第 4 波(claude/board-v3-w4):连接器的「助手」角色(合同 E)——发码 role=assistant 不建线不绑线;助手令牌只读简报与卡面、挂未放行卡(posted_by、同时 ≤20 张),SSE / 领卡 / 交付 / 裁定 / 放行 / 会话一律拒;GET /api/brief 复用首页「待我处理」切片,文字是纯函数;桥按令牌角色给五个助手工具(wait_for_attention 同一件只提醒一次);面板表单加角色、助手徽标、「<名称> 挂上 · 待你放行」。
+- 并入 premain-fix(1b717f4);总复审 C7(同屏单主按钮、说明进 title)与 H2(公开代码不写测试板端口)顺手修;本地会话勾选清单归入受管线禁读表,扫描认得 join(dataDir, …) 写法;sdkrunnerstest 补认令牌目录拒绝规则(premain-fix 带来的红)。
+- 新增 assistanttest 5/0;受影响套件全绿(servertest 229/0、selftest 402/0、prompt-selftest 90/0、fourchannelhttp 9/0);全套 npm test 只红 sdkrunnerstest 一处,修后 test:channels 117/0、usagetest 4/0;临时看板 + 真 stdio 桥走查通过。没有调用模型。阻塞:无。

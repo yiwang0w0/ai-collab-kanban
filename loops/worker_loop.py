@@ -1177,7 +1177,8 @@ def prompt_selftest():
     ok("⭐没有任何 deny 规则盖住证据路径(否则 Claude 座席一张卡都交不出)", not covered, str(covered[:2]))
     # ⭐ 防「忘了列」:源码里每个写进 <data> 的字面文件名都要归入 PROTECTED 或 MODEL_OUTPUT。
     #   归不进去 = 一个新文件躺在模型伸手可及处而没人决定它是谁的。这是结构,不是注释。
-    _lit = re.compile(r'(?:join\(store\.DATA_DIR|path\.join\(DATA_DIR|os\.path\.join\(DATA), f?"([^"]+)"\)')
+    # 模块里以参数 dataDir 接数据目录、再拼一个字面文件名的写法也认(desktop-sessions.mjs 的勾选清单就是这样写的)。
+    _lit = re.compile(r'(?:join\((?:store\.DATA_DIR|dataDir)|path\.join\(DATA_DIR|os\.path\.join\(DATA), f?"([^"]+)"\)')
     # N8:用常量拼的写法(join 数据目录变量与一个大写常量)也认:常量名按同一文件里的 `NAME = "…"` 取值;取不到值 = 归不进表(红)。
     _const_use = re.compile(r'(?:join\((?:store\.DATA_DIR|dataDir|DATA_DIR)|os\.path\.join\((?:DATA|data_dir)), ([A-Z][A-Z0-9_]*)\)')
     _const_def = re.compile(r'(?:\b(?:const|let|var)\s+|^)([A-Z][A-Z0-9_]*)\s*=\s*"([^"]+)"', re.M)
@@ -1201,6 +1202,11 @@ def prompt_selftest():
     ok("N8 扫描认得常量拼的路径:desktop-sessions.mjs 的 DESK_LINEAGE_FILE / DESK_FORKS_FILE 被扫到",
        all(x in _const_use.findall(io.open(os.path.join(CODE_ROOT, "core", "desktop-sessions.mjs"), encoding="utf-8").read())
            for x in ("DESK_LINEAGE_FILE", "DESK_FORKS_FILE")))
+    ok("N8 扫描认得 join(dataDir, \"…\") 的写法:desktop-sessions.mjs 的勾选清单被扫到",
+       "desktop_sessions_selected.json" in _lit.findall(io.open(os.path.join(CODE_ROOT, "core", "desktop-sessions.mjs"), encoding="utf-8").read()))
+    ok("N8 本地会话勾选清单(会话 id)与写入时的 .tmp 禁读禁写",
+       all(_fn.fnmatch(n, p) for n in ("desktop_sessions_selected.json", "desktop_sessions_selected.json.tmp") for p in ("desktop_sessions_selected.json*",))
+       and all(f"{tool}({deny_path(DATA)}/desktop_sessions_selected.json*)" in rules for tool in ("Read", "Edit")))
     ok("N8 桌面会话继承表与 fork 副本清单(完整会话 id)禁读禁写",
        all(f"{tool}({deny_path(DATA)}/{n})" in rules for tool in ("Read", "Edit") for n in ("desktop_lineage.json", "desktop_forks.json")))
     from verify_lib import executor_token_dirs, token_dir_deny_rules
