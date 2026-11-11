@@ -1380,3 +1380,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - convtest 4/0、servertest 228/0、decomposetest 84/0、selftest 402/0、hometest 41/0、clitest 116/0；没有调用模型。阻塞：无。
 - 2026-11-11 执行者令牌的 MCP stdio 桥(claude/zcode-gui):`cli/exec-mcp.mjs` 把执行者的读卡、领卡、续租、交付接口包成 5 个 MCP 工具,供 Zcode 桌面版这类客户端以外部执行线的执行者身份领卡交付;只接本机回环地址与 `exe_` 执行者令牌,`--line` 限定只看一条线;docs/多执行者协作.md 写明接法。
 - execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
+- 2026-11-11 连接器安全复审修复(claude/connect,F1–F9/F13/P3):绑线执行者只领只看本线(读接口白名单,别的线 404,别人的 live_note 为空);撤销断 SSE 并放锁;live_note 去重 + 每卡 5 秒节流 + 清洗;兑换取消锁定改错码延迟 200ms/并发 20;码 10 位;建线推迟到兑换、待兑换 ≤5;令牌文件缺省移到 %LOCALAPPDATA%;远程摘要去掉凭码执行者;other 片段改 PowerShell 引号。
+- connecttest 9/0(12 处还原变异全红)、execmcptest 3/0、coordtest 25/0、approvaltest 20/0、selftest 402/0、fourchannel-store 7/0、servertest 228/0;没有调用模型。阻塞:面板侧 task.live_note 局部刷新属 UI 线。

@@ -1612,9 +1612,10 @@ function claim(db, worker, leaseMin = DEFAULT_LEASE_MIN, opts = {}) {
           -- the UPDATE below, so all that belongs here is the lifetime ceiling
           -- (rationale and the number live at LIFETIME_DISPATCH_CAP).
           AND t.human_gate=0   -- ⭐ human-gated pre-filter: cards waiting on a human never enqueue, attempts never burn
-          AND t.route=? AND (t.line IS NULL OR t.line=?)
+          AND t.route=? AND (t.line=? OR (? = 0 AND t.line IS NULL))
+          -- opts.strictLine:凭码接入的绑线执行者只领 line 恰好等于本线的卡(未指定线的卡不算);受管线与旧执行者照旧
         ORDER BY t.id`
-    ).all(String(route), String(line));
+    ).all(String(route), String(line), opts.strictLine ? 1 : 0);
 
     // ⭐ WIP cap: in-flight count per root chain (all lines combined); count once,
     //   then look up per candidate.
