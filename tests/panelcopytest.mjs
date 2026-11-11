@@ -1055,4 +1055,5 @@ test("流转相关的界面接线：容错与文案", () => {
   assert.match(source, /@media \(prefers-reduced-motion: reduce\)\{ \.just\{animation:none;/);
   assert.ok(source.includes("if (flowBack(t.handed_back)) meta2.push("), "卡面打回次数徽标");
   assert.ok(source.includes('t.status === "in_progress" && typeof t.live_note === "string"'), "live_note 只在进行中显示");
+  assert.match(source, /typeof t\.live_note === "string" && t\.live_note\.trim\(\)\)\n\s*body \+= `<p class="live-note"/, "看板卡的 live_note 在卡面上,不进默认折叠的展开区");
 });

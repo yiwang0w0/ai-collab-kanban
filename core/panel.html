@@ -2527,12 +2527,13 @@ function cardParts(t){
 
   let body = `<div class="card-top">${top}</div><div class="subj">${esc(t.subject)}</div>`;
   if (meta2.length) body += `<div class="meta">${meta2.join("")}</div>`;
+  // 「它现在在做什么」(合同 A:live_note):执行者心跳时写的临时一句,只在进行中显示;交付或释放后服务端清空。
+  // 放在卡面上(不进下面默认折叠的展开区,否则进行中的卡看不到它)。
+  if (t.status === "in_progress" && typeof t.live_note === "string" && t.live_note.trim())
+    body += `<p class="live-note" title="${t.live_note_at ? "执行者 " + esc(localTime(t.live_note_at)) + " 报的进度；下一条覆盖上一条" : "执行者报的进度；下一条覆盖上一条"}">${icon("play")}${esc(t.live_note.trim())}</p>`;
 
   // ── 展开区:来历、证据、方案、留言与动作。data-stop:在展开区里点击不触发「打开侧栏」。
   let more = `<div class="tags">${tags}${usage}</div>`;
-  // 「它现在在做什么」(合同 A:live_note):执行者心跳时写的临时一句,只在进行中显示;交付或释放后服务端清空。
-  if (t.status === "in_progress" && typeof t.live_note === "string" && t.live_note.trim())
-    more = `<p class="live-note" title="${t.live_note_at ? "执行者 " + esc(localTime(t.live_note_at)) + " 报的进度；下一条覆盖上一条" : "执行者报的进度；下一条覆盖上一条"}">${icon("play")}${esc(t.live_note.trim())}</p>` + more;
   if (t.status === "waiting") more += decisionPanel(t, true);
   // Folded text is too small to read — show a digest, DOUBLE-CLICK opens the full
   // text large.
