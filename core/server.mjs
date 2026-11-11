@@ -40,6 +40,7 @@ import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorC
   coordinatorTurnOf,mergeTools,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
+import {createFlow} from "./flow.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -325,6 +326,7 @@ const unnamedOf = (t) => {
 const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
   ...t,
   history_refs:store.taskHistoryRefs(db,t.id),
+  ...flow.taskFields(t),   // 合同 B:handed_back / last_actor / last_actor_kind(core/flow.mjs,增量缓存)
   execution_trace: taskExecutionView(db, t),
   verification_repair:repair.policy,
   ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
@@ -442,6 +444,9 @@ const db = store.open();
 coord.migrate(db);
 approvals.migrate(db);
 conversations.migrate(db);
+// 合同 B「流转」:卡历史、任务派生字段、建卡对话的进度(core/flow.mjs)。线名与显示名在读时取(配置可热改)。
+const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVISED || [], labels: () => LINE_LABEL || {},
+                          emit: (type, data) => emit(type, data) });
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
 { const cut = conversations.recoverInterrupted(db);
   if (cut.length) console.log(`对话 ${cut.map((id) => "#" + id).join(" ")} 的上一轮在看板重启时被中断,已标为失败`); }
@@ -2305,6 +2310,7 @@ function emit(type, data = {}) {
   if (wire === "change") settleUsage();          // 卡变成 done 的每条路都经过这里
   const payload = `event: ${wire}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
   for (const res of clients) { try { res.write(payload); } catch {} }
+  if (wire === "change") flow.notify(type, data);   // 子卡变化 → 建卡对话的进度(2 秒合并后推 conversation.changed)
 }
 
 const json = (res, code, body) => {
@@ -3628,7 +3634,7 @@ async function conversationsRoute(req, res, url, p, m, boardRole) {
     const mc = p.match(/^\/api\/conversations\/(\d+)(?:\/(messages|stop))?$/);
     if (mc) {
       const id = Number(mc[1]);
-      if (!mc[2] && m === "GET") return json(res, 200, conversations.detail(db, id));
+      if (!mc[2] && m === "GET") return json(res, 200, flow.decorateDetail(conversations.detail(db, id)));
       if (!mc[2] && m === "PATCH") {
         const b = await readBody(req);
         const conversation = conversations.patch(db, id, { title: b.title, archived: b.archived });
@@ -4319,11 +4325,19 @@ const server = http.createServer(async (req, res) => {
       const record=store.taskHistoryRecord(db,{id,kind:historyPath[2],seq:Number(historyPath[3])});
       return record?json(res,200,{[historyPath[2]==="decisions"?"decision":"evidence"]:record}):json(res,404,{error:"不存在"});
     }
-    const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs))?$/);
+    const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs|history))?$/);
     if (mt) {
       const id = Number(mt[1]);
       const action = mt[2];
 
+      // 合同 B:按卡的历史(人话条目,旧→新)。只给操作员(面板会话或操作员令牌)。
+      if (m === "GET" && action === "history") {
+        if (boardRole !== "operator") return json(res, 403, { error: "卡的历史只给操作员(面板会话或操作员令牌)", role: boardRole });
+        const raw = url.searchParams.get("limit"), limit = raw == null ? 100 : Number(raw);
+        if (!Number.isInteger(limit) || limit < 1 || limit > 1000) return json(res, 400, { error: "limit 必须是 1..1000" });
+        if (!store.get(db, id)) return json(res, 404, { error: "不存在" });
+        return json(res, 200, flow.history(id, limit));
+      }
       if (m === "GET" && action === "runs") {
         if (!store.get(db,id)) return json(res,404,{error:"不存在"});
         return json(res,200,{runs:store.runs(db,id)});
@@ -4612,6 +4626,7 @@ server.listen(PORT, HOST, () => {
     if (ra.length) console.log(`  子任务卡已齐、仍在等待人工的父卡 → 送回重审: #${ra.join(" #")}`);
     const gc = store.completeGoals(db);
     if (gc.length) console.log(`  目标状态收敛: ${gc.map((x) => x > 0 ? "#" + x + " 完成" : "#" + (-x) + " 重开").join(" ")}`);
+    flow.syncAll();   // 建卡对话的进度消息按库重算(重启不丢、不重复)
   } catch (e) { console.error("启动盘点失败:", e.message); }
 
   // ⭐ Deliverable-gate coverage (v0.16.1). assertCoverage has existed since the gate was

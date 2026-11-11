@@ -1380,3 +1380,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - convtest 4/0、servertest 228/0、decomposetest 84/0、selftest 402/0、hometest 41/0、clitest 116/0；没有调用模型。阻塞：无。
 - 2026-11-11 执行者令牌的 MCP stdio 桥(claude/zcode-gui):`cli/exec-mcp.mjs` 把执行者的读卡、领卡、续租、交付接口包成 5 个 MCP 工具,供 Zcode 桌面版这类客户端以外部执行线的执行者身份领卡交付;只接本机回环地址与 `exe_` 执行者令牌,`--line` 限定只看一条线;docs/多执行者协作.md 写明接法。
 - execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
+- 2026-11-11 公告板 v3 合同 B「流转」后端(claude/flow):新 `core/flow.mjs` 给 `GET /api/tasks/:id/history`(人话条目 + step / actor_kind,打回带裁定原文摘要)、任务对象 `handed_back` / `last_actor` / `last_actor_kind`(事件表增量缓存)、建卡对话的 `conversation.progress` 与唯一一条原位更新的 `kind:"progress"` 消息(子卡变化 2 秒合并推 `conversation.changed`,重启按库重算);server.mjs 只接线,convtest 看建卡消息时略过进度消息。
+- flowtest 4/0(500 卡 / 5000 事件:热读 500 次约 1ms)、convtest 5/0、hometest 43/0、taskexecutionhttp 1/0;没有调用模型。阻塞：无。

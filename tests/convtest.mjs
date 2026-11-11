@@ -375,7 +375,8 @@ test("假 CLI 走通:建对话 → 出计划 → 人改 → 续接 → 按计划
     assert.deepEqual([d.conversation.goal_id, d.conversation.plan_applied, d.conversation.plan_rev], [goalId, true, 2]);
     assert.equal(d.plans[0].applied, null);
     assert.deepEqual({ ...d.plans[1].applied, at: "" }, { at: "", by: "local", goal_id: goalId, task_ids: ids });
-    const note = d.messages.at(-1);
+    // 建卡之后紧跟一条原位更新的进度消息(kind:"progress",合同 B;tests/flowtest.mjs 测它),这里看建卡那条。
+    const note = d.messages.filter((m) => m.kind !== "progress").at(-1);
     assert.deepEqual([note.role, note.kind], ["system", "applied"]);
     assert.ok(note.text.includes(`目标 #${goalId}`) && ids.every((n) => note.text.includes(`#${n}`)) && note.text.includes("「ghost」"), note.text);
     assert.ok(note.text.includes(`#${ids[2]} 涉及要人确认的动作,没有放行,要操作者确认后放行。`), note.text);

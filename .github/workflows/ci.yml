@@ -273,6 +273,9 @@ jobs:
       - name: "execmcptest (executor-token MCP stdio bridge for desktop clients)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/execmcptest.mjs
+      - name: "flowtest (card history, derived hand-back fields, conversation progress)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/flowtest.mjs
       - name: "approvaltest (pending approvals, decision routing, remote entry and approval tokens)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/approvaltest.mjs
