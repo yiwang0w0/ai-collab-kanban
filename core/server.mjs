@@ -33,6 +33,7 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
+import {openConnect,isLoopback} from "./connect.mjs";
 import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
 import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliResult} from "./board-claude-cli.mjs";
@@ -330,6 +331,8 @@ const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),rep
   ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
   ...(profile ? {execution_profile:profile} : {}),
   progress_blockers: store.stuckWhy(db,t),
+  // 执行者 heartbeat 带的临时进度(core/connect.mjs):只在这次 run 执行中时有值,不进历史。
+  ...connect.liveNote(t),
   // Zcode 线的卡:最近一个分派请求的状态、拒收码与白话及其来源、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
   ...zcodeTaskField(db, t, CFG.zcode_worker_config ?? null),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
@@ -440,6 +443,17 @@ const fpContext = () => {
 
 const db = store.open();
 coord.migrate(db);
+// 凭码接入(core/connect.mjs):线、座位名与加线逻辑在本文件里,以钩子交给它;COORD_STALE_MS 在后面定义,取值时再读。
+const connect = openConnect({ db, coord, store, emit: (type, data) => emit(type, data), staleMs: () => COORD_STALE_MS, hooks: {
+  lineTaken: (id) => LINES.includes(id) || ROLES.includes(id) || id === "review",
+  isExternalLine: (id) => LINES.includes(id) && LINE_EXTERNAL[id] === true,
+  managedName: (id) => isManagedSeatName(id),
+  addExternalLine: (id, label) => { const added = addLine(id, "", label, null, null, true); emit("config.lines", { line: added.id });
+    console.log(`线已加入: ${added.id}「${added.label}」· 外部执行(凭码接入)—— 已写入 ${CONFIG_FILE},无需重启`); },
+  snippetBase: () => ({ node: process.execPath, bridge: join(__dirname, "..", "cli", "exec-mcp.mjs"), url: `http://127.0.0.1:${PORT}`,
+                        tokenDir: join(store.DATA_DIR, "credentials") }),
+} });
+connect.migrate();
 approvals.migrate(db);
 conversations.migrate(db);
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
@@ -2602,7 +2616,7 @@ function guardAuthentication(req, res) {
              : tok === REVIEW_TOKEN ? "review" : null;
   // 执行者令牌:只按哈希查登记表;只有上面三类都不匹配时才查。
   req.executor = role ? null : coord.byToken(db, tok);
-  if (req.executor) role = "executor";
+  if (req.executor) { role = "executor"; connect.seen(req.executor.id); }   // last_seen_at:每次执行者请求都算
   req.boardRole = role;
   if (!role) {
     // ⚠ Echoing TOKEN_FILE raw would hand an unauthenticated caller an absolute
@@ -3710,6 +3724,17 @@ const server = http.createServer(async (req, res) => {
       console.log("面板已用一次性配对码连上(本机浏览器;退出连接即撤销,30 天后需重新配对)");
       return json(res, 200, { token, role: "operator", expires_at: new Date(Date.now() + PANEL_TTL_MS).toISOString() });
     }
+    // 凭码兑换执行者令牌:持码的一方还没有令牌,所以在鉴权之前;只接本机回环、不接跨来源页面(core/connect.mjs)。
+    if (m === "POST" && p === "/api/connect/redeem") {
+      if (!isLoopback(req.socket.remoteAddress)) return json(res, 403, { code: "LOOPBACK_ONLY", error: "凭码兑换只接受本机回环地址发起的请求" });
+      if (req.headers.origin && !ALLOWED_ORIGINS.has(req.headers.origin)) return json(res, 403, { error: "跨来源的看板请求被拒绝" });
+      const b = await readSmallJson(req, 1024);
+      if (!b || typeof b !== "object" || Array.isArray(b)) return json(res, 400, { code: "BAD_INPUT", error: "请求正文必须是 1KB 以内的 JSON 对象 {code}" });
+      const r = connect.redeem(b.code, req.socket.remoteAddress);
+      if (r.headers) for (const [k, v] of Object.entries(r.headers)) res.setHeader(k, v);
+      if (r.status === 200) console.log(`接入:执行者 ${r.body.executor_id} 已凭码换到令牌(线 ${r.body.line})`);
+      return json(res, r.status, r.body);
+    }
     // Authenticate every other request, including SSE and future read endpoints.
     const boardRole = m === "GET" || m === "HEAD" ? guardAuthentication(req,res) : guardWrite(req,res,p);
     if (!boardRole) return;
@@ -3778,6 +3803,24 @@ const server = http.createServer(async (req, res) => {
     if (m === "GET" && p === "/api/zcode/status") {
       if (!guardWrite(req, res, p)) return;
       return json(res, 200, zcodeStatus(db, { configFile: CFG.zcode_worker_config ?? null }));
+    }
+    // ── 凭码接入的管理面(core/connect.mjs):读写都只给操作员(面板会话或 board_token);执行者、worker、审阅令牌 403。
+    if (p === "/api/connect/codes" || p === "/api/executors" || p.startsWith("/api/executors/")) {
+      if (boardRole !== "operator") return json(res, 403, { error: "接入管理只属于操作员", role: boardRole });
+      if (m === "POST" && p === "/api/connect/codes") {
+        const r = connect.issueCode(await readBody(req));
+        if (r.status === 201) console.log(`接入:为 ${r.body.executor_id} 发了一次性码(线 ${r.body.line},10 分钟有效)`);
+        return json(res, r.status, r.body);
+      }
+      if (m === "GET" && p === "/api/executors") return json(res, 200, { executors: connect.list(), now: new Date().toISOString() });
+      const mr = p.match(/^\/api\/executors\/([a-z0-9][a-z0-9_-]{0,31})\/revoke$/);
+      if (m === "POST" && mr) {
+        const r = connect.revoke(mr[1]);
+        console.log(`接入:操作员撤销执行者 ${mr[1]}${r.released.length ? `,放回卡 ${r.released.join(",")}` : ""}`);
+        if (r.released.length) emit("task.reaped", { count: r.released.length });
+        return json(res, 200, r);
+      }
+      return json(res, 404, { error: "不存在" });
     }
     // ── SSE
     if (m === "GET" && p === "/api/events") {
@@ -4255,6 +4298,9 @@ const server = http.createServer(async (req, res) => {
     if (m === "POST" && p === "/api/claim") {
       const b = await readBody(req);
       if(req.workerSeat?.executionProfile&&b.line!==req.workerSeat.line)throw store.err(store.ERR.CONFLICT,"执行配置只能领取本执行线任务");
+      { const bound = boardRole === "executor" ? connect.lineOf(req.executor.id) : null;      // 凭码接入:只从自己的线挑
+        if (bound && b.line != null && b.line !== bound) return json(res, 403, { error: `此执行者只接线 ${bound} 的卡` });
+        if (bound) b.line = bound; }
       // All pools down = global stop. During a single-pool switchover race, no new
       // card goes to a process of the exhausted runtime either.
       if (req.workerSeat?.executionProfile?.auth_kind!=="api_key" && (bothPoolsDown() || (POOL_IDS.includes(b.runtime) && poolDown(b.runtime))))
@@ -4339,6 +4385,9 @@ const server = http.createServer(async (req, res) => {
       if(versioned.has(action)) store.requireExpectedVersion(b.expected_version);
 
       if (action === "claim") {
+        // 凭码接入的执行者绑一条线:别的线的卡领不走(桥里也筛,这里是服务端的门)。
+        const bound = boardRole === "executor" ? connect.lineOf(req.executor.id) : null;
+        if (bound && store.get(db, id)?.line !== bound) return json(res, 403, { error: `此执行者只接线 ${bound} 的卡`, id });
         // ⭐ This endpoint claims THE GIVEN id (it used to call pick-a-card and
         //   occupy a different card). Refusals come back with the reason named.
         const r = store.claimById(db, { id, worker: b.worker, expectedVersion:b.expected_version, ...claimIdentity(b, boardRole,req.workerSeat),
@@ -4368,8 +4417,11 @@ const server = http.createServer(async (req, res) => {
           lease = Math.max(store.DEFAULT_LEASE_MIN, Number.isFinite(left) ? left : 0);
           if (boardRole === "executor") lease = Math.min(lease, coord.EXECUTOR_MAX_LEASE_MIN);
         }
+        const note = b.note === undefined ? undefined : connect.checkNote(b.note);   // 先校验:不合规就不续租
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: lease });
         if (boardRole === "executor") coord.touch(db, req.executor.id);
+        // note = 临时进度(live_note):覆盖上一条,不进历史;只有它变时才推一个事件给面板。
+        if (note !== undefined) { connect.setNote(id, b.run_id, note); emit("task.live_note", { id }); }
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side
       }
       if (action === "process-started") {
@@ -4396,6 +4448,7 @@ const server = http.createServer(async (req, res) => {
       if (action === "report") {
         const selfUsage = b.usage == null ? null : externalRows(b.usage);   // 先校验:格式不对就不收这次交付
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });
+        connect.clearNote(id);          // 交付即清掉临时进度
         if (selfUsage) usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome });
         emit("task.reported", r);
         // ⭐ v0.21 (user ruling 2026-09-09): on a line configured accept:"auto" a delivery completes
@@ -4504,6 +4557,7 @@ if (!["127.0.0.1", "::1", "localhost"].includes(HOST)) {
 // Lease reaping never depends on claim traffic: even with every worker dead, the
 // board converges to a correct state.
 const REAP_MS = Number(process.env.BOARD_REAP_MS || 30000);
+connect.watch(Number(process.env.BOARD_CONNECT_WATCH_MS || 10000));   // 在线/离线、working/stalled 变化 → executor.changed
 setInterval(() => {
   try {
     const n = store.reapExpired(db);
