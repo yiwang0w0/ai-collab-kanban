@@ -971,3 +971,77 @@ test("文案闸的阴性对照：卡 #9 之前的那些写法逐条被判出来"
     "看板还没回来(超过 30 秒)。看它的日志:<数据目录>/board.log",
   ]) assert.deepEqual(copyFindings(good), [], `合规文案被误判:${good.slice(0, 40)}`);
 });
+
+// ── 流转条 / 首页按目标归组 / 卡详情「历史」(合同 B;core/panel.html 的 flow-copy 段) ──
+const flowSource = panelSection("// ── flow-copy(pure;tests/panelcopytest.mjs)──", "// ── /flow-copy ──");
+const flow = new Function(flowSource + "\nreturn { FLOW_STEP_NAMES, flowUsable, flowNeed, flowDots, flowPhrase, flowBack, flowTotal, homeGroups, historyRow, historyPick };")();
+
+test("流转条：progress 缺或为 null 不画，五步点与侧栏同名，只有在等你的一步亮", () => {
+  for (const p of [null, undefined, {}, { items: [] }, { items: "x" }]) assert.equal(flow.flowUsable(p), false);
+  assert.equal(flow.flowUsable({ items: [{ id: 1 }] }), true);
+  assert.deepEqual(flow.FLOW_STEP_NAMES, ["放行", "领取", "启动", "回传", "验收"]);
+  const states = (item) => flow.flowDots(item).map((d) => d.state).join(",");
+  assert.equal(states({ status: "not_started", released: false, step: 0 }), "now,todo,todo,todo,todo", "未放行 = 第一步轮到你");
+  assert.equal(states({ status: "not_started", released: true, step: 1 }), "done,todo,todo,todo,todo");
+  assert.equal(states({ status: "in_progress", released: true, step: 3 }), "done,done,done,todo,todo", "执行中不亮强调");
+  assert.equal(states({ status: "waiting", waiting_for: "review", released: true, step: 4 }), "done,done,done,done,now", "待验收 = 最后一步轮到你");
+  assert.equal(states({ status: "done", step: 5 }), "done,done,done,done,done");
+  assert.equal(states({ status: "in_progress", step: "x" }), "todo,todo,todo,todo,todo", "step 不合格不猜");
+});
+
+test("流转条：当前状态短语与「已打回 n 次」", () => {
+  const p = (item) => flow.flowPhrase(item, (l) => "线" + l);
+  assert.deepEqual(p({ status: "in_progress", step: 3, runtime: "zcode", line: "a" }), { text: "Zcode 在做", need: false });
+  assert.deepEqual(p({ status: "in_progress", step: 2, worker: "w-1" }), { text: "w-1 已领取", need: false });
+  assert.deepEqual(p({ status: "in_progress", step: 3, line: "a" }), { text: "线a 在做", need: false });
+  assert.deepEqual(p({ status: "waiting", waiting_for: "review", step: 4 }), { text: "待你验收", need: true });
+  assert.deepEqual(p({ status: "waiting", waiting_for: "decision" }), { text: "待你决定", need: true });
+  assert.deepEqual(p({ status: "waiting", waiting_for: "dep" }), { text: "等待中", need: false });
+  assert.deepEqual(p({ status: "not_started", released: false, step: 0 }), { text: "待你放行", need: true });
+  assert.deepEqual(p({ status: "not_started", released: true, step: 1 }), { text: "等领取", need: false });
+  assert.deepEqual(p({ status: "not_started", released: true, step: 1, handed_back: 1 }), { text: "打回后排队", need: false });
+  assert.deepEqual(p({ status: "done", step: 5 }), { text: "已完成", need: false });
+  assert.equal(p({ status: "in_progress", step: 3, runtime: "constructor" }).text, "执行中", "原型键不当执行器名");
+  assert.equal(flow.flowBack(1), "已打回 1 次");
+  for (const n of [0, null, undefined, -1, 1.5, "2"]) assert.equal(flow.flowBack(n), "", String(n));
+  assert.deepEqual(flow.flowTotal({ total: 5, done: 3, items: [] }), { done: 3, total: 5, text: "3/5 完成", ratio: 0.6 });
+  assert.equal(flow.flowTotal({ items: [{ status: "done" }, { status: "waiting" }] }).text, "1/2 完成", "缺 total/done 按行数");
+});
+
+test("首页「正在执行」按目标归组：同一目标归进第一次出现的位置，不属于目标的照旧", () => {
+  const items = [{ k: 1, g: 9 }, { k: 2 }, { k: 3, g: 9 }, { k: 4, g: 8 }];
+  const info = { 9: { title: "目标甲", done: 2, total: 5 }, 8: { title: "目标乙", done: 0, total: 1 } };
+  const groups = flow.homeGroups(items, (x) => x.g ?? null, (id) => info[id] || null);
+  assert.deepEqual(groups.map((g) => [g.goal && g.goal.text, g.items.map((x) => x.k)]), [["2/5", [1, 3]], [null, [2]], ["0/1", [4]]]);
+  assert.equal(groups[0].goal.title, "目标甲");
+  assert.deepEqual(flow.homeGroups([{ k: 1, g: 7 }], (x) => x.g, () => null).map((g) => g.goal), [null], "目标读不到就不归组");
+});
+
+test("卡详情「历史」：时间 · 谁 · 做了什么，新的在上，最多 20 条", () => {
+  assert.deepEqual(flow.historyRow({ at: "t", actor_kind: "human", step: "released", summary: "放行" }), { at: "t", who: "你", what: "放行", back: false });
+  assert.deepEqual(flow.historyRow({ at: "t", actor_kind: "human", step: "handed_back", summary: "打回：缺测试" }), { at: "t", who: "你", what: "打回：缺测试", back: true });
+  assert.equal(flow.historyRow({ actor_kind: "line", actor: "a", step: "claimed" }, (l) => "线" + l).who, "线a");
+  assert.deepEqual(flow.historyRow({ at: "t", actor: "你", actor_kind: "human", step: "handed_back", summary: "你打回,回原线重做:缺测试" }),
+    { at: "t", who: "你", what: "打回,回原线重做:缺测试", back: true }, "summary 以谁开头时不重复");
+  assert.equal(flow.historyRow({ actor: "看板", actor_kind: "system", step: "reaped", summary: "租约超时,收回等重新领取" }).what, "租约超时,收回等重新领取");
+  assert.equal(flow.historyRow({ actor_kind: "auto", step: "accepted" }).who, "自动审阅");
+  assert.equal(flow.historyRow({ actor_kind: "system", step: "reaped" }).what, "回收", "没有 summary 按 step 写");
+  assert.equal(flow.historyRow({ actor_kind: "system", step: "reaped" }).who, "看板");
+  assert.equal(flow.historyRow({ actor_kind: "executor", actor: "zc-1", step: "constructor" }).what, "其他");
+  const entries = Array.from({ length: 25 }, (_, i) => ({ n: i }));
+  const short = flow.historyPick(entries);
+  assert.equal(short.rows.length, 20); assert.equal(short.hidden, 5); assert.equal(short.rows[0].n, 24, "新的在上");
+  assert.equal(flow.historyPick(entries, true).rows.length, 25);
+  assert.deepEqual(flow.historyPick(null), { rows: [], hidden: 0 });
+});
+
+test("流转相关的界面接线：容错与文案", () => {
+  assert.ok(source.includes('if (r.status === 404) { mine.missing = true;'), "history 接口 404 → 暂无记录");
+  assert.ok(source.includes('"暂无记录"'));
+  assert.ok(source.includes('homeEl("summary", "历史")'), "侧栏历史分节");
+  assert.ok(source.includes('"显示全部（还有 " + pick.hidden + " 条）"'));
+  assert.ok(source.includes('d.type.startsWith("task.") && d.id != null) flashMark(d.id)'), "SSE task.* 带卡号 → 刚更新标记");
+  assert.match(source, /@media \(prefers-reduced-motion: reduce\)\{ \.just\{animation:none;/);
+  assert.ok(source.includes("if (flowBack(t.handed_back)) meta2.push("), "卡面打回次数徽标");
+  assert.ok(source.includes('t.status === "in_progress" && typeof t.live_note === "string"'), "live_note 只在进行中显示");
+});

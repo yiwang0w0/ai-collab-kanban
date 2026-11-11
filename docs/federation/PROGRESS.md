@@ -1380,3 +1380,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - convtest 4/0、servertest 228/0、decomposetest 84/0、selftest 402/0、hometest 41/0、clitest 116/0；没有调用模型。阻塞：无。
 - 2026-11-11 执行者令牌的 MCP stdio 桥(claude/zcode-gui):`cli/exec-mcp.mjs` 把执行者的读卡、领卡、续租、交付接口包成 5 个 MCP 工具,供 Zcode 桌面版这类客户端以外部执行线的执行者身份领卡交付;只接本机回环地址与 `exe_` 执行者令牌,`--line` 限定只看一条线;docs/多执行者协作.md 写明接法。
 - execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
+- 2026-11-11 面板第 1 波「流转」(claude/flow-ui):对话里已建卡的计划换成流转条(每张子卡一行:卡号/标题/线·执行器/五步点/状态短语/打回次数/live_note,顶上 d/n 细进度条,只有等你的行用强调色);SSE task.* 带卡号时对应行与首页卡标 4 秒「刚更新」;首页「正在执行」按目标归组;卡详情加默认折叠的「历史」(最近 20 条 + 显示全部,404 写暂无记录);卡面「已打回 n 次」与进行中的 live_note。字段缺失一律不显示。docs/style-guide.md §七 同步。
+- panelcopytest 37/0、hometest 43/0、panelsidetest 34/0、panelauth 11/0、panelcoordtest 9/0、tltest 1/0、progressdiagnostictest 7/0;渲染只在假数据(浏览器打桩)下看过,真数据联调留到整合。阻塞：无。

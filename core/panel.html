@@ -1302,6 +1302,56 @@
   .plan-id{font-family:var(--mono)}
   .plan-old > summary{padding:var(--sp-2) var(--sp-4);cursor:pointer;color:var(--dim);font-size:var(--fs-sm);border-radius:var(--r-md)}
   .plan-old[open] > summary{border-bottom:1px solid var(--line);border-radius:var(--r-md) var(--r-md) 0 0}
+  /* ── 流转条(style-guide §七 流转条):已建卡的计划里每张子卡一行;数字等宽、不用强调色;只有在等你的行用强调色。 */
+  .flow-h{display:flex;align-items:center;gap:var(--sp-3);padding:var(--sp-3) var(--sp-4) var(--sp-2)}
+  .flow-n{flex:none;font:600 var(--fs-sm)/1.2 var(--mono);font-variant-numeric:tabular-nums;color:var(--fg)}
+  .fbar{position:relative;display:block;flex:1 1 auto;height:4px;min-width:48px;border-radius:2px;background:var(--line);overflow:hidden}
+  .fbar > span{display:block;height:100%;background:var(--ok)}
+  .flow-rows{list-style:none;margin:0;padding:0}
+  .flow-rows > li{border-top:1px solid var(--row-line)}
+  .flow-row{display:grid;grid-template-columns:max-content max-content minmax(0,1fr);grid-template-areas:"t t t" "dots st who";gap:2px var(--sp-3);align-items:center;
+            width:100%;min-height:0;padding:var(--sp-2) var(--sp-4);border:0;border-radius:0;background:transparent;text-align:left;font-weight:400;font-size:var(--fs-md)}
+  .flow-row:hover{border:0;background:var(--hover)}
+  .flow-row[data-need]{box-shadow:inset 3px 0 0 var(--accent)}
+  .fr-t{grid-area:t;display:flex;align-items:baseline;gap:var(--sp-2);min-width:0}
+  .fr-id{flex:none;font:600 var(--fs-sm)/1.2 var(--mono);color:var(--dim)}
+  .fr-subj{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .fr-who{grid-area:who;justify-self:end;max-width:100%;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dim);font-size:var(--fs-sm)}
+  .fr-dots{grid-area:dots;display:flex;gap:4px}
+  .fr-dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--dim2)}
+  .fr-dot[data-s="done"]{border-color:var(--ok);background:var(--ok)}
+  .fr-dot[data-s="now"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 30%,transparent)}
+  .fr-st{grid-area:st;display:flex;align-items:center;gap:var(--sp-2);color:var(--dim);font-size:var(--fs-sm);white-space:nowrap}
+  .flow-row[data-need] .fr-ph{color:var(--accent);font-weight:600}
+  .fr-back,.tag.back{display:inline-flex;align-items:center;gap:2px;color:var(--dim)}
+  .fr-back .ic,.tag.back .ic,.live-note .ic,.hist .ic{width:12px;height:12px;flex:none}
+  .fr-note{margin:0;padding:0 var(--sp-4) var(--sp-2);color:var(--dim);font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  @container (min-width:640px){
+    .flow-row{grid-template-columns:minmax(0,1fr) 112px 60px 184px;grid-template-areas:"t who dots st"}
+    .fr-who{justify-self:start}
+    .fr-st{justify-self:end}
+  }
+  /* 首页「正在执行」按目标归组:组头 = 目标标题 + d/n + 细进度条,无框无底。 */
+  .hgroup{display:flex;flex-direction:column;gap:var(--sp-2)}
+  .hg-head{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:var(--sp-1) var(--sp-2);align-items:center;min-height:0;padding:2px 0;
+           border:0;background:transparent;text-align:left;color:var(--dim);font-weight:500}
+  .hg-head:hover{border:0;background:transparent;color:var(--fg)}
+  .hg-title{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .hg-n{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  .hg-head .fbar{grid-column:1 / -1;height:3px}
+  /* 卡面「它现在在做什么」与侧栏「历史」 */
+  .live-note{display:flex;align-items:baseline;gap:var(--sp-1);margin:0 0 var(--sp-2);color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .hist{list-style:none;margin:var(--sp-2) 0;padding:0;font-size:var(--fs-sm)}
+  .hist li{display:grid;grid-template-columns:auto auto minmax(0,1fr);gap:0 var(--sp-2);padding:var(--sp-1) 0;border-top:1px solid color-mix(in srgb,var(--line) 55%,transparent)}
+  .hist li[data-back]{grid-template-columns:12px auto auto minmax(0,1fr)}
+  .hist li[data-back] .ic{align-self:center;color:var(--dim)}
+  .hist-at{color:var(--dim);font-family:var(--mono);font-variant-numeric:tabular-nums;white-space:nowrap}
+  .hist-who{color:var(--dim);white-space:nowrap}
+  .hist-what{overflow-wrap:anywhere}
+  /* 刚流转:约 4 秒的底色渐隐;reduced-motion 下只换底色,到时摘掉。 */
+  .just{animation:justFade 4s ease-out}
+  @keyframes justFade{from{background-color:color-mix(in srgb,var(--cc) 22%,var(--panel))}}
+  @media (prefers-reduced-motion: reduce){ .just{animation:none;outline:1px solid var(--cc);outline-offset:-1px} }
   @container (min-width:640px){
     .pl-head,.pl-row{grid-template-columns:28px minmax(0,1fr) 150px 112px 96px;column-gap:var(--sp-3);align-items:center}
     .pl-head{display:grid;padding:var(--sp-2) var(--sp-4);border-bottom:1px solid var(--row-line);color:var(--dim);font-size:var(--fs-sm)}
@@ -1866,7 +1916,84 @@ function zcodeCardRows(z){
   return rows;
 }
 // ── /display-copy ──
-const COLS = ["goal", "not_started", "in_progress", "waiting", "done"];
+// ── flow-copy(pure;tests/panelcopytest.mjs)──
+// 流转条(对话里已建卡的计划)、首页「正在执行」按目标归组、卡详情「历史」的文案与判定。只读服务端给的字段
+// (合同 B:conversation.progress、/api/tasks/:id/history、任务的 handed_back / live_note);缺字段一律不显示,不猜。
+const FLOW_STEP_NAMES = ["放行", "领取", "启动", "回传", "验收"];
+const FLOW_RUNTIME = { claude: "Claude", codex: "Codex", zcode: "Zcode" };
+const flowInt = (v) => Number.isInteger(v) && v > 0 ? v : 0;
+/** progress 合格(是对象且 items 是非空数组)才画流转条;null、旧服务端没有这个字段都返回 false。 */
+function flowUsable(p) { return !!p && typeof p === "object" && Array.isArray(p.items) && p.items.length > 0; }
+/** 这一行是不是在等你:待放行、待验收、待选择方案、待决定。只有这几种用强调色。 */
+function flowNeed(item) {
+  if (!item) return false;
+  if (item.status === "waiting") return ["review", "confirm", "decision"].includes(item.waiting_for);
+  return item.status === "not_started" && (item.released === false || item.released === 0 || item.step === 0);
+}
+/** 五步点(与侧栏 sideSteps 同一套名字):step 0 未放行 1 等领取 2 已领取 3 已启动 4 已回传 5 完成。
+ *  走过的点 done;轮到你的那一步 now;其余 todo。step 不是整数按 0。 */
+function flowDots(item) {
+  const step = Number.isInteger(item?.step) ? Math.min(5, Math.max(0, item.step)) : 0, need = flowNeed(item);
+  return FLOW_STEP_NAMES.map((name, i) => ({ name, state: i < step ? "done" : i === step && need ? "now" : "todo" }));
+}
+/** 当前状态短语:「Zcode 在做」「待你验收」「等领取」……need = 在等你。 */
+function flowPhrase(item, lineName = (l) => l) {
+  if (!item || typeof item !== "object") return { text: "状态待核实", need: false };
+  const rt = Object.hasOwn(FLOW_RUNTIME, String(item.runtime)) ? FLOW_RUNTIME[item.runtime] : "";
+  const who = rt || (item.worker ? String(item.worker) : item.line ? lineName(item.line) : "");
+  if (item.status === "done") return { text: "已完成", need: false };
+  if (item.status === "waiting") {
+    const ask = { review: "待你验收", confirm: "待你选择方案", decision: "待你决定" };
+    return Object.hasOwn(ask, item.waiting_for) ? { text: ask[item.waiting_for], need: true } : { text: "等待中", need: false };
+  }
+  if (item.status === "in_progress") return { text: who ? who + (item.step >= 3 ? " 在做" : " 已领取") : "执行中", need: false };
+  if (item.status === "not_started") return flowNeed(item) ? { text: "待你放行", need: true } : { text: flowInt(item.handed_back) ? "打回后排队" : "等领取", need: false };
+  return { text: "状态待核实", need: false };
+}
+/** 「已打回 n 次」:n 不是正整数返回空串(不显示)。 */
+const flowBack = (n) => flowInt(n) ? "已打回 " + n + " 次" : "";
+/** 总进度:done/total;total 缺省按 items 数,done 缺省按 status=done 的行数。 */
+function flowTotal(p) {
+  const items = Array.isArray(p?.items) ? p.items : [];
+  const total = flowInt(p?.total) || items.length, done = Number.isInteger(p?.done) && p.done >= 0 ? Math.min(p.done, total) : items.filter((x) => x?.status === "done").length;
+  return { done, total, text: done + "/" + total + " 完成", ratio: total ? done / total : 0 };
+}
+/** 首页「正在执行」按目标归组。items 照原顺序;goalOf(item) → 目标卡号或 null;goalInfo(id) → { title, done, total }。
+ *  返回 [{ goal:null|{id,title,done,total,text}, items }]:同一目标的卡归进它第一次出现的位置,不属于目标的卡各自一项。 */
+function homeGroups(items = [], goalOf = () => null, goalInfo = () => null) {
+  const out = [], at = new Map();
+  for (const item of items) {
+    const id = goalOf(item), info = id == null ? null : goalInfo(id);
+    if (!info) { out.push({ goal: null, items: [item] }); continue; }
+    if (!at.has(id)) {
+      const total = flowInt(info.total), done = Math.min(flowInt(info.done), total);
+      at.set(id, out.length);
+      out.push({ goal: { id, title: String(info.title || "目标"), done, total, text: done + "/" + total }, items: [] });
+    }
+    out[at.get(id)].items.push(item);
+  }
+  return out;
+}
+const FLOW_HISTORY_STEP = { created: "建卡", released: "放行", claimed: "领取", started: "启动", reported: "回传", accepted: "验收通过",
+  handed_back: "打回", reopened: "重新打开", reaped: "回收", other: "其他" };
+/** 历史一条:「时间 · 谁 · 做了什么」。actor 是服务端给好的显示名(人 =「你」、线 = 线的显示名);缺了按 actor_kind 补。
+ *  summary 是服务端写的整句(以谁开头,打回带原因):开头就是这个名字时只留后半句,不重复;没有 summary 按 step 写。 */
+function historyRow(e, lineName = (l) => l) {
+  const actor = typeof e?.actor === "string" && e.actor.trim() ? e.actor.trim() : "";
+  const who = actor ? (e?.actor_kind === "line" ? lineName(actor) : actor)
+    : ({ human: "你", auto: "自动审阅", executor: "执行者", line: "执行线", system: "看板" })[e?.actor_kind] || "来源未记录";
+  const summary = typeof e?.summary === "string" ? e.summary.trim() : "";
+  const rest = summary.startsWith(who) ? summary.slice(who.length).replace(/^[\s,，:：]+/, "") : summary;
+  const what = rest || summary || (Object.hasOwn(FLOW_HISTORY_STEP, String(e?.step)) ? FLOW_HISTORY_STEP[e.step] : "其他");
+  return { at: e?.at || "", who, what, back: e?.step === "handed_back" };
+}
+/** 历史列表:新的在上;默认只给最近 20 条,hidden = 收起的条数。 */
+function historyPick(entries, all = false, cap = 20) {
+  const rows = (Array.isArray(entries) ? entries : []).slice().reverse();
+  return all || rows.length <= cap ? { rows, hidden: 0 } : { rows: rows.slice(0, cap), hidden: rows.length - cap };
+}
+// ── /flow-copy ──
+const COLS =["goal", "not_started", "in_progress", "waiting", "done"];
 // ⭐ Labels come from the server (GET /api/meta → status_labels / wf_labels): the ONE
 //   copy is core/store.js, and the CLI reads the same endpoint. This file used to carry
 //   its own table and so did cli/board.py — "grow one side and the other shows the raw
@@ -2353,6 +2480,8 @@ function cardParts(t){
   //   naming. The criterion comes from the server (same function claim uses).
   // v0.23: held by the auto-review anti-affinity — the server decides (review_hold), the
   // panel only shows it; the card is waiting for YOU or for another family's reviewer.
+  // 打回次数(合同 B:handed_back):图标 + 文字,不用强调色;字段缺或为 0 不出。
+  if (flowBack(t.handed_back)) meta2.push(`<span class="tag back" title="这张卡被打回重做的次数，原因在卡详情的「历史」里">${icon("undo")}${esc(flowBack(t.handed_back))}</span>`);
   if (t.review_hold === "same_family") {
     meta2.push(`<span class="tag" title="当前自动审阅方与交付方属于同一模型家族，不能互相验收。请由操作者或其他模型家族审阅。">待独立审阅</span>`);
   }
@@ -2386,6 +2515,9 @@ function cardParts(t){
 
   // ── 展开区:来历、证据、方案、留言与动作。data-stop:在展开区里点击不触发「打开侧栏」。
   let more = `<div class="tags">${tags}${usage}</div>`;
+  // 「它现在在做什么」(合同 A:live_note):执行者心跳时写的临时一句,只在进行中显示;交付或释放后服务端清空。
+  if (t.status === "in_progress" && typeof t.live_note === "string" && t.live_note.trim())
+    more = `<p class="live-note" title="${t.live_note_at ? "执行者 " + esc(localTime(t.live_note_at)) + " 报的进度；下一条覆盖上一条" : "执行者报的进度；下一条覆盖上一条"}">${icon("play")}${esc(t.live_note.trim())}</p>` + more;
   if (t.status === "waiting") more += decisionPanel(t, true);
   // Folded text is too small to read — show a digest, DOUBLE-CLICK opens the full
   // text large.
@@ -5377,6 +5509,23 @@ document.getElementById("line-add").addEventListener("submit", async (e) => {
   }
 });
 
+// ── 刚流转标记:SSE 的 task.* 事件带卡号,对应的流转条行([data-flow-id])与首页卡([data-task-id])标约 4 秒。
+//    重建过的节点按已过去的时间接着放(负的 animation-delay),不从头再闪;reduced-motion 下只换底色、到时摘掉。
+const flashUntil = new Map(), FLASH_MS = 4000;
+function flashMark(id){
+  flashUntil.set(String(id), Date.now() + FLASH_MS);
+  flashApply();
+  setTimeout(flashApply, FLASH_MS + 50);
+}
+function flashApply(){
+  const now = Date.now();
+  for (const [k, until] of flashUntil) if (until <= now) flashUntil.delete(k);
+  for (const el of document.querySelectorAll("[data-flow-id],[data-task-id]")) {
+    const until = flashUntil.get(el.dataset.flowId ?? el.dataset.taskId);
+    if (until && !el.classList.contains("just")) { el.style.animationDelay = (until - now - FLASH_MS) + "ms"; el.classList.add("just"); }
+    else if (!until && el.classList.contains("just")) { el.classList.remove("just"); el.style.animationDelay = ""; }
+  }
+}
 // SSE: pushed on change only; heartbeat/lease countdowns are computed locally
 // (1s redraw, zero server load)
 const es = window.boardSession.events("/api/events");
@@ -5406,6 +5555,8 @@ es.addEventListener("change", (e) => {
     if (d.type === "board.restarting"){ noteRestart(d); return; }
     if (d.type === "conversation.changed"){ chatChanged(); return; }   // 对话有变:只重读对话列表和当前对话
     if (d.type === "code.accepted") chatChanged();   // 版本确认了:协调线能不能用跟着变,对话区立即重读,不等 5 秒的读取间隔
+    // 任务事件带卡号:给流转条那一行和首页那张卡一个约 4 秒的「刚更新」标记;刷新照旧整页走。
+    if (typeof d.type === "string" && d.type.startsWith("task.") && d.id != null) flashMark(d.id);
   } catch {}
   refresh();
 });
@@ -6963,6 +7114,8 @@ function renderSide(){
       const sec = sideSection(title, text); if (sec) detail.append(sec);
     }
     out.push(detail);
+    // 「历史」:默认折叠,展开时才读 /api/tasks/:id/history。
+    out.push(sideHistory(t));
     // 其余操作: 不是「我」这一步时的手动处理、编辑、归档——收起来,不抢下一步
     const more = homeEl("details", undefined, "side-sec");
     more.id = "task-side-more";
@@ -7044,6 +7197,57 @@ function renderSide(){
   // 草稿后注(同看板: 值不进签名,打字不被重建打断);按钮上的字跟着留言走
   const vin = body.querySelector("[data-vin]");
   if (vin && t) { vin.value = verdictDraft.get(t.id) || ""; syncHandoff(document.getElementById("task-side")); }
+}
+// ── 侧栏「历史」:GET /api/tasks/:id/history(合同 B),默认折叠,展开时才读;卡的版本变了下次展开重读。
+//    接口不在(404)写「暂无记录」;读失败写「暂时读不到」,再展开再读。不进 sideSig。
+let sideHist = { id: null, ver: null, busy: false, entries: null, missing: false, error: false, all: false };
+function sideHistory(t){
+  const box = homeEl("details", undefined, "side-sec side-hist");
+  box.id = "task-side-history";
+  const list = homeEl("div", undefined, "hist-body");
+  box.append(homeEl("summary", "历史"), list);
+  sideHistFill(t, list);
+  box.addEventListener("toggle", () => { if (box.open) sideHistLoad(t); });
+  return box;
+}
+function sideHistFill(t, list){
+  const h = sideHist.id === t.id ? sideHist : null;
+  if (!h || (h.entries === null && !h.missing && !h.error)) { list.replaceChildren(homeEl("p", "正在读取", "side-state")); return; }
+  if (h.missing || (h.entries && !h.entries.length)) { list.replaceChildren(homeEl("p", "暂无记录", "side-state")); return; }
+  if (h.error && !h.entries) { list.replaceChildren(homeEl("p", "暂时读不到", "side-state")); return; }
+  const pick = historyPick(h.entries, h.all), ol = homeEl("ol", undefined, "hist");
+  for (const e of pick.rows) {
+    const r = historyRow(e, lineLabel), li = homeEl("li");
+    if (r.back) { li.dataset.back = ""; li.append(chatIcon("undo")); }
+    li.append(homeEl("span", r.at ? localTime(r.at) : "时间未记录", "hist-at"), homeEl("span", r.who, "hist-who"), homeEl("span", r.what, "hist-what"));
+    ol.append(li);
+  }
+  const out = [ol];
+  if (pick.hidden) {
+    const more = homeEl("button", "显示全部（还有 " + pick.hidden + " 条）", "ghost"); more.type = "button";
+    more.addEventListener("click", () => { sideHist.all = true; sideHistFill(t, list); });
+    out.push(more);
+  }
+  list.replaceChildren(...out);
+}
+async function sideHistLoad(t){
+  if (sideHist.id !== t.id) sideHist = { id: t.id, ver: null, busy: false, entries: null, missing: false, error: false, all: false };
+  const mine = sideHist;
+  if (mine.busy || (mine.ver === t.aggregate_version && (mine.entries || mine.missing))) return;
+  mine.busy = true;
+  try {
+    const r = await fetch("/api/tasks/" + encodeURIComponent(t.id) + "/history?limit=100", { headers: WH, cache: "no-store" });
+    if (r.status === 404) { mine.missing = true; mine.entries = null; }
+    else {
+      const v = await r.json().catch(() => null);
+      if (!r.ok || !v || !Array.isArray(v.entries)) throw Error("history " + r.status);
+      mine.entries = v.entries; mine.missing = false;
+    }
+    mine.error = false; mine.ver = t.aggregate_version;
+  } catch { mine.error = true; }
+  finally { mine.busy = false; }
+  const list = sideHist === mine ? document.querySelector("#task-side-history .hist-body") : null;
+  if (list && sideCard()?.id === t.id) sideHistFill(t, list);
 }
 /** 首页点开的一件跨机事项,本机没有对应的卡:收到的委派、待确认的绑定、回传的交付。 */
 function sideActionRecord(){
@@ -7276,10 +7480,13 @@ function homeLane(lane, items, empty){
   const list = document.getElementById("home-" + lane);
   document.getElementById("home-" + lane + "-n").textContent = items.length ? String(items.length) : "";
   const base = homeNarrow.matches ? 3 : 8, cap = homeExpanded[lane] || items.length <= base + 1 ? items.length : base;
-  homeFill(list, JSON.stringify([homeReady, cap, items]), () => {
+  // 「正在执行」里同一目标的卡归成一组,组头 = 目标标题 + d/n 细进度条;不属于目标的卡照旧一张一张排。
+  const groups = lane === "running" ? homeGroups(items.slice(0, cap), homeGoalOf, homeGoalInfo) : null;
+  homeFill(list, JSON.stringify([homeReady, cap, items, groups && groups.map((g) => g.goal)]), () => {
     if (!homeReady) return [homeEl("p", "正在读取…", "home-empty")];
     if (!items.length) return [homeEmpty(...empty)];
-    const out = items.slice(0, cap).map((item) => homeCard(item, lane));
+    const out = groups ? groups.flatMap((g) => g.goal ? [homeGroupBox(g, lane)] : g.items.map((item) => homeCardMarked(item, lane)))
+      : items.slice(0, cap).map((item) => homeCardMarked(item, lane));
     if (items.length > cap){
       const more = homeEl("button", "还有 " + (items.length - cap) + " 项 · 全部展开", "home-more"); more.type = "button";
       more.addEventListener("click", () => { homeExpanded[lane] = true; renderHomeViews(); });
@@ -7287,6 +7494,47 @@ function homeLane(lane, items, empty){
     }
     return out;
   });
+}
+/** 首页卡带上卡号(data-task-id),给「刚流转」标记找;卡面本身不写编号。 */
+function homeCardMarked(item, lane){
+  const b = homeCard(item, lane);
+  if (item.localId != null) b.dataset.taskId = String(item.localId);
+  return b;
+}
+/** 本机卡往上找所属目标(最多 10 层);别的电脑的卡、不在目标下的卡返回 null。 */
+function homeGoalOf(item){
+  let cur = item.localId != null ? byId.get(Number(item.localId)) : null, g = 0;
+  while (cur && cur.parent_id != null && g++ < 10) {
+    const up = byId.get(Number(cur.parent_id));
+    if (!up) return null;
+    if (up.kind === "goal") return up.id;
+    cur = up;
+  }
+  return null;
+}
+/** 目标的组头:标题与直属子任务 完成/总数(未归档)。 */
+function homeGoalInfo(id){
+  const goal = byId.get(Number(id));
+  if (!goal) return null;
+  const kids = tasks.filter((x) => x.parent_id === goal.id && !x.archived_at);
+  return { title: goal.subject, done: kids.filter((k) => k.status === "done").length, total: kids.length };
+}
+/** 细进度条:只是 done/total 的图,数字另写在旁边;读屏读旁边的数字。 */
+function flowBar(done, total){
+  const bar = homeEl("span", undefined, "fbar"), fill = homeEl("span");
+  bar.setAttribute("aria-hidden", "true");
+  fill.style.width = (total ? Math.round(done / total * 100) : 0) + "%";
+  bar.append(fill);
+  return bar;
+}
+function homeGroupBox(g, lane){
+  const box = homeEl("div", undefined, "hgroup"); box.setAttribute("role", "group");
+  box.setAttribute("aria-label", "目标「" + g.goal.title + "」，子任务 " + g.goal.text + " 完成");
+  const head = homeEl("button", undefined, "hg-head"); head.type = "button"; head.title = "打开目标；数字是子任务 完成/总数";
+  head.append(homeEl("span", g.goal.title, "hg-title"), homeEl("span", g.goal.text, "hg-n"), flowBar(g.goal.done, g.goal.total));
+  head.addEventListener("click", () => openSide({ id: g.goal.id, uid: byId.get(Number(g.goal.id))?.task_uid || null, item: null }));
+  box.append(head, ...g.items.map((item) => homeCardMarked(item, lane)));
+  return box;
 }
 /** 空状态:一句「现在怎样」加一句「可以做什么」(style-guide §五 空态)。 */
 function homeEmpty(title, hint, ic = "success"){
@@ -7933,7 +8181,59 @@ function chatMessage(m){
 }
 /** 对话区里的一段段内容:消息,以及跟在消息后面的计划卡。 */
 function chatFlowItems(){
-  return chatTimeline(chatData.messages || [], chatData.plans || []).map((x) => x.kind === "plan" ? chatPlan(x.plan, x.latest, x.appliedRev) : chatMessage(x.message));
+  // 有流转条时,服务端那条「3/5 完成 · …」进度消息(kind:"progress")与流转条重复,不再另出一行。
+  const strip = flowUsable(chatData.conversation?.progress);
+  return chatTimeline(chatData.messages || [], chatData.plans || []).filter((x) => !(strip && x.kind !== "plan" && x.message?.role === "system" && x.message?.kind === "progress"))
+    .map((x) => x.kind === "plan" ? chatPlan(x.plan, x.latest, x.appliedRev) : chatMessage(x.message));
+}
+// ── 流转条 ──────────────────────────────────────────────────────────────
+// 已建卡的计划:每张子卡一行(卡号 + 标题 + 线/执行者 + 五步点 + 当前状态短语),顶上一条总进度。数据 = conversation.progress
+// (合同 B);没有这个字段或为 null 时照旧画子任务表。点一行打开卡侧栏。只有在等你的行用强调色。
+/** 这版计划配不配流转条:建过卡,且 progress 的目标就是这版建出的目标(progress 没写 goal_id 时只配建卡的那一版)。 */
+function chatFlowFor(v, appliedRev){
+  const p = chatData?.conversation?.progress;
+  if (!v.applied || !flowUsable(p)) return null;
+  if (p.goal_id != null && v.applied.goalId != null) return chatSame(p.goal_id, v.applied.goalId) ? p : null;
+  return chatSame(v.rev, appliedRev) ? p : null;
+}
+/** 行下面那行小字:progress 行自带 live_note 就用它,否则用看板上这张卡的;只在进行中显示。 */
+function flowLiveNote(item){
+  const t = byId.get(Number(item?.id)), status = item?.status ?? t?.status;
+  const note = typeof item?.live_note === "string" ? item.live_note : t?.live_note;
+  return status === "in_progress" && typeof note === "string" && note.trim() ? note.trim() : "";
+}
+function chatFlowStrip(p){
+  const box = homeEl("div", undefined, "flow"), sum = flowTotal(p);
+  const head = homeEl("div", undefined, "flow-h");
+  head.append(homeEl("span", sum.text, "flow-n"), flowBar(sum.done, sum.total));
+  const list = homeEl("ul", undefined, "flow-rows");
+  for (const item of p.items) {
+    const id = item?.id, phrase = flowPhrase(item, lineLabel), li = homeEl("li");
+    const row = homeEl("button", undefined, "flow-row"); row.type = "button";
+    row.dataset.flowId = String(id); row.dataset.fk = "flow:" + id;
+    if (phrase.need) row.dataset.need = "";
+    const rt = Object.hasOwn(FLOW_RUNTIME, String(item.runtime)) ? FLOW_RUNTIME[item.runtime] : "";
+    const lineName = item.line ? lineLabel(item.line) : "不指定线", who = rt && rt !== lineName ? lineName + " · " + rt : lineName;
+    const title = homeEl("span", undefined, "fr-t");
+    title.append(homeEl("span", "#" + id, "fr-id"), homeEl("span", String(item.subject || byId.get(Number(id))?.subject || ""), "fr-subj"));
+    const dots = homeEl("span", undefined, "fr-dots");
+    dots.title = FLOW_STEP_NAMES.join(" → ");
+    for (const d of flowDots(item)) { const dot = homeEl("span", undefined, "fr-dot"); dot.dataset.s = d.state; dot.title = d.name; dots.append(dot); }
+    const state = homeEl("span", undefined, "fr-st");
+    state.append(homeEl("span", phrase.text, "fr-ph"));
+    const back = flowBack(item.handed_back);
+    if (back) { const b = homeEl("span", back, "fr-back"); b.prepend(chatIcon("undo")); state.append(b); }
+    row.append(title, homeEl("span", who, "fr-who"), dots, state);
+    const done = flowDots(item).filter((d) => d.state === "done").length;
+    row.setAttribute("aria-label", ["#" + id, item.subject, who, "第 " + done + "/5 步", phrase.text, back].filter(Boolean).join("，"));
+    row.addEventListener("click", () => openSide({ id, uid: byId.get(Number(id))?.task_uid || null, item: null }));
+    li.append(row);
+    const note = flowLiveNote(item);
+    if (note) { const n = homeEl("p", note, "fr-note"); n.title = "执行者报的进度；下一条覆盖上一条"; li.append(n); }
+    list.append(li);
+  }
+  box.append(head, list);
+  return box;
 }
 // ── 计划卡 ──────────────────────────────────────────────────────────────
 // 勾选和执行线的改动先留在本地(sessionStorage)并标出;发消息或建卡前先 PUT 成新版本。建卡只发生在「按计划建卡」。
@@ -7994,7 +8294,9 @@ function chatPlan(plan, latest, appliedRev){
   const goal = homeEl("div", undefined, "plan-goal");
   goal.append(homeEl("span", "目标", "plan-k"), homeEl("h3", v.goal.subject));
   if (v.goal.description) goal.append(homeEl("p", v.goal.description));
-  const rows = chatPlanRows(plan, v, lines);
+  // 建过卡且服务端给了流转数据:子任务表换成流转条(旧版本的折叠里仍是原表)。
+  const flow = v.state === "old" ? null : chatFlowFor(v, appliedRev);
+  const rows = flow ? chatFlowStrip(flow) : chatPlanRows(plan, v, lines);
   // 旧版本:折成一行,点开只读。
   if (v.state === "old") {
     const fold = homeEl("details", undefined, "plan plan-old");
@@ -8007,7 +8309,7 @@ function chatPlan(plan, latest, appliedRev){
   head.append(homeEl("b", "计划 · 第 " + v.rev + " 版"),
     v.state === "applied" ? chatBadge("已建卡", "ok", "success") : v.state === "open" ? chatBadge("待建卡", "need", "wait") : chatBadge("不再建卡", "quiet", "wait"),
     homeEl("span", v.author === "human" ? "你改过的版本" : "协调线拟定", "plan-by"));
-  card.append(head, goal, rows, chatPlanFoot(v, latest));
+  card.append(head, goal, rows, chatPlanFoot(v, latest, !!flow));
   return card;
 }
 function chatPlanRows(plan, v, lines){
@@ -8062,9 +8364,16 @@ function chatPlanRows(plan, v, lines){
   }
   return list;
 }
-function chatPlanFoot(v, latest){
+function chatPlanFoot(v, latest, flow = false){
   const foot = homeEl("div", undefined, "plan-f");
-  if (v.applied) {
+  if (v.applied && flow) {
+    // 流转条每行已能点开那张卡:页脚只留目标卡号。
+    if (v.applied.goalId != null) {
+      const b = homeEl("button", "目标 #" + v.applied.goalId, "plan-id"); b.type = "button"; b.dataset.fk = "card:" + v.applied.goalId; b.title = "打开这张卡";
+      b.addEventListener("click", () => openSide({ id: v.applied.goalId, uid: byId.get(Number(v.applied.goalId))?.task_uid || null, item: null }));
+      foot.append(homeEl("span", v.total, "plan-sum"), b);
+    } else foot.append(homeEl("span", v.total, "plan-sum"));
+  } else if (v.applied) {
     const links = homeEl("span", undefined, "plan-links");
     const link = (id, text) => {
       const b = homeEl("button", text, "plan-id"); b.type = "button"; b.dataset.fk = "card:" + id; b.title = "打开这张卡";
@@ -8202,9 +8511,15 @@ function renderChat(){
   });
   if (rebuilt && chatStick) flow.scrollTop = flow.scrollHeight;
   chatSync();
+  flashApply();
 }
 /** 消息流里除了对话数据之外、变了也要重画的东西(计划卡的本地改动等)。 */
-function chatFlowSig(){ return [chatPlanDraft(), chatPlanBusy, chatPlanNote, [...chatPlanOpen], chatLines(), LINE_LABELS, (chatData?.plans || []).map(chatPending)]; }
+function chatFlowSig(){
+  // 流转条行下面的 live_note 取自看板的卡(progress 里没有这个字段时):卡的 live_note 变了也要重画。
+  const items = flowUsable(chatData?.conversation?.progress) ? chatData.conversation.progress.items : [];
+  return [chatPlanDraft(), chatPlanBusy, chatPlanNote, [...chatPlanOpen], chatLines(), LINE_LABELS, (chatData?.plans || []).map(chatPending),
+    items.map((x) => flowLiveNote(x))];
+}
 // 离底部不远才跟着新内容滚到底:往上翻看旧消息时不被拽回去。
 document.getElementById("chat-flow").addEventListener("scroll", (e) => {
   const el = e.currentTarget; chatStick = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
