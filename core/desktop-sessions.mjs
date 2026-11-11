@@ -183,6 +183,69 @@ function codexMeta(f, titles) {
            origin: typeof pl.thread_source === "string" ? pl.thread_source : null, approx_tokens: tokens, subagent: !!sub };
 }
 
+// ── 历史消息(只读)
+const MSG_TEXT_MAX = 4000, MSG_CHUNK = 1024 * 1024, MSG_SCAN_MAX = 32 * 1024 * 1024;
+export const MSG_LIMIT_DEFAULT = 50, MSG_LIMIT_MAX = 200;
+function readBuf(path, start, len) {
+  const fd = openSync(path, "r");
+  try { const buf = Buffer.alloc(len); const n = readSync(fd, buf, 0, len, start); return buf.subarray(0, n); }
+  finally { closeSync(fd); }
+}
+const msgText = (s) => { const cps = [...String(s).trim()]; return cps.length > MSG_TEXT_MAX ? cps.slice(0, MSG_TEXT_MAX).join("") : cps.join(""); };
+const stamp = (d) => (typeof d.timestamp === "string" ? d.timestamp : null);
+const visible = (t) => typeof t === "string" && t.trim() && !t.trim().startsWith("<");
+/** Claude 一行 → {role,text,at,tools} | {tools:n}(只有工具调用) | null */
+function claudeMsg(d) {
+  if (d.isSidechain) return null;
+  if (d.type === "user") {
+    if (d.isMeta || d.isCompactSummary || d.toolUseResult) return null;
+    const c = d.message?.content;
+    const parts = typeof c === "string" ? [c] : Array.isArray(c) ? c.filter((b) => b?.type === "text").map((b) => b.text) : [];
+    const text = parts.filter(visible).join("\n");
+    return text ? { role: "user", text: msgText(text), at: stamp(d), tools: 0 } : null;
+  }
+  if (d.type === "assistant") {
+    const c = Array.isArray(d.message?.content) ? d.message.content : [];
+    const tools = c.filter((b) => b?.type === "tool_use" || b?.type === "server_tool_use").length;
+    const text = c.filter((b) => b?.type === "text" && typeof b.text === "string").map((b) => b.text).join("\n").trim();
+    if (text) return { role: "assistant", text: msgText(text), at: stamp(d), tools };
+    return tools ? { tools } : null;
+  }
+  return null;
+}
+const CODEX_TOOL_ITEMS = new Set(["function_call", "custom_tool_call", "tool_search_call", "local_shell_call", "web_search_call"]);
+/** Codex 一行(response_item)→ 同上形 */
+function codexMsg(d) {
+  if (d.type !== "response_item" || !d.payload) return null;
+  const p = d.payload;
+  if (CODEX_TOOL_ITEMS.has(p.type)) return { tools: 1 };
+  if (p.type !== "message" || (p.role !== "user" && p.role !== "assistant")) return null;
+  const want = p.role === "user" ? "input_text" : "output_text";
+  const text = (Array.isArray(p.content) ? p.content : []).filter((b) => b?.type === want).map((b) => b.text)
+    .filter(visible).join("\n").trim();
+  return text ? { role: p.role, text: msgText(text), at: stamp(d), tools: 0 } : null;
+}
+
+// ── 桌面会话登记成线的继承表:数据目录(不进 git),运行时增删;手写的 lineage.json 由看板另读、照旧生效
+export const DESK_LINEAGE_FILE = "desktop_lineage.json";
+/** → { <线 id>: { session, source, label, created_at } };坏文件 / 坏项一律忽略。 */
+export function loadDeskLineage(dataDir) {
+  const out = {};
+  try {
+    const raw = JSON.parse(readFileSync(join(dataDir, DESK_LINEAGE_FILE), "utf8"));
+    for (const [k, v] of Object.entries(raw?.lines || {}))
+      if (/^[a-z0-9][a-z0-9_-]{0,31}$/.test(k) && v && SOURCES.includes(v.source) && typeof v.session === "string" && UUID.test(v.session))
+        out[k] = { session: v.session.toLowerCase(), source: v.source, label: typeof v.label === "string" ? v.label : "",
+                   created_at: typeof v.created_at === "string" ? v.created_at : null, via: "desktop" };
+  } catch {}
+  return out;
+}
+export function saveDeskLineage(dataDir, lines) {
+  const file = join(dataDir, DESK_LINEAGE_FILE), tmp = file + ".tmp";
+  writeFileSync(tmp, JSON.stringify({ version: 1, lines }, null, 1), "utf8");
+  renameSync(tmp, file);
+}
+
 /**
  * opts: { claudeRoot, codexRoot, dataDir }
  * 返回 { list, select }。
@@ -230,14 +293,15 @@ export function createDesktopSessions({ claudeRoot, codexRoot, dataDir }) {
   }
   const keyOf = (x) => `${x.source}:${x.id}`;
 
-  function row(f, meta, selected) {
+  function row(f, meta, selected, line = null) {
     return { source: f.source, id: f.id, title: meta.title ?? null, project: meta.project ?? null,
              updated_at: new Date(f.mtimeMs).toISOString(), size_bytes: f.size, approx_tokens: meta.approx_tokens ?? null,
-             origin: meta.origin ?? null, selected };
+             origin: meta.origin ?? null, selected, line };
   }
 
-  /** { source:"claude"|"codex"|"all", days:number|null, q:string|null, limit:number, selectedOnly:boolean } */
-  function list({ source = "all", days = null, q = null, limit = LIMIT_DEFAULT, selectedOnly = false } = {}) {
+  /** { source:"claude"|"codex"|"all", days:number|null, q:string|null, limit:number, selectedOnly:boolean,
+   *    lineOf:(source,id)=>string|null —— 已登记成哪条线(看板的继承表给) } */
+  function list({ source = "all", days = null, q = null, limit = LIMIT_DEFAULT, selectedOnly = false, lineOf = () => null } = {}) {
     const sources = source === "all" ? SOURCES : [source];
     const { files, unavailable } = scan(sources);
     const titles = sources.includes("codex") ? codexTitles(codexRoot) : new Map();
@@ -254,7 +318,7 @@ export function createDesktopSessions({ claudeRoot, codexRoot, dataDir }) {
       if (meta.subagent) continue;
       if (needle && !(meta.title || "").toLowerCase().includes(needle)) continue;
       if (out.length >= limit) { truncated = true; break; }
-      out.push(row(f, meta, selKeys.has(keyOf(f))));
+      out.push(row(f, meta, selKeys.has(keyOf(f)), lineOf(f.source, f.id)));
     }
     if (selectedOnly) {
       // 已勾选但文件不在了:照样列出并标 missing,可被取消
@@ -264,18 +328,75 @@ export function createDesktopSessions({ claudeRoot, codexRoot, dataDir }) {
         if (needle) continue;                                 // 没有标题可比对
         if (out.length >= limit) { truncated = true; break; }
         out.push({ source: x.source, id: x.id, title: null, project: null, updated_at: null, size_bytes: null,
-                   approx_tokens: null, origin: null, selected: true, missing: true });
+                   approx_tokens: null, origin: null, selected: true, line: lineOf(x.source, x.id), missing: true });
       }
     }
     return { sessions: out, truncated, unavailable };
   }
 
   /** 本机确实存在、且是会出现在清单里的对话(Codex 子代理线程不算)。 */
-  function exists(source, id) {
+  function locate(source, id) {
+    if (!SOURCES.includes(source) || typeof id !== "string" || !UUID.test(id)) return null;
     const { files } = scan([source]);
-    const f = files.find((x) => x.id === id);
-    if (!f) return false;
-    return !metaOf(f, source === "codex" ? codexTitles(codexRoot) : new Map()).subagent;
+    const f = files.find((x) => x.id === id.toLowerCase());
+    if (!f) return null;
+    const titles = source === "codex" ? codexTitles(codexRoot) : new Map();
+    const meta = titled(f, metaOf(f, titles), titles);
+    return meta.subagent ? null : { file: f, meta };
+  }
+  const exists = (source, id) => !!locate(source, id);
+  /** 清单里的那一行(登记成线时看体量用;不含正文)。 */
+  function info(source, id) {
+    const hit = locate(source, id);
+    return hit ? row(hit.file, hit.meta, false) : null;
+  }
+
+  /**
+   * 只读看历史:从 before(字节位置,缺省 = 文件尾)往前读,凑够 limit 条 user / assistant 文字,按时间正序返回。
+   * 工具调用折叠进它前面那条 assistant 的 tools 计数(前面没有 assistant 文字时补一条空文字的);
+   * 工具结果、元消息、<…> 注入块、思考一律不给。游标是字节位置:会话文件只追加,位置在之后的追加下仍有效。
+   * 正文只在内存里过一遍:不缓存、不写日志、不落盘。
+   */
+  function messages(source, id, { limit = 50, before = null } = {}) {
+    const hit = locate(source, id);
+    if (!hit) return null;
+    const f = hit.file;
+    if (before != null && (!Number.isInteger(before) || before <= 0 || before > f.size))
+      throw Object.assign(new Error("before 游标无效(要用上一页给的 next_before)"), { status: 400 });
+    const conv = source === "claude" ? claudeMsg : codexMsg;
+    const out = [];                       // 倒序收集
+    let pending = 0;                      // 已见到、还没归到某条 assistant 上的工具调用数
+    const flush = () => { if (pending) { out.push({ role: "assistant", text: "", at: null, tools: pending }); pending = 0; } };
+    let pos = before ?? f.size, tail = Buffer.alloc(0), scanned = 0;
+    for (;;) {
+      if (scanned >= MSG_SCAN_MAX) { flush(); return { messages: out.reverse(), next_before: pos + tail.length || null }; }
+      const start = Math.max(0, pos - MSG_CHUNK);
+      const buf = Buffer.concat([readBuf(f.path, start, pos - start), tail]);
+      scanned += pos - start;
+      const segs = [];
+      let s0 = 0;
+      for (let i = buf.indexOf(10); i >= 0; i = buf.indexOf(10, i + 1)) { segs.push([s0, i]); s0 = i + 1; }
+      segs.push([s0, buf.length]);
+      const first = start > 0 ? 1 : 0;    // start>0 时第一段是半行,留到下一块拼完整
+      for (let k = segs.length - 1; k >= first; k--) {
+        const [a, b] = segs[k];
+        if (b <= a) continue;
+        const d = parse(buf.subarray(a, b).toString("utf8"));
+        const m = d ? conv(d) : null;
+        if (!m) continue;
+        if (!m.role) { pending += m.tools; continue; }
+        if (m.role === "assistant") { out.push({ ...m, tools: m.tools + pending }); pending = 0; }
+        else { flush(); out.push(m); }
+        if (out.length >= limit) {
+          const lineStart = start + a;
+          return { messages: out.slice(0, limit).reverse(), next_before: lineStart > 0 ? lineStart : null };
+        }
+      }
+      // 到这里 out 不足 limit 条,flush 最多补 1 条,不会超
+      if (start === 0) { flush(); return { messages: out.reverse(), next_before: null }; }
+      tail = buf.subarray(segs[0][0], segs[0][1]);
+      pos = start;
+    }
   }
 
   /** add/remove: [{source,id}];返回 { selected } 或抛 {status, error}。 */
@@ -307,5 +428,5 @@ export function createDesktopSessions({ claudeRoot, codexRoot, dataDir }) {
     return { selected: next.length, changed };
   }
 
-  return { list, select };
+  return { list, select, info, messages };
 }

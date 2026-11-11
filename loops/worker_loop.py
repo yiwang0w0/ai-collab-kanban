@@ -182,6 +182,8 @@ SESSION = os.environ.get("WORKER_SESSION") or None
 # 初次可从桌面对话 fork 继承记忆,以后 resume 自己的 session。
 FORK_FROM = os.environ.get("WORKER_FORK_FROM") or None
 ANCHOR    = os.environ.get("WORKER_ANCHOR") or None
+# 看板说这条线已经 fork 过(继承关系登记在看板):Codex 线据此续接自己的会话;Claude 线看转录在不在,用不到它。
+LINEAGE_FORKED = os.environ.get("WORKER_LINEAGE_FORKED") == "1"
 EFFORT = os.environ.get("WORKER_EFFORT", "high")
 # 运行时座席(allowlist=未知值落在拒绝侧)。
 # Keep the seat credential in the trusted loop, out of all provider/verifier environments.
@@ -200,6 +202,7 @@ PROFILE_MODE = EXECUTION_PROFILE is not None
 API_MODE = PROFILE_MODE and EXECUTION_PROFILE.get("channel") in ("claude_agent_sdk", "codex_sdk_api")
 if PROFILE_MODE:
     SESSION = FORK_FROM = ANCHOR = None  # 不继承另一认证通道的旧会话或锚点。
+    LINEAGE_FORKED = False
 # API 通道的供应商密钥移出宿主环境，只显式交给 SDK 运行器；登记验证、git 等宿主子进程都拿不到。
 _API_CREDENTIALS = {key: os.environ.pop(key) for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CODEX_API_KEY")
                     if key in os.environ} if API_MODE else {}
@@ -1640,11 +1643,22 @@ def session_args():
     return []
 
 
-def confirm_forked(sid):
-    """把「继承了」登记到看板。**不去猜也不去找** —— id 是这边定的,早就知道。"""
+def codex_rollout_of(thread_id):
+    """Codex 会话文件 <CODEX_HOME>/sessions/YYYY/MM/DD/rollout-…-<id>[_<uuid>].jsonl(只认 UUID 形的 id)。"""
+    try:
+        thread_id = str(uuid.UUID(str(thread_id)))
+    except (ValueError, TypeError):
+        return None
+    home = os.environ.get("CODEX_HOME") or os.path.join(os.path.expanduser("~"), ".codex")
+    hits = glob.glob(os.path.join(home, "sessions", "*", "*", "*", "rollout-*-" + thread_id + "*.jsonl"))
+    return hits[0] if hits else None
+
+
+def confirm_forked(sid, exists=None):
+    """把「继承了」登记到看板。**不去猜也不去找** —— id 是这边定的(Codex 是 fork 回报的 thread_id),早就知道。"""
     global SESSION, FORK_DONE, FORKED_SID
     FORKED_SID = None
-    if not transcript_of(sid):
+    if not (exists or transcript_of)(sid):
         # fork 本身失败了(CLI 崩了等)。登记的话就等于继承了一个不存在的会话。
         log(f"  ⚠本该继承的转录 {sid[:8]} 不在 —— 不登记(下次重来)")
         return None
@@ -2177,9 +2191,20 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
     try: os.path.isfile(last_path) and os.remove(last_path)   # 别把上次的残骸当证据
     except Exception: pass
     context = t.get("_repair_context")
-    argv = (codex_runtime.session_argv(CODEX_CLI, model, effort, last_path, REPO,
-            mode="read-only" if TOOL_PROFILE == "read-only" else "write", thread_id=context.get("session_id"))
-            if context is not None else codex_argv(model, effort, last_path))
+    mode = "read-only" if TOOL_PROFILE == "read-only" else "write"
+    # 桌面会话登记成的线:首次 `exec fork <桌面会话>`(原会话不动),之后续接 fork 出来的自己的会话。
+    # 修复轮(context)照旧走它自己的续接,不碰继承。
+    lineage = None
+    if context is None and FORK_FROM and not FORK_DONE and codex_rollout_of(FORK_FROM):
+        lineage = {"fork_from": FORK_FROM}
+    elif context is None and (LINEAGE_FORKED or FORK_DONE) and SESSION:   # FORK_DONE:本进程刚 fork 过
+        lineage = {"thread_id": SESSION}
+    if context is not None:
+        argv = codex_runtime.session_argv(CODEX_CLI, model, effort, last_path, REPO, mode=mode, thread_id=context.get("session_id"))
+    elif lineage:
+        argv = codex_runtime.session_argv(CODEX_CLI, model, effort, last_path, REPO, mode=mode, **lineage)
+    else:
+        argv = codex_argv(model, effort, last_path)
     prompt = context.get("prompt") if context and context.get("prompt") else build_prompt(t, worker, evidence_path, prev_tail, attempt)
     t0 = datetime.datetime.now(datetime.timezone.utc).isoformat().replace("+00:00", "Z")
     try:
@@ -2200,6 +2225,17 @@ def run_codex(t, worker, evidence_path, prev_tail, attempt, model, effort):
         if context.get("session_id") and context["session_id"] != sid:
             return -2, "Codex 续接返回了不同会话，停止本次尝试"
         context["session_id"] = sid
+    if lineage and v.get("thread"):
+        try:
+            sid = str(uuid.UUID(str(v["thread"])))
+        except ValueError:
+            return -2, "Codex 返回了无效会话 UUID，停止本次尝试"
+        if lineage.get("fork_from"):
+            if sid == str(uuid.UUID(FORK_FROM)):
+                return -2, "Codex fork 回报的是原会话本身，不登记继承，停止本次尝试"
+            confirm_forked(sid, exists=codex_rollout_of)
+        elif sid != str(uuid.UUID(SESSION)):
+            return -2, "Codex 续接返回了不同会话，停止本次尝试"
     # ⭐ 沙箱写不了证据文件时,最终回复就是证据,由这里落盘(delivery_block 对模型说的正是这个):
     #   只读沙箱必然如此;workspace-write 在**分仓部署**(BOARD_REPO ≠ 看板仓)下也如此 —— 证据路径
     #   在工作仓之外,沙箱拒写(v0.23.1,远程机接手时发现的形)。只在模型没写出文件时才落 ——
@@ -2433,6 +2469,30 @@ def codex_selftest():
     ok("⑪d 只读形有 --sandbox read-only、无 --approve-for-me、带 output schema",
        "--sandbox" in ro and "read-only" in ro and "--approve-for-me" not in ro and
        "--output-schema" in ro, str(ro))
+    src = "11111111-2222-4333-8444-555555555555"
+    fk = codex_runtime.session_argv("C:/x/codex.exe", "gpt-5.6-sol", "high", "C:/tmp/fk.txt", "C:/tmp",
+                                    mode="read-only", fork_from=src.upper())
+    ex = fk.index("exec")
+    ok("⑪e 桌面会话首次领卡 = exec fork <会话> …,提示词仍走 stdin",
+       fk[ex + 1:ex + 3] == ["fork", src] and fk[-1] == "-" and "resume" not in fk and "--ephemeral" not in fk, str(fk))
+    ok("⑪f fork 的只读沙箱在 exec 之前的配置层(fork 子命令没有 --sandbox)",
+       'sandbox_mode="read-only"' in fk[:ex] and 'approval_policy="never"' in fk[:ex] and "--sandbox" not in fk, str(fk))
+    for bad in ({"thread_id": src, "fork_from": src}, {"fork_from": "--last"}):
+        try:
+            codex_runtime.session_argv("C:/x/codex.exe", "m", "high", "l", "w", **bad)
+            ok("⑪g fork 参数不合法时组装就抛", False, str(bad))
+        except ValueError:
+            ok("⑪g fork 参数不合法时组装就抛", True)
+    home = tempfile.mkdtemp(prefix="codexhome_")
+    day = os.path.join(home, "sessions", "2026", "11", "01"); os.makedirs(day)
+    io.open(os.path.join(day, "rollout-2026-11-01T10-00-00-" + src + "_" + src + ".jsonl"), "w", encoding="utf-8").write("{}")
+    old_home = os.environ.get("CODEX_HOME"); os.environ["CODEX_HOME"] = home
+    try:
+        ok("⑪h 按 CODEX_HOME 找得到会话文件(含双 uuid 文件名)", bool(codex_rollout_of(src)))
+        ok("⑪i 非 UUID 不拿去 glob", codex_rollout_of("*") is None and codex_rollout_of(None) is None)
+    finally:
+        if old_home is None: os.environ.pop("CODEX_HOME", None)
+        else: os.environ["CODEX_HOME"] = old_home
     try:
         assert_no_bypass(["codex", "exec", "--dangerously-bypass-approvals-and-sandbox"])
         ok("⑫ bypass 旗在组装时抛异常", False, "没有抛异常")
@@ -3181,8 +3241,10 @@ def main():
     once, dry = "--once" in sys.argv, "--dry-run" in sys.argv
     until = parse_until(arg_of("--until"))
     route = sys.argv[sys.argv.index("--route") + 1] if "--route" in sys.argv else "default"
-    if FORK_FROM and transcript_of(FORK_FROM):
+    if FORK_FROM and (codex_rollout_of if RUNTIME == "codex" else transcript_of)(FORK_FROM):
         sess = "从桌面对话 " + FORK_FROM[:8] + " 继承记忆(首次 fork)"
+    elif RUNTIME == "codex" and LINEAGE_FORKED and SESSION:
+        sess = "续用 fork 出来的 Codex 会话 " + SESSION[:8]
     elif SESSION and transcript_of(SESSION):
         sess = "续用 " + SESSION[:8]
     elif SESSION:
