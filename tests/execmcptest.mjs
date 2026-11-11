@@ -4,7 +4,7 @@ const HOST_ENV = harnessEnvironment();
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -79,7 +79,7 @@ test("桥:握手、只看本线、领卡、续租、交付都走执行者令牌"
       assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
       M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const list = await M.request("tools/list");
-      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result"]);
+      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator"]);
       assert.ok(!("line" in list.result.tools[0].inputSchema.properties), "固定了 --line 就不给 line 参数");
       const ls = await M.call("list_cards", {});
       assert.equal(ls.isError, false, JSON.stringify(ls));
@@ -114,6 +114,60 @@ test("桥:握手、只看本线、领卡、续租、交付都走执行者令牌"
   } finally { await B.stop(); }
 });
 
+test("桥:--code 凭码接入、wait_for_card、heartbeat note、ask_operator", { timeout: 90000 }, async () => {
+  const B = await board();
+  try {
+    const code = await B.api("POST", "/api/connect/codes", B.operator, { kind: "zcode", line: "ext" });
+    assert.equal(code.status, 201, JSON.stringify(code.body));
+    const tokenFile = join(B.dir, "creds", "ext.token");          // 目录还不存在:桥建成仅当前账户可访问
+    const M = bridge(["--url", B.base, "--line", "ext", "--code", code.body.code, "--token-file", tokenFile]);
+    try {
+      const init = await M.request("initialize", INIT);
+      assert.ok(init.result, JSON.stringify(init) + M.stderr());
+      M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      assert.match(readFileSync(tokenFile, "utf8"), /^exe_[0-9a-f]{48}$/, "兑换到的令牌已写入文件");
+      assert.ok(!M.stderr().includes(code.body.code) && !M.stderr().includes("exe_"), "stderr 不带码和令牌");
+      const none = await M.call("wait_for_card", { timeout_sec: 1 });
+      assert.equal(none.structuredContent.none, true, JSON.stringify(none));
+      assert.equal((await M.call("wait_for_card", { timeout_sec: 51 })).structuredContent.code, "BAD_INPUT");
+      // 等卡期间别的请求照常应答;卡挂上后立即返回
+      const waiting = M.call("wait_for_card", { timeout_sec: 20 });
+      const t0 = Date.now(); assert.deepEqual((await M.request("ping")).result, {}); assert.ok(Date.now() - t0 < 1500, "等卡不阻塞 ping");
+      await B.card("别的线", "alpha");
+      const mine = await B.card("值守的卡", "ext");
+      const got = (await waiting).structuredContent;
+      assert.deepEqual([got.card?.id, got.card?.subject, got.card?.aggregate_version], [mine.id, "值守的卡", mine.aggregate_version], JSON.stringify(got));
+      const claim = await M.call("claim_card", { id: mine.id, expected_version: got.card.aggregate_version });
+      assert.equal(claim.isError, false, JSON.stringify(claim));
+      assert.equal(claim.structuredContent.card.worker, "ext");
+      assert.equal((await M.call("heartbeat", { id: mine.id, note: "x".repeat(121) })).structuredContent.code, "BAD_INPUT");
+      const hb = await M.call("heartbeat", { id: mine.id, note: "正在核对验收条件" });
+      assert.equal(hb.isError, false, JSON.stringify(hb));
+      let t = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
+      assert.equal(t.live_note, "正在核对验收条件");
+      const ask = await M.call("ask_operator", { id: mine.id, question: "验收条件第二条要按哪个口径?A 按日 / B 按周" });
+      assert.equal(ask.isError, false, JSON.stringify(ask));
+      t = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
+      assert.deepEqual([t.status, t.waiting_for, t.live_note], ["waiting", "decision", null], "ask_operator = 等你决定,临时进度清空");
+      assert.match(t.result, /按哪个口径/);
+      const ex = (await B.api("GET", "/api/executors", B.operator)).body.executors.find((e) => e.id === "ext");
+      assert.deepEqual([ex.connected_via, ex.online, ex.state, ex.pending_code], ["code", true, "idle", false]);
+    } finally { await M.end(); }
+    // 令牌文件已在:--code 被忽略(码已用过也照常启动)
+    const N = bridge(["--url", B.base, "--line", "ext", "--code", code.body.code, "--token-file", tokenFile]);
+    try { assert.ok((await N.request("initialize", INIT)).result, N.stderr()); } finally { await N.end(); }
+    // 新令牌文件 + 用过的码 → 启动失败,不写文件
+    const other = join(B.dir, "other.token");
+    const used = spawnSync(process.execPath, [BRIDGE, "--url", B.base, "--line", "ext", "--code", code.body.code, "--token-file", other],
+      { input: "", encoding: "utf8", windowsHide: true, env: HOST_ENV, timeout: 20000 });
+    assert.equal(used.status, 1); assert.match(used.stderr, /CODE_USED/); assert.ok(!existsSync(other));
+    // 撤销后桥在握手阶段失败
+    assert.equal((await B.api("POST", "/api/executors/ext/revoke", B.operator, {})).status, 200);
+    const R = bridge(["--url", B.base, "--token-file", tokenFile]);
+    try { assert.match((await R.request("initialize", INIT)).error?.message ?? "", /^UNAUTHENTICATED/); } finally { await R.end(); }
+  } finally { await B.stop(); }
+});
+
 test("桥的启动参数:只接回环地址和 exe_ 执行者令牌,错误文案不带令牌", { timeout: 30000 }, () => {
   const dir = mkdtempSync(join(tmpdir(), "execmcpargs-"));
   try {
@@ -129,5 +183,9 @@ test("桥的启动参数:只接回环地址和 exe_ 执行者令牌,错误文案
     const missing = run("--url", "http://127.0.0.1:47914", "--token-file", join(dir, "nope.token"));
     assert.equal(missing.status, 1); assert.match(missing.stderr, /BAD_CREDENTIAL/); assert.ok(!missing.stderr.includes(dir), "不回显路径");
     assert.equal(run("--url", "http://127.0.0.1:47914").status, 1, "缺 --token-file");
+    const badCode = run("--url", "http://127.0.0.1:47914", "--token-file", join(dir, "new.token"), "--code", "not a code");
+    assert.equal(badCode.status, 1); assert.match(badCode.stderr, /BAD_INPUT/);
+    const down = run("--url", "http://127.0.0.1:9", "--token-file", join(dir, "new.token"), "--code", "ABCD-EFGH");
+    assert.equal(down.status, 1); assert.match(down.stderr, /BOARD_UNREACHABLE/); assert.ok(!down.stderr.includes("ABCD"), "不回显码");
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
