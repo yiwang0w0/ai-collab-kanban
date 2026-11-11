@@ -1382,3 +1382,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - execmcptest 2/0(真看板 + 真 stdio 子进程;去掉线名闸的变异变红);没有调用模型。阻塞：无。
 - 2026-11-11 本机桌面对话清单与勾选(claude/desk-sessions):`GET /api/desktop-sessions` 只读列出 Claude 与 Codex 桌面端对话(标题、项目、最后活动、体量、来源;不返回正文,Codex 子代理/审阅线程不列);`PUT /api/desktop-sessions/selection` 存操作者勾选(上限 50,只收本机存在的对话,重启保留,推 `desktop-sessions.changed`);只认操作员。docs/多执行者协作.md 写接口,docs/桌面对话续接_CLI能力.md 记两家 CLI 续接 / fork / 限工具 / 结构化输出的事实与限制。
 - desksessionstest 4/0(合成夹具);没有调用模型。阻塞：无。
+- 2026-11-11 公告板 v3 合同 B「流转」后端(claude/flow):新 `core/flow.mjs` 给 `GET /api/tasks/:id/history`(人话条目 + step / actor_kind,打回带裁定原文摘要)、任务对象 `handed_back` / `last_actor` / `last_actor_kind`(事件表增量缓存)、建卡对话的 `conversation.progress` 与唯一一条原位更新的 `kind:"progress"` 消息(子卡变化 2 秒合并推 `conversation.changed`,重启按库重算);server.mjs 只接线,convtest 看建卡消息时略过进度消息。
+- flowtest 4/0(500 卡 / 5000 事件:热读 500 次约 1ms)、convtest 5/0、hometest 43/0、taskexecutionhttp 1/0;没有调用模型。阻塞：无。

@@ -1,0 +1,338 @@
+// 公告板 v3 合同 B 节「流转」:按卡的历史、任务派生字段(handed_back / last_actor / last_actor_kind)、
+// 建卡对话的进度(conversation.progress 与那一条原位更新的 kind:"progress" 系统消息)。
+// 只读 task_events / task_runs / tasks / conversations;自己只写一张可变小表 conversation_progress(每个对话至多一行)。
+// 对话消息表是只追加的(库层触发器挡 UPDATE),所以「原位更新」的那条进度消息不放在消息表里,读详情时按位置并进 messages。
+//
+// ── step(历史条目)由事件 kind 判定 ─────────────────────────────────────────────
+//   add → created                     release(action=release) → released   release(action=hold) → other(收回放行)
+//   claim → claimed                   process_started → started             report → reported
+//   resolve(disposition=close)→accepted  resolve(hand_back)→handed_back     resolve(hold_for_review) → other
+//     旧事件没有 disposition:按 detail.status 判(done→accepted、not_started→handed_back、其余 other)
+//   reopen → reopened                 reap、release(action=release_held) → reaped
+//   其余(set_line / set_parent / report_overridden / review.* / 自动审阅的 decision.recorded / snapshot …)→ other
+//   不出条目:evidence.recorded(report 已有一条)、resolve 自己的 decision.recorded(并进上一条 resolve 当原因)、
+//   execution.* / run_identity(执行器内部观察,量大且不是流转)
+// ── actor_kind ────────────────────────────────────────────────────────────────
+//   human   : human / operator / local / panel / approval-token:*(人按的,经面板、操作员令牌或远程批准)
+//   auto    : auto / review(自动审阅与审阅线的裁定)
+//   executor: coord 登记过的执行者 id
+//   line    : 配置里的线 id 或其并行槽 <线>@<k>;以及领取/启动/交付这几类事件里其余的执行方名字
+//   system  : 其余(system / migration / lease-reaper / cascade / decompose… 看板自己做的)
+// ── progress.step(子卡当前状态,与面板侧栏五步条 sideSteps 同义)───────────────────
+//   5 完成        status=done                                 (sideSteps 第 5 步「人工验收」done)
+//   4 已回传      status=waiting(待验收/待决定/等子卡…)       (第 4 步「回传」done,有 result)
+//   3 已启动      status=in_progress 且当前 run 有 process_started (第 3 步「启动」observed)
+//   2 已领取      status=in_progress,尚无本轮启动记录          (第 2 步「领取」done)
+//   1 等领取      status=not_started 且已放行                  (第 1 步「放行」done)
+//   0 未放行      status=not_started 且未放行
+
+export const FLOW_COALESCE_MS = 2000;
+const HUMAN = new Set(["human", "operator", "local", "panel"]);
+const AUTO = new Set(["auto", "review"]);
+const WORKER_KINDS = new Set(["claim", "process_started", "report"]);
+const SKIP = new Set(["evidence.recorded", "run_identity"]);
+const WAIT_TEXT = { review: "待验收", confirm: "待选择方案", decision: "待决定", dep: "等前置卡", rearm: "等子卡" };
+const chars = (s) => [...String(s)];
+export const cut = (s, max) => { const c = chars(String(s ?? "").replace(/\s+/g, " ").trim()); return c.length > max ? c.slice(0, max - 1).join("") + "…" : c.join(""); };
+
+/** 给人看的短句:去掉私有路径、长 ID / 哈希、令牌样的串、反引号里的命令,再截断。 */
+export function safeText(s, max = 60) {
+  const t = String(s ?? "")
+    .replace(/`[^`]*`/g, "…")
+    .replace(/[A-Za-z]:[\\/][^\s"'<>|),，;；、]*/g, "…")
+    .replace(/(^|[\s(「"'])(?:~|\/(?:Users|home|tmp|var|mnt|opt|root|private))\/[^\s"'<>|),，;；、]*/g, "$1…")
+    .replace(/\\\\[^\s"'<>|),，;；、]+/g, "…")
+    .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "…")
+    .replace(/\b(?:exe|apr|tok|pat|sk|ghp|gho)[-_][A-Za-z0-9_-]{8,}/g, "…")
+    .replace(/\b[0-9a-f]{12,}\b/gi, "…")
+    .replace(/^\s*(?:\$|PS>|>)\s.*$/gm, "…")
+    .replace(/(?:…\s*){2,}/g, "…");
+  return cut(t, max);
+}
+
+/** actor_kind 判定(见文件头)。eventKind 用来认出「领取/启动/交付」里的执行方。 */
+export function actorKindOf(actor, eventKind, { lines = [], isExecutor = () => false } = {}) {
+  const a = String(actor ?? "");
+  if (HUMAN.has(a) || a.startsWith("approval-token:")) return "human";
+  if (AUTO.has(a)) return "auto";
+  if (a === "executor") return "executor";
+  if (a === "worker") return "line";
+  try { if (isExecutor(a)) return "executor"; } catch {}
+  const base = a.replace(/@\d+$/, "");
+  if (lines.includes(base)) return "line";
+  if (WORKER_KINDS.has(eventKind)) return "line";
+  return "system";
+}
+
+/** 显示用的执行方名字:人 →「你」,自动审阅 →「自动审阅」,看板自己 →「看板」,线 → 线的显示名(并行槽号去掉)。 */
+export function actorLabel(actor, kind, labels = {}) {
+  const a = String(actor ?? "");
+  if (kind === "human") return a.startsWith("approval-token:") ? "你(远程批准)" : "你";
+  if (kind === "auto") return "自动审阅";
+  if (kind === "system") return "看板";
+  const base = a.replace(/@\d+$/, "");
+  return cut((kind === "line" && labels[base]) || (a === "worker" ? "执行线" : a === "executor" ? "执行者" : base), 32);
+}
+
+const dispositionOf = (d) => d.disposition || (d.status === "done" ? "close" : d.status === "not_started" ? "hand_back" : "hold");
+
+/** 一条事件 → 一条历史条目(或 null = 不出条目)。runtimeOf(run_id) 由 task_runs 补运行时。 */
+export function entryOf(e, ctx = {}) {
+  if (SKIP.has(e.kind) || e.kind.startsWith("execution.")) return null;
+  const d = e.detail || {};
+  if (e.kind === "decision.recorded" && d.source !== "autoreview") return null;
+  // 执行方停下时把卡放回(release_held)的 actor 也是执行方,与领取同一判法。
+  const actor_kind = actorKindOf(e.actor, e.kind === "release" && d.action === "release_held" ? "claim" : e.kind, ctx);
+  const who = actorLabel(e.actor, actor_kind, ctx.labels);
+  const runtime = d.runtime || (d.run_id && ctx.runtimeOf ? ctx.runtimeOf(d.run_id) : null);
+  const rt = runtime ? `(${cut(runtime, 16)})` : "";
+  let step = "other", summary;
+  switch (e.kind) {
+    case "add": step = "created"; summary = `${who}建卡${d.released ? ",已放行" : ",未放行"}`; break;
+    case "release":
+      if (d.action === "release") { step = "released"; summary = `${who}放行,等执行方领取`; }
+      else if (d.action === "hold") summary = `${who}收回放行`;
+      else { step = "reaped"; summary = `${who}停下,卡退回等领取`; }
+      break;
+    case "claim": step = "claimed"; summary = `${who}领取${rt}`; break;
+    case "process_started": step = "started"; summary = `${who}启动了执行${rt}`; break;
+    case "report": step = "reported";
+      summary = d.outcome === "done" ? `${who}交付,等验收` : `${who}交回,等你决定`; break;
+    case "report_overridden": summary = `交付改为等你决定${d.reason ? ":" + safeText(d.reason, 50) : ""}`; break;
+    case "resolve": {
+      const disp = dispositionOf(d);
+      if (e.actor === "cascade") { step = "accepted"; summary = `联动关闭${d.cause_task_id ? `(因 #${d.cause_task_id} 通过)` : ""}`; }
+      else if (disp === "close") { step = "accepted"; summary = `${who}${actor_kind === "auto" ? "" : "验收"}通过`; }
+      else if (disp === "hand_back") { step = "handed_back"; summary = d.verdict === "approve" ? `${who}通过并附指示,退回原线继续` : `${who}打回,回原线重做`; }
+      else summary = `${who}裁定后交审阅`;
+      break;
+    }
+    case "reopen": step = "reopened"; summary = `${who}重新打开`; break;
+    case "reap": step = "reaped"; summary = "租约超时,收回等重新领取"; break;
+    case "set_line": summary = `${who}改线:${d.to == null ? "不指定线" : cut(ctx.labels?.[d.to] || d.to, 24)}`; break;
+    case "set_parent": summary = d.to == null ? `${who}从目标上摘下` : `${who}挂到 #${d.to}`; break;
+    case "review.rearmed": summary = "子卡齐了,送回重审"; break;
+    case "review.rearm_blocked": summary = "子卡未齐,暂不重审"; break;
+    case "decision.recorded": summary = `自动审阅看过${d.note ? ":" + safeText(d.note, 50) : ",等你确认"}`; break;
+    case "execution.configured": summary = `${who}设置了执行配置`; break;
+    case "snapshot": summary = "旧数据导入时的状态"; break;
+    case "unattested": summary = "旧执行记录(无启动凭据)"; break;
+    case "node_recovery": summary = "节点恢复"; break;
+    default: summary = `记录:${cut(e.kind, 24)}`;
+  }
+  return { at: e.at, kind: e.kind, actor: who, actor_kind, step, summary: cut(summary, 120) };
+}
+
+/** 一张卡的事件(旧→新)→ 条目。resolve 之后紧跟的 decision.recorded(source=resolve)里的 note 是裁定原文,并进打回条目当原因。 */
+export function entriesOf(evs, ctx = {}) {
+  const out = []; let lastResolve = null;
+  for (const e of evs) {
+    if (e.kind === "decision.recorded" && e.detail?.source === "resolve") {
+      const note = safeText(e.detail.note, 60);
+      if (lastResolve && note && lastResolve.step !== "accepted") lastResolve.summary = cut(`${lastResolve.summary}:${note}`, 120);
+      lastResolve = null; continue;
+    }
+    const en = entryOf(e, ctx);
+    if (!en) continue;
+    out.push(en);
+    lastResolve = e.kind === "resolve" ? en : null;
+  }
+  return out;
+}
+
+/** 子卡当前状态 → step 0..5(见文件头)。started = 当前 run 有 process_started。 */
+export function stepOf(t, started) {
+  if (t.status === "done") return 5;
+  if (t.status === "waiting") return 4;
+  if (t.status === "in_progress") return started ? 3 : 2;
+  return t.released ? 1 : 0;
+}
+
+export function createFlow({ db, isExecutor = () => false, lines = () => [], labels = () => ({}), emit = () => {}, coalesceMs = FLOW_COALESCE_MS } = {}) {
+  db.exec(`CREATE TABLE IF NOT EXISTS conversation_progress (
+    conversation_id INTEGER PRIMARY KEY, after_message_id INTEGER, text TEXT NOT NULL, sig TEXT NOT NULL,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
+  const ctx = () => ({ lines: lines() || [], labels: labels() || {}, isExecutor: (a) => isExecutor(db, a) });
+  const runtimeStmt = db.prepare("SELECT runtime FROM task_runs WHERE run_id=?");
+  const runtimeOf = (runId) => { try { return runtimeStmt.get(String(runId))?.runtime ?? null; } catch { return null; } };
+  const parse = (s) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
+
+  // ── 任务派生字段:增量缓存。每次读只扫 id 大于上次的新事件(一条走主键的范围查询),不按卡扫全量。
+  //    库被换掉(恢复)时 max(id) 会变小 → 整个重建。
+  const fields = new Map();
+  let seen = 0;
+  const scan = db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? ORDER BY id LIMIT 5000");
+  const maxId = db.prepare("SELECT COALESCE(MAX(id),0) AS m FROM task_events");
+  function refresh() {
+    const top = Number(maxId.get().m);
+    if (top < seen) { fields.clear(); seen = 0; }
+    if (top === seen) return;
+    const c = ctx();
+    for (;;) {
+      const rows = scan.all(seen);
+      if (!rows.length) break;
+      for (const r of rows) {
+        seen = Number(r.id);
+        const e = { at: r.at, kind: r.kind, actor: r.actor, detail: parse(r.detail) };
+        if (e.kind === "decision.recorded" && e.detail.source === "resolve") continue;
+        const en = entryOf(e, c);
+        if (!en) continue;
+        const f = fields.get(Number(r.task_id)) || { handed_back: 0, last_actor: null, last_actor_kind: null };
+        if (en.step === "handed_back") f.handed_back += 1;
+        f.last_actor = en.actor; f.last_actor_kind = en.actor_kind;
+        fields.set(Number(r.task_id), f);
+      }
+      if (rows.length < 5000) break;
+    }
+  }
+  /** 任务对象(列表与详情)要并进的三项。 */
+  function taskFields(t) {
+    refresh();
+    return fields.get(Number(t?.id)) || { handed_back: 0, last_actor: null, last_actor_kind: null };
+  }
+
+  const evStmt = db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE task_id=? ORDER BY id");
+  /** GET /api/tasks/:id/history:旧→新,最多 limit 条(取最近的 limit 条)。 */
+  function history(taskId, limit = 100) {
+    const evs = evStmt.all(Number(taskId)).map((r) => ({ at: r.at, kind: r.kind, actor: r.actor, detail: parse(r.detail) }));
+    const entries = entriesOf(evs, { ...ctx(), runtimeOf });
+    return { task_id: Number(taskId), entries: entries.slice(Math.max(0, entries.length - limit)) };
+  }
+
+  // ── 对话进度
+  const convStmt = db.prepare("SELECT id, goal_id, applied_rev, applied_task_ids FROM conversations WHERE id=?");
+  const kidsStmt = db.prepare("SELECT * FROM tasks WHERE parent_id=? AND (archived_at IS NULL OR status='done') ORDER BY id");
+  const goalStmt = db.prepare("SELECT id, status FROM tasks WHERE id=?");
+  const planStmt = db.prepare("SELECT tasks FROM conversation_plans WHERE conversation_id=? AND rev=?");
+  const startedStmt = db.prepare("SELECT 1 FROM task_events WHERE task_id=? AND kind='process_started' AND json_extract(detail,'$.run_id')=? LIMIT 1");
+  const lastClaimStmt = db.prepare("SELECT actor, detail FROM task_events WHERE task_id=? AND kind='claim' ORDER BY id DESC LIMIT 1");
+
+  function progressOf(convId) {
+    const c = convStmt.get(Number(convId));
+    if (!c || c.goal_id == null) return null;
+    const goalId = Number(c.goal_id), cx = ctx();
+    // n = 计划里的序号:建卡时按启用的计划条目顺序一一建卡,applied_task_ids 与之同序。后来另挂到目标上的卡没有 n。
+    const ids = parse(c.applied_task_ids), planTasks = (() => { try { return JSON.parse(planStmt.get(c.id, c.applied_rev)?.tasks || "[]"); } catch { return []; } })();
+    const enabled = Array.isArray(planTasks) ? planTasks.filter((t) => t.enabled !== false) : [];
+    const nOf = new Map(Array.isArray(ids) ? ids.map((id, i) => [Number(id), enabled[i]?.n ?? i + 1]) : []);
+    refresh();
+    const items = kidsStmt.all(goalId).map((t) => {
+      const started = t.status === "in_progress" && t.run_id ? !!startedStmt.get(t.id, String(t.run_id)) : false;
+      let worker = null, runtime = null;
+      if (t.status === "in_progress") { worker = t.worker; runtime = (t.run_id && runtimeOf(t.run_id)) || t.last_runtime || null; }
+      else if (t.status !== "not_started") {
+        const lc = lastClaimStmt.get(t.id);
+        worker = lc ? lc.actor : t.worker || null;
+        runtime = t.last_runtime || (lc && parse(lc.detail).runtime) || null;
+      }
+      const wk = worker == null ? null : actorLabel(worker, actorKindOf(worker, "claim", cx), cx.labels);
+      return { id: Number(t.id), n: nOf.get(Number(t.id)) ?? null, subject: cut(t.subject, 80), line: t.line ?? null,
+               status: t.status, waiting_for: t.status === "waiting" ? (t.waiting_for ?? null) : null, released: !!t.released,
+               step: stepOf(t, started), worker: wk, runtime: runtime ? String(runtime) : null,
+               handed_back: fields.get(Number(t.id))?.handed_back ?? 0, updated_at: t.updated_at };
+    });
+    const goal = goalStmt.get(goalId);
+    return { goal_id: goalId, goal_status: goal?.status ?? null, total: items.length, done: items.filter((i) => i.step === 5).length, items };
+  }
+
+  /** 进度消息的一句话:「3/5 完成 · #12 待验收 · #13 Zcode 在做」。要人做的排前面,最多列 3 项。 */
+  function progressText(p) {
+    if (!p.total) return "目标下暂时没有子卡";
+    const head = p.goal_status === "done" ? `全部完成 · ${p.done}/${p.total}` : `${p.done}/${p.total} 完成`;
+    const rank = (i) => i.step === 4 && ["review", "confirm", "decision"].includes(i.waiting_for) ? 0 : i.step === 4 ? 1
+      : i.step >= 2 ? 2 : i.step === 0 ? 3 : 4;
+    const open = p.items.filter((i) => i.step < 5).sort((a, b) => rank(a) - rank(b) || a.id - b.id);
+    const say = (i) => i.step === 4 ? `#${i.id} ${WAIT_TEXT[i.waiting_for] || "等待中"}`
+      : i.step >= 2 ? `#${i.id} ${i.worker || "执行方"}${i.step === 3 ? "在做" : "已领取"}`
+      : i.step === 0 ? `#${i.id} 未放行` : i.handed_back ? `#${i.id} 已打回,等重领` : `#${i.id} 等领取`;
+    const shown = open.slice(0, 3).map(say);
+    if (open.length > 3) shown.push(`另 ${open.length - 3} 张未完`);
+    return cut([head, ...shown].join(" · "), 200);
+  }
+  const sigOf = (p) => JSON.stringify([p.goal_status, p.items.map(({ updated_at, ...rest }) => rest)]);
+
+  const rowStmt = db.prepare("SELECT * FROM conversation_progress WHERE conversation_id=?");
+  const appliedMsgStmt = db.prepare("SELECT id FROM conversation_messages WHERE conversation_id=? AND kind='applied' ORDER BY id DESC LIMIT 1");
+  const lastMsgStmt = db.prepare("SELECT COALESCE(MAX(id),0) AS m FROM conversation_messages WHERE conversation_id=?");
+  /** 按库里当前状态重算并落盘(签名没变就不写)。返回 { progress, row, sig }。 */
+  function sync(convId) {
+    const p = progressOf(convId);
+    if (!p) return { progress: null, row: null, sig: null };
+    const sig = sigOf(p), text = progressText(p), at = new Date().toISOString();
+    let row = rowStmt.get(Number(convId));
+    if (!row) {
+      const after = appliedMsgStmt.get(Number(convId))?.id ?? lastMsgStmt.get(Number(convId)).m;
+      db.prepare("INSERT OR IGNORE INTO conversation_progress (conversation_id, after_message_id, text, sig, created_at, updated_at) VALUES (?,?,?,?,?,?)")
+        .run(Number(convId), Number(after), text, sig, at, at);
+      row = rowStmt.get(Number(convId));
+    } else if (row.sig !== sig || row.text !== text) {
+      db.prepare("UPDATE conversation_progress SET text=?, sig=?, updated_at=? WHERE conversation_id=?").run(text, sig, at, Number(convId));
+      row = rowStmt.get(Number(convId));
+    }
+    return { progress: p, row, sig };
+  }
+  const messageOf = (convId, row) => ({ id: `progress-${convId}`, role: "system", kind: "progress", text: row.text,
+    created_at: row.created_at, updated_at: row.updated_at, tools: null, plan_rev: null });
+
+  /** GET /api/conversations/:id 的返回:并进 conversation.progress 与那一条进度消息(放在建卡消息之后)。 */
+  function decorateDetail(detail) {
+    const id = detail?.conversation?.id;
+    const { progress, row } = sync(id);
+    if (!progress) return { ...detail, conversation: { ...detail.conversation, progress: null } };
+    const { goal_status, ...pub } = progress;
+    const msgs = detail.messages.filter((m) => m.kind !== "progress");
+    const at = msgs.findIndex((m) => m.id === Number(row.after_message_id));
+    msgs.splice(at < 0 ? msgs.length : at + 1, 0, messageOf(id, row));
+    return { ...detail, conversation: { ...detail.conversation, progress: pub }, messages: msgs };
+  }
+
+  // ── 子卡变化 → 推 conversation.changed。同一对话 coalesceMs 内只推一次(首个变化起计时,窗口内的并进这一次);
+  //    签名与上次推的相同(心跳、无关字段)就不推。lastSent 只在内存:重启后第一次变化照推一次,不会丢。
+  const timers = new Map(), lastSent = new Map();
+  const parentStmt = db.prepare("SELECT parent_id FROM tasks WHERE id=?");
+  const appliedStmt = db.prepare("SELECT id, goal_id FROM conversations WHERE goal_id IS NOT NULL");
+  function convsFor(ids) {
+    const byGoal = new Map(appliedStmt.all().map((r) => [Number(r.goal_id), Number(r.id)]));
+    if (!byGoal.size) return [];
+    if (ids == null) return [...byGoal.values()];
+    const out = new Set();
+    for (const raw of ids) {
+      let cur = Math.abs(Number(raw)), hops = 0;
+      while (Number.isSafeInteger(cur) && cur > 0 && hops++ < 32) {
+        if (byGoal.has(cur)) { out.add(byGoal.get(cur)); break; }
+        cur = Number(parentStmt.get(cur)?.parent_id ?? 0);
+      }
+    }
+    return [...out];
+  }
+  function flush(convId) {
+    timers.delete(convId);
+    try {
+      const { sig } = sync(convId);
+      if (sig == null || lastSent.get(convId) === sig) return;
+      lastSent.set(convId, sig);
+      emit("conversation.changed", { id: convId });
+    } catch (e) { console.warn(`对话 #${convId} 的进度刷新失败(${String(e?.message || e).slice(0, 160)})`); }
+  }
+  function schedule(convId) {
+    if (timers.has(convId)) return;
+    const h = setTimeout(() => flush(convId), coalesceMs); h.unref?.(); timers.set(convId, h);
+  }
+  /** 由 server 的 emit 调用。只看 task.* / goal.*;conversation.* 不看(自己推的,免得绕圈)。 */
+  function notify(type, data = {}) {
+    const t = String(type);
+    if (!t.startsWith("task.") && !t.startsWith("goal.")) return;
+    try {
+      const ids = [data.id, ...(Array.isArray(data.ids) ? data.ids : []), ...(Array.isArray(data.made) ? data.made : [])]
+        .filter((v) => Number.isFinite(Number(v)) && Number(v) !== 0);
+      for (const c of convsFor(ids.length ? ids : null)) schedule(c);
+    } catch (e) { console.warn(`进度通知失败(${String(e?.message || e).slice(0, 160)})`); }
+  }
+  /** 启动时:每个已建卡对话按库重算一次(只写库,不推;此时还没有订阅者)。 */
+  function syncAll() {
+    for (const r of appliedStmt.all()) { try { sync(r.id); } catch (e) { console.warn(`对话 #${r.id} 的进度重算失败(${String(e?.message || e).slice(0, 160)})`); } }
+  }
+  function stop() { for (const t of timers.values()) { try { clearTimeout(t); } catch {} } timers.clear(); }
+
+  return { history, taskFields, progressOf, progressText, sync, syncAll, decorateDetail, notify, stop, refresh };
+}
