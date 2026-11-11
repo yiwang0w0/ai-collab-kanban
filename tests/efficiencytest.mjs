@@ -137,6 +137,20 @@ test("本周对上周:各个数按口径算出;未知列进 unknown;主句", (t)
   assert.deepEqual(r.groups, []);
 });
 
+test("主句时长措辞:不到 1 分钟 / 整分钟(向下取整)/ 一位小数小时;面板与 board.py 都只读 headline", () => {
+  assert.equal(E.aiSpan(0), " 0 分钟");
+  assert.equal(E.aiSpan(59999), "不到 1 分钟");
+  assert.equal(E.aiSpan(60000), " 1 分钟");
+  assert.equal(E.aiSpan(53 * 60000 + 59000), " 53 分钟");
+  assert.equal(E.aiSpan(H - 1), " 59 分钟", "不会写出 60 分钟");
+  assert.equal(E.aiSpan(H), " 1.0 小时");
+  assert.equal(E.aiSpan(10.26 * H), " 10.3 小时");
+  const panel = readFileSync(join(ROOT, "core", "panel.html"), "utf8");
+  assert.ok(!/AI 干了/.test(panel), "面板不另拼主句里的 AI 时长");
+  const py = readFileSync(join(ROOT, "cli", "board.py"), "utf8");
+  assert.ok(py.includes('print(d["headline"])') && !/AI 干了/.test(py), "board.py 原样打印 headline");
+});
+
 test("分解:按线、按运行时、按天、按周", (t) => {
   const { eff } = fixture(t);
   const line = eff.compute({ by: "line" }).groups;
@@ -165,7 +179,7 @@ test("空区间:done=0、比率为 null 并列进 unknown;账本缺失 → 模�
   for (const k of ["first_pass_rate", "auto_accept_rate", "lead_ms_median", "cycle_ms_median", "parallel_avg", "model_ms", "cost_usd", "stalled"])
     assert.ok(n[k] === null && n.unknown.includes(k), k);
   nullsListed(n);
-  assert.equal(r.headline, "本期完成 0 张 · 打回 0 次 · AI 干了 0.0 小时 · 你操作 0 次", "平均并行未知 → 那一段省略");
+  assert.equal(r.headline, "本期完成 0 张 · 打回 0 次 · AI 干了 0 分钟 · 你操作 0 次", "平均并行未知 → 那一段省略");
   assert.equal(r.daily.length, 7);
   const w = eff.compute();
   assert.deepEqual([w.now.model_ms, w.now.cost_usd], [null, null], "没有账本 = 未知,不是 0");

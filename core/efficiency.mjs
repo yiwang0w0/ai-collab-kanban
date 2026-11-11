@@ -20,6 +20,15 @@
 import { entryOf } from "./flow.mjs";
 import { parseTime } from "./usage.mjs";
 
+/** 主句里的时长措辞(面板与 board.py 都原样显示 headline,不另算):0 → 0 分钟;
+ *  不到 1 分钟 → 不到 1 分钟;不到 1 小时 → 整分钟(向下取整,不会写出「60 分钟」);其余 → 小时一位小数。 */
+export function aiSpan(ms) {
+  if (ms <= 0) return " 0 分钟";
+  if (ms < 60000) return "不到 1 分钟";
+  if (ms < 3600000) return ` ${Math.floor(ms / 60000)} 分钟`;
+  return ` ${(ms / 3600000).toFixed(1)} 小时`;
+}
+
 export const BY = ["day", "week", "line", "runtime"];
 const METRIC_KEYS = ["done", "lead_ms_median", "cycle_ms_median", "handed_back", "stalled", "ai_work_ms", "model_ms",
   "wait_human_ms_total", "wait_human_ms_median", "human_actions", "first_pass_rate", "auto_accept_rate",
@@ -275,7 +284,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
 
   function headline(label, m) {
     const parts = [`${label}完成 ${m.done} 张`, `打回 ${m.handed_back} 次`];
-    if (m.ai_work_ms !== null) parts.push(`AI 干了 ${(m.ai_work_ms / 3600000).toFixed(1)} 小时`);
+    if (m.ai_work_ms !== null) parts.push(`AI 干了${aiSpan(m.ai_work_ms)}`);
     parts.push(`你操作 ${m.human_actions} 次`);
     if (m.parallel_avg !== null) parts.push(`平均同时 ${m.parallel_avg.toFixed(1)} 条线在跑`);
     return parts.join(" · ");
