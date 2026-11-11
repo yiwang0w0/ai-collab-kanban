@@ -398,6 +398,9 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     return db.prepare("INSERT OR IGNORE INTO task_run_heartbeats (run_id, task_id, at) VALUES (?,?,?)")
       .run(String(runId), Number(taskId), clock()).changes > 0;
   }
+  /** 这一轮第一次执行者心跳的时刻(ISO);没有 = null。侧栏「启动」一步取它(外部执行者自报)。 */
+  const heartbeatStartedAt = (runId) => runId == null || runId === "" ? null :
+    iso(db.prepare("SELECT at FROM task_run_heartbeats WHERE run_id=?").get(String(runId))?.at ?? null);
   const heartbeatSeen = (runId) => runId != null && runId !== "" &&
     !!db.prepare("SELECT 1 FROM task_run_heartbeats WHERE run_id=?").get(String(runId));
 
@@ -416,6 +419,6 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     return h;
   }
 
-  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, watch,
+  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, heartbeatStartedAt, watch,
            checkNote: (v) => checkNote(v, bad) };
 }

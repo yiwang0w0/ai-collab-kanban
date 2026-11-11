@@ -189,6 +189,9 @@ test("发码、兑换、重放 410、未知码 404、撤销、线绑定、四态
       try { assert.deepEqual(ro.prepare("SELECT run_id, task_id FROM task_run_heartbeats").all().map((r) => ({ ...r })), [{ run_id: run, task_id: mine.id }]); }
       finally { ro.close(); }
     }
+    // 任务对象带「对方自报的启动时刻」(侧栏五步条「启动」与首页「在做 · 对方自报」用);别的卡为 null
+    assert.ok(!Number.isNaN(Date.parse(t.self_reported_started_at)), "执行者心跳过 → 有自报启动时刻");
+    assert.equal((await B.api("GET", `/api/tasks/${other.id}`, B.operator)).body.task.self_reported_started_at, null);
     await B.api("POST", `/api/tasks/${mine.id}/heartbeat`, zt, { run_id: run, note: "改第三章" });
     t = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
     assert.equal(t.live_note, "改第三章", "下一条覆盖上一条");

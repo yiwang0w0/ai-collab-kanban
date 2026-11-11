@@ -2114,7 +2114,9 @@ function flowPhrase(item, lineName = (l) => l) {
     const ask = { review: "待你验收", confirm: "待你选择方案", decision: "待你决定" };
     return Object.hasOwn(ask, item.waiting_for) ? { text: ask[item.waiting_for], need: true } : { text: "等待中", need: false };
   }
-  if (item.status === "in_progress") return { text: who ? who + (item.step >= 3 ? " 在做" : " 已领取") : "执行中", need: false };
+  // 外部执行者「在做」的依据是它领卡后的心跳(对方自报,看板没观察到进程):措辞写明(合同 B 裁定)
+  const doing = item.started_via === "self_report" ? " 在做 · 对方自报" : " 在做";
+  if (item.status === "in_progress") return { text: who ? who + (item.step >= 3 ? doing : " 已领取") : "执行中", need: false };
   if (item.status === "not_started") return flowNeed(item) ? { text: "待你放行", need: true } : { text: flowInt(item.handed_back) ? "打回后排队" : "等领取", need: false };
   return { text: "状态待核实", need: false };
 }
@@ -6113,9 +6115,11 @@ function homeLastFaultTip(f) {
 function homeStep(t, { autoReview = false, remoteName = null } = {}) {
   if (t.status === "in_progress") {
     const rt = HOME_RUNTIME[t.last_runtime] ? HOME_RUNTIME[t.last_runtime] + " " : "";
-    // 领取、心跳和启动许可都不能证明模型已开工；只采用本轮绑定的观察。
+    // 受管线:领取、心跳和启动许可都不能证明模型已开工；只采用本轮绑定的观察。
+    // 外部执行者(看板不起它的进程):领取后心跳过 = 已启动,措辞标明是对方自报(合同 B 裁定;服务端只对执行者给 self_reported_started_at)。
     const trace = t.execution_trace?.run_id === t.run_id ? t.execution_trace : null;
-    const stage = trace?.process_state === "not_started" ? "已领取 · 进程未启动"
+    const selfStarted = !!t.self_reported_started_at && trace?.process_state !== "observed";
+    const stage = selfStarted ? "在做 · 对方自报" : trace?.process_state === "not_started" ? "已领取 · 进程未启动"
       : trace?.work_state === "activity_observed" ? "已领取 · 有输出记录"
       : trace?.process_state === "observed" ? "进程已启动 · 开工待核实"
       : trace?.launch_requested_at ? "已请求启动 · 开工待核实" : "已领取 · 开工待核实";
@@ -7297,7 +7301,10 @@ function sideSteps(t, trace){
   const steps = [];
   steps.push(["放行", t.released ? (at(trace.released_at) || "已放行") : "尚未放行", t.released ? "done" : t.status === "not_started" ? "now" : "todo"]);
   steps.push(["领取", trace.claimed_at ? at(trace.claimed_at) : t.run_id ? "待核实" : "未领取", trace.claimed_at ? "done" : t.run_id ? "unknown" : "todo"]);
-  steps.push(["启动", trace.process_state === "observed" ? (at(trace.process_started_at) || "已启动") : trace.process_state === "not_started" ? "未启动" : t.run_id ? "待核实" : "未到",
+  const selfStarted = trace.process_state !== "observed" && t.status === "in_progress" && !!t.self_reported_started_at;
+  if (selfStarted)   // 外部执行者:时间取这一轮第一次心跳;看板没有观察到进程,title 写明
+    steps.push(["启动", at(t.self_reported_started_at) || "对方自报", "done", "外部执行者自报，看板没有观察到进程"]);
+  else steps.push(["启动", trace.process_state === "observed" ? (at(trace.process_started_at) || "已启动") : trace.process_state === "not_started" ? "未启动" : t.run_id ? "待核实" : "未到",
     trace.process_state === "observed" ? "done" : trace.process_state === "not_started" ? "warn" : t.run_id ? "unknown" : "todo"]);
   steps.push(["回传", t.result ? (at(trace.ended_at) || "已回传") : trace.ended_at ? "结果待核实" : "未到", t.result ? "done" : trace.ended_at ? "unknown" : "todo"]);
   const human = t.status === "waiting" && ["review", "confirm", "decision"].includes(t.waiting_for);
@@ -7306,8 +7313,9 @@ function sideSteps(t, trace){
     t.status === "done" ? "done" : human ? "now" : "todo"]);
   const ol = homeEl("ol", undefined, "steps");
   ol.title = "派发与领取的进度;灰色「待核实」表示没有本轮记录,不等于没做";
-  for (const [name, value, state] of steps) {
+  for (const [name, value, state, tip] of steps) {
     const li = homeEl("li", undefined, "step " + state);
+    if (tip) li.title = tip;
     li.append(homeEl("span", undefined, "st-dot"), homeEl("span", name, "st-name"), homeEl("span", value, "st-val"));
     ol.append(li);
   }

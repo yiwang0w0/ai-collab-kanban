@@ -136,8 +136,11 @@ test("外部执行者:领取之后有过心跳 = 已启动;受管线仍只认 pr
   assert.equal(connect.markHeartbeat(ext, c.run_id), true, "本轮第一次心跳");
   assert.equal(connect.markHeartbeat(ext, c.run_id), false, "第二次不再算第一次");
   assert.equal(item(ext).step, 3, "外部执行者领取后心跳过 = 已启动");
+  assert.equal(item(ext).started_via, "self_report", "依据是对方自报(面板写「在做 · 对方自报」)");
+  assert.ok(!Number.isNaN(Date.parse(connect.heartbeatStartedAt(c.run_id))), "第一次心跳的时刻(侧栏「启动」取它)");
   connect.markHeartbeat(man, m.run_id);
   assert.equal(item(man).step, 2, "受管线只认 process_started");
+  assert.equal(item(man).started_via, null);
   store.report(db, { id: ext, worker: "zc", runId: c.run_id, outcome: "done", evidence: "好了" });
   store.resolve(db, { id: ext, verdict: "reject", note: "再改", resolvedBy: "human", expectedVersion: version(db, ext) });
   claim(ext, "zc", "zcode");
@@ -321,7 +324,7 @@ test("建卡对话:progress、唯一的进度消息原位更新、2 秒合并推
     let p = d.conversation.progress;
     assert.deepEqual([p.goal_id, p.total, p.done], [applied.body.goal_id, 4, 0]);
     assert.deepEqual(p.items.map((i) => [i.id, i.n, i.step, i.released]), [[ids[0], 1, 1, true], [ids[1], 2, 1, true], [ids[2], 3, 0, false], [ids[3], 4, 1, true]]);
-    for (const i of p.items) assert.deepEqual(Object.keys(i).sort(), ["handed_back", "id", "line", "live_note", "live_note_at", "n", "released", "runtime", "status", "step", "subject", "updated_at", "waiting_for", "worker"]);
+    for (const i of p.items) assert.deepEqual(Object.keys(i).sort(), ["handed_back", "id", "line", "live_note", "live_note_at", "n", "released", "runtime", "started_via", "status", "step", "subject", "updated_at", "waiting_for", "worker"]);
     assert.ok(p.items.every((i) => i.live_note === null && i.live_note_at === null), "没人报进度时 live_note 为 null");
     const progressMsgs = (dd) => dd.messages.filter((m) => m.kind === "progress");
     let pm = progressMsgs(d);

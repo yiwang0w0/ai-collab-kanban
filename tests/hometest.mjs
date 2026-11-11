@@ -85,6 +85,10 @@ test("侧栏次按钮去哪、受阻原因：心跳中断去执行线，进程�
   const cold = M.homeStep({ ...run, hb: "fresh", execution_trace: { run_id: "r", process_state: "not_started" } });
   assert.deepEqual([cold.next, cold.go], ["检查启动回执", "receipt"]);
   assert.equal(M.homeStep({ ...run, hb: "fresh" }).go, undefined, "正常在跑的卡没有次按钮");
+  // 「已启动」口径(合同 B 裁定):外部执行者领取后心跳过 = 在做,写明对方自报;受管线不变(心跳不能证明开工)
+  assert.match(M.homeStep({ ...run, hb: "fresh", self_reported_started_at: "2026-11-11T00:00:00Z" }).state, /在做 · 对方自报$/);
+  assert.match(M.homeStep({ ...run, hb: "fresh" }).state, /开工待核实$/, "受管线只有心跳 = 仍待核实");
+  assert.match(M.homeStep({ ...run, hb: "fresh", self_reported_started_at: "x", execution_trace: { run_id: "r", process_state: "observed" } }).state, /进程已启动/, "观察到进程时以观察为准");
   const stuck = M.homeStep({ status: "waiting", waiting_for: "rearm",
     progress_blockers: [{ code: "NO_NEW_CHILD_RESULT", message: "未观察到上次审阅之后的新子任务结果", next_action: "核对审阅记录及子任务结果" }] });
   assert.deepEqual([stuck.lane, stuck.state, stuck.why, stuck.next], ["mine", "重审受阻", "未观察到上次审阅之后的新子任务结果", "核对审阅记录及子任务结果"]);

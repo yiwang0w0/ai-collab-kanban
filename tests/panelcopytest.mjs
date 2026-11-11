@@ -1005,6 +1005,8 @@ test("流转条：当前状态短语与「已打回 n 次」", () => {
   assert.deepEqual(p({ status: "in_progress", step: 3, runtime: "zcode", line: "a" }), { text: "Zcode 在做", need: false });
   assert.deepEqual(p({ status: "in_progress", step: 2, worker: "w-1" }), { text: "w-1 已领取", need: false });
   assert.deepEqual(p({ status: "in_progress", step: 3, line: "a" }), { text: "线a 在做", need: false });
+  assert.deepEqual(p({ status: "in_progress", step: 3, worker: "zcode", started_via: "self_report" }), { text: "zcode 在做 · 对方自报", need: false }, "外部执行者:措辞标明证据是对方自报");
+  assert.deepEqual(p({ status: "in_progress", step: 3, line: "a", started_via: "process" }), { text: "线a 在做", need: false });
   assert.deepEqual(p({ status: "waiting", waiting_for: "review", step: 4 }), { text: "待你验收", need: true });
   assert.deepEqual(p({ status: "waiting", waiting_for: "decision" }), { text: "待你决定", need: true });
   assert.deepEqual(p({ status: "waiting", waiting_for: "dep" }), { text: "等待中", need: false });
@@ -1178,4 +1180,7 @@ test("接真接口后的收口:live_note 只改那一处、登记确认框、刚
   assert.ok(reg.indexOf("confirm(deskRegisterConfirm(") < reg.indexOf("await send("), "先确认再发");
   assert.ok(reg.includes("s.line = deskLineRef(v.line, lineLabel)") && reg.includes("s.start_blocked = v.start_blocked"));
   assert.ok(source.includes("aiNote.textContent = aiIssueError(r.status, v);"), "发码错误码给人话");
+  // 侧栏五步条「启动」:外部执行者取第一次心跳,title 写明看板没有观察到进程
+  const ss = source.slice(source.indexOf("function sideSteps("), source.indexOf("function sideRelationshipBox("));
+  assert.ok(ss.includes('steps.push(["启动", at(t.self_reported_started_at) || "对方自报", "done", "外部执行者自报，看板没有观察到进程"]);') && ss.includes("if (tip) li.title = tip;"));
 });

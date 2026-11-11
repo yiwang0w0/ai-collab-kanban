@@ -251,8 +251,10 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
     const nOf = new Map(Array.isArray(ids) ? ids.map((id, i) => [Number(id), enabled[i]?.n ?? i + 1]) : []);
     refresh();
     const items = kidsStmt.all(goalId).map((t) => {
-      const started = t.status === "in_progress" && t.run_id
-        ? !!startedStmt.get(t.id, String(t.run_id)) || !!heartbeatStarted(t) : false;
+      // started_via:看板观察到的进程启动 = "process";外部执行者领取后心跳过(对方自报,看板没观察到进程)= "self_report"
+      const observed = t.status === "in_progress" && t.run_id ? !!startedStmt.get(t.id, String(t.run_id)) : false;
+      const selfReported = !observed && t.status === "in_progress" && t.run_id ? !!heartbeatStarted(t) : false;
+      const started = observed || selfReported;
       let note = { live_note: null, live_note_at: null };
       try { const n = liveNote(t) || {}; note = { live_note: n.live_note ?? null, live_note_at: n.live_note_at ?? null }; } catch {}
       let worker = null, runtime = null;
@@ -265,7 +267,7 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
       const wk = worker == null ? null : actorLabel(worker, actorKindOf(worker, "claim", cx), cx.labels);
       return { id: Number(t.id), n: nOf.get(Number(t.id)) ?? null, subject: cut(t.subject, 80), line: t.line ?? null,
                status: t.status, waiting_for: t.status === "waiting" ? (t.waiting_for ?? null) : null, released: !!t.released,
-               step: stepOf(t, started), worker: wk, runtime: runtime ? String(runtime) : null,
+               step: stepOf(t, started), started_via: observed ? "process" : selfReported ? "self_report" : null, worker: wk, runtime: runtime ? String(runtime) : null,
                handed_back: fields.get(Number(t.id))?.handed_back ?? 0, ...note, updated_at: t.updated_at };
     });
     const goal = goalStmt.get(goalId);
