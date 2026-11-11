@@ -461,7 +461,9 @@ approvals.migrate(db);
 conversations.migrate(db);
 // 合同 B「流转」:卡历史、任务派生字段、建卡对话的进度(core/flow.mjs)。线名与显示名在读时取(配置可热改)。
 const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVISED || [], labels: () => LINE_LABEL || {},
-                          emit: (type, data) => emit(type, data) });
+                          emit: (type, data) => emit(type, data),
+                          // 外部执行者的「已启动」= 这一轮领取后有过心跳(合同 B 订正;受管线仍只认 process_started)。
+                          heartbeatStarted: (t) => coord.isExecutor(db, t.worker) && connect.heartbeatSeen(t.run_id) });
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
 { const cut = conversations.recoverInterrupted(db);
   if (cut.length) console.log(`对话 ${cut.map((id) => "#" + id).join(" ")} 的上一轮在看板重启时被中断,已标为失败`); }
@@ -4476,7 +4478,11 @@ const server = http.createServer(async (req, res) => {
         }
         const note = b.note === undefined ? undefined : connect.checkNote(b.note);   // 先校验:不合规就不续租
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: lease });
-        if (boardRole === "executor") coord.touch(db, req.executor.id);
+        if (boardRole === "executor") {
+          coord.touch(db, req.executor.id);
+          // 外部执行者这一轮第一次心跳 = 「已启动」(合同 B 订正);推一个 task.* 让流转条与首页跟着亮。
+          if (connect.markHeartbeat(id, b.run_id)) emit("task.started", { id });
+        }
         // note = 临时进度(live_note):覆盖上一条,不进历史;只有它变时才推一个事件给面板。
         if (note !== undefined) { connect.setNote(id, b.run_id, note); emit("task.live_note", { id }); }
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side

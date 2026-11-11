@@ -106,6 +106,10 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     db.exec(`CREATE TABLE IF NOT EXISTS task_live_notes (
       task_id INTEGER PRIMARY KEY, run_id TEXT, note TEXT NOT NULL, at INTEGER NOT NULL
     )`);
+    // 「已启动」(合同 B 订正:外部执行者 = 领取之后有过一次心跳):每个 run 第一次执行者心跳记一行。不进 task_events(心跳不进历史)。
+    db.exec(`CREATE TABLE IF NOT EXISTS task_run_heartbeats (
+      run_id TEXT PRIMARY KEY, task_id INTEGER NOT NULL, at INTEGER NOT NULL
+    )`);
     // 「最后一次回报」按执行者查 task_events:给 actor 建索引,列表不必全表扫。
     db.exec("CREATE INDEX IF NOT EXISTS ix_task_events_actor_kind ON task_events(actor, kind, id)");
   }
@@ -291,6 +295,15 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     return { live_note: live ? n.note : null, live_note_at: live ? iso(n.at) : null };
   }
 
+  // ── 外部执行者的「已启动」:这个 run 第一次心跳返回 true(之后 false);run 换了自然重新算。
+  function markHeartbeat(taskId, runId) {
+    if (runId == null || runId === "") return false;
+    return db.prepare("INSERT OR IGNORE INTO task_run_heartbeats (run_id, task_id, at) VALUES (?,?,?)")
+      .run(String(runId), Number(taskId), clock()).changes > 0;
+  }
+  const heartbeatSeen = (runId) => runId != null && runId !== "" &&
+    !!db.prepare("SELECT 1 FROM task_run_heartbeats WHERE run_id=?").get(String(runId));
+
   // ── 状态变化(在线 ↔ 离线、working ↔ stalled)没有请求可挂,定时比一次,变了发 executor.changed。
   function watch(everyMs = 10000) {
     let last = new Map();
@@ -306,6 +319,6 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     return h;
   }
 
-  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, setNote, clearNote, liveNote, watch,
+  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, setNote, clearNote, liveNote, markHeartbeat, heartbeatSeen, watch,
            checkNote: (v) => checkNote(v, bad) };
 }

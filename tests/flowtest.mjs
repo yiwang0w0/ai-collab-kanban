@@ -109,6 +109,41 @@ test("一张卡走完全程:历史条目与 step、actor_kind、打回原因、h
   assert.equal(flow.progressOf(999), null);
 });
 
+// 外部执行者(凭码/令牌接入)的卡:connect 的表注入 flow,与 server.mjs 的接线同形。
+async function extSetup(t) {
+  const db = new DatabaseSync(":memory:"); store.migrate(db); conversations.migrate(db); t.after(() => db.close());
+  const coord = require(join(ROOT, "core", "coord.js")); coord.migrate(db);
+  const { openConnect } = await import(pathToFileURL(join(ROOT, "core", "connect.mjs")).href);
+  const connect = openConnect({ db, coord, store }); connect.migrate();
+  const flow = F.createFlow({ db, lines: () => ["alpha"], isExecutor: coord.isExecutor, coalesceMs: 50,
+    heartbeatStarted: (x) => coord.isExecutor(db, x.worker) && connect.heartbeatSeen(x.run_id), liveNote: (x) => connect.liveNote(x) });
+  t.after(() => flow.stop());
+  coord.register(db, { id: "zc", name: "zc", kind: "external" });
+  const goal = store.add(db, { subject: "目标", kind: "goal", released: 1, actor: "operator" });
+  const ext = store.add(db, { subject: "外部卡", parentId: goal, line: "zc", released: 1, actor: "operator" });
+  const man = store.add(db, { subject: "受管卡", parentId: goal, line: "alpha", released: 1, actor: "operator" });
+  const conv = conversations.create(db, { message: "目标", model: "m", effort: "high" }).conversation.id;
+  conversations.markApplied(db, conv, 1, { by: "local", goalId: goal, taskIds: [ext, man] });
+  const item = (id) => flow.progressOf(conv).items.find((i) => i.id === id);
+  const claim = (id, worker, runtime) => store.claimById(db, { id, worker, runtime, agentInstanceId: randomUUID(), expectedVersion: version(db, id) }).task;
+  return { db, connect, flow, goal, ext, man, conv, item, claim };
+}
+
+test("外部执行者:领取之后有过心跳 = 已启动;受管线仍只认 process_started", async (t) => {
+  const { db, connect, ext, man, item, claim } = await extSetup(t);
+  const c = claim(ext, "zc", "zcode"), m = claim(man, "alpha", "claude");
+  assert.deepEqual([item(ext).step, item(man).step], [2, 2], "刚领取:都还是 2");
+  assert.equal(connect.markHeartbeat(ext, c.run_id), true, "本轮第一次心跳");
+  assert.equal(connect.markHeartbeat(ext, c.run_id), false, "第二次不再算第一次");
+  assert.equal(item(ext).step, 3, "外部执行者领取后心跳过 = 已启动");
+  connect.markHeartbeat(man, m.run_id);
+  assert.equal(item(man).step, 2, "受管线只认 process_started");
+  store.report(db, { id: ext, worker: "zc", runId: c.run_id, outcome: "done", evidence: "好了" });
+  store.resolve(db, { id: ext, verdict: "reject", note: "再改", resolvedBy: "human", expectedVersion: version(db, ext) });
+  claim(ext, "zc", "zcode");
+  assert.equal(item(ext).step, 2, "新一轮领取:还没心跳");
+});
+
 test("actor_kind 判定表、摘要清洗", () => {
   const ctx = { lines: ["alpha"], isExecutor: (a) => a === "zc-1" };
   const k = (a, kind = "resolve") => F.actorKindOf(a, kind, ctx);

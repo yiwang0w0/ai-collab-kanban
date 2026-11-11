@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
+import { DatabaseSync } from "node:sqlite";
 import { isLoopback, normalizeCode, createLimiter, openConnect, checkNote, CODE_TTL_MS } from "../core/connect.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -123,6 +124,11 @@ test("发码、兑换、重放 410、未知码 404、撤销、线绑定、四态
     assert.equal((await B.api("POST", `/api/tasks/${mine.id}/heartbeat`, zt, { run_id: run, note: "正在读第二章" })).status, 200);
     let t = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
     assert.equal(t.live_note, "正在读第二章"); assert.ok(t.live_note_at);
+    { // 外部执行者这一轮心跳过 = 「已启动」(流转 step 3 的依据):看板记下了这个 run
+      const ro = new DatabaseSync(join(B.dir, "board.db"), { readOnly: true });
+      try { assert.deepEqual(ro.prepare("SELECT run_id, task_id FROM task_run_heartbeats").all().map((r) => ({ ...r })), [{ run_id: run, task_id: mine.id }]); }
+      finally { ro.close(); }
+    }
     await B.api("POST", `/api/tasks/${mine.id}/heartbeat`, zt, { run_id: run, note: "改第三章" });
     t = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
     assert.equal(t.live_note, "改第三章", "下一条覆盖上一条");

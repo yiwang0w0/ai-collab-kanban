@@ -21,7 +21,8 @@
 // ── progress.step(子卡当前状态,与面板侧栏五步条 sideSteps 同义)───────────────────
 //   5 完成        status=done                                 (sideSteps 第 5 步「人工验收」done)
 //   4 已回传      status=waiting(待验收/待决定/等子卡…)       (第 4 步「回传」done,有 result)
-//   3 已启动      status=in_progress 且当前 run 有 process_started (第 3 步「启动」observed)
+//   3 已启动      status=in_progress 且当前 run 有 process_started (第 3 步「启动」observed);
+//                 外部执行者(凭码/令牌接入,不发 process_started)= 当前 run 领取之后有过一次心跳(由 server 注入 heartbeatStarted)
 //   2 已领取      status=in_progress,尚无本轮启动记录          (第 2 步「领取」done)
 //   1 等领取      status=not_started 且已放行                  (第 1 步「放行」done)
 //   0 未放行      status=not_started 且未放行
@@ -148,7 +149,9 @@ export function stepOf(t, started) {
   return t.released ? 1 : 0;
 }
 
-export function createFlow({ db, isExecutor = () => false, lines = () => [], labels = () => ({}), emit = () => {}, coalesceMs = FLOW_COALESCE_MS } = {}) {
+// heartbeatStarted(t) → 外部执行者这一轮是否已心跳过(connect 的表)。由 server 注入,缺省不改行为。
+export function createFlow({ db, isExecutor = () => false, lines = () => [], labels = () => ({}), emit = () => {}, coalesceMs = FLOW_COALESCE_MS,
+                             heartbeatStarted = () => false } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS conversation_progress (
     conversation_id INTEGER PRIMARY KEY, after_message_id INTEGER, text TEXT NOT NULL, sig TEXT NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
@@ -217,7 +220,8 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
     const nOf = new Map(Array.isArray(ids) ? ids.map((id, i) => [Number(id), enabled[i]?.n ?? i + 1]) : []);
     refresh();
     const items = kidsStmt.all(goalId).map((t) => {
-      const started = t.status === "in_progress" && t.run_id ? !!startedStmt.get(t.id, String(t.run_id)) : false;
+      const started = t.status === "in_progress" && t.run_id
+        ? !!startedStmt.get(t.id, String(t.run_id)) || !!heartbeatStarted(t) : false;
       let worker = null, runtime = null;
       if (t.status === "in_progress") { worker = t.worker; runtime = (t.run_id && runtimeOf(t.run_id)) || t.last_runtime || null; }
       else if (t.status !== "not_started") {
