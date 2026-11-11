@@ -1392,3 +1392,7 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - flowtest 5/0(新增逐类 20 例,旧实现下 15 例红,其余 5 例为回归保护);没有调用模型。阻塞：无。
 - 2026-11-11 连接器安全复审修复(claude/connect,F1–F9/F13/P3):绑线执行者只领只看本线(读接口白名单,别的线 404,别人的 live_note 为空);撤销断 SSE 并放锁;live_note 去重 + 每卡 5 秒节流 + 清洗;兑换取消锁定改错码延迟 200ms/并发 20;码 10 位;建线推迟到兑换、待兑换 ≤5;令牌文件缺省移到 %LOCALAPPDATA%;远程摘要去掉凭码执行者;other 片段改 PowerShell 引号。
 - connecttest 9/0(12 处还原变异全红)、execmcptest 3/0、coordtest 25/0、approvaltest 20/0、selftest 402/0、fourchannel-store 7/0、servertest 228/0;没有调用模型。阻塞:面板侧 task.live_note 局部刷新属 UI 线。
+- 2026-11-11 公告板 v3 合同 C「效率」后端(claude/efficiency):新 `core/efficiency.mjs` 给 `GET /api/efficiency`(本周对上周或指定区间对紧邻等长区间;done/lead/cycle/返工/一次通过率/自动通过占比/人的操作与等待/AI 持卡时长/并行均值与峰值/卡住/模型耗时与费用;未知一律 null 并列进 unknown;by=day|week|line|runtime 分解;按事件水位 + 区间缓存),事件归类复用 core/flow.mjs;`board.py efficiency`;docs/效率口径.md。
+- efficiencytest 7/0(2000 卡 / 2 万事件:冷算约 135ms、热读约 1ms)、flowtest 4/0;没有调用模型。阻塞：无。
+- 2026-11-11 安全复审 P5 等(claude/efficiency):`by=day` 区间上限 92 天、`by=week` 上限 2 年(超出 400 并说明);卡表快照按数据签名缓存,换 from/to 不重读卡表、不重扫事件;`daily` 补齐区间内每一天(含还没到的日子);`groups` 里 key 为 null 的 label 一律「未指定」。flow.mjs 未动。
+- efficiencytest 9/0(新增 2 例 + 性能例补上限处最坏:by=day 92 段约 45ms、by=week 2 年约 97ms;带 2 万行账本约 0.15 / 0.2 秒;旧实现下 4 例红);没有调用模型。阻塞：无。
