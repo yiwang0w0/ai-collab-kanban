@@ -214,6 +214,21 @@ test("缓存:同一事件水位与区间直接回同一份;新事件 / 卡变化
   assert.ok(eff.compute().now.ai_work_ms > c.now.ai_work_ms, "本期还开着:进行中的时段随时间变长");
 });
 
+test("卡住:外部执行者以 卡心跳 与 执行者最后一次请求(lastSeen)较晚者为准", (t) => {
+  const { db, ids } = fixture(t);
+  db.prepare("UPDATE tasks SET worker=? WHERE id=?").run("ext-z", ids.S);     // S 的卡心跳停在 10:05(已超时)
+  let seen = null;
+  const eff = E.createEfficiency({ db, lines: () => ["alpha", "beta"], clock: () => NOW, openTtlMs: 1,
+                                   lastSeen: (w) => (w === "ext-z" ? seen : null) });
+  assert.equal(eff.compute().now.stalled, 1, "没有执行者请求记录 → 只看卡心跳 → 卡住");
+  seen = NOW - 60000;
+  db.prepare("UPDATE tasks SET updated_at=? WHERE id=?").run(iso(NOW - 1), ids.S);   // 换卡表签名,绕开缓存
+  assert.equal(eff.compute().now.stalled, 0, "执行者 1 分钟前还在请求(桥在轮询)→ 不算卡住");
+  seen = NOW - 30 * 60000;
+  db.prepare("UPDATE tasks SET updated_at=? WHERE id=?").run(iso(NOW - 2), ids.S);
+  assert.equal(eff.compute().now.stalled, 1, "执行者也 30 分钟没动静 → 卡住");
+});
+
 test("鉴权:只给操作员;其余 403;坏参数 400", (t) => {
   const { eff } = fixture(t);
   const q = (s) => new URLSearchParams(s);

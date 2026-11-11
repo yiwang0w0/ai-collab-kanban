@@ -301,6 +301,13 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
 
   /** 执行者绑定的线;用令牌直接登记的(没有码)不绑线,返回 null。 */
   function lineOf(executorId) { const r = row(executorId); return r?.connected_via === "code" ? r.line ?? null : null; }
+  /** 执行者最后一次带令牌请求的时刻(ms;connect 与 coord 两处记的较晚者),不是执行者 → null。效率的「卡住」用它。 */
+  function lastSeenMs(executorId) {
+    const k = coordRow(executorId);
+    if (!k) return null;
+    const c = row(executorId), coordSeen = Number(k.last_seen) || 0;      // coord_executors.last_seen 是毫秒整数
+    return Math.max(c?.last_seen_at ?? 0, Number.isFinite(coordSeen) ? coordSeen : 0) || null;
+  }
   /** 凭码接入的执行者(远程摘要据此去掉它们的明细)。 */
   const isCodeExecutor = (id) => row(id)?.connected_via === "code";
 
@@ -409,6 +416,6 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     return h;
   }
 
-  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, isCodeExecutor, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, watch,
+  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, watch,
            checkNote: (v) => checkNote(v, bad) };
 }

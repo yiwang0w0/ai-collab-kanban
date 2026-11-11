@@ -1073,7 +1073,7 @@ function settleUsage() {
 }
 // 合同 C「效率」:本期对上期的汇总(core/efficiency.mjs,只读;卡死判定沿用 COORD_STALE_MS)。
 const efficiency = createEfficiency({ db, ledger: usageLedger, lines: () => SUPERVISED || [], labels: () => LINE_LABEL || {},
-                                     isExecutor: coord.isExecutor, staleMs: () => COORD_STALE_MS });
+                                     isExecutor: coord.isExecutor, lastSeen: (w) => connect.lastSeenMs(w), staleMs: () => COORD_STALE_MS });
 const MAX_PARALLEL = Math.max(1, Number(CFG.max_parallel) || 3);
 const DEFAULT_AGENT = { ...CFG.default_agent };
 const DEFAULT_SET = { agents: [{ ...DEFAULT_AGENT }], rev: 0 };

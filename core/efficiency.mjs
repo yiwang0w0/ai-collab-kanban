@@ -90,6 +90,7 @@ export function overlap(spans) {
 }
 
 export function createEfficiency({ db, ledger = null, lines = () => [], labels = () => ({}), isExecutor = () => false,
+                                   lastSeen = () => null,
                                    staleMs = () => 20 * 60000, clock = Date.now, cacheSize = 32, openTtlMs = 30000 } = {}) {
   const parse = (s) => { try { return JSON.parse(s || "{}"); } catch { return {}; } };
 
@@ -126,7 +127,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
     return top;
   }
 
-  const tasksStmt = db.prepare("SELECT id, kind, parent_id, line, status, created_at, resolved_at, work_spans, attempts, heartbeat_at, last_runtime FROM tasks");
+  const tasksStmt = db.prepare("SELECT id, kind, parent_id, line, status, created_at, resolved_at, work_spans, attempts, heartbeat_at, last_runtime, worker FROM tasks");
   const parentsStmt = db.prepare("SELECT DISTINCT parent_id AS p FROM tasks WHERE parent_id IS NOT NULL");
   const runtimeStmt = db.prepare("SELECT task_id, runtime FROM task_runs ORDER BY started_at, rowid");
   const sigStmt = db.prepare("SELECT COUNT(*) AS n, COALESCE(MAX(updated_at),'') AS u FROM tasks");
@@ -151,7 +152,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
       const id = Number(t.id);
       return { id, goal: t.kind === "goal", parent: parents.has(id), line: t.line ?? null, status: t.status,
                created: ms(t.created_at), resolved: ms(t.resolved_at), spans, spanUnknown, attempts: Number(t.attempts) || 0,
-               heartbeat: t.heartbeat_at == null ? null : Number(t.heartbeat_at),
+               heartbeat: t.heartbeat_at == null ? null : Number(t.heartbeat_at), worker: t.worker ?? null,
                runtime: rt.get(id) || t.last_runtime || null };
     });
   }
@@ -165,6 +166,15 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
     const sum = (k) => g.some((x) => x[k] == null) ? null : g.reduce((n, x) => n + x[k], 0);
     const c = sum("cost_usd");
     return { model_ms: sum("duration_ms"), cost_usd: c == null ? null : Math.round(c * 1e6) / 1e6 };
+  }
+
+  // 卡住 = 执行中且「最近一次活着的迹象」超过 staleMs。迹象取 卡的心跳 与 持卡执行者最后一次请求(lastSeen,
+  // 外部执行者由 connect / coord 记)里较晚的那个 —— 与 GET /api/executors 的 stalled 同一口径;受管线没有 lastSeen,只看心跳。
+  function isStalled(t, now, stale) {
+    let seen = null;
+    if (t.worker) { const v = Number(lastSeen(t.worker)); if (Number.isFinite(v) && v > 0) seen = v; }
+    const beat = Math.max(t.heartbeat ?? 0, seen ?? 0) || null;
+    return beat === null || now - beat > stale;
   }
 
   /** 一组卡在 [a,b) 的 Metrics。 */
@@ -209,7 +219,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
       lead_ms_median: median(lead),
       cycle_ms_median: median(cycle),
       handed_back: handedBack,
-      stalled: open ? tasks.filter((t) => t.status === "in_progress" && (t.heartbeat === null || now - t.heartbeat > stale)).length : null,
+      stalled: open ? tasks.filter((t) => t.status === "in_progress" && isStalled(t, now, stale)).length : null,
       ai_work_ms: spansUnknown ? null : ov.total,
       model_ms: led.model_ms,
       wait_human_ms_total: wait.reduce((n, x) => n + x, 0),
