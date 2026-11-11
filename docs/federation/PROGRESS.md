@@ -1384,3 +1384,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - desksessionstest 4/0(合成夹具);没有调用模型。阻塞：无。
 - 2026-11-11 公告板 v3 合同 B「流转」后端(claude/flow):新 `core/flow.mjs` 给 `GET /api/tasks/:id/history`(人话条目 + step / actor_kind,打回带裁定原文摘要)、任务对象 `handed_back` / `last_actor` / `last_actor_kind`(事件表增量缓存)、建卡对话的 `conversation.progress` 与唯一一条原位更新的 `kind:"progress"` 消息(子卡变化 2 秒合并推 `conversation.changed`,重启按库重算);server.mjs 只接线,convtest 看建卡消息时略过进度消息。
 - flowtest 4/0(500 卡 / 5000 事件:热读 500 次约 1ms)、convtest 5/0、hometest 43/0、taskexecutionhttp 1/0;没有调用模型。阻塞：无。
+- 2026-11-11 面板第 1 波「流转」(claude/flow-ui):对话里已建卡的计划换成流转条(每张子卡一行:卡号/标题/线·执行器/五步点/状态短语/打回次数/live_note,顶上 d/n 细进度条,只有等你的行用强调色);SSE task.* 带卡号时对应行与首页卡标 4 秒「刚更新」;首页「正在执行」按目标归组;卡详情加默认折叠的「历史」(最近 20 条 + 显示全部,404 写暂无记录);卡面「已打回 n 次」与进行中的 live_note。字段缺失一律不显示。docs/style-guide.md §七 同步。
+- panelcopytest 37/0、hometest 43/0、panelsidetest 34/0、panelauth 11/0、panelcoordtest 9/0、tltest 1/0、progressdiagnostictest 7/0;渲染只在假数据(浏览器打桩)下看过,真数据联调留到整合。阻塞：无。
