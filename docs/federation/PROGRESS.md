@@ -1407,3 +1407,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-11 公告板 v3 第 3 波(claude/board-v3-w3):效率主句时长换单位(不到 1 分钟 / 整分钟 / 一位小数小时);进度消息「在做(自报)」;加线 hint 同一清洗;md 交接 board.py export-md / import-md / report-md(一律未放行、整份拒绝带行号、内容哈希去重);docs/接入说明.md;style-guide 两处订正。
 - 端到端走查缺陷并入:Codex 片段补 default_tools_approval_mode(只放行 fleet-board);流转条状态折行不压圆点、task.started 就地推进;本地会话不列看板 fork 的副本、线状态按 line_forked 写;卡历史执行者用显示名 + 空格、补「自报开始」。
 - 受影响测试全绿(mdhandofftest 8/0 等),全套 npm test 退出码 0(失败 0、无重跑);没有调用模型。阻塞:无。
+- 2026-11-11 进 main 前总复审修正(claude/premain-fix):md 导出结构行单行化、正文 # 与未闭合围栏转义、标题 # 往返、~~~ / ``` 分开计,导出改轻量遮蔽(只遮令牌样串、家目录写成 ~);已归档的同内容卡重新建、--goal 只收目标卡正整数;
+  执行者令牌目录进受管线禁读(SDK / Claude 座席 / 看板自起 CLI;Codex 座席照旧无路径禁读),desktop_lineage / desktop_forks 归 PROTECTED、扫描认常量路径;fork 副本清单只增不减;摘要清洗补 Bearer / 内网地址 / 口令值;绑线执行者读 export-md 回 403;文档 C1–C6。
+- 受影响测试全绿(mdhandofftest 13/0、flowtest 9/0、desksessionstest 8/0、connecttest 9/0、fourchannelhttp 9/0、servertest 229/0、prompt-selftest 88/0 等),每条修复做过还原变红核对;没有调用模型。阻塞:无。

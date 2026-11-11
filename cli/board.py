@@ -57,7 +57,7 @@
 
 md 交接(docs/接入说明.md「只会读写文件的 AI」;给只会读写文件的 AI 与代为提交的人):
   $P export-md <卡号|目标号> [--out 文件]    # 卡面 + 已有回报 / 裁定导出成 md;目标号 = 目标 + 全部直接子卡,一卡一节;
-                                             #   令牌、长 ID、私有路径、反引号里的命令已遮掉。不给 --out 打到标准输出
+                                             #   令牌样串已遮、家目录写成 ~,其余(代码块 / 命令 / URL)原样。不给 --out 打到标准输出
   $P import-md <文件> [--line 线] [--goal 目标号]   # md 队列文件批量挂卡,一律未放行(在面板放行);任何一节不合格 = 整份
                                              #   不导入并逐条给行号;同一节再导一次不重复建卡,回已存在的卡号
   $P report-md <卡号> <文件> --run <run_id> [--as 线] [--usage …]   # 把一份 md 当回报交付 = done <卡号> --file <文件>
@@ -547,7 +547,8 @@ def import_md_cmd():
             sys.exit(chr(10).join(lines))
         die(s, d)
     for c in d.get("created") or []:
-        print(f"已建 #{c['id']}(未放行):{vis(c['subject'])}  ← 第 {c['line_no']} 行")
+        again = f";同一内容的 #{c['replaces_archived']} 已归档,重新建了一张" if c.get("replaces_archived") else ""
+        print(f"已建 #{c['id']}(未放行{again}):{vis(c['subject'])}  ← 第 {c['line_no']} 行")
     for c in d.get("existing") or []:
         print(f"已存在 #{c['id']}(同一内容导入过,未重复建卡):{vis(c['subject'])}  ← 第 {c['line_no']} 行")
     print(f"— 新建 {len(d.get('created') or [])} 张 · 已存在 {len(d.get('existing') or [])} 张;新卡都未放行,核对后在面板放行")

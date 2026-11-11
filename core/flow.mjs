@@ -65,16 +65,54 @@ const TOKEN_RES = [
   /\b[0-9a-f]{12,}\b/gi,
 ];
 const mixedLong = (m) => [/[a-z]/, /[A-Z]/, /\d/].filter((r) => r.test(m)).length >= 2 ? "…" : m;
+// N11:认证头后的串(含全小写)、内网地址(10/8、172.16/12、192.168/16、100.64/10,可带端口)、「密码 / password / passwd / secret」后的值。不遮邮箱。
+const AUTH_HEADER_RE = /\b(Bearer|Basic)\s+[A-Za-z0-9._~+\/=-]{6,}/gi;
+const PRIVATE_IP_RE = new RegExp(String.raw`(?<![\d.])(?:10(?:\.\d{1,3}){3}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2}|192\.168(?:\.\d{1,3}){2}|` +
+  String.raw`100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])(?:\.\d{1,3}){2})(?::\d{1,5})?(?!\.?\d)`, "g");
+const SECRET_KV_RE = /(?<![A-Za-z])(密码|password|passwd|secret)(\s*[:=：]\s*|\s+)[^\s"'<>,，;；。]+/gi;
 
 /** 遮掉私有路径、令牌样串、长 ID / 哈希、反引号里的命令与 shell 提示行;不截断、不并空白。 */
 export function redactText(s) {
-  let t = String(s ?? "").replace(/`[^`]*`/g, "…");
+  let t = String(s ?? "").replace(/`[^`]*`/g, "…").replace(AUTH_HEADER_RE, "$1 …").replace(SECRET_KV_RE, "$1$2…");
   for (const re of PATH_RES) t = t.replace(re, "…");
   for (const re of TOKEN_RES) t = t.replace(re, "…");
+  t = t.replace(PRIVATE_IP_RE, "…");
   return t
     .replace(/(?<![A-Za-z0-9_+/=-])[A-Za-z0-9_+/=-]{20,}/g, mixedLong)
     .replace(/^\s*(?:\$|PS>|>)\s.*$/gm, "…")
     .replace(/(?:…\s*){2,}/g, "…");
+}
+
+// ── md 导出用的轻量遮蔽(redactLight,N3):导出是给别的 AI 当任务读的,命令、引用、代码块、URL、提交号、长标识符都要原样留下。
+//   只做两件事:令牌样串换成「…」;用户家目录前缀换成「~」。逐个匹配替换,不跨行、不吞整行、不合并省略号,换行原样。
+//   令牌前缀要求比 redactText 长(exe_/apr_/tok_/pat_ 后 ≥16 位、sk- 后 ≥20 位),免得 tok_count 这类标识符被当成令牌。
+const LIGHT_TOKEN_RES = [
+  AUTH_HEADER_RE,
+  /(?<![A-Za-z0-9_])github_pat_[A-Za-z0-9_]{16,}/g,
+  /(?<![A-Za-z0-9_])gh[pousr]_[A-Za-z0-9]{16,}/g,
+  /(?<![A-Za-z0-9_])(?:exe|apr|tok|pat)_[A-Za-z0-9_-]{16,}/g,
+  /(?<![A-Za-z0-9_])sk-(?:ant-|proj-)?[A-Za-z0-9_-]{20,}/g,
+  /(?<![A-Za-z0-9_])xox[abposr]-[A-Za-z0-9-]{10,}/g,
+  /(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Z0-9])/g,
+  /(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/g,
+];
+const HOME_RES = [
+  /(?<![A-Za-z0-9])[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s"'<>|:*?`]+/gi,
+  /(?<![A-Za-z0-9_.\-/])\/(?:mnt\/)?[a-z]\/Users\/[^/\s"'<>`]+/gi,
+  /(?<![A-Za-z0-9_.\-/:])\/(?:Users|home)\/[^/\s"'<>`]+/g,
+];
+const escRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+/** home = 本机家目录(缺省 os.homedir()):不在 Users / home 下的家目录也按原样换成 ~。 */
+export function redactLight(s, { home = null } = {}) {
+  let t = String(s ?? "");
+  for (const re of LIGHT_TOKEN_RES) t = t.replace(re, (m, p1) => (re === AUTH_HEADER_RE ? `${p1} …` : "…"));
+  if (home && String(home).length > 3) {
+    const parts = String(home).split(/[\\/]+/).filter(Boolean).map(escRe);
+    const lead = /^[\\/]/.test(String(home)) ? "[\\\\/]" : "";
+    t = t.replace(new RegExp(`(?<![A-Za-z0-9_])${lead}${parts.join("[\\\\/]+")}(?![A-Za-z0-9_.-])`, "gi"), "~");
+  }
+  for (const re of HOME_RES) t = t.replace(re, "~");
+  return t;
 }
 
 /** 给人看的短句:redactText 之后并空白、截断到 max 字。 */

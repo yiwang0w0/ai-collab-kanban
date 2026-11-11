@@ -475,14 +475,17 @@ test("登记成线:建线/重复 409/未知会话/大体量确认/解除/手写 
     assert.equal(r.body.start_blocked, null);
     assert.deepEqual([row[F.ids.a].line_forked, row[F.ids.a].line_forked_at], [false, null], "还没从会话起步");
     // 线第一次领卡时 fork 出一个会话副本(这里用另一个已有会话的 id 充当副本):清单默认不列副本,line_forked 变真
-    const fk = await B.api("POST", `/api/workers/${lineA}/forked`, B.operator, { session_id: F.ids.c });
+    const fk = await B.api("POST", `/api/workers/${lineA}/forked`, B.operator, { session_id: F.ids.d });
     assert.equal(fk.status, 200, fk.text);
     const after = Object.fromEntries((await B.api("GET", "/api/desktop-sessions?limit=200", B.operator)).body.sessions.map((s) => [s.id, s]));
-    assert.equal(after[F.ids.c], undefined, "看板自己 fork 出来的副本默认不列(与原会话同标题,会被再登记成第二条线)");
+    assert.equal(after[F.ids.d], undefined, "看板自己 fork 出来的副本默认不列(与原会话同标题,会被再登记成第二条线)");
     assert.ok(after[F.ids.a], "原会话照列");
     assert.equal(after[F.ids.a].line_forked, true); assert.ok(!Number.isNaN(Date.parse(after[F.ids.a].line_forked_at)));
     const withForks = (await B.api("GET", "/api/desktop-sessions?limit=200&include_forks=1", B.operator)).body.sessions;
-    assert.ok(withForks.some((s) => s.id === F.ids.c), "include_forks=1 才列副本");
+    assert.ok(withForks.some((s) => s.id === F.ids.d), "include_forks=1 才列副本");
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "desktop_forks.json"), "utf8")).forks, ["claude:" + F.ids.d], "副本进只增不减的清单");
+    const fc = await post({ source: "claude", id: F.ids.d });
+    assert.deepEqual([fc.status, fc.body.code], [409, "FORK_COPY"], "副本不能登记成线");
     const stored =JSON.parse(readFileSync(join(dir, "desktop_lineage.json"), "utf8"));
     assert.deepEqual(Object.keys(stored.lines).sort(), [lineA, lineX, "claude-" + hash8(H.big)].sort(), "数据目录里只存面板登记的");
     // 重启保留
@@ -496,6 +499,11 @@ test("登记成线:建线/重复 409/未知会话/大体量确认/解除/手写 
     assert.equal((await list())[F.ids.a], null);
     assert.ok((await B.api("GET", "/api/workers", B.operator)).body.workers.some((w) => w.line === lineA && !w.lineage), "线保留、继承解除");
     assert.equal((await B.api("DELETE", `/api/desktop-sessions/lines/${lineA}`, B.operator)).status, 404);
+    // W1:解除登记后副本仍不列、仍登记不成线(清单只增不减)
+    const ids = async () => new Set((await B.api("GET", "/api/desktop-sessions?limit=200", B.operator)).body.sessions.map((s) => s.id));
+    assert.ok(!(await ids()).has(F.ids.d), "解除登记后副本也不回到清单");
+    assert.deepEqual((await post({ source: "claude", id: F.ids.d })).body.code, "FORK_COPY");
+    assert.deepEqual(JSON.parse(readFileSync(join(dir, "desktop_forks.json"), "utf8")).forks, ["claude:" + F.ids.d], "解除登记不清清单");
     const hd = await B.api("DELETE", "/api/desktop-sessions/lines/hand1", B.operator);
     assert.deepEqual([hd.status, hd.body.code], [409, "LINEAGE_HANDWRITTEN"]);
     assert.equal((await B.api("DELETE", "/api/desktop-sessions/lines/alpha", B.operator)).status, 404);

@@ -30,7 +30,7 @@ const cases=[
  {line:"claudeapi",runtime:"claude",model:"claude-haiku-4-5",effort:"high",profile:"claude-api"},
  {line:"gptapi",runtime:"codex",model:"gpt-5.3-codex-spark",effort:"xhigh",profile:"gpt-api"},
 ];
-const seats=new Map(),spawnCounts=new Map(),customCredential=new Map(),kanbanCredential=new Map(),authHomes=new Map(),hostCommit=new Map(),hostGit=new Map(),hostCommitTimeout=new Map();let child,callback,base,operator,shared,output="";
+const seats=new Map(),spawnCounts=new Map(),customCredential=new Map(),kanbanCredential=new Map(),authHomes=new Map(),protectedPaths=new Map(),hostCommit=new Map(),hostGit=new Map(),hostCommitTimeout=new Map();let child,callback,base,operator,shared,output="";
 // 无执行配置的旧线与审阅线：同一宿主组装点（slotEnv），只换成替身。
 const extraLines=[{line:"legacycli",runtime:"claude",model:"claude-haiku-4-5",effort:"high"},{line:"review",runtime:"claude",model:"claude-haiku-4-5",effort:"high"}];
 const profileConfig=[{id:"claude-cli",budget},{id:"codex-cli",budget},{id:"claude-api",enabled:true,budget},{id:"gpt-api",enabled:true,budget,provider_spend_limit_confirmed:true,credential_env:"GPT_PROJECT_KEY"}];
@@ -51,10 +51,10 @@ before(async()=>{
  mkdirSync(REPO);
  REPO=directoryIdentity(REPO).root;
  writeFileSync(CONTROL,"{}");
- callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);customCredential.set(value.worker,value.custom_credential);kanbanCredential.set(value.worker,value.kanban_credential);authHomes.set(value.worker,value.auth_homes);hostCommit.set(value.worker,value.host_commit);hostGit.set(value.worker,value.host_git);hostCommitTimeout.set(value.worker,value.host_commit_timeout);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
+ callback=httpServer((request,response)=>{let raw="";request.on("data",chunk=>raw+=chunk);request.on("end",()=>{const value=JSON.parse(raw);seats.set(value.worker,value.token);customCredential.set(value.worker,value.custom_credential);kanbanCredential.set(value.worker,value.kanban_credential);authHomes.set(value.worker,value.auth_homes);protectedPaths.set(value.worker,[value.protected_paths,value.token_dirs]);hostCommit.set(value.worker,value.host_commit);hostGit.set(value.worker,value.host_git);hostCommitTimeout.set(value.worker,value.host_commit_timeout);spawnCounts.set(value.worker,(spawnCounts.get(value.worker)||0)+1);response.end("ok");});});
  await new Promise(r=>callback.listen(0,"127.0.0.1",r));
  const stub=join(TMP,"受管替身.py");
- writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN',''),'custom_credential':'GPT_PROJECT_KEY' in os.environ,'kanban_credential':'KANBAN_ANTHROPIC_API_KEY' in os.environ,'auth_homes':os.environ.get('WORKER_AUTH_HOMES'),'host_commit':os.environ.get('WORKER_HOST_COMMIT'),'host_git':os.environ.get('WORKER_HOST_GIT'),'host_commit_timeout':os.environ.get('WORKER_HOST_COMMIT_TIMEOUT_SEC')}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
+ writeFileSync(stub,["import os,sys,json,urllib.request,time,pathlib","args=sys.argv","name=args[args.index('--worker')+1] if '--worker' in args else args[args.index('--as')+1]","data=json.dumps({'worker':name,'token':os.environ.get('WORKER_BOARD_TOKEN',''),'custom_credential':'GPT_PROJECT_KEY' in os.environ,'kanban_credential':'KANBAN_ANTHROPIC_API_KEY' in os.environ,'auth_homes':os.environ.get('WORKER_AUTH_HOMES'),'protected_paths':os.environ.get('WORKER_PROTECTED_PATHS'),'token_dirs':os.environ.get('WORKER_TOKEN_DIRS'),'host_commit':os.environ.get('WORKER_HOST_COMMIT'),'host_git':os.environ.get('WORKER_HOST_GIT'),'host_commit_timeout':os.environ.get('WORKER_HOST_COMMIT_TIMEOUT_SEC')}).encode()","urllib.request.urlopen(urllib.request.Request(os.environ['BOARD_FOUR_HTTP_CALLBACK'],data=data),timeout=10).read()","until=time.monotonic()+90","while time.monotonic()<until:","    try:","        control=json.loads(pathlib.Path(os.environ['BOARD_FOUR_HTTP_CONTROL']).read_text(encoding='utf-8'))","    except (OSError,ValueError):","        control={}","    if name in control:","        sys.exit(control[name])","    time.sleep(0.05)",""].join("\n"));
  const original=join(ROOT,"core/server.mjs"),source=readFileSync(original,"utf8"),anchor='[loopScriptOf(line), "--as", line,',reviewAnchor='? [loopScriptOf(line), "--interval", "300",';
  assert.equal(source.split(anchor).length,2,"精确替换唯一宿主入口后才允许运行夹具");assert.equal(source.split(reviewAnchor).length,2,"审阅线入口同样唯一");
  const fixture=join(TMP,"server.mjs");
@@ -121,6 +121,17 @@ test("每条执行线（显式配置、旧线、审阅线）都收到全部配�
  const expected=loadExecutionProfiles(profileConfig,{dataDir:TMP}).map(profile=>resolve(profile.auth_home));
  assert.equal(expected.length,4);
  for(const line of ["claudecli","claudeapi","gptapi","legacycli","review"])assert.deepEqual(JSON.parse(authHomes.get(line)||"null"),expected,line+" 应收到全部认证目录");
+});
+
+test("N2:每条执行线的禁读清单都含执行者令牌目录(数据目录之外);Claude CLI 座席另收 WORKER_TOKEN_DIRS",async()=>{
+ const {defaultTokenDir}=await import(pathToFileURL(join(ROOT,"core","connect.mjs")).href);
+ const root=resolve(dirname(defaultTokenDir(TMP)));
+ for(const line of ["claudecli","claudeapi","gptapi","legacycli","review"]){
+  const [paths,dirs]=protectedPaths.get(line)||[];
+  assert.ok(JSON.parse(paths||"[]").includes(root),line+" WORKER_PROTECTED_PATHS 应含令牌目录");
+  assert.ok(JSON.parse(paths||"[]").includes(resolve(TMP)),line+" 数据目录照旧");
+  assert.deepEqual(JSON.parse(dirs||"null"),[root],line+" WORKER_TOKEN_DIRS");
+ }
 });
 
 test("本人确认摘要后才放行，受管绑定领取并把 SDK 观察和报告回到原卡",async()=>{

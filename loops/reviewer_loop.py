@@ -44,7 +44,7 @@ import evidence_contract
 from prompt_items import whole_text, retrieval_hint
 from pool_state import report_exhausted
 from verify_lib import (run_verify, fmt_verify, save_verify_log, verify_registry, cli_deny_rules, auth_home_deny_rules,
-                        cli_write_allow_rules, cli_denied_tools, git_dir_deny_rules)
+                        cli_write_allow_rules, cli_denied_tools, git_dir_deny_rules, token_dir_deny_rules)
 
 BASE = os.environ.get("BOARD_URL") or (
     "http://127.0.0.1:" + os.environ["BOARD_PORT"] if os.environ.get("BOARD_PORT")
@@ -682,7 +682,7 @@ def review_cli_argv(cli, prompt):
                   "--add-dir", REPO, "--add-dir", OUTDIR,
                   "--allowedTools", *cli_write_allow_rules([OUTDIR]),
                   "--disallowedTools", *cli_denied_tools(REVIEW_TOOLS),
-                  *cli_deny_rules(DATA), *auth_home_deny_rules(), *git_dir_deny_rules(REPO)]
+                  *cli_deny_rules(DATA), *auth_home_deny_rules(), *token_dir_deny_rules(), *git_dir_deny_rules(REPO)]
 
 
 def review_one(t, vr=None):

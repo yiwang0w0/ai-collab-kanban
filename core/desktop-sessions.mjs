@@ -270,6 +270,28 @@ export function saveDeskLineage(dataDir, lines) {
   renameSync(tmp, file);
 }
 
+// ── 看板 fork 出来的会话副本清单(W1):数据目录(不进 git),只增不减 —— 解除登记、线被删都不清。
+//   键 = 「来源:会话 id(小写)」。清单里的会话不进「本地会话」列表(include_forks=1 才列),也不能登记成线。
+export const DESK_FORKS_FILE = "desktop_forks.json";
+const FORK_KEY = /^(claude|codex):[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+/** → Set<"来源:id">;坏文件 / 坏项一律忽略。 */
+export function loadDeskForks(dataDir) {
+  try {
+    const raw = JSON.parse(readFileSync(join(dataDir, DESK_FORKS_FILE), "utf8"));
+    return new Set((Array.isArray(raw?.forks) ? raw.forks : []).filter((k) => typeof k === "string" && FORK_KEY.test(k)));
+  } catch { return new Set(); }
+}
+/** 并进新的键(已有的不动);有新增才落盘,返回是否新增。 */
+export function addDeskForks(dataDir, keys) {
+  const have = loadDeskForks(dataDir), before = have.size;
+  for (const k of keys) { const v = String(k).toLowerCase(); if (FORK_KEY.test(v)) have.add(v); }
+  if (have.size === before) return false;
+  const file = join(dataDir, DESK_FORKS_FILE), tmp = file + ".tmp";
+  writeFileSync(tmp, JSON.stringify({ version: 1, forks: [...have].sort() }, null, 1), "utf8");
+  renameSync(tmp, file);
+  return true;
+}
+
 /**
  * opts: { claudeRoot, codexRoot, dataDir }
  * 返回 { list, select }。
