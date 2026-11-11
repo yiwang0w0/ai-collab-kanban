@@ -1396,3 +1396,7 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - efficiencytest 7/0(2000 卡 / 2 万事件:冷算约 135ms、热读约 1ms)、flowtest 4/0;没有调用模型。阻塞：无。
 - 2026-11-11 安全复审 P5 等(claude/efficiency):`by=day` 区间上限 92 天、`by=week` 上限 2 年(超出 400 并说明);卡表快照按数据签名缓存,换 from/to 不重读卡表、不重扫事件;`daily` 补齐区间内每一天(含还没到的日子);`groups` 里 key 为 null 的 label 一律「未指定」。flow.mjs 未动。
 - efficiencytest 9/0(新增 2 例 + 性能例补上限处最坏:by=day 92 段约 45ms、by=week 2 年约 97ms;带 2 万行账本约 0.15 / 0.2 秒;旧实现下 4 例红);没有调用模型。阻塞：无。
+- 2026-11-11 本地会话登记成来领任务的线(claude/desk-sessions,合同 D 节):只读历史 `GET /api/desktop-sessions/:source/:id/messages`(只给文字、工具折叠成个数、字节游标分页);`POST/DELETE /api/desktop-sessions/lines` 登记 / 解除,继承表存数据目录、运行时增删,手写 lineage.json 照旧生效;体量阈值 200k 要 confirm_large;Codex 线首次领卡 `exec fork`、之后 `exec resume` 自己的会话。
+- desksessionstest 6/0、worker_loop --codex-selftest 39/0、verificationrepairtest 19/0;没有调用模型。阻塞：无。
+- 2026-11-11 安全复审 F10 / F11 / P6 与面板接口补充(claude/desk-sessions):会话历史每页至多读 16MB、单行超 4MB 给「这条太长,已省略」占位且游标严格前进;登记成线的 label 清掉控制符 / 零宽 / 双向控制符并限 24 字;解除后同一会话可重新登记(接回原线);清单顶层带 threshold_tokens / threshold_bytes,列表项 line = {id,label}、登记接口与列表项带 start_blocked(座席未解禁等现有判据)。
+- desksessionstest 8/0(每条修复单独还原均变红)、worker_loop --codex-selftest 39/0;没有调用模型。阻塞：无。

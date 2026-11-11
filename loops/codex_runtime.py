@@ -123,12 +123,20 @@ def argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None):
     return out
 
 
-def session_argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None, thread_id=None):
-    """可续接的明确会话形；首轮与续轮的权限、认证、配置层级完全相同。"""
+def session_argv(cli, model, effort, last_path, workdir, *, mode="write", schema=None, thread_id=None, fork_from=None):
+    """可续接的明确会话形；首轮与续轮的权限、认证、配置层级完全相同。
+
+    fork_from=<桌面会话 id>:`exec fork <id> -`,以该会话的副本为起点、原会话不动(桌面会话登记成的线首次领卡)。
+    沙箱与批准走 exec 之前的 `-c sandbox_mode / approval_policy`(配置层),与 resume 同一形:
+    `exec fork` 子命令自己没有 `--sandbox` 旗(0.165 的 --help 实查)。"""
     if mode not in ("write", "read-only"):
         raise ValueError("未知 Codex mode")
+    if thread_id is not None and fork_from is not None:
+        raise ValueError("thread_id 与 fork_from 只能给一个")
     if thread_id is not None:
         thread_id = str(uuid.UUID(str(thread_id)))
+    if fork_from is not None:
+        fork_from = str(uuid.UUID(str(fork_from)))
     out = [cli, "-c", 'sandbox_mode="workspace-write"' if mode == "write" else 'sandbox_mode="read-only"',
            "-c", 'approval_policy="on-request"' if mode == "write" else 'approval_policy="never"']
     if mode == "write":
@@ -141,6 +149,8 @@ def session_argv(cli, model, effort, last_path, workdir, *, mode="write", schema
             "-c", "tools.web_search=false", "-C", workdir, "exec"]
     if thread_id:
         out += ["resume", thread_id]
+    elif fork_from:
+        out += ["fork", fork_from]
     out += ["-m", str(model), "--ignore-user-config", "--skip-git-repo-check", "--json"]
     if schema:
         out += ["--output-schema", schema]

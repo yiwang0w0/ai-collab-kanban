@@ -41,7 +41,8 @@ import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorC
   coordinatorTurnOf,mergeTools,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
-import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX} from "./desktop-sessions.mjs";
+import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX,
+        MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel} from "./desktop-sessions.mjs";
 import {createFlow} from "./flow.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
 
@@ -1303,11 +1304,14 @@ const seatDrift = (line, st) => {
 //   (measured on the origin). They live in .data/ (gitignored); the template is
 //   examples/lineage.example.json. Absent = no inheritance, board runs fine.
 const LINEAGE_FILE = join(store.DATA_DIR, "lineage.json");
-let LINEAGE = {};
+// 面板登记的(POST /api/desktop-sessions/lines)另存 desktop_lineage.json,运行时增删;手写 lineage.json 照旧生效,
+// 同名时手写为准、且面板解除不了(LINEAGE_HAND)。没写 source 的手写项按 claude。
+let LINEAGE = { ...loadDeskLineage(store.DATA_DIR) };
+const LINEAGE_HAND = new Set();
 try {
   const raw = JSON.parse(readFileSync(LINEAGE_FILE, "utf8"));
   for (const [k, v] of Object.entries(raw))
-    if (!k.startsWith("_") && v && v.session) LINEAGE[k] = v;
+    if (!k.startsWith("_") && v && v.session) { LINEAGE[k] = v; LINEAGE_HAND.add(k); }
 } catch { /* fine to be absent; the startup log says so */ }
 // BOARD_CLAUDE_PROJECTS: test-only escape hatch. A harness must never plant a transcript
 // under the operator's real ~/.claude/projects, so it points this at a temp dir instead.
@@ -1925,9 +1929,12 @@ function slotEnv(line, k, ag, isReview) {
            ...(isReview && REVIEW_ANTI_AFFINITY ? { REVIEWER_ANTI_AFFINITY: REVIEW_ANTI_AFFINITY } : {}),
            ...(isReview ? {} : k === 1 ? {
              WORKER_SESSION: sessionOf(line),
-             // Not yet forked → the first run forks from the desktop conversation
-             ...(lg && !lg.forked ? { WORKER_FORK_FROM: lg.session } : {}),
-             ...(lg ? { WORKER_ANCHOR: lg.anchor } : {}),
+             // Not yet forked → the first run forks from the desktop conversation.
+             // 只在本槽的运行时与会话来源一致时下传(Claude 会话交给 Codex 进程 fork 不了)。
+             ...(lg && !lg.forked && (lg.source || "claude") === (ag.runtime || RUNTIME_IDS[0]) ? { WORKER_FORK_FROM: lg.session } : {}),
+             // 已 fork 过:Codex 线据此续接自己的会话(Claude 线看转录在不在,不需要这个)
+             ...(lg && lg.forked ? { WORKER_LINEAGE_FORKED: "1" } : {}),
+             ...(lg?.anchor ? { WORKER_ANCHOR: lg.anchor } : {}),
            } : {
              // Extra slots (2+) run a FRESH session per card. The persistent
              // session is slot 1's private property — two processes resuming the
@@ -3678,6 +3685,83 @@ function applyConversationPlan(convId, rev, expectedRev, by) {
   return out;
 }
 
+// ── 桌面会话 → 来领任务的线。⚠ 会话 id 是个人信息:进继承表(数据目录),接口只回 sha256 前 8 位。
+// 体量阈值 200k:按 Claude 默认上下文窗口取。超过它的副本第一轮就要先压缩(又一次模型调用)或直接装不下,
+// 且每次冷缓存的续接都按全价输入计这 20 万以上的 token;所以要人明确确认。体量不明(没有 usage 记录)时按文件大小 4MB 兜底。
+const DESK_LARGE_TOKENS = 200000, DESK_LARGE_BYTES = 4 * 1024 * 1024;
+const sessionHash = (id) => createHash("sha256").update(String(id).toLowerCase()).digest("hex").slice(0, 8);
+const deskLineIndex = () => new Map(Object.entries(LINEAGE).map(([line, v]) => [`${v.source || "claude"}:${String(v.session).toLowerCase()}`, line]));
+const deskLineageEntries = () => Object.fromEntries(Object.entries(LINEAGE).filter(([k, v]) => !LINEAGE_HAND.has(k) && v.via === "desktop")
+  .map(([k, v]) => [k, { session: v.session, source: v.source, label: v.label, created_at: v.created_at }]));
+/** 新线的座席:运行时 = 会话来源;全局缺省正好是这个运行时就用全局缺省,否则取该座席第一个模型。 */
+function deskAgent(source) {
+  if ((DEFAULT_AGENT.runtime || RUNTIME_IDS[0]) === source) return agentOf(DEFAULT_AGENT);
+  const seat = seatOf(source), md = seat.models?.[0];
+  const efforts = md?.efforts || seat.efforts || EFFORTS;
+  return agentOf({ runtime: source, model: md?.id, effort: efforts.includes("high") ? "high" : efforts[efforts.length - 1] });
+}
+/** 登记了但这条线起不来的原因(面板要说清楚):只用现有判定 —— 座席未解禁(seat.disabled,与保存闸同一判据)、
+ *  座席缺命令路径(seatCmdOk,与 workerStart 同一判据)、执行配置未就绪(profileFacts)。判不出 → null,不猜。 */
+function deskStartBlocked(line) {
+  if (!LINES.includes(line) || LINE_EXTERNAL?.[line]) return null;
+  for (const ag of settingsOf(line).agents || []) {
+    const profile = profileOf(ag);
+    if (profile) {
+      const fact = profileFacts().find((p) => p.id === profile.id);
+      if (fact && !fact.ready) return { code: "PROFILE_NOT_READY", message: fact.reason || "执行配置尚未就绪" };
+      continue;
+    }
+    const seat = seatOf(ag.runtime);
+    if (!seat) continue;
+    if (seat.disabled)
+      return { code: "SEAT_LOCKED", message: `${seat.id} 座席未解禁(宿主设 ${seat.release_env}=1 后重启看板才能起这条线);登记已保存` };
+    if (!seatCmdOk(seat))
+      return { code: "SEAT_CMD_MISSING", message: `${seat.id} 座席缺命令路径(宿主没有配置 ${seat.cmd_env});登记已保存` };
+  }
+  return null;
+}
+const deskLineRef = (line) => (line ? { id: line, label: LINE_LABEL?.[line] || line } : null);
+/** POST /api/desktop-sessions/lines → [status, body] */
+function deskLineAdd(b) {
+  if (!b || typeof b !== "object" || Array.isArray(b)) return [400, { error: "正文要是 {source, id, label?, confirm_large?}" }];
+  const source = b.source, id = typeof b.id === "string" ? b.id.toLowerCase() : "";
+  if (!DESK_SOURCES.includes(source)) return [400, { error: "source 只接受 claude / codex", code: "SESSION_UNKNOWN" }];
+  if (b.label !== undefined && typeof b.label !== "string") return [400, { error: "label 要是字符串" }];
+  if (b.confirm_large !== undefined && typeof b.confirm_large !== "boolean") return [400, { error: "confirm_large 只接受 true / false" }];
+  if (!seatOf(source) || seatOf(source).id !== source) return [400, { error: `看板没有配置 ${source} 运行时`, code: "RUNTIME_UNAVAILABLE" }];
+  const s = deskSessions.info(source, id);
+  if (!s) return [400, { error: "本机没有这个会话(或它是子代理线程)", code: "SESSION_UNKNOWN" }];
+  const hash = sessionHash(s.id), lineId = `${source}-${hash}`;
+  const taken = deskLineIndex().get(`${source}:${s.id}`);
+  // P6:解除继承后线还在(卡与历史保留)。同一会话再登记 = 把继承接回这条线,不新建、不改显示名。
+  //    线 id 由会话 id 的哈希定,同名线就是这个会话当初建的;外部执行线 / 角色座席不会是这个形,保险起见也拒。
+  const reattach = !taken && LINES.includes(lineId) && !LINEAGE[lineId] && !LINE_EXTERNAL?.[lineId] && !ROLES.includes(lineId);
+  if (taken || (LINES.includes(lineId) && !reattach))
+    return [409, { error: `这个会话已经登记成线 ${taken || lineId}`, code: "ALREADY_A_LINE", line: taken || lineId }];
+  const size = { approx_tokens: s.approx_tokens, size_bytes: s.size_bytes, threshold_tokens: DESK_LARGE_TOKENS };
+  const large = s.approx_tokens != null ? s.approx_tokens > DESK_LARGE_TOKENS : s.size_bytes > DESK_LARGE_BYTES;
+  if (large && b.confirm_large !== true)
+    return [400, { error: `这个会话体量约 ${s.approx_tokens ?? "未知"} token(阈值 ${DESK_LARGE_TOKENS}):副本的第一轮要把整段历史送进模型,费用高、可能先压缩。确认后带 confirm_large:true 再提交`,
+                   code: "NEEDS_CONFIRM_LARGE", ...size }];
+  // ⚠ 缺省显示名不用会话标题:标题会写进 fleet.config.json(可能进仓库)。显示名先清洗(F11)再限长。
+  const label = cleanLineLabel(b.label || "") || `${source === "claude" ? "Claude" : "Codex"} 会话 ${hash}`;
+  let added;
+  if (reattach) added = { label: LINE_LABEL?.[lineId] || lineId };
+  else {
+    added = addLine(lineId, "", label, null, null, false);
+    settings[lineId] = { ...settingsOf(lineId), agents: [deskAgent(source)] };
+    writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 1), "utf8");
+  }
+  LINEAGE[lineId] = { session: s.id, source, label: added.label, created_at: new Date().toISOString(), via: "desktop" };
+  saveDeskLineage(store.DATA_DIR, deskLineageEntries());
+  emit("config.lines", { line: lineId });
+  emit("desktop-sessions.changed", { line: lineId });
+  console.log(`线已从桌面会话${reattach ? "重新登记(接回原线)" : "登记"}: ${lineId}「${added.label}」(${source},首次领卡以会话副本为起点;未启动)`);
+  return [201, { line: { id: lineId, label: added.label, runtime: source,
+                         lineage: { source, session_id_hash: hash, forked: !!lineageOf(lineId)?.forked } }, ...size,
+                 start_blocked: deskStartBlocked(lineId), ...(reattach ? { reattached: true } : {}) }];
+}
+
 /** 桌面端对话清单与勾选:只属于操作员(面板会话或操作员令牌),与 /api/coordinator 同一档。
  *  远程批准入口只路由批准接口,到不了这里;批准令牌在本机接口上不认(401)。 */
 async function desktopSessionsRoute(req, res, url, p, m, boardRole) {
@@ -3700,7 +3784,46 @@ async function desktopSessionsRoute(req, res, url, p, m, boardRole) {
     }
     const q = (qs.get("q") || "").trim();
     if (q.length > 200) return json(res, 400, { error: "q 最长 200 字" });
-    return json(res, 200, deskSessions.list({ source, days, q: q || null, limit, selectedOnly: qs.get("selected") === "1" }));
+    const lineOf = deskLineIndex();
+    const r = deskSessions.list({ source, days, q: q || null, limit, selectedOnly: qs.get("selected") === "1",
+                                  lineOf: (s, id) => lineOf.get(`${s}:${id}`) || null });
+    // 面板要用:顶层带大体量阈值;每项 line = {id,label}|null,start_blocked = 登记了但起不来的原因|null
+    return json(res, 200, { ...r, threshold_tokens: DESK_LARGE_TOKENS, threshold_bytes: DESK_LARGE_BYTES,
+                            sessions: r.sessions.map((x) => ({ ...x, line: deskLineRef(x.line), start_blocked: x.line ? deskStartBlocked(x.line) : null })) });
+  }
+  const mm = p.match(/^\/api\/desktop-sessions\/(claude|codex)\/([0-9a-fA-F-]{36})\/messages$/);
+  if (mm && m === "GET") {
+    const qs = url.searchParams;
+    let limit = DESK_MSG_LIMIT_DEFAULT, before = null;
+    if (qs.get("limit") !== null) {
+      limit = Number(qs.get("limit"));
+      if (!Number.isInteger(limit) || limit < 1) return json(res, 400, { error: `limit 要是正整数(上限 ${DESK_MSG_LIMIT_MAX})` });
+      limit = Math.min(limit, DESK_MSG_LIMIT_MAX);
+    }
+    if (qs.get("before") !== null) {
+      if (!/^[1-9][0-9]{0,15}$/.test(qs.get("before"))) return json(res, 400, { error: "before 游标无效(要用上一页给的 next_before)" });
+      before = Number(qs.get("before"));
+    }
+    let r;
+    try { r = deskSessions.messages(mm[1], mm[2], { limit, before }); }
+    catch (e) { if (e.status) return json(res, e.status, { error: e.message }); throw e; }
+    return r ? json(res, 200, r) : json(res, 404, { error: "本机没有这个对话", code: "SESSION_UNKNOWN" });
+  }
+  if (p === "/api/desktop-sessions/lines" && m === "POST") return json(res, ...deskLineAdd(await readBody(req)));
+  const ml = p.match(/^\/api\/desktop-sessions\/lines\/([a-z0-9_-]+)$/);
+  if (ml && m === "DELETE") {
+    const line = ml[1];
+    if (!LINEAGE[line]) return json(res, 404, { error: `线 ${line} 不是从桌面会话登记的线`, code: "NOT_A_DESKTOP_LINE" });
+    if (LINEAGE_HAND.has(line))
+      return json(res, 409, { error: `线 ${line} 的继承写在数据目录的 lineage.json 里(手写项),在面板解除不了;要解除就从那份文件删掉这一项再重启看板`, code: "LINEAGE_HANDWRITTEN" });
+    const running = slotsOf(line).some((s) => s.proc);
+    if (SUPERVISED.includes(line)) await workerStop(line);
+    delete LINEAGE[line];
+    saveDeskLineage(store.DATA_DIR, deskLineageEntries());
+    emit("desktop-sessions.changed", { line });
+    emit("worker.changed", { line });
+    console.log(`线 ${line} 已解除桌面会话继承${running ? "并停线" : ""}(线、卡与历史保留)`);
+    return json(res, 200, { line: { id: line, lineage: null }, stopped: running });
   }
   if (p === "/api/desktop-sessions/selection" && m === "PUT") {
     const b = await readBody(req);

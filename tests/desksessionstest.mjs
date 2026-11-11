@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer, connect } from "node:net";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -142,8 +142,8 @@ test("清单:两家解析、标题来源、排序、过滤与上限、不返回�
     assert.equal(byId[F.ids.y].title, "没有索引标题的 Codex 对话", "无索引 → 首条 user_message,跳过注入块");
     assert.equal(byId[F.ids.w].title, "双 uuid 文件名", "rollout-…-<id>_<uuid>.jsonl 的 id 取第一个");
     for (const s of all.body.sessions) {
-      assert.deepEqual(Object.keys(s).sort(), ["approx_tokens", "id", "origin", "project", "selected", "size_bytes", "source", "title", "updated_at"]);
-      assert.equal(s.selected, false);
+      assert.deepEqual(Object.keys(s).sort(), ["approx_tokens", "id", "line", "origin", "project", "selected", "size_bytes", "source", "start_blocked", "title", "updated_at"]);
+      assert.equal(s.selected, false); assert.equal(s.line, null);
       assert.ok(s.size_bytes > 0 && !Number.isNaN(Date.parse(s.updated_at)));
     }
     const c = await B.api("GET", "/api/desktop-sessions?source=claude", B.operator);
@@ -268,5 +268,249 @@ test("勾选:增删幂等、不存在的 id 拒绝、上限 50、SSE、重启保
     assert.equal(m.body.sessions.find((s) => s.id === F.ids.x).missing, undefined);
     assert.deepEqual((await B.api("PUT", "/api/desktop-sessions/selection", B.operator, { remove: [A] })).body, { selected: 1 });
     assert.equal((await B.api("PUT", "/api/desktop-sessions/selection", B.operator, { add: [A] })).status, 400, "文件不在了就不能再勾");
+  } finally { await B.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// ── 历史与登记成线(合同 D 节)
+const TOOL_IN = "TOOL_INPUT_MARK", TOOL_OUT = "TOOL_RESULT_MARK", THINK = "THINK_MARK", META = "META_MARK";
+const hash8 = (id) => createHash("sha256").update(id).digest("hex").slice(0, 8);
+function historyFixtures(F) {
+  const h = randomUUID(), big = randomUUID(), cx = randomUUID();
+  const ts = (i) => new Date(Date.UTC(2026, 10, 1, 0, i)).toISOString();
+  const u = (i, content, extra = {}) => J({ type: "user", timestamp: ts(i), message: { role: "user", content }, ...extra });
+  const a = (i, content) => J({ type: "assistant", timestamp: ts(i), message: { role: "assistant", content } });
+  const tool = { type: "tool_use", id: "t", name: "Bash", input: { command: TOOL_IN } };
+  writeFileSync(join(F.P2, h + ".jsonl"), [
+    J({ type: "custom-title", customTitle: "历史夹具" }),
+    u(1, "问一"),
+    a(2, [{ type: "thinking", thinking: THINK }, { type: "text", text: "答一" }, tool]),
+    a(3, [tool]),
+    u(4, [{ type: "tool_result", tool_use_id: "t", content: TOOL_OUT }], { toolUseResult: { stdout: TOOL_OUT } }),
+    a(5, [tool]),
+    a(6, [{ type: "text", text: "答二" }]),
+    u(7, META, { isMeta: true }),
+    u(8, "<command-name>/x</command-name>"),
+    u(9, [{ type: "text", text: "问二" }]),
+    "{坏行",
+    a(10, [{ type: "text", text: "长".repeat(5000) }]),
+    J({ type: "attachment", attachment: { content: META } }),
+  ].join("\n") + "\n");
+  writeFileSync(join(F.P2, big + ".jsonl"), [
+    J({ type: "custom-title", customTitle: "大体量" }), u(1, "问"),
+    J({ type: "assistant", message: { content: [{ type: "text", text: "答" }], usage: { input_tokens: 250000 } } })].join("\n") + "\n");
+  const day = join(F.codex, "sessions", "2026", "11", "02"); mkdirSync(day, { recursive: true });
+  const ri = (i, payload) => J({ timestamp: ts(i), type: "response_item", payload });
+  writeFileSync(join(day, `rollout-2026-11-02T10-00-00-${cx}.jsonl`), [
+    J({ timestamp: ts(0), type: "session_meta", payload: { id: cx, cwd: "C:\\demo\\codex", source: "vscode", thread_source: "user" } }),
+    ri(1, { type: "message", role: "developer", content: [{ type: "input_text", text: META }] }),
+    ri(2, { type: "message", role: "user", content: [{ type: "input_text", text: "<environment_context>" + META + "</environment_context>" }] }),
+    ri(3, { type: "message", role: "user", content: [{ type: "input_text", text: "Codex 问" }] }),
+    ri(4, { type: "reasoning", summary: [{ type: "summary_text", text: THINK }] }),
+    ri(5, { type: "message", role: "assistant", content: [{ type: "output_text", text: "Codex 答" }] }),
+    ri(6, { type: "function_call", name: "shell", arguments: TOOL_IN }),
+    ri(7, { type: "function_call_output", output: TOOL_OUT }),
+    ri(8, { type: "custom_tool_call", name: "apply_patch", input: TOOL_IN }),
+    ri(9, { type: "message", role: "assistant", content: [{ type: "output_text", text: "Codex 完" }] }),
+  ].join("\n") + "\n");
+  return { h, big, cx };
+}
+
+test("历史:只给文字、工具折叠成个数、分页游标、单条截 4000 字", { timeout: 120000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desksessions-hist-")), F = fixtures(dir), H = historyFixtures(F);
+  const B = await board(dir, F);
+  try {
+    const all = await B.api("GET", `/api/desktop-sessions/claude/${H.h}/messages?limit=200`, B.operator);
+    assert.equal(all.status, 200, all.text);
+    for (const mark of [TOOL_IN, TOOL_OUT, THINK, META, "command-name"]) assert.ok(!all.text.includes(mark), "不含 " + mark);
+    const flat = all.body.messages.map((x) => [x.role, x.text.slice(0, 3), x.tools]);
+    assert.deepEqual(flat, [["user", "问一", 0], ["assistant", "答一", 3], ["assistant", "答二", 0], ["user", "问二", 0], ["assistant", "长长长", 0]]);
+    assert.equal(all.body.next_before, null);
+    assert.equal([...all.body.messages[4].text].length, 4000, "单条截到 4000 字");
+    assert.deepEqual(Object.keys(all.body.messages[0]).sort(), ["at", "role", "text", "tools"]);
+    assert.equal(all.body.messages[0].at, new Date(Date.UTC(2026, 10, 1, 0, 1)).toISOString());
+    // 分页:每页 2 条,拼起来与一次取完相同
+    const pages = []; let before = null;
+    for (let i = 0; i < 10; i++) {
+      const r = await B.api("GET", `/api/desktop-sessions/claude/${H.h}/messages?limit=2${before ? "&before=" + before : ""}`, B.operator);
+      assert.equal(r.status, 200, r.text);
+      pages.unshift(...r.body.messages);
+      before = r.body.next_before;
+      if (before === null) break;
+      assert.ok(Number.isInteger(before) && before > 0);
+    }
+    assert.deepEqual(pages, all.body.messages, "分页拼回与一次取完相同");
+    const cx = await B.api("GET", `/api/desktop-sessions/codex/${H.cx}/messages`, B.operator);
+    assert.equal(cx.status, 200, cx.text);
+    for (const mark of [TOOL_IN, TOOL_OUT, THINK, META]) assert.ok(!cx.text.includes(mark), "Codex 不含 " + mark);
+    assert.deepEqual(cx.body.messages.map((x) => [x.role, x.text, x.tools]),
+                     [["user", "Codex 问", 0], ["assistant", "Codex 答", 2], ["assistant", "Codex 完", 0]]);
+    assert.equal((await B.api("GET", `/api/desktop-sessions/claude/${randomUUID()}/messages`, B.operator)).status, 404);
+    assert.equal((await B.api("GET", `/api/desktop-sessions/codex/${F.ids.z}/messages`, B.operator)).status, 404, "子代理线程不给看");
+    for (const bad of ["before=0", "before=-1", "before=abc", "before=99999999999", "limit=0"])
+      assert.equal((await B.api("GET", `/api/desktop-sessions/claude/${H.h}/messages?${bad}`, B.operator)).status, 400, bad);
+    assert.ok(!B.logs().includes("问一") && !B.logs().includes("Codex 答"), "正文不进看板日志");
+    assert.ok(!existsSync(join(dir, "desktop_lineage.json")), "看历史不落盘");
+  } finally { await B.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+// F10:超长单行。模块层用很小的读取上限(块 4KB / 单行 64KB / 每页 128KB)把「一行比每页上限还长」造出来,
+// 真看板层用缺省上限(单行 4MB)放一条 5MB 的行。
+test("历史超长单行(F10):游标严格前进直到 null、给「这条太长,已省略」、工具结果超长行静默跳过、正文不外泄", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desksessions-long-"));
+  try {
+    const { createDesktopSessions, MSG_OMITTED_TEXT } = await import(new URL("../core/desktop-sessions.mjs", import.meta.url).href);
+    const root = join(dir, "claude"), proj = join(root, "p1"), id = randomUUID();
+    mkdirSync(proj, { recursive: true });
+    const X = "X".repeat(300 * 1024), Y = "Y".repeat(90 * 1024);
+    const u = (t, content, extra = {}) => J({ type: "user", message: { role: "user", content }, timestamp: t, ...extra });
+    const a = (t, text) => J({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text }] }, timestamp: t });
+    writeFileSync(join(proj, id + ".jsonl"), [
+      u("2026-11-01T00:00:01Z", "第一"),
+      u("2026-11-01T00:00:02Z", [{ type: "text", text: X }]),                                   // 比每页上限还长
+      a("2026-11-01T00:00:03Z", "第二"),
+      u("2026-11-01T00:00:04Z", [{ type: "tool_result", tool_use_id: "t", content: X }]),     // 工具结果:本来就不显示
+      a("2026-11-01T00:00:05Z", Y),                                                           // 超单行上限、没超每页上限
+      u("2026-11-01T00:00:06Z", "第三"),
+    ].join("\n") + "\n");
+    const ds = createDesktopSessions({ claudeRoot: root, codexRoot: join(dir, "nocodex"), dataDir: dir,
+                                       readLimits: { chunk: 4096, line: 64 * 1024, scan: 128 * 1024 } });
+    for (const limit of [200, 1]) {
+      const got = []; let before = null, prev = Infinity, pages = 0;
+      for (;;) {
+        const r = ds.messages("claude", id, { limit, before });
+        pages++;
+        assert.ok(pages < 50, `limit=${limit}: 翻页不收敛`);
+        assert.ok(!JSON.stringify(r).includes("XXXX") && !JSON.stringify(r).includes("YYYY"), "超长行正文不外泄");
+        got.unshift(...r.messages);
+        if (r.next_before === null) break;
+        assert.ok(r.next_before < prev, `limit=${limit}: next_before 必须严格变小(${r.next_before} ≥ ${prev})`);
+        prev = before = r.next_before;
+      }
+      assert.deepEqual(got.map((m) => [m.role, m.text, !!m.omitted]),
+        [["user", "第一", false], ["user", MSG_OMITTED_TEXT, true], ["assistant", "第二", false], ["assistant", MSG_OMITTED_TEXT, true], ["user", "第三", false]],
+        `limit=${limit}`);
+    }
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("历史超长单行(F10)真看板:5MB 的一行给占位、翻页到 null", { timeout: 120000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desksessions-long2-")), F = fixtures(dir);
+  const id = randomUUID(), proj = join(F.claude, "plong"); mkdirSync(proj, { recursive: true });
+  writeFileSync(join(proj, id + ".jsonl"), [
+    J({ type: "user", message: { role: "user", content: "前" }, timestamp: "2026-11-01T00:00:01Z" }),
+    J({ type: "user", message: { role: "user", content: [{ type: "text", text: "Z".repeat(5 * 1024 * 1024) }] }, timestamp: "2026-11-01T00:00:02Z" }),
+    J({ type: "assistant", message: { role: "assistant", content: [{ type: "text", text: "后" }] }, timestamp: "2026-11-01T00:00:03Z" }),
+  ].join("\n") + "\n");
+  const B = await board(dir, F);
+  try {
+    const r = await B.api("GET", `/api/desktop-sessions/claude/${id}/messages?limit=200`, B.operator);
+    assert.equal(r.status, 200, r.text.slice(0, 200));
+    assert.deepEqual(r.body.messages.map((m) => [m.role, m.text]), [["user", "前"], ["user", "这条太长,已省略"], ["assistant", "后"]]);
+    assert.equal(r.body.next_before, null);
+    assert.ok(!r.text.includes("ZZZZ"));
+  } finally { await B.stop(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("登记成线:建线/重复 409/未知会话/大体量确认/解除/手写 lineage.json 兼容/鉴权/重启保留", { timeout: 180000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "desksessions-lines-")), F = fixtures(dir), H = historyFixtures(F);
+  // 旧的手写 lineage.json:没有 source 字段 = claude
+  writeFileSync(join(dir, "lineage.json"), J({ _comment: "手写", hand1: { session: F.ids.b, anchor: "docs/x.md" } }));
+  let B = await board(dir, { ...F, config: { lines: [{ id: "alpha" }, { id: "hand1" }] } });
+  try {
+    const reg = await B.api("POST", "/api/coord/executors", B.operator, { id: "ext1", name: "外部", kind: "external" });
+    assert.equal(reg.status, 201, reg.text);
+    const post = (body, t = B.operator) => B.api("POST", "/api/desktop-sessions/lines", t, body);
+    for (const t of [B.worker, B.review, reg.body.token]) {
+      assert.equal((await post({ source: "claude", id: F.ids.a }, t)).status, 403);
+      assert.equal((await B.api("GET", `/api/desktop-sessions/claude/${H.h}/messages`, t)).status, 403);
+      assert.equal((await B.api("DELETE", "/api/desktop-sessions/lines/hand1", t)).status, 403);
+    }
+    assert.equal((await post({ source: "claude", id: F.ids.a }, null)).status, 401);
+    const r = await post({ source: "claude", id: F.ids.a.toUpperCase() });
+    assert.equal(r.status, 201, r.text);
+    const lineA = "claude-" + hash8(F.ids.a);
+    assert.deepEqual(r.body.line, { id: lineA, label: "Claude 会话 " + hash8(F.ids.a), runtime: "claude",
+                                    lineage: { source: "claude", session_id_hash: hash8(F.ids.a), forked: false } });
+    assert.equal(r.body.approx_tokens, 117); assert.equal(r.body.threshold_tokens, 200000);
+    assert.ok(!r.text.toLowerCase().includes(F.ids.a), "不回会话 id 原文");
+    assert.ok(!r.text.includes("合成对话"), "缺省显示名不用会话标题");
+    const dup = await post({ source: "claude", id: F.ids.a });
+    assert.deepEqual([dup.status, dup.body.code], [409, "ALREADY_A_LINE"]);
+    const handDup = await post({ source: "claude", id: F.ids.b });
+    assert.deepEqual([handDup.status, handDup.body.code, handDup.body.line], [409, "ALREADY_A_LINE", "hand1"], "手写 lineage.json 的会话也算已登记");
+    for (const bad of [{ source: "claude", id: randomUUID() }, { source: "codex", id: F.ids.z }, { source: "gpt", id: F.ids.a }, { source: "codex", id: F.ids.a }]) {
+      const x = await post(bad);
+      assert.deepEqual([x.status, x.body.code], [400, "SESSION_UNKNOWN"], J(bad));
+    }
+    const lg = await post({ source: "claude", id: H.big });
+    assert.deepEqual([lg.status, lg.body.code, lg.body.approx_tokens], [400, "NEEDS_CONFIRM_LARGE", 250000]);
+    assert.ok(!lg.text.includes(H.big));
+    assert.equal((await post({ source: "claude", id: H.big, confirm_large: true, label: "大会话" })).status, 201);
+    const c = await post({ source: "codex", id: F.ids.x, label: "Codex 线" });
+    assert.equal(c.status, 201, c.text);
+    const lineX = "codex-" + hash8(F.ids.x);
+    assert.equal(c.body.line.runtime, "codex");
+    const ws = await B.api("GET", "/api/workers", B.operator);
+    const wX = ws.body.workers.find((w) => w.line === lineX), wA = ws.body.workers.find((w) => w.line === lineA);
+    assert.equal(wX.settings.agents[0].runtime, "codex", "运行时 = 会话来源");
+    assert.equal(wA.settings.agents[0].runtime, "claude");
+    assert.equal(wX.running, false, "登记不等于启动");
+    assert.deepEqual([wA.lineage.configured, wA.lineage.forked], [true, false]);
+    assert.equal(ws.body.workers.find((w) => w.line === "hand1").lineage.anchor, "docs/x.md", "手写项照旧生效");
+    assert.ok(!JSON.stringify(ws.body).includes(F.ids.a), "/api/workers 不带会话 id");
+    const list = async () => Object.fromEntries((await B.api("GET", "/api/desktop-sessions?limit=200", B.operator)).body.sessions.map((s) => [s.id, s.line?.id ?? null]));
+    let L = await list();
+    assert.deepEqual([L[F.ids.a], L[F.ids.x], L[F.ids.b], L[F.ids.c]], [lineA, lineX, "hand1", null]);
+    // 接口补充:顶层阈值;列表项 line = {id,label};登记了但起不来(Codex 座席未解禁)带 start_blocked,能起的为 null
+    const full = (await B.api("GET", "/api/desktop-sessions?limit=200", B.operator)).body;
+    assert.deepEqual([full.threshold_tokens, full.threshold_bytes], [200000, 4 * 1024 * 1024]);
+    const row = Object.fromEntries(full.sessions.map((s) => [s.id, s]));
+    assert.deepEqual(row[F.ids.a].line, { id: lineA, label: "Claude 会话 " + hash8(F.ids.a) });
+    assert.deepEqual(row[F.ids.x].line, { id: lineX, label: "Codex 线" });
+    assert.equal(row[F.ids.a].start_blocked, null, "Claude 座席能起");
+    assert.equal(row[F.ids.c].start_blocked, null, "没登记的也是 null");
+    assert.equal(row[F.ids.x].start_blocked?.code, "SEAT_LOCKED", J(row[F.ids.x].start_blocked));
+    assert.match(row[F.ids.x].start_blocked.message, /BOARD_CODEX_RELEASED/);
+    assert.equal(c.body.start_blocked?.code, "SEAT_LOCKED", "201 里也带");
+    assert.equal(r.body.start_blocked, null);
+    const stored = JSON.parse(readFileSync(join(dir, "desktop_lineage.json"), "utf8"));
+    assert.deepEqual(Object.keys(stored.lines).sort(), [lineA, lineX, "claude-" + hash8(H.big)].sort(), "数据目录里只存面板登记的");
+    // 重启保留
+    await B.stop(); B = await board(dir, { ...F, config: JSON.parse(readFileSync(join(dir, "fleet.json"), "utf8")) });
+    L = await list();
+    assert.deepEqual([L[F.ids.a], L[F.ids.x], L[F.ids.b]], [lineA, lineX, "hand1"], "重启后继承还在");
+    assert.equal((await B.api("POST", "/api/desktop-sessions/lines", B.operator, { source: "claude", id: F.ids.a })).status, 409);
+    // 解除
+    const del = await B.api("DELETE", `/api/desktop-sessions/lines/${lineA}`, B.operator);
+    assert.deepEqual([del.status, del.body.line], [200, { id: lineA, lineage: null }], del.text);
+    assert.equal((await list())[F.ids.a], null);
+    assert.ok((await B.api("GET", "/api/workers", B.operator)).body.workers.some((w) => w.line === lineA && !w.lineage), "线保留、继承解除");
+    assert.equal((await B.api("DELETE", `/api/desktop-sessions/lines/${lineA}`, B.operator)).status, 404);
+    const hd = await B.api("DELETE", "/api/desktop-sessions/lines/hand1", B.operator);
+    assert.deepEqual([hd.status, hd.body.code], [409, "LINEAGE_HANDWRITTEN"]);
+    assert.equal((await B.api("DELETE", "/api/desktop-sessions/lines/alpha", B.operator)).status, 404);
+    assert.deepEqual(Object.keys(JSON.parse(readFileSync(join(dir, "desktop_lineage.json"), "utf8")).lines).sort(), [lineX, "claude-" + hash8(H.big)].sort());
+    // P6:解除后同一会话可以重新登记(沿用原来那条线,不新建、不改显示名)
+    const again = await post({ source: "claude", id: F.ids.a, label: "新名字" });
+    assert.equal(again.status, 201, again.text);
+    assert.deepEqual([again.body.line.id, again.body.line.label, again.body.reattached], [lineA, "Claude 会话 " + hash8(F.ids.a), true]);
+    assert.equal((await list())[F.ids.a], lineA);
+    assert.ok(Object.keys(JSON.parse(readFileSync(join(dir, "desktop_lineage.json"), "utf8")).lines).includes(lineA));
+    assert.equal(JSON.parse(readFileSync(join(dir, "fleet.json"), "utf8")).lines.filter((l) => l.id === lineA).length, 1, "不重复建线");
+    assert.equal((await post({ source: "claude", id: F.ids.a })).status, 409, "再登记一次仍 409");
+    // F11:label 清掉换行、ESC、控制符、零宽与双向控制字符,限 24 字
+    const dirty = await post({ source: "claude", id: F.ids.c, label: "a\nFAKE 日志行\u001b[31m\u202e名\u200b字\u200f\ufeff\u061c" });
+    assert.equal(dirty.status, 201, dirty.text);
+    assert.equal(dirty.body.line.label, "a FAKE 日志行[31m名字");
+    const cfgLabel = JSON.parse(readFileSync(join(dir, "fleet.json"), "utf8")).lines.find((l) => l.id === "claude-" + hash8(F.ids.c)).label;
+    assert.equal(cfgLabel, "a FAKE 日志行[31m名字");
+    assert.ok(!/\nFAKE/.test(B.logs()) && !B.logs().includes("\u001b") && !B.logs().includes("\u202e"), "日志里不出现伪造行与控制符");
+    await B.api("DELETE", `/api/desktop-sessions/lines/claude-${hash8(F.ids.c)}`, B.operator);
+    const long = await post({ source: "claude", id: F.ids.c });   // 重新登记沿用旧名;另找一个会话测限长
+    assert.equal(long.status, 201, long.text);
+    const lim = await post({ source: "codex", id: F.ids.y, label: "长".repeat(40) });
+    if (lim.status === 201) assert.equal([...lim.body.line.label].length, 24, "限 24 字");
+    else assert.fail("限长用例没登记上:" + lim.text);
+    assert.ok(!B.logs().includes(F.ids.a) && !B.logs().includes(F.ids.x), "日志不带会话 id");
   } finally { await B.stop(); rmSync(dir, { recursive: true, force: true }); }
 });
