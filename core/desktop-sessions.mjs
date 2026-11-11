@@ -326,8 +326,9 @@ export function createDesktopSessions({ claudeRoot, codexRoot, dataDir, readLimi
   }
 
   /** { source:"claude"|"codex"|"all", days:number|null, q:string|null, limit:number, selectedOnly:boolean,
-   *    lineOf:(source,id)=>string|null —— 已登记成哪条线(看板的继承表给) } */
-  function list({ source = "all", days = null, q = null, limit = LIMIT_DEFAULT, selectedOnly = false, lineOf = () => null } = {}) {
+   *    lineOf:(source,id)=>string|null —— 已登记成哪条线(看板的继承表给),
+   *    hide:(source,id)=>boolean —— 不列的会话(看板自己 fork 出来的副本:与原会话同标题,再登记一次就是第二条线) } */
+  function list({ source = "all", days = null, q = null, limit = LIMIT_DEFAULT, selectedOnly = false, lineOf = () => null, hide = () => false } = {}) {
     const sources = source === "all" ? SOURCES : [source];
     const { files, unavailable } = scan(sources);
     const titles = sources.includes("codex") ? codexTitles(codexRoot) : new Map();
@@ -342,6 +343,7 @@ export function createDesktopSessions({ claudeRoot, codexRoot, dataDir, readLimi
     for (const f of pool) {
       const meta = titled(f, metaOf(f, titles), titles);
       if (meta.subagent) continue;
+      if (hide(f.source, f.id)) continue;
       if (needle && !(meta.title || "").toLowerCase().includes(needle)) continue;
       if (out.length >= limit) { truncated = true; break; }
       out.push(row(f, meta, selKeys.has(keyOf(f)), lineOf(f.source, f.id)));

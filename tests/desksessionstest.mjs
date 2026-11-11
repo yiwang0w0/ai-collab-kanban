@@ -142,7 +142,7 @@ test("清单:两家解析、标题来源、排序、过滤与上限、不返回�
     assert.equal(byId[F.ids.y].title, "没有索引标题的 Codex 对话", "无索引 → 首条 user_message,跳过注入块");
     assert.equal(byId[F.ids.w].title, "双 uuid 文件名", "rollout-…-<id>_<uuid>.jsonl 的 id 取第一个");
     for (const s of all.body.sessions) {
-      assert.deepEqual(Object.keys(s).sort(), ["approx_tokens", "id", "line", "origin", "project", "selected", "size_bytes", "source", "start_blocked", "title", "updated_at"]);
+      assert.deepEqual(Object.keys(s).sort(), ["approx_tokens", "id", "line", "line_forked", "line_forked_at", "origin", "project", "selected", "size_bytes", "source", "start_blocked", "title", "updated_at"]);
       assert.equal(s.selected, false); assert.equal(s.line, null);
       assert.ok(s.size_bytes > 0 && !Number.isNaN(Date.parse(s.updated_at)));
     }
@@ -473,7 +473,17 @@ test("登记成线:建线/重复 409/未知会话/大体量确认/解除/手写 
     assert.match(row[F.ids.x].start_blocked.message, /BOARD_CODEX_RELEASED/);
     assert.equal(c.body.start_blocked?.code, "SEAT_LOCKED", "201 里也带");
     assert.equal(r.body.start_blocked, null);
-    const stored = JSON.parse(readFileSync(join(dir, "desktop_lineage.json"), "utf8"));
+    assert.deepEqual([row[F.ids.a].line_forked, row[F.ids.a].line_forked_at], [false, null], "还没从会话起步");
+    // 线第一次领卡时 fork 出一个会话副本(这里用另一个已有会话的 id 充当副本):清单默认不列副本,line_forked 变真
+    const fk = await B.api("POST", `/api/workers/${lineA}/forked`, B.operator, { session_id: F.ids.c });
+    assert.equal(fk.status, 200, fk.text);
+    const after = Object.fromEntries((await B.api("GET", "/api/desktop-sessions?limit=200", B.operator)).body.sessions.map((s) => [s.id, s]));
+    assert.equal(after[F.ids.c], undefined, "看板自己 fork 出来的副本默认不列(与原会话同标题,会被再登记成第二条线)");
+    assert.ok(after[F.ids.a], "原会话照列");
+    assert.equal(after[F.ids.a].line_forked, true); assert.ok(!Number.isNaN(Date.parse(after[F.ids.a].line_forked_at)));
+    const withForks = (await B.api("GET", "/api/desktop-sessions?limit=200&include_forks=1", B.operator)).body.sessions;
+    assert.ok(withForks.some((s) => s.id === F.ids.c), "include_forks=1 才列副本");
+    const stored =JSON.parse(readFileSync(join(dir, "desktop_lineage.json"), "utf8"));
     assert.deepEqual(Object.keys(stored.lines).sort(), [lineA, lineX, "claude-" + hash8(H.big)].sort(), "数据目录里只存面板登记的");
     // 重启保留
     await B.stop(); B = await board(dir, { ...F, config: JSON.parse(readFileSync(join(dir, "fleet.json"), "utf8")) });

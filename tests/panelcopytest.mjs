@@ -1062,7 +1062,7 @@ test("流转相关的界面接线：容错与文案", () => {
 
 // ── 第 2 波:接入的 AI / 本地会话 / 效率(合同 A / D / C;core/panel.html 的 wave2-copy 段) ──
 const w2Source = panelSection("// ── wave2-copy(pure;tests/panelcopytest.mjs)──", "// ── /wave2-copy ──");
-const w2 = new Function(w2Source + "\nreturn { AI_KINDS, aiKindName, aiState, aiReport, aiCodeLeft, deskSize, deskLineRef, deskBlocked, deskRegisterConfirm, aiIssueError, deskRows, deskMsg, deskLineError, EFF_METRICS, effValue, effDelta, effGroupName, effDaily, effQuery };")();
+const w2 = new Function(w2Source + "\nreturn { AI_KINDS, aiKindName, aiState, aiReport, aiCodeLeft, deskSize, deskLineRef, deskLineState, deskBlocked, deskRegisterConfirm, aiIssueError, deskRows, deskMsg, deskLineError, EFF_METRICS, effValue, effDelta, effGroupName, effDaily, effQuery };")();
 
 test("接入的 AI：状态徽标六种，撤销优先，未知值写待核实", () => {
   const t = (e) => w2.aiState(e).text;
@@ -1146,6 +1146,14 @@ test("效率：八个指标、未知写待核实、升降用文字、逐日细�
   assert.equal(w2.effQuery("week", "line"), "/api/efficiency?by=line", "缺省 = 本周对上周");
   assert.equal(w2.effQuery("d30", "runtime", new Date(2026, 10, 11)), "/api/efficiency?from=2026-10-13&to=2026-11-11&by=runtime", "近 30 天含今天");
   assert.equal(w2.effQuery("week", ""), "/api/efficiency");
+});
+
+test("本地会话一行:登记成的线按真实状态写(在跑 / 已停 · 已从该会话起步 / 还没启动)", () => {
+  assert.equal(w2.deskLineState(true, false), " · 在跑");
+  assert.equal(w2.deskLineState(true, true), " · 在跑");
+  assert.equal(w2.deskLineState(false, true), " · 已停 · 已从该会话起步", "fork 并跑过一张卡后停下,不再写还没启动");
+  assert.equal(w2.deskLineState(false, false), " · 还没启动");
+  assert.ok(source.includes('deskLineState(!!running[ref.id], s.line_forked === true)'), "deskRow 用服务端 line_forked");
 });
 
 test("第 2 波的界面接线：新文案、旧代劳按钮留着、接口缺席写一句", () => {

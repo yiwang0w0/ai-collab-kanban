@@ -3702,6 +3702,10 @@ function applyConversationPlan(convId, rev, expectedRev, by) {
 // 且每次冷缓存的续接都按全价输入计这 20 万以上的 token;所以要人明确确认。体量不明(没有 usage 记录)时按文件大小 4MB 兜底。
 const DESK_LARGE_TOKENS = 200000, DESK_LARGE_BYTES = 4 * 1024 * 1024;
 const sessionHash = (id) => createHash("sha256").update(String(id).toLowerCase()).digest("hex").slice(0, 8);
+/** 看板自己 fork 出来的会话副本:登记成线的会话第一次领卡时 fork,之后这条线沿用副本(settings 里的 session_id)。
+ *  键 = 「来源:会话 id」。清单默认不列它们(GET /api/desktop-sessions?include_forks=1 才列)。 */
+const deskForkCopies = () => new Set(Object.entries(LINEAGE).filter(([line]) => settings[line]?.forked_from && settings[line]?.session_id)
+  .map(([line, v]) => `${v.source || "claude"}:${String(settings[line].session_id).toLowerCase()}`));
 const deskLineIndex = () => new Map(Object.entries(LINEAGE).map(([line, v]) => [`${v.source || "claude"}:${String(v.session).toLowerCase()}`, line]));
 const deskLineageEntries = () => Object.fromEntries(Object.entries(LINEAGE).filter(([k, v]) => !LINEAGE_HAND.has(k) && v.via === "desktop")
   .map(([k, v]) => [k, { session: v.session, source: v.source, label: v.label, created_at: v.created_at }]));
@@ -3797,11 +3801,16 @@ async function desktopSessionsRoute(req, res, url, p, m, boardRole) {
     const q = (qs.get("q") || "").trim();
     if (q.length > 200) return json(res, 400, { error: "q 最长 200 字" });
     const lineOf = deskLineIndex();
+    const forks = qs.get("include_forks") === "1" ? new Set() : deskForkCopies();
     const r = deskSessions.list({ source, days, q: q || null, limit, selectedOnly: qs.get("selected") === "1",
-                                  lineOf: (s, id) => lineOf.get(`${s}:${id}`) || null });
-    // 面板要用:顶层带大体量阈值;每项 line = {id,label}|null,start_blocked = 登记了但起不来的原因|null
+                                  lineOf: (s, id) => lineOf.get(`${s}:${id}`) || null,
+                                  hide: (s, id) => forks.has(`${s}:${String(id).toLowerCase()}`) });
+    // 面板要用:顶层带大体量阈值;每项 line = {id,label}|null,start_blocked = 登记了但起不来的原因|null,
+    //   line_forked / line_forked_at = 这条线已从该会话起步(第一次领卡 fork)与其时刻(面板据此写「已停 · 已从该会话起步」而不是「还没启动」)
     return json(res, 200, { ...r, threshold_tokens: DESK_LARGE_TOKENS, threshold_bytes: DESK_LARGE_BYTES,
-                            sessions: r.sessions.map((x) => ({ ...x, line: deskLineRef(x.line), start_blocked: x.line ? deskStartBlocked(x.line) : null })) });
+                            sessions: r.sessions.map((x) => ({ ...x, line: deskLineRef(x.line), start_blocked: x.line ? deskStartBlocked(x.line) : null,
+                                                               line_forked: !!(x.line && settings[x.line]?.forked_from),
+                                                               line_forked_at: x.line && settings[x.line]?.forked_from ? (settings[x.line].forked_at || null) : null })) });
   }
   const mm = p.match(/^\/api\/desktop-sessions\/(claude|codex)\/([0-9a-fA-F-]{36})\/messages$/);
   if (mm && m === "GET") {

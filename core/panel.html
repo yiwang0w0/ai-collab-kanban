@@ -2313,6 +2313,10 @@ function effQuery(range, by, today = new Date()) {
   const s = p.toString();
   return "/api/efficiency" + (s ? "?" + s : "");
 }
+/** 「本地会话」一行里登记成的线的状态后缀。forked = 服务端 line_forked(这条线已从该会话的副本起步过)。 */
+function deskLineState(running, forked){
+  return running ? " · 在跑" : forked ? " · 已停 · 已从该会话起步" : " · 还没启动";
+}
 // ── /wave2-copy ──
 const COLS =["goal", "not_started", "in_progress", "waiting", "done"];
 // ⭐ Labels come from the server (GET /api/meta → status_labels / wf_labels): the ONE
@@ -9138,7 +9142,8 @@ function deskRow(s, running){
   main.append(meta);
   const ref = deskLineRef(s.line, lineLabel);
   if (ref) {
-    const ln = homeEl("span", "已登记为线 " + ref.label + (running[ref.id] ? "" : " · 还没启动"), "dr-line");
+    // 线的真实状态:在跑 / 已停 · 已从该会话起步(第一次领卡已 fork)/ 还没启动
+    const ln = homeEl("span", "已登记为线 " + ref.label + deskLineState(!!running[ref.id], s.line_forked === true), "dr-line");
     ln.title = "领卡时用这个会话的副本，原会话不动";
     main.append(ln);
     // 登记了但起不来(座席未解禁 / 缺命令路径 / 执行配置未就绪):原因就写在这一行下面
