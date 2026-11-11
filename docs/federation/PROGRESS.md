@@ -1404,3 +1404,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - panelcopytest 41/0、hometest 44/0、panelsidetest 34/0、panelcoordtest 9/0、panelauth+panelclient 20/0、coordtest 25/0;新接口只在浏览器打桩的合同形状假数据下看过。阻塞：无。
 - 2026-11-11 公告板 v3 第 2 波整合(claude/board-v3-int2):并入 connect 安全修复、flow redactText、efficiency、desk-sessions 登记成线、面板第 2 波;收口:遮蔽只留 flow 一份、加线入口显示名统一清洗、效率「卡住」接执行者最后请求、面板接真接口字段形状(line {id,label}、服务端阈值、start_blocked、应答文案、登记确认框写明数据外流面、live_note 就地更新、接入码显示期间不自动刷新)、「已启动」三处同口径标「对方自报」(started_via / self_reported_started_at)、gitleaks 4908518 单提交单文件例外。
 - 真接口联调(临时看板 + 合成会话 + 真 stdio 桥 + 无头 Edge)全部通过,发现并修了设置页「接入的 AI」要等 10 秒巡检才变「在做」;受影响测试全绿;没有调用模型。阻塞：无。
+- 2026-11-11 公告板 v3 第 3 波(claude/board-v3-w3):效率主句时长换单位(不到 1 分钟 / 整分钟 / 一位小数小时);进度消息「在做(自报)」;加线 hint 同一清洗;md 交接 board.py export-md / import-md / report-md(一律未放行、整份拒绝带行号、内容哈希去重);docs/接入说明.md;style-guide 两处订正。
+- 端到端走查缺陷并入:Codex 片段补 default_tools_approval_mode(只放行 fleet-board);流转条状态折行不压圆点、task.started 就地推进;本地会话不列看板 fork 的副本、线状态按 line_forked 写;卡历史执行者用显示名 + 空格、补「自报开始」。
+- 受影响测试全绿(mdhandofftest 8/0 等),全套 npm test 退出码 0(失败 0、无重跑);没有调用模型。阻塞:无。

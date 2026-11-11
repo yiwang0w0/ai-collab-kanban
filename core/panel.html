@@ -1309,7 +1309,7 @@
   .fbar > span{display:block;height:100%;background:var(--ok)}
   .flow-rows{list-style:none;margin:0;padding:0}
   .flow-rows > li{border-top:1px solid var(--row-line)}
-  .flow-row{display:grid;grid-template-columns:max-content max-content minmax(0,1fr);grid-template-areas:"t t t" "dots st who";gap:2px var(--sp-3);align-items:center;
+  .flow-row{display:grid;grid-template-columns:max-content minmax(0,1fr) minmax(0,max-content);grid-template-areas:"t t who" "dots st st";gap:2px var(--sp-3);align-items:center;
             width:100%;min-height:0;padding:var(--sp-2) var(--sp-4);border:0;border-radius:0;background:transparent;text-align:left;font-weight:400;font-size:var(--fs-md)}
   .flow-row:hover{border:0;background:var(--hover)}
   .flow-row[data-need]{box-shadow:inset 3px 0 0 var(--accent)}
@@ -1321,15 +1321,17 @@
   .fr-dot{width:8px;height:8px;border-radius:50%;border:1.5px solid var(--dim2)}
   .fr-dot[data-s="done"]{border-color:var(--ok);background:var(--ok)}
   .fr-dot[data-s="now"]{border-color:var(--accent);background:color-mix(in srgb,var(--accent) 30%,transparent)}
-  .fr-st{grid-area:st;display:flex;align-items:center;gap:var(--sp-2);color:var(--dim);font-size:var(--fs-sm);white-space:nowrap}
+  /* 状态短语 + 打回次数可能比格子宽(「claude 在做 · 对方自报」「已打回 1 次」):折行,不压到五步点上。 */
+  .fr-st{grid-area:st;display:flex;flex-wrap:wrap;align-items:center;gap:0 var(--sp-2);min-width:0;color:var(--dim);font-size:var(--fs-sm)}
+  .fr-st > *{white-space:nowrap}
   .flow-row[data-need] .fr-ph{color:var(--accent);font-weight:600}
   .fr-back,.tag.back{display:inline-flex;align-items:center;gap:2px;color:var(--dim)}
   .fr-back .ic,.tag.back .ic,.live-note .ic,.hist .ic{width:12px;height:12px;flex:none}
   .fr-note{margin:0;padding:0 var(--sp-4) var(--sp-2);color:var(--dim);font-size:var(--fs-xs);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   @container (min-width:640px){
-    .flow-row{grid-template-columns:minmax(0,1fr) 112px 60px 184px;grid-template-areas:"t who dots st"}
+    .flow-row{grid-template-columns:minmax(0,1fr) 112px 60px minmax(184px,max-content);grid-template-areas:"t who dots st"}
     .fr-who{justify-self:start}
-    .fr-st{justify-self:end}
+    .fr-st{justify-self:end;justify-content:flex-end}
   }
   /* 首页「正在执行」按目标归组:组头 = 目标标题 + d/n + 细进度条,无框无底。 */
   .hgroup{display:flex;flex-direction:column;gap:var(--sp-2)}
@@ -2176,6 +2178,14 @@ function goalCountOf(goal, kids = []){
   if (Number.isInteger(goal?.children_done) && Number.isInteger(goal?.children_total)) return { done: goal.children_done, total: goal.children_total };
   const open = kids.filter((k) => !k.archived_at);
   return { done: open.filter((k) => k.status === "done").length, total: open.length };
+}
+/** SSE task.started(外部执行者领卡后第一次心跳)→ 就地把流转条对应行推进到「在做 · 对方自报」,不等对话 2 秒的合并刷新。
+ *  只动「进行中且停在已领取(step 2)」的行;返回是否改了。下一次读对话以服务端为准。 */
+function flowStarted(progress, id){
+  const it = (Array.isArray(progress?.items) ? progress.items : []).find((x) => Number(x?.id) === Number(id));
+  if (!it || it.status !== "in_progress" || it.step !== 2) return false;
+  it.step = 3; it.started_via = "self_report";
+  return true;
 }
 // ── /flow-copy ──
 // ── wave2-copy(pure;tests/panelcopytest.mjs)──
@@ -5930,6 +5940,8 @@ es.addEventListener("change", (e) => {
     if (d.type === "desktop-sessions.changed" && homeView === "settings") deskLoad();
     // live_note(执行者的临时进度):只读这一张卡、只改流转条那一行与卡面那一句,不整页重读(F4)。
     if (d.type === "task.live_note" && d.id != null) { liveNoteChanged(d.id); return; }
+    // 外部执行者的「在做 · 对方自报」:首页右栏走 refresh 立即变,流转条同一张卡也就地跟上(三处同一口径,不差 2 秒)
+    if (d.type === "task.started" && d.id != null && flowStarted(chatData?.conversation?.progress, d.id)) { try { renderChat(); } catch (err) { console.error("流转条就地更新失败", err); } }
     // 设置页开着时,卡的领取 / 交付 / 放回会改「接入的 AI」那一行(在做 / 空闲、手上的卡):跟着重读,不等 10 秒一次的状态巡检
     if (homeView === "settings" && typeof d.type === "string" && d.type.startsWith("task.")) aiLoad();
   } catch {}

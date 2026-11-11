@@ -974,7 +974,22 @@ test("文案闸的阴性对照：卡 #9 之前的那些写法逐条被判出来"
 
 // ── 流转条 / 首页按目标归组 / 卡详情「历史」(合同 B;core/panel.html 的 flow-copy 段) ──
 const flowSource = panelSection("// ── flow-copy(pure;tests/panelcopytest.mjs)──", "// ── /flow-copy ──");
-const flow = new Function(flowSource + "\nreturn { FLOW_STEP_NAMES, flowUsable, flowNeed, flowDots, flowPhrase, flowBack, flowTotal, homeGroups, historyRow, historyPick, flowItemNote, goalCountOf };")();
+const flow = new Function(flowSource + "\nreturn { FLOW_STEP_NAMES, flowUsable, flowNeed, flowDots, flowPhrase, flowBack, flowTotal, homeGroups, historyRow, historyPick, flowItemNote, goalCountOf, flowStarted };")();
+
+test("task.started 就地推进流转条那一行:只动进行中且停在已领取的行,短语变「在做 · 对方自报」", () => {
+  const p = { items: [{ id: 7, status: "in_progress", step: 2, runtime: "codex", started_via: null }, { id: 8, status: "waiting", step: 4 }] };
+  assert.equal(flow.flowPhrase(p.items[0]).text, "Codex 已领取");
+  assert.equal(flow.flowStarted(p, "7"), true);
+  assert.deepEqual([p.items[0].step, p.items[0].started_via], [3, "self_report"]);
+  assert.equal(flow.flowPhrase(p.items[0]).text, "Codex 在做 · 对方自报");
+  assert.equal(flow.flowStarted(p, 7), false, "已经在做:不再动");
+  assert.equal(flow.flowStarted(p, 8), false, "不是进行中:不动");
+  assert.equal(flow.flowStarted(p, 9), false); assert.equal(flow.flowStarted(null, 7), false);
+  assert.ok(source.includes('d.type === "task.started" && d.id != null && flowStarted(chatData?.conversation?.progress, d.id)'), "SSE 接线");
+  // 版式:状态短语 + 打回次数放不下时折行(真实端到端里两者同在时压到了五步点上)
+  assert.match(source, /\.fr-st\{grid-area:st;display:flex;flex-wrap:wrap;/);
+  assert.ok(source.includes("grid-template-columns:minmax(0,1fr) 112px 60px minmax(184px,max-content)"), "宽版状态列至少 184px、可加宽");
+});
 
 test("流转条行下那行字读行项自己的 live_note;目标组头 d/n 优先用服务端同口径的数", () => {
   const card = { status: "in_progress", live_note: "看板卡上的旧句" };
