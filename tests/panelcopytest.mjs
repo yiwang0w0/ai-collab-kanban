@@ -1174,6 +1174,8 @@ test("接真接口后的收口:live_note 只改那一处、登记确认框、刚
   assert.ok(at > 0 && h.slice(at, at + 120).includes("liveNoteChanged(d.id); return;") && at < h.lastIndexOf("refresh();"), "live_note 不走整页刷新");
   const fn = source.slice(source.indexOf("function liveNoteChanged("), source.indexOf("// SSE: pushed on change only"));
   assert.ok(fn.includes('fetch("/api/tasks/" + id') && !fn.includes("refresh()") && !fn.includes("render()"), "只读一张卡,不重读、不重画整页");
+  // 联调发现:设置页开着时卡的领取/交付要立刻反映到「接入的 AI」(不等 10 秒巡检)
+  assert.ok(h.includes('if (homeView === "settings" && typeof d.type === "string" && d.type.startsWith("task.")) aiLoad();'));
   assert.ok(fn.includes(".live-note") && fn.includes(".fr-note") && fn.includes("createTextNode(text)"), "卡面与流转条行就地换字(文本通道)");
   // 登记成线:先确认(P1),确认过大体量就直接带 confirm_large;201 的 label 与 start_blocked 直接用
   const reg = source.slice(source.indexOf("async function deskRegister("), source.indexOf("async function deskUnlink("));

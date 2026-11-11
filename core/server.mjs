@@ -339,8 +339,8 @@ const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),rep
   progress_blockers: store.stuckWhy(db,t),
   // 执行者 heartbeat 带的临时进度(core/connect.mjs):只在这次 run 执行中时有值,不进历史。
   ...connect.liveNote(t),
-  // 外部执行者「已启动」的依据(合同 B 裁定):这一轮领取后第一次心跳的时刻 —— 对方自报,看板没有观察到进程。受管线恒 null。
-  self_reported_started_at: t.status === "in_progress" && t.run_id && coord.isExecutor(db, t.worker) ? connect.heartbeatStartedAt(t.run_id) : null,
+  // 外部执行者「已启动」的依据(合同 B 裁定):最近这一轮(run_id)领取后第一次心跳的时刻 —— 对方自报,看板没有观察到进程。交付/完成后仍保留(侧栏五步条要显示);受管线恒 null。
+  self_reported_started_at: t.status !== "not_started" && t.run_id && coord.isExecutor(db, t.worker) ? connect.heartbeatStartedAt(t.run_id) : null,
   // Zcode 线的卡:最近一个分派请求的状态、拒收码与白话及其来源、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
   ...zcodeTaskField(db, t, CFG.zcode_worker_config ?? null),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),

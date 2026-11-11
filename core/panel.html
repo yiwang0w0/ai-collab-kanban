@@ -5926,6 +5926,8 @@ es.addEventListener("change", (e) => {
     if (d.type === "desktop-sessions.changed" && homeView === "settings") deskLoad();
     // live_note(执行者的临时进度):只读这一张卡、只改流转条那一行与卡面那一句,不整页重读(F4)。
     if (d.type === "task.live_note" && d.id != null) { liveNoteChanged(d.id); return; }
+    // 设置页开着时,卡的领取 / 交付 / 放回会改「接入的 AI」那一行(在做 / 空闲、手上的卡):跟着重读,不等 10 秒一次的状态巡检
+    if (homeView === "settings" && typeof d.type === "string" && d.type.startsWith("task.")) aiLoad();
   } catch {}
   refresh();
 });
@@ -7301,7 +7303,7 @@ function sideSteps(t, trace){
   const steps = [];
   steps.push(["放行", t.released ? (at(trace.released_at) || "已放行") : "尚未放行", t.released ? "done" : t.status === "not_started" ? "now" : "todo"]);
   steps.push(["领取", trace.claimed_at ? at(trace.claimed_at) : t.run_id ? "待核实" : "未领取", trace.claimed_at ? "done" : t.run_id ? "unknown" : "todo"]);
-  const selfStarted = trace.process_state !== "observed" && t.status === "in_progress" && !!t.self_reported_started_at;
+  const selfStarted = trace.process_state !== "observed" && !!t.self_reported_started_at;
   if (selfStarted)   // 外部执行者:时间取这一轮第一次心跳;看板没有观察到进程,title 写明
     steps.push(["启动", at(t.self_reported_started_at) || "对方自报", "done", "外部执行者自报，看板没有观察到进程"]);
   else steps.push(["启动", trace.process_state === "observed" ? (at(trace.process_started_at) || "已启动") : trace.process_state === "not_started" ? "未启动" : t.run_id ? "待核实" : "未到",

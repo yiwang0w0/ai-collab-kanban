@@ -1402,3 +1402,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - desksessionstest 8/0(每条修复单独还原均变红)、worker_loop --codex-selftest 39/0;没有调用模型。阻塞：无。
 - 2026-11-11 面板第 2 波(claude/v3-ui2):设置页「接入的 AI」(列表 + 撤销 + 发接入码,倒计时与两段复制;旧代劳五按钮收进默认折叠的「请协调席代劳(旧)」)、「本地会话」(勾选、登记成线含大体量确认、去起线、解除、只读看历史);首页效率一行与「卡住」进待我处理;历史页「效率」对照表 + 逐日细条 + 按线/按执行器分解。接口 404 只写一句。style-guide §八 同步。
 - panelcopytest 41/0、hometest 44/0、panelsidetest 34/0、panelcoordtest 9/0、panelauth+panelclient 20/0、coordtest 25/0;新接口只在浏览器打桩的合同形状假数据下看过。阻塞：无。
+- 2026-11-11 公告板 v3 第 2 波整合(claude/board-v3-int2):并入 connect 安全修复、flow redactText、efficiency、desk-sessions 登记成线、面板第 2 波;收口:遮蔽只留 flow 一份、加线入口显示名统一清洗、效率「卡住」接执行者最后请求、面板接真接口字段形状(line {id,label}、服务端阈值、start_blocked、应答文案、登记确认框写明数据外流面、live_note 就地更新、接入码显示期间不自动刷新)、「已启动」三处同口径标「对方自报」(started_via / self_reported_started_at)、gitleaks 4908518 单提交单文件例外。
+- 真接口联调(临时看板 + 合成会话 + 真 stdio 桥 + 无头 Edge)全部通过,发现并修了设置页「接入的 AI」要等 10 秒巡检才变「在做」;受影响测试全绿;没有调用模型。阻塞：无。
