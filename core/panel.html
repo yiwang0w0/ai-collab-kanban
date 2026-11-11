@@ -2000,6 +2000,13 @@ function flowItemNote(item, card){
   const note = own ? item.live_note : card?.live_note;
   return status === "in_progress" && typeof note === "string" && note.trim() ? note.trim() : "";
 }
+/** 首页目标组头的 d/n:服务端给了 children_done / children_total 就用(与对话进度同口径:直接子卡,未归档 + 完成后才归档的);
+ *  旧服务端没有这两个字段时按本地拿到的未归档子卡数。 */
+function goalCountOf(goal, kids = []){
+  if (Number.isInteger(goal?.children_done) && Number.isInteger(goal?.children_total)) return { done: goal.children_done, total: goal.children_total };
+  const open = kids.filter((k) => !k.archived_at);
+  return { done: open.filter((k) => k.status === "done").length, total: open.length };
+}
 // ── /flow-copy ──
 const COLS =["goal", "not_started", "in_progress", "waiting", "done"];
 // ⭐ Labels come from the server (GET /api/meta → status_labels / wf_labels): the ONE
@@ -7520,12 +7527,11 @@ function homeGoalOf(item){
   }
   return null;
 }
-/** 目标的组头:标题与直属子任务 完成/总数(未归档)。 */
+/** 目标的组头:标题与直属子任务 完成/总数(口径见 goalCountOf)。 */
 function homeGoalInfo(id){
   const goal = byId.get(Number(id));
   if (!goal) return null;
-  const kids = tasks.filter((x) => x.parent_id === goal.id && !x.archived_at);
-  return { title: goal.subject, done: kids.filter((k) => k.status === "done").length, total: kids.length };
+  return { title: goal.subject, ...goalCountOf(goal, tasks.filter((x) => x.parent_id === goal.id)) };
 }
 /** 细进度条:只是 done/total 的图,数字另写在旁边;读屏读旁边的数字。 */
 function flowBar(done, total){

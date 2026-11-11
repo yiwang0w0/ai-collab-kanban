@@ -341,5 +341,13 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
   }
   function stop() { for (const t of timers.values()) { try { clearTimeout(t); } catch {} } timers.clear(); }
 
-  return { history, taskFields, progressOf, progressText, sync, syncAll, decorateDetail, notify, stop, refresh };
+  /** 目标卡的 d/n:与 progress 同一口径(直接子卡,未归档 + 完成后才归档的)。首页右栏组头用。 */
+  const kidCountStmt = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(status='done'),0) AS d FROM tasks WHERE parent_id=? AND (archived_at IS NULL OR status='done')");
+  function goalCounts(t) {
+    if (t?.kind !== "goal") return {};
+    const r = kidCountStmt.get(Number(t.id));
+    return { children_done: Number(r.d), children_total: Number(r.n) };
+  }
+
+  return { history, taskFields, goalCounts, progressOf, progressText, sync, syncAll, decorateDetail, notify, stop, refresh };
 }

@@ -329,6 +329,7 @@ const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),rep
   ...t,
   history_refs:store.taskHistoryRefs(db,t.id),
   ...flow.taskFields(t),   // 合同 B:handed_back / last_actor / last_actor_kind(core/flow.mjs,增量缓存)
+  ...flow.goalCounts(t),   // 目标卡:children_done / children_total(与 conversation.progress 同口径,首页右栏组头用)
   execution_trace: taskExecutionView(db, t),
   verification_repair:repair.policy,
   ...(repair.digest?{verification_repair_digest:repair.digest}:{}),

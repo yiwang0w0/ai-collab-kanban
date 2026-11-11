@@ -160,6 +160,21 @@ test("progress.items 带 live_note / live_note_at(connect 的表,绑本轮 run);
   assert.deepEqual([item(ext).live_note, item(ext).live_note_at], [null, null], "交付后清空");
 });
 
+test("目标卡的 children_done / children_total 与 progress 的 done/total 同口径(直接子卡,未归档 + 完成后才归档的)", async (t) => {
+  const { db, flow, goal, ext, man, conv, claim } = await extSetup(t);
+  const m = claim(man, "alpha", "claude");
+  store.report(db, { id: man, worker: "alpha", runId: m.run_id, outcome: "done", evidence: "好了" });
+  store.resolve(db, { id: man, verdict: "approve", resolvedBy: "human", expectedVersion: version(db, man) });
+  store.archive(db, { id: man });
+  const gone = store.add(db, { subject: "作废卡", parentId: goal, line: "alpha", released: 0, actor: "operator" });
+  store.archive(db, { id: gone, force: true });
+  const kid = store.add(db, { subject: "孙卡", parentId: ext, line: "alpha", released: 1, actor: "operator" });
+  const p = flow.progressOf(conv);
+  assert.deepEqual([p.done, p.total], [1, 2], "完成后归档的算,未完成就归档的不算,孙卡不算");
+  assert.deepEqual(flow.goalCounts(store.get(db, goal)), { children_done: p.done, children_total: p.total });
+  assert.deepEqual([flow.goalCounts(store.get(db, ext)), flow.goalCounts(store.get(db, kid))], [{}, {}], "不是目标的卡没有这两个字段");
+});
+
 test("actor_kind 判定表、摘要清洗", () => {
   const ctx = { lines: ["alpha"], isExecutor: (a) => a === "zc-1" };
   const k = (a, kind = "resolve") => F.actorKindOf(a, kind, ctx);

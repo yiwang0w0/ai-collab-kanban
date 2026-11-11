@@ -974,14 +974,17 @@ test("文案闸的阴性对照：卡 #9 之前的那些写法逐条被判出来"
 
 // ── 流转条 / 首页按目标归组 / 卡详情「历史」(合同 B;core/panel.html 的 flow-copy 段) ──
 const flowSource = panelSection("// ── flow-copy(pure;tests/panelcopytest.mjs)──", "// ── /flow-copy ──");
-const flow = new Function(flowSource + "\nreturn { FLOW_STEP_NAMES, flowUsable, flowNeed, flowDots, flowPhrase, flowBack, flowTotal, homeGroups, historyRow, historyPick, flowItemNote };")();
+const flow = new Function(flowSource + "\nreturn { FLOW_STEP_NAMES, flowUsable, flowNeed, flowDots, flowPhrase, flowBack, flowTotal, homeGroups, historyRow, historyPick, flowItemNote, goalCountOf };")();
 
-test("流转条行下那行字读行项自己的 live_note", () => {
+test("流转条行下那行字读行项自己的 live_note;目标组头 d/n 优先用服务端同口径的数", () => {
   const card = { status: "in_progress", live_note: "看板卡上的旧句" };
   assert.equal(flow.flowItemNote({ status: "in_progress", live_note: " 读第二章 " }, card), "读第二章");
   assert.equal(flow.flowItemNote({ status: "in_progress", live_note: null }, card), "", "行项给了 null 就不显示,不退到卡上的");
   assert.equal(flow.flowItemNote({ status: "waiting", live_note: "x" }, card), "", "只在进行中显示");
   assert.equal(flow.flowItemNote({ status: "in_progress" }, card), "看板卡上的旧句", "旧服务端没有这个键才看卡");
+  const kids = [{ status: "done" }, { status: "in_progress" }, { status: "done", archived_at: "t" }];
+  assert.deepEqual(flow.goalCountOf({ children_done: 2, children_total: 3 }, kids), { done: 2, total: 3 });
+  assert.deepEqual(flow.goalCountOf({}, kids), { done: 1, total: 2 }, "没有服务端字段:按本地未归档子卡");
 });
 
 test("流转条：progress 缺或为 null 不画，五步点与侧栏同名，只有在等你的一步亮", () => {
