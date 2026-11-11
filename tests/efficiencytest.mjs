@@ -131,7 +131,8 @@ test("本周对上周:各个数按口径算出;未知列进 unknown;主句", (t)
   assert.deepEqual(p.unknown.sort(), ["ai_work_ms", "cycle_ms_median", "model_ms", "parallel_avg", "parallel_peak", "stalled", "wait_human_ms_median"]);
   nullsListed(p);
 
-  assert.deepEqual(r.daily, [{ date: "2026-11-09", created: 0, done: 1 }, { date: "2026-11-10", created: 2, done: 3 }, { date: "2026-11-11", created: 1, done: 0 }]);
+  assert.deepEqual(r.daily, [{ date: "2026-11-09", created: 0, done: 1 }, { date: "2026-11-10", created: 2, done: 3 }, { date: "2026-11-11", created: 1, done: 0 },
+    ...[12, 13, 14, 15].map((d) => ({ date: `2026-11-${d}`, created: 0, done: 0 }))], "区间内还没到的日子也补 0");
   assert.equal(r.headline, "本周完成 4 张 · 打回 2 次 · AI 干了 10.3 小时 · 你操作 5 次 · 平均同时 1.3 条线在跑");
   assert.deepEqual(r.groups, []);
 });
@@ -169,6 +170,35 @@ test("空区间:done=0、比率为 null 并列进 unknown;账本缺失 → 模�
   const w = eff.compute();
   assert.deepEqual([w.now.model_ms, w.now.cost_usd], [null, null], "没有账本 = 未知,不是 0");
   assert.ok(w.now.unknown.includes("model_ms"));
+});
+
+test("区间上限(P5):by=day ≤92 天、by=week ≤2 年,超出 400 并说明;其余仍 ≤400 天", (t) => {
+  const { eff } = fixture(t, { ledgerRows: false });
+  const q = (s) => E.efficiencyHttp(eff, new URLSearchParams(s), "operator");
+  assert.equal(q("from=2026-08-01&to=2026-10-31&by=day").status, 200, "整 92 天可以");
+  const day = q("from=2026-08-01&to=2026-11-01&by=day");
+  assert.equal(day.status, 400); assert.match(day.body.error, /by=day.*92 天/);
+  assert.equal(q("from=2024-11-02&to=2026-11-01&by=week").status, 200, "整 2 年可以");
+  const wk = q("from=2024-11-01&to=2026-11-02&by=week");
+  assert.equal(wk.status, 400); assert.match(wk.body.error, /by=week.*2 年/);
+  assert.equal(q("from=2025-11-01&to=2026-11-01&by=line").status, 200);
+  assert.equal(q("from=2025-01-01&to=2026-11-01&by=line").status, 400, "line / runtime / 不分解仍是 400 天");
+  assert.equal(q("from=2025-01-01&to=2026-11-01").status, 400);
+});
+
+test("daily 补齐区间内每一天;groups 里 key 为 null 的 label 是「未指定」", (t) => {
+  const { eff, db } = fixture(t);
+  const id = store.add(db, { subject: "卡", released: 1, actor: "operator" });
+  db.prepare("UPDATE tasks SET line=NULL, last_runtime=NULL, status='done', created_at=?, updated_at=?, resolved_at=?, attempts=0 WHERE id=?")
+    .run(iso(T(10, 8)), iso(T(10, 9)), iso(T(10, 9)), id);
+  for (const by of ["line", "runtime"]) {
+    const g = eff.compute({ by }).groups.find((x) => x.key === null);
+    assert.ok(g, `${by}: 有 key=null 的组`); assert.equal(g.label, "未指定", by); assert.equal(g.done, 1);
+  }
+  const r = eff.compute({ from: "2026-11-01", to: "2026-11-30" });
+  assert.equal(r.daily.length, 30, "11 月整月 30 天,包括还没到的日子");
+  assert.deepEqual(r.daily.slice(-2), [{ date: "2026-11-29", created: 0, done: 0 }, { date: "2026-11-30", created: 0, done: 0 }]);
+  assert.deepEqual(r.daily.map((d) => d.date), [...new Set(r.daily.map((d) => d.date))], "不重日");
 });
 
 test("缓存:同一事件水位与区间直接回同一份;新事件 / 卡变化 / 时间走过时间片就重算", (t) => {
@@ -217,6 +247,17 @@ test("性能:2000 张卡 / 2 万事件的冷算与热读", (t) => {
   console.log(`# 性能 2000 卡/20000 事件:冷算(建事件缓存 + by=day 13 段)${cold.toFixed(1)}ms;热读 ${warm.toFixed(2)}ms;换区间(事件缓存已热,by=line)${other.toFixed(1)}ms`);
   assert.equal(r.now.done + r.prev.done, 2000);
   assert.ok(cold < 5000 && warm < 50 && other < 3000, `${cold} / ${warm} / ${other}`);
+
+  // P5 最坏情况:上限处的分段数(by=day 92 段、by=week 2 年 ≈105 段)与「每次换一个 from/to」。
+  // 卡表快照只在数据变了时重读:换区间不重读卡表、不重扫事件。
+  const loads0 = eff.stats().task_loads;
+  const [d92] = time(() => eff.compute({ from: "2026-08-15", to: "2026-11-14", by: "day" }));
+  const [w2y] = time(() => eff.compute({ from: "2024-11-15", to: "2026-11-14", by: "week" }));
+  const [many] = time(() => { for (let i = 0; i < 20; i++) eff.compute({ from: `2026-0${1 + (i % 8)}-0${1 + (i % 9)}`, to: "2026-11-14", by: i % 2 ? "line" : null }); });
+  console.log(`# P5 最坏:by=day 92 段 ${d92.toFixed(1)}ms;by=week 2 年 ${w2y.toFixed(1)}ms;20 个不同区间合计 ${many.toFixed(1)}ms`);
+  assert.equal(eff.stats().task_loads, loads0, "换区间不重读卡表");
+  assert.ok(eff.stats().event_scans <= 1, "事件只在建缓存时扫一遍");
+  assert.ok(d92 < 3000 && w2y < 3000 && many < 6000, `${d92} / ${w2y} / ${many}`);
 });
 
 // ── 服务层:真看板上的鉴权与 board.py efficiency ───────────────────────────────────────

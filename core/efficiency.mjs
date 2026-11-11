@@ -27,6 +27,8 @@ const METRIC_KEYS = ["done", "lead_ms_median", "cycle_ms_median", "handed_back",
 const HUMAN_ACTION_KINDS = new Set(["resolve", "release", "reopen"]);
 const DAY = 86400000;
 const MAX_SPAN_MS = 400 * DAY;
+// 分段数的上限(P5):by=day 至多 92 天、by=week 至多 2 年;其余(不分解 / line / runtime)仍是 400 天。
+const MAX_DAYS_BY_DAY = 92, MAX_YEARS_BY_WEEK = 2;
 
 const median = (a) => {
   if (!a.length) return null;
@@ -49,7 +51,7 @@ function localStamp(t) {
 
 /** from / to(查询串)→ 本期与上期的毫秒区间,左闭右开。只给日期时 to 含当天整天。
  *  缺省 = 本周(周一零点起 7 个日历日)对上周。读不懂抛 BAD_INPUT。 */
-export function periodOf(fromRaw, toRaw, now) {
+export function periodOf(fromRaw, toRaw, now, by = null) {
   const bad = (m) => Object.assign(new Error(m), { code: "BAD_INPUT" });
   const has = (v) => v != null && v !== "";
   if (!has(fromRaw) && !has(toRaw)) {
@@ -62,7 +64,13 @@ export function periodOf(fromRaw, toRaw, now) {
   const to = dateOnly ? parseTime(toRaw, true) + 1 : parseTime(toRaw);
   if (!Number.isFinite(from) || !Number.isFinite(to)) throw bad("from / to 要写成 2026-11-10 或 2026-11-10T08:30:00 这样的时刻");
   if (to <= from) throw bad("to 必须晚于 from");
-  if (to - from > MAX_SPAN_MS) throw bad("区间最长 400 天");
+  if (by === "day" && to > addDays(from, MAX_DAYS_BY_DAY))
+    throw bad(`by=day 时区间最长 ${MAX_DAYS_BY_DAY} 天(按天分段太多);更长的区间请用 by=week 或缩短区间`);
+  if (by === "week") {
+    const f = new Date(from);
+    const lim = new Date(f.getFullYear() + MAX_YEARS_BY_WEEK, f.getMonth(), f.getDate(), f.getHours(), f.getMinutes(), f.getSeconds(), f.getMilliseconds()).getTime();
+    if (to > lim) throw bad(`by=week 时区间最长 ${MAX_YEARS_BY_WEEK} 年;请缩短区间`);
+  } else if (to - from > MAX_SPAN_MS) throw bad("区间最长 400 天");
   return { from, to, prevFrom: from - (to - from), prevTo: from, label: "本期", prevLabel: "上期" };
 }
 
@@ -89,6 +97,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
   //    只扫 id 大于上次的新事件;max(id) 变小(库被换掉)→ 整个重建。
   const evs = new Map();
   let seen = 0;
+  const counters = { event_scans: 0, task_loads: 0, computes: 0 };
   const scan = db.prepare("SELECT id, at, task_id, kind, actor, detail FROM task_events WHERE id>? ORDER BY id LIMIT 5000");
   const maxIdStmt = db.prepare("SELECT COALESCE(MAX(id),0) AS m FROM task_events");
   const RELEVANT = new Set(["claim", "report", "resolve", "reopen", "release"]);
@@ -97,6 +106,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
     if (top < seen) { evs.clear(); seen = 0; }
     if (top === seen) return top;
     const ctx = { lines: lines() || [], labels: {}, isExecutor: (a) => isExecutor(db, a) };
+    counters.event_scans++;
     for (;;) {
       const rows = scan.all(seen);
       if (!rows.length) break;
@@ -122,6 +132,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
   const sigStmt = db.prepare("SELECT COUNT(*) AS n, COALESCE(MAX(updated_at),'') AS u FROM tasks");
 
   function loadTasks(now) {
+    counters.task_loads++;
     const parents = new Set(parentsStmt.all().map((r) => Number(r.p)));
     const rt = new Map();
     for (const r of runtimeStmt.all()) if (r.runtime) rt.set(Number(r.task_id), String(r.runtime));
@@ -214,9 +225,10 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
     return m;
   }
 
-  function daily(tasks, a, b, now) {
-    const out = [], stop = Math.min(b, Math.max(a, addDays(dayStart(now), 1)));
-    for (let d = a; d < stop; d = addDays(d, 1)) {
+  function daily(tasks, a, b) {
+    // 区间里每一天都给一行(还没到的日子也给,created / done 为 0),面板按它画整条横轴。
+    const out = [];
+    for (let d = a; d < b; d = addDays(d, 1)) {
       const e = Math.min(addDays(d, 1), b), inR = (t) => t !== null && t >= d && t < e;
       out.push({ date: localDate(d),
         created: tasks.filter((t) => !t.goal && inR(t.created)).length,
@@ -245,7 +257,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
       const m = metrics(list, a, b, now, { cards: new Set(list.map((t) => t.id)) });
       // 区间里什么都没发生的组不列(不做排名,也不列一长串 0)。
       if (!m.done && !m.handed_back && !m.human_actions && m.ai_work_ms === 0 && !m.stalled && m.model_ms == null && m.cost_usd == null) continue;
-      const label = by === "line" ? (key ? (lab[key] || key) : "未指定线") : (key || "未知运行时");
+      const label = key ? (by === "line" ? (lab[key] || key) : key) : "未指定";   // 未指定线 / 未知运行时
       out.push({ key: key || null, label, ...m });
     }
     return out.sort((x, y) => String(x.key ?? "￿").localeCompare(String(y.key ?? "￿")));
@@ -261,25 +273,32 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
 
   // ── 结果缓存:键 = 事件最大 id + 卡表签名(条数、最晚 updated_at)+ 账本读到的位置 + 区间 + by;
   //    区间末尾在现在之后时再加一个 openTtlMs 的时间片(进行中的时段与心跳随时间变)。
+  //    卡表快照另缓存一份(键 = 事件水位 + 卡表签名 + 时间片):换 from/to 不重读卡表、不重扫事件,
+  //    只重算区间内的数(分段数由 periodOf 的上限封顶)。
   const cache = new Map();
+  let snap = { key: null, tasks: null };
   function compute({ from = null, to = null, by = null } = {}) {
     if (by != null && by !== "" && !BY.includes(by)) throw Object.assign(new Error(`by 只能是 ${BY.join(" | ")}`), { code: "BAD_INPUT" });
     const now = clock();
-    const P = periodOf(from, to, now);
+    const P = periodOf(from, to, now, by || null);
     ledger?.refresh?.();
     const top = refresh();
     const sig = sigStmt.get();
+    const slice = Math.floor(now / openTtlMs);
     const key = JSON.stringify([top, sig.n, sig.u, ledger?.stats?.().offset ?? null, P.from, P.to, by || null,
-      P.to > now ? Math.floor(now / openTtlMs) : null]);
+      P.to > now ? slice : null]);
     if (cache.has(key)) { const v = cache.get(key); cache.delete(key); cache.set(key, v); return v; }
-    const tasks = loadTasks(now);
+    counters.computes++;
+    const snapKey = JSON.stringify([top, sig.n, sig.u, slice]);
+    if (snap.key !== snapKey) snap = { key: snapKey, tasks: loadTasks(now) };
+    const tasks = snap.tasks;
     const nowM = metrics(tasks, P.from, P.to, now), prevM = metrics(tasks, P.prevFrom, P.prevTo, now);
     const out = {
       period: { from: localStamp(P.from), to: localStamp(P.to) },
       previous: { from: localStamp(P.prevFrom), to: localStamp(P.prevTo) },
       now: nowM, prev: prevM,
       groups: groupsOf(by || null, tasks, P.from, P.to, now),
-      daily: daily(tasks, P.from, P.to, now),
+      daily: daily(tasks, P.from, P.to),
       headline: headline(P.label, nowM),
     };
     cache.set(key, out);
@@ -287,7 +306,7 @@ export function createEfficiency({ db, ledger = null, lines = () => [], labels =
     return out;
   }
 
-  return { compute, refresh, metrics, cacheSize: () => cache.size };
+  return { compute, refresh, metrics, cacheSize: () => cache.size, stats: () => ({ ...counters }) };
 }
 
 /** GET /api/efficiency 的应答。role 来自 guardAuthentication:只给操作员(面板会话或操作员令牌)。 */

@@ -1384,3 +1384,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - flowtest 4/0(500 卡 / 5000 事件:热读 500 次约 1ms)、convtest 5/0、hometest 43/0、taskexecutionhttp 1/0;没有调用模型。阻塞：无。
 - 2026-11-11 公告板 v3 合同 C「效率」后端(claude/efficiency):新 `core/efficiency.mjs` 给 `GET /api/efficiency`(本周对上周或指定区间对紧邻等长区间;done/lead/cycle/返工/一次通过率/自动通过占比/人的操作与等待/AI 持卡时长/并行均值与峰值/卡住/模型耗时与费用;未知一律 null 并列进 unknown;by=day|week|line|runtime 分解;按事件水位 + 区间缓存),事件归类复用 core/flow.mjs;`board.py efficiency`;docs/效率口径.md。
 - efficiencytest 7/0(2000 卡 / 2 万事件:冷算约 135ms、热读约 1ms)、flowtest 4/0;没有调用模型。阻塞：无。
+- 2026-11-11 安全复审 P5 等(claude/efficiency):`by=day` 区间上限 92 天、`by=week` 上限 2 年(超出 400 并说明);卡表快照按数据签名缓存,换 from/to 不重读卡表、不重扫事件;`daily` 补齐区间内每一天(含还没到的日子);`groups` 里 key 为 null 的 label 一律「未指定」。flow.mjs 未动。
+- efficiencytest 9/0(新增 2 例 + 性能例补上限处最坏:by=day 92 段约 45ms、by=week 2 年约 97ms;带 2 万行账本约 0.15 / 0.2 秒;旧实现下 4 例红);没有调用模型。阻塞：无。
