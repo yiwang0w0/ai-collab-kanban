@@ -58,7 +58,7 @@ test("一张卡走完全程:历史条目与 step、actor_kind、打回原因、h
   let p = flow.progressOf(conv);
   assert.deepEqual([p.items[0].step, p.items[0].waiting_for], [4, "review"]);
   assert.match(flow.progressText(p), /^0\/2 完成 · #\d+ 待验收/);
-  const reason = "缺少 C:\\Users\\someone\\proj\\a.txt 的用例,先跑 `npm test` 再交 0123456789abcdef0123";
+  const reason = "缺少 C:\\Users\\you\\proj\\a.txt 的用例,先跑 `npm test` 再交 0123456789abcdef0123";
   store.resolve(db, { id, verdict: "reject", note: reason, resolvedBy: "human", expectedVersion: version(db, id) });
   assert.deepEqual(flow.taskFields({ id }), { handed_back: 1, last_actor: "你", last_actor_kind: "human" });
   assert.equal(flow.progressOf(conv).items[0].step, 1, "打回回到等领取");
