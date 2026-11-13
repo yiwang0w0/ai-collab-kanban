@@ -282,12 +282,12 @@ test("真看板:勾选记在数据目录;未勾选不起线;勾上后起 alpha�
   try {
     const O = b.operator;
     // ── 勾选:看板级记住,初始不勾,只接受布尔
-    assert.deepEqual((await b.api("GET", "/api/home/prefs", O)).body, { autostart: false });
+    assert.deepEqual((await b.api("GET", "/api/home/prefs", O)).body, { autostart: false, stuck_after: 3 });   // 合同 I10c:卡死阈值同存一处
     assert.equal((await b.api("PUT", "/api/home/prefs", O, { autostart: "yes" })).status, 400);
     assert.equal((await b.api("PUT", "/api/home/prefs", O, { autostart: true, x: 1 })).status, 400);
-    assert.deepEqual((await b.api("PUT", "/api/home/prefs", O, { autostart: true })).body, { autostart: true });
-    assert.deepEqual(JSON.parse(readFileSync(join(b.dir, "home_prefs.json"), "utf8")), { autostart: true }, "存在数据目录");
-    assert.deepEqual((await b.api("GET", "/api/home/prefs", O)).body, { autostart: true });
+    assert.deepEqual((await b.api("PUT", "/api/home/prefs", O, { autostart: true })).body, { autostart: true, stuck_after: 3 });
+    assert.deepEqual(JSON.parse(readFileSync(join(b.dir, "home_prefs.json"), "utf8")), { autostart: true, stuck_after: 3 }, "存在数据目录");
+    assert.deepEqual((await b.api("GET", "/api/home/prefs", O)).body, { autostart: true, stuck_after: 3 });
     // 记住的勾选不替 apply 做主:只有请求里带 autostart:true 才起线
 
     // ── 未勾选(请求不带 autostart):建卡照旧,不起线、不写自动开工消息
@@ -394,7 +394,7 @@ test("真看板:勾选记在数据目录;未勾选不起线;勾上后起 alpha�
         assert.ok([401, 403, 404].includes(r.status), `${who} ${m} ${p} → ${r.status}`);   // 绑线执行者的读在前面就被 404(F2),其余 403/401
       }
     }
-    assert.deepEqual((await b.api("GET", "/api/home/prefs", O)).body, { autostart: true }, "被拒的写没生效");
+    assert.deepEqual((await b.api("GET", "/api/home/prefs", O)).body, { autostart: true, stuck_after: 3 }, "被拒的写没生效");
   } catch (e) { e.message += "\n" + b.logs().slice(-3000); throw e; }
   finally { await b.stop(); }
 });

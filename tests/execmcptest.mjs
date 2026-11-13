@@ -181,7 +181,7 @@ test("G5:ask_operator needs=hands 的 what / where / expect 往返;换行压成�
       assert.ok((await M.request("initialize", INIT)).result, M.stderr());
       M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const schema = (await M.request("tools/list")).result.tools.find((t) => t.name === "ask_operator").inputSchema;
-      assert.deepEqual(Object.keys(schema.properties), ["id", "question", "needs", "what", "where", "expect"]);
+      assert.deepEqual(Object.keys(schema.properties), ["id", "question", "needs", "what", "where", "expect", "reason_code"]);   // reason_code = 合同 I10c(只增不改)
       assert.deepEqual(schema.required, ["id", "question"], "新参数全部可选");
       const mine = await B.card("要人插卡的活", "ext");
       const claim = await M.call("claim_card", { id: mine.id, expected_version: mine.aggregate_version });
@@ -289,4 +289,37 @@ test("桥的启动参数:只接回环地址和 exe_ 执行者令牌,错误文案
     const deep = run("--url", "http://127.0.0.1:9", "--token-file", join(dir, "a", "b", "c", "d", "e", "x.token"), "--code", "ABCDE-FGHJK");
     assert.equal(deep.status, 1); assert.match(deep.stderr, /TOKEN_FILE_UNWRITABLE/, "缺的目录超过 4 级不建");
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("合同 I10a–c:reason_code 往返进卡死计数、heartbeat 透出 refs_stale、get_card 读被引用的别线卡只给几项;不带新字段照旧", { timeout: 90000 }, async () => {
+  const B = await board();
+  try {
+    const ec = await B.api("POST", "/api/connect/codes", B.operator, { kind: "other", line: "ext" });
+    const M = bridge(["--url", B.base, "--line", "ext", "--code", ec.body.code, "--token-file", join(B.dir, "e.token")]);
+    try {
+      assert.ok((await M.request("initialize", INIT)).result);
+      M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      const S = await B.card("别线规格", "alpha");
+      const r = await B.api("POST", "/api/tasks", B.operator, { subject: "照规格做", line: "ext", description: "d", acceptance: "a", refs: [S.id] });
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const R = r.body.task;
+      const ver = (await M.call("get_card", { id: R.id })).structuredContent.card;
+      assert.deepEqual(ver.refs, [{ card: S.id, title: "别线规格", pinned: 1, current: 1, stale: false, review: false }]);
+      assert.ok((await M.call("claim_card", { id: R.id, expected_version: ver.aggregate_version })).structuredContent.run_id);
+      const sv = (await M.call("get_card", { id: S.id })).structuredContent.card;
+      assert.deepEqual([sv.ref_view, sv.subject, sv.description, sv.acceptance, sv.status], [true, "别线规格", "卡面材料", "三句话", undefined]);
+      const plain = (await M.call("heartbeat", { id: R.id })).structuredContent;
+      assert.equal(plain.refs_stale, undefined); assert.equal(plain.base_gone, undefined);
+      const s = (await B.api("GET", `/api/tasks/${S.id}`, B.operator)).body.task;
+      assert.equal((await B.api("POST", `/api/tasks/${S.id}/update`, B.operator, { expected_version: s.aggregate_version, description: "第二版" })).status, 200);
+      const hb = (await M.call("heartbeat", { id: R.id })).structuredContent;
+      assert.deepEqual(hb.refs_stale, [{ card: S.id, pinned: 1, current: 2 }]); assert.match(hb.next, /规格已改/);
+      const ask = (await M.call("ask_operator", { id: R.id, question: "缺东西", reason_code: "missing_input" })).structuredContent;
+      assert.equal(ask.status, "waiting");
+      const evs = (await B.api("GET", `/api/tasks/${R.id}/history`, B.operator)).body.entries;
+      assert.ok(evs.some((e) => e.kind === "ref.stale"));
+      const bad = await M.call("report_result", { id: R.id, outcome: "wait", evidence: "x", reason_code: "NO" });
+      assert.equal(bad.isError, true);
+    } finally { await M.end(); }
+  } finally { await B.stop(); }
 });

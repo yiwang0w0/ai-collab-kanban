@@ -304,6 +304,10 @@ function normalizeCoordinatorPlan(raw) {
     // 合同 I3 / I4:计划项可带 batch(同批名)/ needs(互斥资源名);原样带到建卡,合规与否由建卡处判(不合规静默不设)。
     if (typeof t?.batch === "string" && t.batch.trim()) task.batch = t.batch.trim();
     if (Array.isArray(t?.needs) && t.needs.length) task.needs = t.needs.filter((x) => typeof x === "string").slice(0, 16);
+    // 合同 I10a / I10b:计划项可带 refs(已有卡的卡号)/ base:{commit, onto?};原样带到建卡,合规与否由建卡处判(不合规静默不设)。
+    if (Array.isArray(t?.refs) && t.refs.length) task.refs = t.refs.filter((x) => Number.isSafeInteger(x) && x > 0).slice(0, 16);
+    if (t?.base && typeof t.base === "object" && !Array.isArray(t.base) && typeof t.base.commit === "string")
+      task.base = { commit: t.base.commit, ...(typeof t.base.onto === "string" ? { onto: t.base.onto } : {}) };
     return task;
   });
   return issues.length ? { ok: false, issues } : { ok: true, plan: { goal, tasks } };

@@ -48,6 +48,9 @@ export const TURN_SCHEMA=freeze({
       needs_confirm:{type:"boolean"},needs_bash:{type:"boolean"},
       // 合同 I3 / I4:可选。同批名、互斥资源名;不合规由建卡处静默不设。
       batch:{type:"string"},needs:{type:"array",items:{type:"string"}},
+      // 合同 I10a / I10b:可选。照哪几张已有卡的说明做(卡号)、基于哪个提交;不合规由建卡处静默不设。
+      refs:{type:"array",items:{type:"integer",minimum:1}},
+      base:{type:"object",additionalProperties:false,required:["commit"],properties:{commit:{type:"string"},onto:{type:"string"}}},
      },
     }},
    },

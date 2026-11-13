@@ -306,6 +306,9 @@ jobs:
       - name: "panelreltest (I11 attention rule for home and brief, relation/occupancy copy, gated-confirm copy, write entries only via operator endpoints)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/panelreltest.mjs
+      - name: "refsbasestucktest (refs pinned to a spec version, stale by hash, spec review cards, base commit precondition read-only scan, stuck detection and clear)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/refsbasestucktest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

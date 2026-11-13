@@ -96,7 +96,9 @@ export function composeAssemble({ goal, target, target_sha = null, kids = [] }) 
  * @param clean         (s, max) => 给人看的一行
  */
 export function openAutocards({ db, store, cred, integ, occ, release, afterEdit = () => {}, deliveredSince = () => false,
-                                clean = (s) => String(s ?? ""), emit = () => {}, log = () => {}, now = () => new Date().toISOString() }) {
+                                clean = (s) => String(s ?? ""), emit = () => {}, log = () => {}, now = () => new Date().toISOString(),
+                                // 别的模块的「事件 → 动作」也登记进下面的 RULES(合同 I10:复审卡、引用过期、卡死):[{name, on, run}]。
+                                rules = [] }) {
   function migrate() {
     db.exec(`CREATE TABLE IF NOT EXISTS release_rules (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, kind TEXT NOT NULL,
       source INTEGER, event TEXT, by_ TEXT, at TEXT NOT NULL)`);
@@ -230,6 +232,7 @@ export function openAutocards({ db, store, cred, integ, occ, release, afterEdit 
   const RULES = [
     { name: "release_on", on: ["task.*"], run: sweepReleaseOn },
     { name: "assemble", on: ["task.*", "integrate.scan"], run: sweepAssemble },
+    ...rules.filter((r) => r && typeof r.name === "string" && typeof r.run === "function").map((r) => ({ name: r.name, on: r.on || ["task.*"], run: r.run })),
   ];
   let running = null, again = false;
   function sweep() {

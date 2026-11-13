@@ -53,6 +53,12 @@ else if (message.includes("【关系】")) turn = { reply: "计划出好了。",
   task("乙", "alpha", [], { batch: "b1", needs: ["bad name!"] }),
   task("丙", "alpha", [1], { batch: "  ", needs: [] }),
 ]) };
+// 【引用】(refsbasestucktest,合同 I10a / I10b):计划项带 refs(卡号)/ base;第 2 张底提交不合规、第 3 张引用的卡不存在 → 建卡时静默不设。
+else if (message.includes("【引用】")) turn = { reply: "计划出好了。", title: "引用", plan: plan([
+  task("甲", "alpha", [], { refs: [1], base: { commit: "abc1234", onto: "refs/heads/main" } }),
+  task("乙", "alpha", [], { refs: [1], base: { commit: "not-hex" } }),
+  task("丙", "alpha", [1], { refs: [999999] }),
+]) };
 else turn = { reply: `收到:${message.slice("[用户消息]".length).trim().slice(0, 40)}`, plan: null };
 
 // 用量与真实 CLI 同形(2026-11-10 CLI 2.1.322 实测):usage 是这一轮各次调用之和;

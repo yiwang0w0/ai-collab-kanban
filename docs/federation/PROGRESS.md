@@ -1437,3 +1437,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-14 公告板 v3 第 8 波面板(claude/board-v3-w8-panel,合同 I11 + I1–I9 显示与写入口):阻塞条目带 attention 即进「要本人做的事」(首页与简报只认这个字段;DEP_ARCHIVED 服务端带 fault,登记口的检查带的照样带出);首页一句话新码与条件放行文案;卡面 / 行 / 侧栏的取代、同批、资源与占用方、条件放行、依赖重开「已看过」、改同一处、整合状态、候选组装标签;计划组头「整合 待合 n · 已在 m」;「全部任务」工具条「文件占用」;卡的「关系与占用…」对话框;确认处多同批未完 / 改同一处两类缺口。
 - 第 7 波欠账:审过被闸的卡写「审阅已过 · 自动通过被拦 · 待你验收」(按钮通过 / 打回);1280×800 下「已完成」组头不用滚动;深色模式过一遍;attention_type_mismatch 在组头旁弱提示。
 - 新增 tests/panelreltest.mjs(含变异对照),hometest / panelcopytest / panelsidetest 同步;临时板真鼠标走查截图。没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 8 波第二轮引用 / 底提交 / 卡死(claude/board-v3-w8-refs,合同 I10a–c;新模块 core/refs.mjs、core/basecommit.mjs、core/stuck.mjs):refs 钉说明版本与哈希、过期按哈希判(REF_STALE、refs_stale、重钉 = 引用方说明 +1、based_on_stale_ref 进自动通过闸)、持卡执行者跨线只读被引用卡几项、复审卡(spec_review,未放行,结论 spec_reviewed / spec_deviation);base 只读定时扫(BASE_GONE、base_gone、base_differs);卡死四种连续计数、reason_code、stuck_after、STUCK、清零只追加。
+- 新领卡闸经 registerClaimCheck 并带 attention;新写接口只给操作者。新增 refsbasestucktest(含真 stdio 桥、计划项),execmcptest / homebackgroundtest 同步。没有调用模型。阻塞:无。

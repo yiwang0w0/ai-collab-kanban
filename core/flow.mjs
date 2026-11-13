@@ -207,6 +207,16 @@ export function entryOf(e, ctx = {}) {
     case "basis.ack": summary = `${who}确认已看过依赖的变化`; break;
     case "batch.set": summary = d.to ? `${who}放进批「${safeText(d.to, 24)}」` : `${who}移出了批`; break;
     case "needs.set": summary = Array.isArray(d.to) && d.to.length ? `${who}设了要独占的资源:${safeText(d.to.join("、"), 60)}` : `${who}清掉了要独占的资源`; break;
+    // 合同 I10a–c(第 8 波第二轮):引用、复审卡、底提交、卡死。
+    case "refs.set": summary = Array.isArray(d.cards) && d.cards.length ? `${who}设了引用:${d.cards.map((n) => "#" + Number(n)).join("、")}` : `${who}清掉了引用`; break;
+    case "ref.stale": summary = `引用的 #${Number(d.card) || "?"} 说明改了(钉 v${Number(d.pinned) || "?"} · 现 v${Number(d.current) || "?"})`; break;
+    case "ref.repinned": summary = `${who}把引用 #${Number(d.card) || "?"} 重钉到 v${Number(d.to) || "?"}`; break;
+    case "ref.stale_delivery": summary = `交付时引用的 ${Array.isArray(d.cards) ? d.cards.map((n) => "#" + Number(n)).join("、") : "卡"} 说明已改,照的是旧版`; break;
+    case "spec_review.created": summary = `看板出了复审卡 #${Number(d.card) || "?"}(对照 #${Number(d.spec?.card) || "?"} 说明 v${Number(d.spec?.version) || "?"})`; break;
+    case "spec.reviewed": summary = `复审卡 #${Number(d.by_card) || "?"} 的结论:${d.verdict === "conform" ? "符合说明" : d.verdict === "deviates" ? "与说明不符" : "没给出结论"}`; break;
+    case "base.set": summary = d.commit ? `${who}设了底提交 ${safeText(d.commit, 12)}${d.onto ? `(在 ${safeText(d.onto, 40)} 上)` : ""}` : `${who}撤销了底提交`; break;
+    case "task.stuck": summary = `卡死了:连着${({ reaped: "被回收", handed_back: "被退回", failed: "交回没做完", same_reason: "以同一原因停下" })[d.kind] || "出问题"} ${Number(d.count) || "?"} 次`; break;
+    case "stuck.cleared": summary = `${who}把卡死计数清零${d.note ? ":" + safeText(d.note, 50) : ""}`; break;
     default: summary = `记录:${cut(e.kind, 24)}`;
   }
   return { at: e.at, kind: e.kind, actor: who0, actor_kind, step, summary: cut(summary, 120) };

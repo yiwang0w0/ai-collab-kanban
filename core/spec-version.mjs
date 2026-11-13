@@ -13,11 +13,13 @@ const asList = (v) => {
   if (typeof v === "string" && v.trim()) { try { const j = JSON.parse(v); return Array.isArray(j) ? j : []; } catch { return []; } }
   return [];
 };
-/** 说明的内容哈希:标题、说明、验收、必需检查(缺失 = 空;名字去重排序,顺序不算修改)。 */
-export function specHash(t) {
+/** 说明的内容哈希:标题、说明、验收、必需检查(缺失 = 空;名字去重排序,顺序不算修改)。
+ *  extra = 别的模块并进说明的部分(合同 I10a:引用钉的版本);null / 空串 = 不并,哈希与旧版逐字节相同。 */
+export function specHash(t, extra = null) {
   const checks = [...new Set(asList(t?.required_checks).map((x) => String(x)))].sort();
-  return createHash("sha256").update(JSON.stringify(["spec:v1", String(t?.subject ?? ""), String(t?.description ?? ""),
-    String(t?.acceptance ?? ""), checks])).digest("hex");
+  const body = ["spec:v1", String(t?.subject ?? ""), String(t?.description ?? ""), String(t?.acceptance ?? ""), checks];
+  if (typeof extra === "string" && extra) body.push(extra);
+  return createHash("sha256").update(JSON.stringify(body)).digest("hex");
 }
 
 /** seen_spec_version:不给 / null = 没带;否则要正整数。 */
@@ -28,7 +30,8 @@ export function checkSeen(v, badInput) {
 }
 
 // requiredOf(id):必需检查不在 tasks 表上(可信核心自己的表),由 server 接上;任务对象自己带了就用自己的。
-export function openSpecVersion({ db, store, clock = () => new Date().toISOString(), appendEvent = null, requiredOf = () => [] }) {
+// extraOf(id):并进说明哈希的附加部分(合同 I10a 引用的钉版本;core/refs.mjs 给);没有 = null。
+export function openSpecVersion({ db, store, clock = () => new Date().toISOString(), appendEvent = null, requiredOf = () => [], extraOf = () => null }) {
   function migrate() {
     db.exec(`CREATE TABLE IF NOT EXISTS spec_versions (
       task_id INTEGER NOT NULL, version INTEGER NOT NULL, hash TEXT NOT NULL, at TEXT NOT NULL, by TEXT NOT NULL,
@@ -52,7 +55,8 @@ export function openSpecVersion({ db, store, clock = () => new Date().toISOStrin
     if (!t) return null;
     const id = Number(t.id), last = lastStmt().get(id);
     let rq = t.required_checks; if (rq == null) { try { rq = requiredOf(id); } catch { rq = []; } }
-    const hash = specHash({ ...t, required_checks: rq });
+    let extra = null; try { extra = extraOf(id); } catch { extra = null; }
+    const hash = specHash({ ...t, required_checks: rq }, extra);
     if (!last) {
       if (!Number(t.released)) return { version: 1, hash };       // 放行前:不记版本,修改不计
       putStmt().run(id, 1, hash, clock(), "release");

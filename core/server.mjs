@@ -56,6 +56,9 @@ import {openCredibility} from "./credibility.mjs";
 import {openOccupancy} from "./occupancy.mjs";
 import {openIntegrate} from "./integrate.mjs";
 import {openAutocards,normReleaseOn} from "./autocards.mjs";
+import {openRefs} from "./refs.mjs";
+import {openBase} from "./basecommit.mjs";
+import {openStuck,checkReason,checkStuckAfter,STUCK_DEFAULT} from "./stuck.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -340,7 +343,7 @@ const unnamedOf = (t) => {
 // file names, hashes and controlled download endpoints — never source paths.
 // 合同 H1–H4(core/credibility.mjs):任务对象另带 fingerprint / checks / evidence_counts / badge / baseline / required_checks / conclusions。
 //   based_on_stale_spec(合同 H6)若由别的字段段给出,在这里读到(缺失 = false)。
-const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t); return {...o, ...cred.fields(t,{staleSpec:o.based_on_stale_spec===true}), ...wave8Fields(t, o)}; };
+const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t); const c=cred.fields(t,{staleSpec:o.based_on_stale_spec===true}); return {...o, ...c, ...wave8Fields(t, o), ...wave8bFields(t, o, c)}; };
 // 合同 I6–I9(第 8 波 8b):touches / overlaps(占用,只提示)、integrate(目标)/ integration(子卡,只读缓存)、
 //   release_on(条件放行)、auto_kind(板自动出的卡)。写了有效 release_on、还没触发的未放行卡在 progress_blockers 里多一条
 //   RELEASE_ON_PENDING:首页「要本人做的事」的判定(homeAwaitsRelease 只认「只差放行」)因此不把它当待放行;条件坏了 / 放行失败就不加,照常给人。
@@ -350,6 +353,19 @@ function wave8Fields(t, o) {
   if (t.kind === "goal") { const cfg = integ.get(t.id); out.integrate = cfg; }
   else out.integration = integ.childField(t);
   // RELEASE_ON_PENDING 由 store.claimBlockers 的登记口给出(见 auto.migrate() 之后的 registerClaimCheck),这里不再追加。
+  return out;
+}
+// 合同 I10a–c(第 8 波第二轮 8d):refs / based_on_stale_ref / review_of / spec_review(core/refs.mjs)、base(core/basecommit.mjs)、
+//   stuck(core/stuck.mjs);徽标 flags 加 based_on_stale_ref / spec_reviewed / spec_deviation / base_differs(只加标记,不改档位)。
+//   X 待验收且复审判「不符」→ progress_blockers 多一条 SPEC_DEVIATION(带 attention,进「要本人做的事」)。
+function wave8bFields(t, o, c) {
+  const r = refs.fields(t), base = baseChk.fieldOf(t);
+  const flags = [...r.flags, ...(baseChk.differs(t, c.fingerprint) ? ["base_differs"] : [])];
+  const out = { refs: r.refs, based_on_stale_ref: r.based_on_stale_ref, review_of: r.review_of, spec_review: r.spec_review, base, stuck: stuck.fieldOf(t) };
+  if (r.review_of) out.auto_kind = "spec_review";
+  if (c.badge && flags.length) out.badge = { ...c.badge, flags: [...c.badge.flags, ...flags.filter((f) => !c.badge.flags.includes(f))] };
+  const extra = refs.reviewBlockers(t);
+  if (extra.length) out.progress_blockers = [...(Array.isArray(o.progress_blockers) ? o.progress_blockers : []), ...extra];
   return out;
 }
 const taskOutBase = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
@@ -526,7 +542,8 @@ const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVI
 // md 交接(core/md-handoff.mjs):卡面导出成 md / md 队列文件批量挂卡(一律未放行)。线表在读时取(加线免重启)。
 // 合同 H6「说明的版本确认」(core/spec-version.mjs)与 H5「证据文件」(core/evidence.mjs)。
 //   证据图在数据目录的 evidence_files/(受管线禁读表登记了这个目录名);digest(当时的指纹)由可信核心给,没接上时为 null。
-const spec = openSpecVersion({ db, store, appendEvent: store.appendEvent, requiredOf: (id) => cred.requiredOf(id) });
+// 合同 I10a:引用钉的版本并进引用方的说明哈希(重钉 = 说明版本 +1);没有引用的卡哈希与旧版相同。refs 在下面才建,这里取时再读。
+const spec = openSpecVersion({ db, store, appendEvent: store.appendEvent, requiredOf: (id) => cred.requiredOf(id), extraOf: (id) => refs?.pinsOf(id) ?? null });
 spec.migrate();
 const evidence = openEvidence({ db, store, dir: join(store.DATA_DIR, "evidence_files"), cleanText, digestOf: (t) => cred.currentDigest(t.id), emit: (type, data) => emit(type, data) });
 evidence.migrate();
@@ -541,14 +558,29 @@ const integ = openIntegrate({ db, err: store.err, ERR: store.ERR, git: () => GIT
   repoForLine: (line) => { const l = (CFG.lines || []).find((x) => x.id === line); if (!l) return null;
     if (typeof l.work_repo === "string" && isAbsolutePath(l.work_repo)) return resolve(l.work_repo);
     return l.external === true ? null : REPO_ROOT; },
-  headOf: (id) => cred.currentHead(id), isAuto: (id) => auto.isAuto(id) });
+  headOf: (id) => cred.currentHead(id), isAuto: (id) => auto.isAuto(id) || refs.isReviewCard(id) });
 integ.migrate();
+// 合同 I10a–c(第 8 波第二轮 8d):引用与复审卡(core/refs.mjs)、底提交前提(core/basecommit.mjs,只读 git 并进整合的定时扫)、
+//   卡死检测(core/stuck.mjs)。表都在 board.db,不往数据目录写新文件;新领卡闸经 registerClaimCheck,事件 → 动作登记进 autocards 的 RULES。
+var refs = openRefs({ db, store, spec, cred, clean: (s, max = 80) => cut(redactText(String(s ?? "")), max),
+  afterEdit: (id, by) => (by ? spec.observe(id, by) : spec.observe(id)), emit: (type, data) => emit(type, data), log: (s) => console.log(s) });
+refs.migrate();
+const lineRepo = (line) => { const l = (CFG.lines || []).find((x) => x.id === line); if (!l) return null;
+  if (typeof l.work_repo === "string" && isAbsolutePath(l.work_repo)) return resolve(l.work_repo);
+  return l.external === true ? null : REPO_ROOT; };
+const baseChk = openBase({ db, store, git: () => GIT?.path || null, repoForLine: lineRepo });
+baseChk.migrate();
+const stuck = openStuck({ db, store, threshold: () => homePrefs().stuck_after, emit: (type, data) => emit(type, data), log: (s) => console.log(s),
+  clean: (s, max = 200) => cut(redactText(String(s ?? "").replace(/\s+/g, " ").trim()), max) });
+stuck.migrate();
 const deliveredSinceStmt = db.prepare("SELECT 1 FROM cred_deliveries WHERE task_id=? AND at>=? LIMIT 1");
 const auto = openAutocards({ db, store, cred, integ, occ,
   release: (id) => { const t = store.get(db, id); releaseTask(id, { expected_version: t.aggregate_version, released: true }, "rule"); },
   afterEdit: (id, by) => (by ? spec.observe(id, by) : spec.observe(id)),
   deliveredSince: (id, at) => !!deliveredSinceStmt.get(Number(id), String(at)),
-  clean: (s, max = 80) => cut(redactText(String(s ?? "")), max), emit: (type, data) => emit(type, data), log: (s) => console.log(s) });
+  clean: (s, max = 80) => cut(redactText(String(s ?? "")), max), emit: (type, data) => emit(type, data), log: (s) => console.log(s),
+  rules: [{ name: "ref_stale", on: ["task.*"], run: () => refs.sweepStale() }, { name: "spec_review", on: ["task.*"], run: () => refs.sweepReviews() },
+          { name: "stuck", on: ["task.*"], run: () => stuck.sweep() }] });
 auto.migrate();
 // 合同 I5 × I8:「等条件放行」进同一份领卡判定(登记口),progress_blockers 里只出这一条(原先由 wave8Fields 另行追加)。
 store.registerClaimCheck("release_on", (_db, t) => {
@@ -558,6 +590,10 @@ store.registerClaimCheck("release_on", (_db, t) => {
            message: `等 #${r.card} ${r.event === "done" ? "完成" : "交付"}后自动放行`, why: `#${t.id} 等 #${r.card} ${r.event === "done" ? "完成" : "交付"}后自动放行`,
            next_action: "无需操作:条件到了看板自动放行(要提前就撤销条件后手动放行)" };
 });
+// 合同 I10a / I10b / I10c × I11:三个新领卡闸经登记口进同一份判定,阻塞条目带 attention(面板按通用规则进「要本人做的事」)。
+store.registerClaimCheck("ref_stale", (_db, t) => refs.claimCheck(t));
+store.registerClaimCheck("base_gone", (_db, t) => baseChk.claimCheck(t));
+store.registerClaimCheck("stuck", (_db, t) => stuck.claimCheck(t));
 const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t), evidenceOf: (id) => evidence.listOf(id) });
 mdHandoff.migrate();
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
@@ -1623,6 +1659,7 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
   //   the card face and counted in the response (never silently converted).
   const demoted = [];
   const held = [];   // 建好没放行的卡号(needs_confirm)
+  let planBaseSet = false;
   list.forEach((t, i) => {
     const deps = (t.after || []).map((n) => made[Number(n) - 1]).filter((x) => x != null);
     const want = t.line && t.line !== "null" ? String(t.line) : null;
@@ -1674,7 +1711,12 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
     // 合同 I3 / I4:计划项可带 batch / needs(计划经操作者确认才建);不合规(名字、批满 20、资源多于 8)的项静默不设,同 required_checks。
     if (t.batch != null) { try { const k = store.normBatchKey(t.batch); if (k) store.setBatch(db, { id: made[i], batch: k, actor: actor || "plan" }); } catch {} }
     if (t.needs != null) { try { const nd = store.normNeeds(t.needs); if (nd.length) store.setNeeds(db, { id: made[i], needs: nd, actor: actor || "plan" }); } catch {} }
+    // 合同 I10a / I10b:计划项可带 refs(卡号,或 {card, review?};计划里前面的项写 {after:n})与 base:{commit, onto?}。不合规整项不设。
+    if (t.refs != null) { try { const rv = refs.normRefs(Array.isArray(t.refs) ? t.refs.map((x) => (x && typeof x === "object" && Number.isSafeInteger(x.after) ? { card: made[x.after - 1], ...(x.review !== undefined ? { review: x.review } : {}) } : x)) : t.refs);
+      if (rv?.length) refs.set(made[i], rv, actor || "plan"); } catch {} }
+    if (t.base != null) { try { const bv = baseChk.normBase(t.base); if (bv) { baseChk.set(made[i], bv, actor || "plan"); planBaseSet = true; } } catch {} }
   });
+  if (planBaseSet) void integrateTick();
   return { made, demoted, held };
 }
 
@@ -2491,6 +2533,11 @@ function kickAutoRules() {
 }
 
 const badSpecInput = (m) => store.err(store.ERR.BAD_INPUT, m);
+/** 自动通过的硬闸 = 可信核心的闸(credibility.autoGate)+ 合同 I10a:带 refs 的卡不得有 based_on_stale_ref。缺口逐条并进 missing。 */
+function autoGateAll(t, opts) {
+  const h = cred.autoGate(t, opts), more = refs.gateMissing(t);
+  return more.length ? { ok: false, missing: [...h.missing, ...more] } : h;
+}
 const json = (res, code, body) => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -2782,7 +2829,8 @@ const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|export-md|deci
 function boundExecutorMayRead(req, p) {
   if (p === "/api/coord" || p === "/api/tasks" || p === "/api/connect/me" || p === "/api/occupancy") return true;
   const mt = BOUND_TASK_READ.exec(p);
-  if (mt) return store.get(db, Number(mt[1]))?.line === req.boundLine;
+  // 合同 I10a:别线的卡,只有卡面本身(不含 runs / history / 证据等子资源)、且它被这个执行者此刻持有的卡引用着,才读得到(只给几项,见 GET 处)。
+  if (mt) return store.get(db, Number(mt[1]))?.line === req.boundLine || (p === `/api/tasks/${Number(mt[1])}` && refs.readableBy(req.executor.id, Number(mt[1])));
   // 自己发起的批准请求可以查结果;别的事项不给。
   const ma = /^\/api\/approvals\/request:(\d{1,15}):[A-Za-z0-9_.-]{1,200}$/.exec(p);
   if (ma) return db.prepare("SELECT executor FROM approval_requests WHERE id=?").get(Number(ma[1]))?.executor === req.executor.id;
@@ -3132,7 +3180,7 @@ function resolveTask(id, b, boardRole) {
     if (typeof b.verify_key === "string" && (b.verify_ok === true || b.verify_ok === false))
       cred.addVerifiedCheck(id, { name: b.verify_key, key: b.verify_key, ok: b.verify_ok, by: "reviewer", env: `reviewer:${reviewRuntime}` });
     if (disp === "close") {
-      const hard = cred.autoGate(t, { staleSpec: taskOut(t)?.based_on_stale_spec === true });
+      const hard = autoGateAll(t, { staleSpec: taskOut(t)?.based_on_stale_spec === true });
       if (!hard.ok) {
         const held = store.markAutoReviewed(db, { id, expectedVersion: b.expected_version,
           note: "【自动审阅】审阅判通过,但自动通过的可信闸不满足 —— 转人工验收:" + hard.missing.map((x) => String.fromCharCode(10) + "- " + x).join("") });
@@ -3477,16 +3525,22 @@ async function backgroundStop(id) {
   emit("task.updated", { id });
   return [back ? 200 : 409, { ok: back, task_id: id, line: v.line, steps, released: stopped.released || [] }];
 }
-/** 「建卡后自动开工」那个勾选,看板级记住(数据目录,不进 git;受管线禁读表里登记了这个文件名)。 */
+/** 「建卡后自动开工」那个勾选,看板级记住(数据目录,不进 git;受管线禁读表里登记了这个文件名)。
+ *  合同 I10c:板设置 stuck_after(卡死阈值,默认 3,2–10,0 = 关)也存在这里,同一读写口(只有操作者能改)。 */
 const HOME_PREFS_FILE = join(store.DATA_DIR, "home_prefs.json");
+let homePrefsCache = null;
 function homePrefs() {
-  try { const v = JSON.parse(readFileSync(HOME_PREFS_FILE, "utf8")); return { autostart: v?.autostart === true }; }
-  catch { return { autostart: false }; }
+  if (homePrefsCache) return { ...homePrefsCache };
+  let v = null;
+  try { v = JSON.parse(readFileSync(HOME_PREFS_FILE, "utf8")); } catch { v = null; }
+  homePrefsCache = { autostart: v?.autostart === true, stuck_after: checkStuckAfter(v?.stuck_after) ? v.stuck_after : STUCK_DEFAULT };
+  return { ...homePrefsCache };
 }
 function saveHomePrefs(next) {
   const tmp = HOME_PREFS_FILE + ".tmp";
   writeFileSync(tmp, JSON.stringify(next), "utf8"); renameSync(tmp, HOME_PREFS_FILE);
-  return next;
+  homePrefsCache = null;
+  return homePrefs();
 }
 /** 自动开工的闸:按顺序,源码闸(与协调线、执行线同一道 blessStep)→ 座席解禁 / 命令路径 / 执行配置(deskStartBlocked 同一判据)
  *  → 额度池(effectiveAgents,与起线同一个)。过了这三道才调 workerStart,它自己的拒绝(看板窗已过、槽已满、脚本缺失…)照原样作原因。 */
@@ -4460,9 +4514,15 @@ const server = http.createServer(async (req, res) => {
         if (m === "GET") return json(res, 200, homePrefs());
         if (m === "PUT") {
           const b = await readBody(req);
-          if (!b || typeof b !== "object" || Array.isArray(b) || typeof b.autostart !== "boolean" || Object.keys(b).some((k) => k !== "autostart"))
-            return json(res, 400, { code: "BAD_INPUT", error: "正文要是 {autostart: true|false}" });
-          return json(res, 200, saveHomePrefs({ ...homePrefs(), autostart: b.autostart }));
+          // 可只带其中一项:autostart(true|false)/ stuck_after(合同 I10c:0 = 关,或 2–10)。
+          const keys = b && typeof b === "object" && !Array.isArray(b) ? Object.keys(b) : null;
+          if (!keys || !keys.length || keys.some((k) => k !== "autostart" && k !== "stuck_after")
+              || (Object.hasOwn(b, "autostart") && typeof b.autostart !== "boolean") || (Object.hasOwn(b, "stuck_after") && !checkStuckAfter(b.stuck_after)))
+            return json(res, 400, { code: "BAD_INPUT", error: "正文要是 {autostart?: true|false, stuck_after?: 0 | 2–10}(至少一项)" });
+          const was = homePrefs().stuck_after;
+          const saved = saveHomePrefs({ ...homePrefs(), ...b });
+          if (saved.stuck_after !== was) { console.log(`卡死阈值 stuck_after:${was} → ${saved.stuck_after}${saved.stuck_after === 0 ? "(关)" : ""}`); kickAutoRules(); }
+          return json(res, 200, saved);
         }
       }
       return json(res, 404, { error: "没有这个接口或不接受该方法" });
@@ -4707,7 +4767,10 @@ const server = http.createServer(async (req, res) => {
       if(b.required_checks!==undefined&&boardRole!=="operator")return json(res,403,{error:"required_checks 只能由操作者设定"});
       const requiredChecks=cred.normRequired(b.required_checks);
       // 合同 I6–I8:touches / release_on / integrate 只由操作者写(worker 派生卡带 → 403);先校验,不合规不建卡。
-      for(const k of ["touches","release_on","integrate"])if(b[k]!==undefined&&boardRole!=="operator")return json(res,403,{error:`${k} 只能由操作者设定`});
+      for(const k of ["touches","release_on","integrate","refs","base"])if(b[k]!==undefined&&boardRole!=="operator")return json(res,403,{error:`${k} 只能由操作者设定`});
+      // 合同 I10a / I10b:refs / base 只由操作者写;先校验(被引用卡存在、未归档),不合规不建卡。
+      const refsIn=refs.normRefs(b.refs),baseIn=baseChk.normBase(b.base);
+      for(const r of refsIn||[]){const s=store.get(db,r.card);if(!s)throw store.err(store.ERR.NOT_FOUND,`refs 里的卡 #${r.card} 不存在`);if(s.archived_at)throw store.err(store.ERR.CONFLICT,`refs 里的卡 #${r.card} 已归档`);}
       const touches=occ.normTouches(b.touches,"touches"),releaseOn=normReleaseOn(b.release_on,{err:store.err,ERR:store.ERR}),integrate=integ.normIntegrate(b.integrate);
       if(integrate&&b.kind!=="goal")throw store.err(store.ERR.BAD_INPUT,"integrate 只写在目标卡上(kind:\"goal\")");
       if(releaseOn&&(b.released===true||b.released===1))throw store.err(store.ERR.BAD_INPUT,"release_on 只能写在未放行的卡上:不要同时带 released:true");
@@ -4779,6 +4842,8 @@ const server = http.createServer(async (req, res) => {
       if (touches?.length) occ.setTouches(id, touches, "operator");
       if (integrate) integ.set(id, integrate, "operator");
       if (releaseOn) auto.setReleaseOn(id, releaseOn, "operator");
+      if (refsIn?.length) refs.set(id, refsIn, "operator");
+      if (baseIn) { baseChk.set(id, baseIn, "operator"); void integrateTick(); }   // 写入后后台马上补扫一次(不等应答)
       emit("task.created", { id });
       const made = taskOut(store.get(db, id));
       // 建成的卡比请求更严的地方逐项点名(放宽没有生效、执行配置卡固定未放行等)，不静默。
@@ -5233,6 +5298,38 @@ const server = http.createServer(async (req, res) => {
       emit("task.updated", { id });
       return json(res, 200, { ...r, task: taskOut(store.get(db, id)) });
     }
+    // 合同 I10a–c 的写接口:引用(覆盖式)/ 重钉 / 底提交 / 卡死清零 —— 只给操作者(不进任何非操作者的写白名单;这里再按角色核一次)。
+    const m10 = p.match(/^\/api\/tasks\/(\d+)\/(refs|refs\/repin|base|stuck\/clear)$/);
+    if (m10) {
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      if (boardRole !== "operator") return json(res, 403, { error: "引用 / 底提交 / 卡死清零只能由操作者写", role: boardRole });
+      const id = Number(m10[1]), what = m10[2];
+      if (!store.get(db, id)) return json(res, 404, { error: "不存在" });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象");
+      let extra = {};
+      if (what === "refs") {
+        if (!Object.hasOwn(b, "refs")) throw store.err(store.ERR.BAD_INPUT, "要 {refs:[卡号 | {card, review?}]}(空数组 = 清掉)");
+        const v = refs.normRefs(b.refs);
+        spec.observe(id);                      // 合同 H6:改之前先核一次;引用钉的版本属于说明 → 放行后改了 +1(by 记操作员)
+        refs.set(id, v, "operator");
+        spec.observe(id, "operator");
+      } else if (what === "refs/repin") {
+        if (!Number.isSafeInteger(b.card)) throw store.err(store.ERR.BAD_INPUT, "要 {card:被引用卡号}");
+        spec.observe(id);
+        extra = refs.repin(id, b.card, "operator");
+        spec.observe(id, "operator");          // 引用方说明版本 +1:执行中的对方走 H6 的 spec_changed / seen_spec_version
+      } else if (what === "base") {
+        if (!Object.hasOwn(b, "base")) throw store.err(store.ERR.BAD_INPUT, "要 {base:{commit, onto?} | null}");
+        baseChk.set(id, baseChk.normBase(b.base), "operator");
+        void integrateTick();                  // 写入后后台马上补扫一次(不在请求路径上等)
+      } else {
+        if (b.note !== undefined && b.note !== null && typeof b.note !== "string") throw store.err(store.ERR.BAD_INPUT, "note 要字符串");
+        extra = stuck.clear(id, { note: b.note || null, by: "operator" });
+      }
+      emit("task.updated", { id });
+      return json(res, 200, { ...extra, task: taskOut(store.get(db, id)) });
+    }
     const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs|history))?$/);
     if (mt) {
       const id = Number(mt[1]);
@@ -5256,6 +5353,8 @@ const server = http.createServer(async (req, res) => {
       }
       if (m === "GET" && !action) {
         const t = store.get(db, id);
+        // 合同 I10a:绑线执行者读别线的被引用卡 = 只给 subject / description / acceptance / spec_version(不给交付、证据、历史)。
+        if (t && boardRole === "executor" && req.boundLine && t.line !== req.boundLine) return json(res, 200, { task: refs.refView(t) });
         return t ? json(res, 200, { task: forReader(req, taskOut(t)) }) : json(res, 404, { error: "不存在" });
       }
       if (m !== "POST") return json(res, 405, { error: "方法不允许" });
@@ -5309,7 +5408,12 @@ const server = http.createServer(async (req, res) => {
         // 合同 I1 / I2:执行中被取代 → superseded:{by} + next「停手,交回」(板不强收,租约照常);依赖被重开 → basis_changed。
         { const sb = store.supersededBy(db, id), bc = store.basisChanged(db, id);
           if (sb != null) Object.assign(r, { superseded: { by: sb }, next: `这张卡已被 #${sb} 取代:停手,交回(report_result outcome=wait 说明停在哪)` });
-          if (bc.length) Object.assign(r, { basis_changed: bc, ...(sb == null ? { next: `依赖 #${bc.map((x) => x.dep).join(" #")} 被重开过:做的前提可能变了,先确认再继续` } : {}) }); }
+          if (bc.length) Object.assign(r, { basis_changed: bc, ...(sb == null ? { next: `依赖 #${bc.map((x) => x.dep).join(" #")} 被重开过:做的前提可能变了,先确认再继续` } : {}) });
+          // 合同 I10a / I10b:执行中引用过期 → refs_stale + next「规格已改,先读新版」;底提交没了 / 分叉 → base_gone + next「停手问人」(板不强制)。
+          //   next 的先后:取代 > 底变了 > 依赖重开 > 引用过期。
+          const now0 = store.get(db, id), rx = refs.heartbeatExtra(now0), bx = baseChk.heartbeatExtra(now0);
+          if (rx.refs_stale) Object.assign(r, { refs_stale: rx.refs_stale, ...(sb == null && !bc.length && !bx.base_gone ? { next: rx.next } : {}) });
+          if (bx.base_gone) Object.assign(r, { base_gone: bx.base_gone, ...(sb == null ? { next: bx.next } : {}) }); }
         if (boardRole === "executor") {
           coord.touch(db, req.executor.id);
           // 外部执行者这一轮第一次心跳 = 「已启动」(合同 B 订正);推一个 task.* 让流转条与首页跟着亮。
@@ -5348,12 +5452,15 @@ const server = http.createServer(async (req, res) => {
         if (ask && b.outcome !== "wait") throw store.err(store.ERR.BAD_INPUT, "ask 只配 outcome=wait(交回给人)");
         // 合同 H1/H3:base_commit / head_commit / files / checks(全部可选)先校验,不合规就不收这次交付。
         const credIn = cred.parseDelivery(b);
+        const reasonCode = checkReason(b.reason_code, badSpecInput);   // 合同 I10c:可选 reason_code,先校验
         // 合同 H6:seen_spec_version 先校验;交付前按这一轮领到 / 确认到的版本判是否基于旧版说明,交付落盘后再记。
         const seen = checkSeen(b.seen_spec_version, badSpecInput), before = store.get(db, id);
         if (before) spec.assertSeen(before, seen, badSpecInput);
         const sj = before?.status === "in_progress" && before.worker === String(b.worker) && before.run_id === b.run_id ? spec.judgeReport(before, b.run_id, seen) : null;
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });
         spec.record(sj, b.worker);
+        if (reasonCode) stuck.recordReason(id, b.run_id, reasonCode);
+        if (before) refs.onDelivery(before, b.run_id, b.outcome);   // 合同 I10a:交付时有引用过期 → based_on_stale_ref
         connect.clearNote(id);          // 交付即清掉临时进度
         if (ask) connect.setAsk(id, b.run_id, ask); else connect.clearAsk(id);
         if (selfUsage) usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome });
@@ -5380,7 +5487,7 @@ const server = http.createServer(async (req, res) => {
             && LINE_ACCEPT[after.line] === "auto" && Number(after.human_gate) === 0) {
           // 合同 H3 硬闸:必需检查 / 指纹 / 旧版说明不满足 → 不自动通过,留在等待中给人(现有路径)。
           const hard = credFailed ? { ok: false, missing: ["本次交付的指纹没记下(见上一行)"] }
-            : cred.autoGate(after, { staleSpec: taskOut(after)?.based_on_stale_spec === true });
+            : autoGateAll(after, { staleSpec: taskOut(after)?.based_on_stale_spec === true });
           if (!hard.ok) console.log(`#${id} 线 ${after.line} accept:auto 未自动完成(可信闸)—— 留在等待中给人:${hard.missing.join(";").slice(0, 200)}`);
           else try {
             closeGateOrThrow(after);
@@ -5487,7 +5594,8 @@ if (!["127.0.0.1", "::1", "localhost"].includes(HOST)) {
 const REAP_MS = Number(process.env.BOARD_REAP_MS || 30000);
 // 合同 I7 / I9:整合状态的定时扫(只读 git,不在请求路径上)+ 扫完把自动规则过一遍。BOARD_INTEGRATE_SCAN_MS 只给测试调快。
 const INTEGRATE_SCAN_MS = Math.max(200, Number(process.env.BOARD_INTEGRATE_SCAN_MS) || 30000);
-const integrateTick = () => integ.scan().then(() => auto.sweep()).catch((e) => console.error("整合扫描失败:", String(e?.message || e).slice(0, 120)));
+// 合同 I10b:底提交前提的只读核对并进同一次定时扫(先整合、再底提交、再自动规则)。
+const integrateTick = () => integ.scan().then(() => baseChk.scan()).then(() => auto.sweep()).catch((e) => console.error("整合扫描失败:", String(e?.message || e).slice(0, 120)));
 setInterval(integrateTick, INTEGRATE_SCAN_MS).unref?.();
 setImmediate(integrateTick);
 connect.watch(Number(process.env.BOARD_CONNECT_WATCH_MS || 10000));   // 在线/离线、working/stalled 变化 → executor.changed
