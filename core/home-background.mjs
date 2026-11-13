@@ -150,9 +150,16 @@ export function typeAttention(shown = [], allCount = 0, kinds = []) {
   const typed = kinds.length === allCount;
   return { attention: shown.map((a, i) => (typed ? { ...a, ...kinds[i] } : a)), mismatch: !typed };
 }
-/** 一条 attention 加上 G2 的四个字段。work = 本板未归档的非目标卡(找下游用)。 */
-export function attentionDecor(a, t, { work = [], whoOf = () => null } = {}) {
+/** 一条 attention 加上 G2 的四个字段。work = 本板未归档的非目标卡(找下游用)。
+ *  合同 I10d:包的条目(带 package_id)—— packageOf(id) 给 { name, label, expect, why? }:做什么 = 跑包「名」(fault = 为什么先别跑),
+ *  实物在哪 = label,期待 = expect(expect_by:"executor" = 对方写的),解锁 = 依赖这张卡的下游。 */
+export function attentionDecor(a, t, { work = [], whoOf = () => null, packageOf = () => null } = {}) {
   const type = typeof a?.type === "string" ? a.type : null, ask = t?.ask && typeof t.ask === "object" ? t.ask : null;
+  const pk = a?.package_id != null ? packageOf(Number(a.package_id)) : null;
+  if (pk) return { ...a, type, verb: typeof a?.verb === "string" ? a.verb : null, evidence: null,
+    package: { id: Number(a.package_id), name: oneText(pk.name), frozen: pk.frozen ?? null },
+    detail: { what: pk.why ? oneText(pk.why) : oneText(`跑包「${pk.name}」`), where: oneText(pk.label), expect: oneText(pk.expect),
+              expect_by: pk.expect ? "executor" : null, ...unlocksOf(t, work), source: sourceOf(t) } };
   const why = blockersOf(t).find((b) => b.code !== "NOT_RELEASED" && typeof b.message === "string" && b.message.trim());
   return { ...a, type, verb: typeof a?.verb === "string" ? a.verb : null, evidence: evidenceOf(type, t, t ? whoOf(t) : null),
            detail: { what: oneText(ask?.what) ?? (why ? clean(why.message, ASK_MAX) : null), where: oneText(ask?.where), expect: oneText(ask?.expect),
@@ -221,12 +228,12 @@ export function goalOf(t, byId) {
 export function backgroundModel({ tasks = [], attention = [], attentionTotal = null, now = 0,
                                   whoOf = () => null, sinceOf = () => null, stopOf = () => ({ stoppable: false }),
                                   lineOf = () => null, lineLabel = (l) => l, sourceGate = () => false, attentionIds = null,
-                                  integrationOf = () => null } = {}) {
+                                  integrationOf = () => null, packageOf = () => null } = {}) {
   const live = tasks.filter((t) => t && !t.archived_at);
   const byId = new Map(live.map((t) => [Number(t.id), t]));
   const work = live.filter((t) => t.kind !== "goal");
   // G2:attention 原样(同一份判定)+ type / verb / evidence / detail。
-  attention = attention.map((a) => attentionDecor(a, a?.task_id != null ? byId.get(Number(a.task_id)) ?? null : null, { work, whoOf }));
+  attention = attention.map((a) => attentionDecor(a, a?.task_id != null ? byId.get(Number(a.task_id)) ?? null : null, { work, whoOf, packageOf }));
   // G1:运行中 = 已放行、未完成、不在本人手上;在跑的(ai / reviewer / peer)按开始先后在前,排队的(queue / dep)在后。
   // attentionIds = 截到 20 条之前的全部卡号(server 从 homeLists 给);没给就用 attention 里的。
   const attIds = new Set(attentionIds ? [...attentionIds].map(Number) : attention.filter((a) => a?.task_id != null).map((a) => Number(a.task_id)));

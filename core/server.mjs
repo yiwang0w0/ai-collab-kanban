@@ -59,6 +59,8 @@ import {openAutocards,normReleaseOn} from "./autocards.mjs";
 import {openRefs} from "./refs.mjs";
 import {openBase} from "./basecommit.mjs";
 import {openStuck,checkReason,checkStuckAfter,STUCK_DEFAULT} from "./stuck.mjs";
+import {openPackages} from "./packages.mjs";
+import {openEnvGap} from "./env-gap.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -343,7 +345,10 @@ const unnamedOf = (t) => {
 // file names, hashes and controlled download endpoints — never source paths.
 // 合同 H1–H4(core/credibility.mjs):任务对象另带 fingerprint / checks / evidence_counts / badge / baseline / required_checks / conclusions。
 //   based_on_stale_spec(合同 H6)若由别的字段段给出,在这里读到(缺失 = false)。
-const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t); const c=cred.fields(t,{staleSpec:o.based_on_stale_spec===true}); return {...o, ...c, ...wave8Fields(t, o), ...wave8bFields(t, o, c)}; };
+// 合同 I10d / I10e(第 8 波 8e):packages 摘要 / packages_count / package_gaps(core/packages.mjs);target_env / env_diff(core/env-gap.mjs);
+//   env_gap 与徽标 flag not_target_env 由可信核心按 target_env 推。
+const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t), te=envGap.targetOf(t.id); const c=cred.fields(t,{staleSpec:o.based_on_stale_spec===true,targetEnv:te});
+  return {...o, ...c, ...wave8Fields(t, o), ...wave8bFields(t, o, c), ...pkgs.cardFields(t.id), target_env:te, env_diff:envGap.diffOf(t.id)}; };
 // 合同 I6–I9(第 8 波 8b):touches / overlaps(占用,只提示)、integrate(目标)/ integration(子卡,只读缓存)、
 //   release_on(条件放行)、auto_kind(板自动出的卡)。写了有效 release_on、还没触发的未放行卡在 progress_blockers 里多一条
 //   RELEASE_ON_PENDING:首页「要本人做的事」的判定(homeAwaitsRelease 只认「只差放行」)因此不把它当待放行;条件坏了 / 放行失败就不加,照常给人。
@@ -574,8 +579,20 @@ const stuck = openStuck({ db, store, threshold: () => homePrefs().stuck_after, e
   clean: (s, max = 200) => cut(redactText(String(s ?? "").replace(/\s+/g, " ").trim()), max) });
 stuck.migrate();
 const deliveredSinceStmt = db.prepare("SELECT 1 FROM cred_deliveries WHERE task_id=? AND at>=? LIMIT 1");
-const auto = openAutocards({ db, store, cred, integ, occ,
+// 合同 I10d「包」(core/packages.mjs)与 I10e 环境差(core/env-gap.mjs)。表都在 board.db;提交的只读核对并进下面的 30 秒定时扫。
+//   自动通过闸经可信核心的登记口加一道「包」闸(只对带包的卡)。
+const pkgs = openPackages({ db, store, isExecutor: (w) => coord.isExecutor(db, w), git: () => GIT?.path || null,
+  repoForLine: (line) => { const l = (CFG.lines || []).find((x) => x.id === line); if (!l) return null;
+    if (typeof l.work_repo === "string" && isAbsolutePath(l.work_repo)) return resolve(l.work_repo);
+    return l.external === true ? null : REPO_ROOT; },
+  clean: (s) => cleanText(s), emit: (type, data) => emit(type, data), log: (s) => console.log(s) });
+pkgs.migrate();
+cred.registerGate("包", (t) => pkgs.gateMissing(t.id));
+const envGap = openEnvGap({ db, store });
+envGap.migrate();
+const auto = openAutocards({ db, store, cred, integ, occ, pkgs,
   release: (id) => { const t = store.get(db, id); releaseTask(id, { expected_version: t.aggregate_version, released: true }, "rule"); },
+  releaseAs: (id, actor) => { const t = store.get(db, id); releaseTask(id, { expected_version: t.aggregate_version, released: true }, actor); },
   afterEdit: (id, by) => (by ? spec.observe(id, by) : spec.observe(id)),
   deliveredSince: (id, at) => !!deliveredSinceStmt.get(Number(id), String(at)),
   clean: (s, max = 80) => cut(redactText(String(s ?? "")), max), emit: (type, data) => emit(type, data), log: (s) => console.log(s),
@@ -594,7 +611,7 @@ store.registerClaimCheck("release_on", (_db, t) => {
 store.registerClaimCheck("ref_stale", (_db, t) => refs.claimCheck(t));
 store.registerClaimCheck("base_gone", (_db, t) => baseChk.claimCheck(t));
 store.registerClaimCheck("stuck", (_db, t) => stuck.claimCheck(t));
-const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t), evidenceOf: (id) => evidence.listOf(id) });
+const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t), evidenceOf: (id) => evidence.listOf(id), packagesOf: (id) => pkgs.listFor(id) });
 mdHandoff.migrate();
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
 { const cut = conversations.recoverInterrupted(db);
@@ -1707,6 +1724,8 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
     if (t.required_checks != null) { try { const rq = cred.normRequired(t.required_checks); if (rq?.length) cred.setRequired(made[i], rq, actor || "plan"); } catch {} }
     // 合同 I6:计划项可带 touches(这张卡会动哪些路径;只提示)。不合规整项不设。
     if (t.touches != null) { try { const tv = occ.normTouches(t.touches, "touches"); if (tv?.length) occ.setTouches(made[i], tv, actor || "plan"); } catch {} }
+    // 合同 I10e:计划项可带 target_env(目标环境标签)。不合规整项不设。
+    if (t.target_env != null) { try { const te = envGap.normTarget(t.target_env); if (te) envGap.setTarget(made[i], te, actor || "plan"); } catch {} }
     if (relOn) { try { auto.setReleaseOn(made[i], relOn, actor || "plan"); } catch { /* 源卡已归档等:卡已建成未放行,由人放行 */ } }
     // 合同 I3 / I4:计划项可带 batch / needs(计划经操作者确认才建);不合规(名字、批满 20、资源多于 8)的项静默不设,同 required_checks。
     if (t.batch != null) { try { const k = store.normBatchKey(t.batch); if (k) store.setBatch(db, { id: made[i], batch: k, actor: actor || "plan" }); } catch {} }
@@ -2525,6 +2544,8 @@ function emit(type, data = {}) {
     try { spec.observe(Number(data.id)); } catch {}
   // 合同 I6 / I8 / I9:卡一变,占用表的快照作废;自动规则(条件放行、候选组装)在本轮请求之后扫一遍(合并成一次,不在请求路径上等)。
   if (wire === "change" && String(type).startsWith("task.")) { try { occ.invalidate(); } catch {} kickAutoRules(); }
+  // 合同 I10d:包一变(尤其 ran),核对卡的规则扫一遍(登记在 autocards 的 RULES)。
+  if (type === "package.changed") kickAutoRules();
 }
 let autoKick = null;
 function kickAutoRules() {
@@ -2743,6 +2764,8 @@ const WORKER_WRITES = (p) =>
 const EXECUTOR_WRITES = (p) =>
   p === "/api/claim" ||
   /^\/api\/tasks\/\d+\/(?:claim|heartbeat|report|evidence|paths)$/.test(p) ||   // paths = declare_paths(合同 I6,只给持卡者)
+  // 合同 I10d / I10e:报包的各步与环境差(handler 里再核「当事执行者」;pin 只给核对卡的持卡者)。ran 不在这里(只有操作者)。
+  /^\/api\/tasks\/\d+\/(?:packages|env-diff)$/.test(p) || /^\/api\/packages\/\d+\/(?:freeze|commit|issue|pin)$/.test(p) ||
   /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
   /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p) ||
   p === "/api/approvals/request";
@@ -2752,7 +2775,8 @@ const ASSISTANT_WRITES = (p) => p === "/api/assistant/cards";
 const ASSISTANT_READS = (p) => p === "/api/brief" || p === "/api/assistant/attention" || p === "/api/tasks" || p === "/api/connect/me" || /^\/api\/tasks\/\d+(?:\/history)?$/.test(p);
 const REVIEW_WRITES = (p) =>
   p === "/api/pools/exhausted" ||
-  /^\/api\/tasks\/\d+\/(?:resolve|autoreview)$/.test(p);
+  /^\/api\/tasks\/\d+\/(?:resolve|autoreview)$/.test(p) ||
+  /^\/api\/packages\/\d+\/pin$/.test(p);        // 合同 I10d:审阅座席写的钉住 = 已核(verified:true)
 // Requests with a foreign Origin are refused; no Origin (curl / CLI) is judged by
 // token. BOARD_EXTRA_ORIGINS widens the allowed browser origins, never supplies
 // credentials or replaces authentication. Keep the management UI off peer forwards.
@@ -2825,12 +2849,15 @@ function closeGateOrThrow(t) {
 
 // ── 绑线执行者(凭码接入)的读接口白名单(F2)。只有桥用得到的这几条;卡与它的子资源再按线核,别的线一律 404。
 //   history / export-md 在这里放过(本线的卡),由各自的处理段按角色回 403「只给操作员」(N9:无权不说成不存在)。
-const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|export-md|decisions\/\d+|evidence\/\d+))?$/;
+const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|export-md|packages|decisions\/\d+|evidence\/\d+))?$/;
 function boundExecutorMayRead(req, p) {
   if (p === "/api/coord" || p === "/api/tasks" || p === "/api/connect/me" || p === "/api/occupancy") return true;
   const mt = BOUND_TASK_READ.exec(p);
   // 合同 I10a:别线的卡,只有卡面本身(不含 runs / history / 证据等子资源)、且它被这个执行者此刻持有的卡引用着,才读得到(只给几项,见 GET 处)。
   if (mt) return store.get(db, Number(mt[1]))?.line === req.boundLine || (p === `/api/tasks/${Number(mt[1])}` && refs.readableBy(req.executor.id, Number(mt[1])));
+  // 合同 I10d:包详情按包所在卡的线核(再由处理段核当事执行者 / 核对卡持卡者)。
+  const mpk = /^\/api\/packages\/(\d+)$/.exec(p);
+  if (mpk) { const r = pkgs.row(Number(mpk[1])); return !!r && store.get(db, Number(r.card_id))?.line === req.boundLine; }
   // 自己发起的批准请求可以查结果;别的事项不给。
   const ma = /^\/api\/approvals\/request:(\d{1,15}):[A-Za-z0-9_.-]{1,200}$/.exec(p);
   if (ma) return db.prepare("SELECT executor FROM approval_requests WHERE id=?").get(Number(ma[1]))?.executor === req.executor.id;
@@ -2838,7 +2865,7 @@ function boundExecutorMayRead(req, p) {
 }
 // 助手看到的卡(合同 E):只给卡面、状态与来源这几项(允许清单);交付证据(result)、裁定附件、运行轨迹、live_note 不给。
 const ASSISTANT_CARD = ["id", "kind", "subject", "summary", "description", "acceptance", "status", "waiting_for", "line", "released", "human_gate",
-  "parent_id", "created_at", "updated_at", "archived_at", "handed_back", "children_done", "children_total", "posted_by", "ask", "evidence_count"];
+  "parent_id", "created_at", "updated_at", "archived_at", "handed_back", "children_done", "children_total", "posted_by", "ask", "evidence_count", "packages_count"];
 function assistantCard(t) {
   const out = Object.fromEntries(ASSISTANT_CARD.filter((k) => Object.hasOwn(t, k)).map((k) => [k, t[k]]));
   out.blockers = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).slice(0, 10).map((b) => ({ code: b?.code ?? null, message: b?.message ?? null }));
@@ -3185,6 +3212,7 @@ function resolveTask(id, b, boardRole) {
         const held = store.markAutoReviewed(db, { id, expectedVersion: b.expected_version,
           note: "【自动审阅】审阅判通过,但自动通过的可信闸不满足 —— 转人工验收:" + hard.missing.map((x) => String.fromCharCode(10) + "- " + x).join("") });
         cred.addConclusion(id, { kind: "review", verdict: b.verdict, by: "reviewer", runtime: reviewRuntime });
+        pkgs.noteConclusion(id, { kind: "review", verdict: b.verdict }, "review");   // 合同 I10d:结论绑各包的 frozen.digest
         emit("task.autoreviewed", held);
         return { held_for_human: true, missing: hard.missing };
       }
@@ -3236,6 +3264,8 @@ function resolveTask(id, b, boardRole) {
   // 合同 H2:审阅结论 / 人工验收都记下它看的 digest(再交付 digest 变了 → stale)。
   if (boardRole === "review") cred.addConclusion(id, { kind: "review", verdict: b.verdict, by: "reviewer", runtime: reviewRuntime });
   else if (boardRole === "operator") cred.addConclusion(id, { kind: "acceptance", verdict: b.verdict, by: "operator" });
+  if (boardRole === "review" || boardRole === "operator")   // 合同 I10d:结论绑各包的 frozen.digest(重冻 / drift 后过期)
+    pkgs.noteConclusion(id, { kind: boardRole === "review" ? "review" : "acceptance", verdict: b.verdict }, boardRole);
   emit("task.resolved", r);
   return r;
 }
@@ -3376,7 +3406,9 @@ function attentionInputs() {
   const lists = attentionModel.homeLists({ tasks, autoReview: workersNow.some((w) => w.line === "review" && w.running),
     approvals: approvalEntries().map((e) => e.item), executors: connect.list() });
   const faults = attentionModel.homeLineFaults(workersNow, LINE_LABEL || {});
-  return { tasks, lists, faults };
+  // 合同 I10d:出了包、还没跑的(亲手跑 / 出包对不上先别跑),进同一份「要本人做的事」。
+  const packages = pkgs.attentionItems(tasks);
+  return { tasks, lists, faults, packages };
 }
 /** 各线一行现况(合同 G6 lines[]):state、在做几张、一句 note(最新的 live_note)。全部过 redactText(cleanText);
  *  不含路径、会话标题、令牌相关信息——由本地会话登记的线只写通用名(显示名可能取自会话)。 */
@@ -3409,10 +3441,10 @@ const cursorKey = (req) => req.assistant ? sha256("assistant-cursor:" + String(r
  */
 function assistantView(req, { maxChars, since = null, mode = "normal", attention = false }) {
   const now = Date.now();
-  const { tasks, lists, faults } = attentionInputs();
+  const { tasks, lists, faults, packages } = attentionInputs();
   let headline = null;
   if (!attention) { try { headline = efficiency.compute({}).headline ?? null; } catch { headline = null; } }
-  const m = briefModel({ lists, faults, tasks, headline, now });
+  const m = briefModel({ lists, faults, tasks, headline, now, packages });
   const key = cursorKey(req);
   const given = parseCursor(since, assistantFeed.max());
   const cur = given ?? (key ? assistantFeed.stored(key) : null);
@@ -3471,20 +3503,26 @@ function bgLineOf(cache) {
 }
 function backgroundNow() {
   const now = Date.now();
-  const { tasks, lists, faults } = attentionInputs();
-  const m = briefModel({ lists, faults, tasks, now });
+  const { tasks, lists, faults, packages } = attentionInputs();
+  const m = briefModel({ lists, faults, tasks, now, packages });
   const execs = new Map(connect.list().map((e) => [String(e.id), e]));
   const attentionIds = (lists.mine || []).filter((r) => r.localId != null).map((r) => Number(r.localId));
   // 合同 G2 的 type / verb:只取 homeLists 写在行上的那一份(面板同一个函数)。briefModel 按「先 mine 各行、后线故障」的顺序出条目,
   //   这里按同一顺序对上;线故障行用同一个 homeAttnType 补。条数对不上就不给 type(不另判)。
-  const kinds = [...(lists.mine || []).map((r) => ({ type: r.type, verb: r.verb })), ...faults.map(() => attentionModel.homeAttnType({ action: "line_fault" }, null))];
+  //   合同 I10d 的包条目(排在 mine 之后、线故障之前)也用同一个 homeAttnType 判:亲手跑 = 卡面上「要你亲手做」的形状,
+  //   出包对不上 = 受阻卡的形状(两者都是给 homeAttnType 的最小输入,类型不在这里另写)。
+  const pkgKind = (p) => attentionModel.homeAttnType({ action: "package" }, p.kind === "hands"
+    ? { status: "in_progress", ask: { needs: "hands" } } : { status: "waiting", waiting_for: "package", human_gate: 0 });
+  const kinds = [...(lists.mine || []).map((r) => ({ type: r.type, verb: r.verb })), ...packages.map(pkgKind),
+                 ...faults.map(() => attentionModel.homeAttnType({ action: "line_fault" }, null))];
   const { attention, mismatch } = typeAttention(m.attention, m.all.attention.length, kinds);
   if (mismatch) console.log(`后台任务:要本人做的事 ${m.all.attention.length} 条与首页行 ${kinds.length} 条对不上,本次不给 type`);
   const out = backgroundModel({ tasks, attention, attentionTotal: m.attention_total, attentionIds, now,
     whoOf: (t) => bgWhoOf(t, execs), sinceOf: (t) => bgRun(t.run_id)?.started_at ?? null, stopOf: bgStopOf,
     lineOf: bgLineOf(new Map()), lineLabel: (l) => LINE_LABEL?.[l] || l,
     sourceGate: () => process.env.BOARD_ALLOW_UNPINNED !== "1" && blessStep().state !== "done",
-    integrationOf: (g) => integ.summary(g.id) });          // 合同 I7:只读缓存,不跑 git
+    integrationOf: (g) => integ.summary(g.id),             // 合同 I7:只读缓存,不跑 git
+    packageOf: (pid) => { const p = packages.find((x) => x.package.id === pid); return p ? p.package : null; } });   // 合同 I10d
   // 第 7 波欠账⑥:条数对不上不再只打日志 —— 应答带 attention_type_mismatch:true(面板 8c 决定怎么显示)。
   return mismatch ? { ...out, attention_type_mismatch: true } : out;
 }
@@ -4767,10 +4805,11 @@ const server = http.createServer(async (req, res) => {
       if(b.required_checks!==undefined&&boardRole!=="operator")return json(res,403,{error:"required_checks 只能由操作者设定"});
       const requiredChecks=cred.normRequired(b.required_checks);
       // 合同 I6–I8:touches / release_on / integrate 只由操作者写(worker 派生卡带 → 403);先校验,不合规不建卡。
-      for(const k of ["touches","release_on","integrate","refs","base"])if(b[k]!==undefined&&boardRole!=="operator")return json(res,403,{error:`${k} 只能由操作者设定`});
+      for(const k of ["touches","release_on","integrate","refs","base","target_env"])if(b[k]!==undefined&&boardRole!=="operator")return json(res,403,{error:`${k} 只能由操作者设定`});
       // 合同 I10a / I10b:refs / base 只由操作者写;先校验(被引用卡存在、未归档),不合规不建卡。
       const refsIn=refs.normRefs(b.refs),baseIn=baseChk.normBase(b.base);
       for(const r of refsIn||[]){const s=store.get(db,r.card);if(!s)throw store.err(store.ERR.NOT_FOUND,`refs 里的卡 #${r.card} 不存在`);if(s.archived_at)throw store.err(store.ERR.CONFLICT,`refs 里的卡 #${r.card} 已归档`);}
+      const targetEnv=envGap.normTarget(b.target_env);   // 合同 I10e:目标环境标签(单行 ≤40)
       const touches=occ.normTouches(b.touches,"touches"),releaseOn=normReleaseOn(b.release_on,{err:store.err,ERR:store.ERR}),integrate=integ.normIntegrate(b.integrate);
       if(integrate&&b.kind!=="goal")throw store.err(store.ERR.BAD_INPUT,"integrate 只写在目标卡上(kind:\"goal\")");
       if(releaseOn&&(b.released===true||b.released===1))throw store.err(store.ERR.BAD_INPUT,"release_on 只能写在未放行的卡上:不要同时带 released:true");
@@ -4844,6 +4883,7 @@ const server = http.createServer(async (req, res) => {
       if (releaseOn) auto.setReleaseOn(id, releaseOn, "operator");
       if (refsIn?.length) refs.set(id, refsIn, "operator");
       if (baseIn) { baseChk.set(id, baseIn, "operator"); void integrateTick(); }   // 写入后后台马上补扫一次(不等应答)
+      if (targetEnv) envGap.setTarget(id, targetEnv, "operator");
       emit("task.created", { id });
       const made = taskOut(store.get(db, id));
       // 建成的卡比请求更严的地方逐项点名(放宽没有生效、执行配置卡固定未放行等)，不静默。
@@ -5227,6 +5267,66 @@ const server = http.createServer(async (req, res) => {
       emit("task.updated", { id });
       return json(res, 200, { task: taskOut(store.get(db, id)) });
     }
+    // 合同 I10d「包」(core/packages.mjs)与 I10e 环境差(core/env-gap.mjs):
+    //   declare(POST /api/tasks/:id/packages)/ freeze / commit / issue / env-diff:只给「当事执行者」(持这张卡的,或卡在等验收 / 等裁定时
+    //   最近交付它的外部执行者;受管线本波不能报包)—— 写白名单放行后这里再核一次。ran:只有操作者。pin:核对卡的持卡执行者(自报)
+    //   或审阅座席(已核)。target-env:只有操作者。GET 包详情:操作者全量,当事执行者看自己这张卡的;助手只有任务对象里的 packages_count。
+    const mpk = p.match(/^\/api\/tasks\/(\d+)\/(packages|env-diff|target-env)$/);
+    if (mpk) {
+      const id = Number(mpk[1]), what = mpk[2], t = store.get(db, id);
+      if (!t || (req.boundLine && t.line !== req.boundLine)) return json(res, 404, { error: "不存在" });
+      const party = boardRole === "executor" && pkgs.partyOf(t) === req.executor.id;
+      if (what === "packages" && m === "GET") {
+        if (boardRole === "operator" || party) return json(res, 200, { card_id: id, packages: pkgs.listFor(id) });
+        return json(res, 403, { code: "NOT_PARTY", error: "包的详情只给操作者与这张卡的当事执行者(助手只看任务对象里的 packages_count)", role: boardRole });
+      }
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      if (what === "target-env" && boardRole !== "operator") return json(res, 403, { error: "target_env 只能由操作者设定", role: boardRole });
+      if (what !== "target-env" && !party)
+        return json(res, 403, { code: "NOT_PARTY", error: `卡 #${id} 的${what === "packages" ? "包" : "环境差"}只收当事执行者报的(持这张卡的,或等验收 / 等裁定时最近交付它的外部执行者)`, role: boardRole });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象");
+      if (what === "target-env") {
+        if (!Object.hasOwn(b, "target_env")) throw store.err(store.ERR.BAD_INPUT, "要 {target_env: 标签 | null}");
+        envGap.setTarget(id, envGap.normTarget(b.target_env), "operator");
+        emit("task.updated", { id });
+        return json(res, 200, { task: taskOut(store.get(db, id)) });
+      }
+      if (what === "env-diff") {
+        const d = envGap.setDiff(id, envGap.normItems(b.items, cleanText), req.executor.id);
+        emit("task.updated", { id });
+        return json(res, 200, { card_id: id, env_diff: d });
+      }
+      return json(res, 200, { package: pkgs.declare(id, b, req.executor.id) });
+    }
+    const mpp = p.match(/^\/api\/packages\/(\d+)(?:\/(freeze|commit|issue|ran|pin))?$/);
+    if (mpp) {
+      const pid = Number(mpp[1]), what = mpp[2] || null, prow = pkgs.row(pid), t = prow ? store.get(db, prow.card_id) : null;
+      if (!prow || !t || (req.boundLine && t.line !== req.boundLine)) return json(res, 404, { error: "不存在" });
+      const party = boardRole === "executor" && pkgs.partyOf(t) === req.executor.id;
+      const pinHolder = () => { const pc = pkgs.pinCardOf(pid), ct = pc ? store.get(db, pc) : null;
+        return boardRole === "executor" && !!ct && ct.status === "in_progress" && ct.worker === req.executor.id; };
+      if (!what) {
+        if (m !== "GET") return json(res, 405, { error: "方法不允许" });
+        if (boardRole === "operator" || party || pinHolder()) return json(res, 200, { package: pkgs.view(pid) });
+        return json(res, 403, { code: "NOT_PARTY", error: "包的详情只给操作者、当事执行者与核对卡的持卡者", role: boardRole });
+      }
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      if (what === "ran" && boardRole !== "operator") return json(res, 403, { error: "「跑完了」只有操作者能报", role: boardRole });
+      if (what === "pin" && boardRole !== "review" && !pinHolder())
+        return json(res, 403, { code: "NOT_PIN_HOLDER", error: "钉住只收核对卡的持卡者(自报)与审阅座席(已核)", role: boardRole });
+      if (["freeze", "commit", "issue"].includes(what) && !party)
+        return json(res, 403, { code: "NOT_PARTY", error: `包 #${pid} 只收当事执行者报的`, role: boardRole });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象");
+      let v;
+      if (what === "ran") v = pkgs.ran(pid, b, "operator");
+      else if (what === "pin") v = boardRole === "review" ? pkgs.pin(pid, b, { by: "review", verified: true }) : pkgs.pin(pid, b, { by: req.executor.id, verified: false });
+      else if (what === "freeze") v = pkgs.freeze(pid, req.executor.id);
+      else if (what === "commit") { v = pkgs.commit(pid, b.commit, req.executor.id); void integrateTick(); }   // 后台马上核一次(不等应答)
+      else v = pkgs.issue(pid, b, req.executor.id);
+      return json(res, 200, { package: v });
+    }
     // 合同 I6–I8 的写接口:touches / release-on / integrate 只给操作者(不进任何别的角色的写白名单,这里再按角色核一次);
     //   paths = 执行者 declare_paths(只给持这张卡、这一轮的执行者;覆盖式,≤50,这一轮结束即失效)。
     const m8 = p.match(/^\/api\/tasks\/(\d+)\/(touches|release-on|integrate|paths)$/);
@@ -5594,8 +5694,8 @@ if (!["127.0.0.1", "::1", "localhost"].includes(HOST)) {
 const REAP_MS = Number(process.env.BOARD_REAP_MS || 30000);
 // 合同 I7 / I9:整合状态的定时扫(只读 git,不在请求路径上)+ 扫完把自动规则过一遍。BOARD_INTEGRATE_SCAN_MS 只给测试调快。
 const INTEGRATE_SCAN_MS = Math.max(200, Number(process.env.BOARD_INTEGRATE_SCAN_MS) || 30000);
-// 合同 I10b:底提交前提的只读核对并进同一次定时扫(先整合、再底提交、再自动规则)。
-const integrateTick = () => integ.scan().then(() => baseChk.scan()).then(() => auto.sweep()).catch((e) => console.error("整合扫描失败:", String(e?.message || e).slice(0, 120)));
+// 合同 I10b:底提交前提的只读核对并进同一次定时扫(先整合、再底提交、再包的提交核对〔I10d〕、再自动规则)。
+const integrateTick = () => integ.scan().then(() => baseChk.scan()).then(() => pkgs.scan()).then(() => auto.sweep()).catch((e) => console.error("整合扫描失败:", String(e?.message || e).slice(0, 120)));
 setInterval(integrateTick, INTEGRATE_SCAN_MS).unref?.();
 setImmediate(integrateTick);
 connect.watch(Number(process.env.BOARD_CONNECT_WATCH_MS || 10000));   // 在线/离线、working/stalled 变化 → executor.changed

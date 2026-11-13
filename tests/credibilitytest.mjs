@@ -76,7 +76,10 @@ test("H1 提交号:只收完整十六进制(防选项注入);大写存小写", (
 
 test("H3 executor 的 checks:by / digest 一概不收,how 缺省 inferred,status 与 baseline 严格", () => {
   const p = parseDelivery({ checks: [{ name: "unit", status: "pass", how: "ran", by: "board", digest: "x" }, { name: "lint", status: "fail", baseline: true }] }, ctx);
-  assert.deepEqual(p.checks, [{ name: "unit", status: "pass", how: "ran", baseline: false }, { name: "lint", status: "fail", how: "inferred", baseline: true }]);
+  assert.deepEqual(p.checks, [{ name: "unit", status: "pass", how: "ran", baseline: false, env: null }, { name: "lint", status: "fail", how: "inferred", baseline: true, env: null }]);
+  // 合同 I10e:executor 的 checks 可带 env(自报的环境标签,单行 ≤80)
+  assert.equal(parseDelivery({ checks: [{ name: "u", status: "pass", env: " 本机 " }] }, ctx).checks[0].env, "本机");
+  assert.throws(() => parseDelivery({ checks: [{ name: "u", status: "pass", env: "x".repeat(81) }] }, ctx), /env/);
   assert.throws(() => parseDelivery({ checks: [{ name: "u", status: "ok" }] }, ctx), /status/);
   assert.throws(() => parseDelivery({ checks: [{ name: "u", status: "pass", how: "guess" }] }, ctx), /how/);
   assert.throws(() => parseDelivery({ checks: [{ name: "u", status: "pass", baseline: "yes" }] }, ctx), /baseline/);

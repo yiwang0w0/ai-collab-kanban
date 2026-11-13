@@ -17,7 +17,7 @@ const SUBJECT_MAX = 200;
 
 // 小节名 → 卡面字段。导出才有的小节(回报 / 裁定)导入时跳过,往返不报错。
 const FIELD_OF = { "说明": "description", "验收": "acceptance", "线": "line", "依赖": "deps" };
-const EXPORT_ONLY = new Set(["回报", "裁定", "附图"]);   // 「附图」= 证据图的件数与哈希(合同 H5),导入时同样跳过
+const EXPORT_ONLY = new Set(["回报", "裁定", "附图", "包"]);   // 「包」= 合同 I10d 的包名、状态、冻结摘要短号(不写 label),导入跳过   // 「附图」= 证据图的件数与哈希(合同 H5),导入时同样跳过
 
 /** 只清字符、不改语义:换行与制表保留;别的控制字符、行/段分隔符(换成换行)、零宽、双向控制符、BOM 去掉。 */
 export function cleanBlock(s) {
@@ -143,7 +143,7 @@ export function sectionHash({ subject, description, acceptance, line, deps, goal
     [...deps].sort((a, b) => a - b), goal ?? null])).digest("hex");
 }
 
-export function openMdHandoff({ db, store, lines = () => [], askOf = () => null, evidenceOf = () => [] }) {
+export function openMdHandoff({ db, store, lines = () => [], askOf = () => null, evidenceOf = () => [], packagesOf = () => [] }) {
   function migrate() {
     db.exec(`CREATE TABLE IF NOT EXISTS md_imports (
       hash TEXT PRIMARY KEY, task_id INTEGER NOT NULL, at TEXT NOT NULL)`);
@@ -216,6 +216,7 @@ export function openMdHandoff({ db, store, lines = () => [], askOf = () => null,
   const recordsStmt = db.prepare("SELECT at, actor, kind, detail FROM task_events WHERE task_id=? AND kind IN ('evidence.recorded','decision.recorded') ORDER BY id");
   const kidsStmt = db.prepare("SELECT id FROM tasks WHERE parent_id=? ORDER BY id");
   const VERDICT = { approve: "通过", reject: "打回" };
+  const PKG_STATE = { draft: "草稿", frozen: "已冻结", committed: "已提交", issued: "已出包", ran: "已跑", pinned: "已钉住" };
   const OUTCOME = { done: "交付", wait: "等你决定" };
   const at16 = (s) => String(s || "").replace("T", " ").slice(0, 16);
 
@@ -261,6 +262,10 @@ export function openMdHandoff({ db, store, lines = () => [], askOf = () => null,
     let pics = []; try { pics = evidenceOf(t.id) || []; } catch {}
     if (pics.length) out.push("### 附图", "", `附图 ${pics.length} 张(图不随导出;在看板上看)`, "",
       ...pics.map((e) => `- sha256 ${String(e.sha256).replace(/[^0-9a-f]/g, "")}`), "");
+    // 合同 I10d:包只写包名、状态、冻结摘要短号(不写 label、不写文件路径)。
+    let pk = []; try { pk = packagesOf(t.id) || []; } catch {}
+    if (pk.length) out.push("### 包", "", ...pk.map((v) => `- ${oneLine(v.name)} · ${PKG_STATE[v.state] || v.state}${v.drift ? " · 对不上" : ""} · ` +
+      (v.frozen?.digest ? `冻结 ${String(v.frozen.digest).replace(/[^0-9a-f]/g, "").slice(0, 12)}` : "未冻结")), "");
     return out.join("\n");
   }
 

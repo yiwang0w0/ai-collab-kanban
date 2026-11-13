@@ -6,9 +6,13 @@
 //   - assemble:目标写了 integrate.target 且 assemble:true、直属子卡全部完成 → 在目标下出一张未放行的「候选组装」卡
 //     (auto_kind:"assemble",线 = 目标的线)。说明由板拼:待合提交(按依赖先后)、每笔的已核 / 自报检查与没跑的必需检查、
 //     文件重叠、基线红、最后一步「推后核远端」。只出一次;之后子卡重开再完成 → 重拼说明(放行后改说明照常 spec_version +1)。
+//   - pin(合同 I10d):包 ran.result=ok 且 pins.required 非空 → 在原卡同一父卡下出一张未放行的「核对卡」(auto_kind:"pin",
+//     线 = 原卡的线);说明由板拼(core/packages.mjs 的 composePin)。同一个包同一冻结轮只出一次;操作者在 ran 里带
+//     release_pin:true → 出卡后由操作者放行(actor = operator)。
 // 板不合并、不推送、不改工作仓;说明里只写相对路径、短提交号与卡号,不写本机绝对路径。
 import { createHash } from "node:crypto";
 import { overlapOf } from "./occupancy.mjs";
+import { composePin } from "./packages.mjs";
 
 export const EVENTS = ["done", "delivered"];
 const sha = (x) => createHash("sha256").update(x).digest("hex");
@@ -95,7 +99,7 @@ export function composeAssemble({ goal, target, target_sha = null, kids = [] }) 
  * @param deliveredSince (taskId, at) => 这之后有过交付(outcome=done)
  * @param clean         (s, max) => 给人看的一行
  */
-export function openAutocards({ db, store, cred, integ, occ, release, afterEdit = () => {}, deliveredSince = () => false,
+export function openAutocards({ db, store, cred, integ, occ, release, pkgs = null, releaseAs = null, afterEdit = () => {}, deliveredSince = () => false,
                                 clean = (s) => String(s ?? ""), emit = () => {}, log = () => {}, now = () => new Date().toISOString(),
                                 // 别的模块的「事件 → 动作」也登记进下面的 RULES(合同 I10:复审卡、引用过期、卡死):[{name, on, run}]。
                                 rules = [] }) {
@@ -196,7 +200,7 @@ export function openAutocards({ db, store, cred, integ, occ, release, afterEdit 
       const sig = sha(JSON.stringify([g.target, ...kids.map((k) => [Number(k.id), cred.currentDigest(k.id)])]));
       const existing = db.prepare("SELECT * FROM auto_cards WHERE goal_id=? AND kind='assemble'").get(Number(goal.id));
       if (existing && existing.sig === sig) continue;
-      await integ.scan();                                            // 拼之前刷新一次整合状态(不在请求路径上)
+      await (integ.scanFresh ? integ.scanFresh() : integ.scan());   // 拼之前刷新一次整合状态(不在请求路径上;在跑的那轮可能早于子卡完成,另扫一轮)
       const summary = integ.summary(goal.id);
       const info = topoOrder(kids).map((k) => kidInfo(k, g.target, summary));
       const card = composeAssemble({ goal: { id: Number(goal.id), title: clean(goal.subject, 60) }, target: g.target, target_sha: summary?.target_sha ?? null, kids: info });
@@ -228,10 +232,36 @@ export function openAutocards({ db, store, cred, integ, occ, release, afterEdit 
     }
   }
 
+  // ── pin(合同 I10d)───────────────────────────────────────────────────────────────
+  async function sweepPin() {
+    if (!pkgs) return;
+    for (const c of pkgs.pinCandidates()) {
+      const src = store.get(db, Number(c.pkg.card_id));
+      if (!src || src.archived_at || superseded(src.id)) continue;   // 被取代的卡(合同 I1)不出核对卡
+      if (!claimTrigger("pin", c.key)) continue;                       // 同一个包同一冻结轮只出一次
+      const card = composePin({ card: { id: Number(src.id), title: clean(src.subject, 60) }, pkg: c.pkg });
+      let id = null;
+      try {
+        id = store.add(db, { subject: card.subject, description: card.description, acceptance: card.acceptance, kind: "task",
+                             ...(src.parent_id != null ? { parentId: Number(src.parent_id) } : {}), line: src.line ?? null, released: 0, actor: "rule" });
+        db.prepare("INSERT INTO auto_cards(task_id, kind, goal_id, sig, at) VALUES(?,?,?,?,?)").run(id, "pin", Number(src.parent_id ?? 0), c.key, now());
+        pkgs.recordPinCard(c.pkg.id, id);
+        settle("pin", c.key, "ok:" + id);
+      } catch (e) { settle("pin", c.key, "failed: " + String(e?.message || e).split(String.fromCharCode(10))[0]); log(`包 #${c.pkg.id} 的核对卡没建成:${String(e?.message || e).split(String.fromCharCode(10))[0].slice(0, 160)}`); continue; }
+      emit("task.created", { id, auto_kind: "pin" });
+      log(`包 #${c.pkg.id}「${c.pkg.name}」跑过(ok):出核对卡 #${id}(${c.release_pin ? "按操作者的 release_pin 放行" : "未放行"})`);
+      if (c.release_pin && releaseAs) {
+        try { releaseAs(id, "operator"); }
+        catch (e) { log(`核对卡 #${id} 没能按 release_pin 放行(留给人放行):${String(e?.message || e).split(String.fromCharCode(10))[0].slice(0, 160)}`); }
+      }
+    }
+  }
+
   // 事件 → 动作的唯一登记处。每条规则自己按「触发记录」防重;sweep 由 server 在 task.* 事件后与定时器上调用(不在请求路径上等它)。
   const RULES = [
     { name: "release_on", on: ["task.*"], run: sweepReleaseOn },
     { name: "assemble", on: ["task.*", "integrate.scan"], run: sweepAssemble },
+    { name: "pin", on: ["package.changed"], run: sweepPin },
     ...rules.filter((r) => r && typeof r.name === "string" && typeof r.run === "function").map((r) => ({ name: r.name, on: r.on || ["task.*"], run: r.run })),
   ];
   let running = null, again = false;

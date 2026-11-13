@@ -113,15 +113,18 @@ export function parseDelivery(b, { err, ERR }) {
   if (b.checks !== undefined && b.checks !== null) {
     if (!Array.isArray(b.checks) || b.checks.length > CHECKS_MAX) throw bad(err, ERR, `checks 要数组,最多 ${CHECKS_MAX} 项`);
     for (const c of b.checks) {
-      if (!c || typeof c !== "object" || Array.isArray(c)) throw bad(err, ERR, "checks 的每一项要 {name, status, how, baseline?}");
+      if (!c || typeof c !== "object" || Array.isArray(c)) throw bad(err, ERR, "checks 的每一项要 {name, status, how, baseline?, env?}");
       const name = cleanName(c.name);
       if (!name) throw bad(err, ERR, `checks[].name 要 1–${NAME_MAX} 字的单行名字`);
       if (!STATUSES.includes(c.status)) throw bad(err, ERR, `checks[].status 只接受 ${STATUSES.join(" / ")}`);
       const how = c.how === undefined || c.how === null ? "inferred" : c.how;
       if (!HOWS.includes(how)) throw bad(err, ERR, `checks[].how 只接受 ${HOWS.join(" / ")}`);
       if (c.baseline !== undefined && c.baseline !== null && typeof c.baseline !== "boolean") throw bad(err, ERR, "checks[].baseline 只接受 true / false");
-      // by / digest / command_hash / env 一概不收:执行者报的永远是自报(by:"executor")。
-      checks.push({ name, status: c.status, how, baseline: c.baseline === true });
+      // 合同 I10e:env = 执行者说它在哪个环境跑的(自报,单行 ≤80;不填 = null)。
+      let env = null;
+      if (c.env !== undefined && c.env !== null) { env = cleanName(c.env); if (!env) throw bad(err, ERR, `checks[].env 要 1–${NAME_MAX} 字的单行环境标签`); }
+      // by / digest / command_hash 一概不收:执行者报的永远是自报(by:"executor")。
+      checks.push({ name, status: c.status, how, baseline: c.baseline === true, env });
     }
   }
   return { base_commit, head_commit, files, checks, provided: !!(base_commit || head_commit || files.length) };
@@ -244,7 +247,7 @@ export function openCredibility({ db, err, ERR, git = () => null, repoForLine = 
            v.mismatch.length ? JSON.stringify(v.mismatch) : null, authorRuntime == null ? null : String(authorRuntime), familyOf(authorRuntime));
     const ins = db.prepare("INSERT INTO cred_checks(task_id, name, status, by_, how, digest, command_hash, env, baseline, base_commit, at) VALUES(?,?,?,?,?,?,?,?,?,?,?)");
     for (const c of parsed.checks)
-      ins.run(Number(task.id), c.name, c.status, "executor", c.how, fp0.digest, null, null, c.baseline ? 1 : 0, fp0.base_commit, at);
+      ins.run(Number(task.id), c.name, c.status, "executor", c.how, fp0.digest, null, c.env ?? null, c.baseline ? 1 : 0, fp0.base_commit, at);
     if (hostCheck) addVerifiedCheck(task.id, { ...hostCheck, by: "board" });
     return { digest: fp0.digest, verified: v.verified };
   }
@@ -276,8 +279,9 @@ export function openCredibility({ db, err, ERR, git = () => null, repoForLine = 
     return out.sort();
   }
 
-  /** 卡的可信字段(任务对象 / 卡详情 / history 共用)。staleSpec = 合同 H6 的 based_on_stale_spec(缺失 = false)。 */
-  function fields(task, { staleSpec = false } = {}) {
+  /** 卡的可信字段(任务对象 / 卡详情 / history 共用)。staleSpec = 合同 H6 的 based_on_stale_spec(缺失 = false);
+   *  targetEnv = 合同 I10e 卡的目标环境标签(没写 = null)。 */
+  function fields(task, { staleSpec = false, targetEnv = null } = {}) {
     const id = Number(task?.id);
     const required_checks = requiredOf(id);
     const all = deliveries(id);
@@ -326,7 +330,13 @@ export function openCredibility({ db, err, ERR, git = () => null, repoForLine = 
     //   上一次交付推出的档位不能替这次作保 → 降到 self_reported,带 fingerprint_missing(闸那一侧见 autoGate)。
     if (badge && fingerprintMissing(task, cur))
       badge = { level: "self_reported", flags: [...badge.flags.filter((f) => f !== "fingerprint_missing"), "fingerprint_missing"], provenance: badge.provenance.slice(0, 1) };
-    return { fingerprint, checks, evidence_counts, badge, baseline, required_checks, conclusions };
+    // 合同 I10e 环境差:已核(board / reviewer)且在当前指纹上通过的检查,它们的 env 标签里有没有目标环境。
+    //   有 = true;有 env 但都不是 = false;没有 env 信息或卡没写 target_env = null。机器验证而 same ≠ true(且写了目标)→ flag not_target_env。
+    const target = typeof targetEnv === "string" && targetEnv ? targetEnv : null;
+    const verified_in = [...new Set([...ver.values()].filter((c) => c.status === "pass" && c.env).map((c) => String(c.env)))];
+    const env_gap = { target, verified_in, same: target == null || !verified_in.length ? null : verified_in.includes(target) };
+    if (badge && target && badge.level === "machine_verified" && env_gap.same !== true) badge = { ...badge, flags: [...badge.flags, "not_target_env"] };
+    return { fingerprint, checks, evidence_counts, badge, baseline, required_checks, conclusions, env_gap };
   }
 
   /** 卡在交付态(待验收 / 已完成的非目标卡),最近记下的指纹却不是卡上这一轮、这份交付正文的 = 这次交付的指纹没记上。
@@ -399,11 +409,20 @@ export function openCredibility({ db, err, ERR, git = () => null, repoForLine = 
     }
     if (cur && cur.verified === 0) missing.push("指纹与工作仓对不上(fingerprint_mismatch)");
     if (staleSpec === true) missing.push("交付基于旧版说明(based_on_stale_spec)");
+    // 别的模块登记的闸(合同 I10d「包」:只对带包的卡;各自返回缺口文字,空 = 满足)。出错 = 不自动通过(未知归拒绝侧)。
+    for (const g of extraGates) {
+      let more;
+      try { more = g.fn(task) || []; } catch (e) { more = [`${g.name} 的闸没算出来:${String(e?.message || e).split(String.fromCharCode(10))[0].slice(0, 80)}`]; }
+      missing.push(...more);
+    }
     return { ok: missing.length === 0, missing };
   }
+  const extraGates = [];
+  /** 登记一道自动通过闸:fn(task) → 缺口文字数组(空 = 满足)。人的显式裁定不受它限制。 */
+  function registerGate(name, fn) { extraGates.push({ name: String(name), fn }); }
 
   return { migrate, parseDelivery: (b) => parseDelivery(b, ctx), normRequired: (v) => normRequired(v, ctx), requiredOf, setRequired,
-           recordDelivery, addVerifiedCheck, addConclusion, fields, autoGate, currentDigest,
+           recordDelivery, addVerifiedCheck, addConclusion, fields, autoGate, registerGate, currentDigest,
            // 第 8 波(I6 / I7 / I9)只读用:最近一次交付的提交与文件。
            currentHead: (id) => current(id)?.head_commit ?? null, currentFiles: (id) => filesOf(current(id)) };
 }

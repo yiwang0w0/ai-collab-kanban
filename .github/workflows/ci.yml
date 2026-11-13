@@ -309,6 +309,9 @@ jobs:
       - name: "refsbasestucktest (refs pinned to a spec version, stale by hash, spec review cards, base commit precondition read-only scan, stuck detection and clear)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/refsbasestucktest.mjs
+      - name: "packagestest (package state machine, three drift sources, party-only writes, operator-only ran, pin card once, auto-pass gate with mutation control, env gap)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/packagestest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

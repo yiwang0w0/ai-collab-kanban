@@ -42,7 +42,7 @@ function kindOf(row, t) {
  * 简报的条目。lists = homeLists(...) 的结果;faults = homeLineFaults(...);tasks = 本板未归档的卡(带 who:在做的那一方的显示名);
  * headline = 效率主句(读不到 = null)。返回 { headline, attention, doing, done_recent }。
  */
-export function briefModel({ lists = {}, faults = [], tasks = [], headline = null, now = 0 } = {}) {
+export function briefModel({ lists = {}, faults = [], tasks = [], headline = null, now = 0, packages = [] } = {}) {
   const byId = new Map(tasks.map((t) => [Number(t.id), t]));
   const attention = [];
   for (const row of Array.isArray(lists.mine) ? lists.mine : []) {
@@ -52,6 +52,14 @@ export function briefModel({ lists = {}, faults = [], tasks = [], headline = nul
                      ...(t?.posted_by?.label ? { posted_by: clean(t.posted_by.label, 24) } : {}),
                      // 合同 G5:执行者 ask_operator 说要本人亲手做(任务对象上的 ask.needs);没有 = 按裁定。
                      ...(kind === "decision" && t?.ask?.needs === "hands" ? { needs: "hands" } : {}) });
+  }
+  // 合同 I10d:包出了、还没跑(core/packages.mjs 的 attentionItems,排在「待我处理」各行之后、线故障之前)。
+  //   亲手跑 = 等你亲手做(kind decision + needs hands);出包对不上 = 受阻(blocked,先别跑)。条目只带 package_id
+  //   (label / expect 不进简报与助手的提醒流;首页 G2 的 detail 由 home-background 按 package_id 取)。
+  for (const p of Array.isArray(packages) ? packages : []) {
+    if (!p || (p.kind !== "hands" && p.kind !== "fault")) continue;
+    attention.push({ kind: p.kind === "hands" ? "decision" : "blocked", task_id: Number(p.task_id), title: clean(p.title), since: p.since || null,
+                     ...(p.kind === "hands" ? { needs: "hands" } : {}), package_id: Number(p.package.id) });
   }
   for (const f of Array.isArray(faults) ? faults : []) attention.push({ kind: "line_fault", title: clean(f.what), since: null });
   const doing = tasks.filter((t) => t.status === "in_progress" && !t.archived_at && t.kind !== "goal")

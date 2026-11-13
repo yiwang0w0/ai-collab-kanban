@@ -137,5 +137,8 @@ export function openIntegrate({ db, err, ERR, git = () => null, repoForLine = ()
     return running;
   }
 
-  return { migrate, normIntegrate: (v) => normIntegrate(v, ctx), set, get, goals, kidsOf, summary, childField, scan, gitRuns: () => runs };
+  /** 一次「从现在起」的扫描:正有一轮在跑时,它开始时看到的子卡可能还没完成(结果里没有它们)—— 等它跑完再从头扫一轮。
+   *  候选组装卡拼说明前用它(全套负载下实测:拼进了还没扫到的「未核」,之后说明不再重拼)。 */
+  const scanFresh = () => (running ? running.then(() => scan(), () => scan()) : scan());
+  return { migrate, normIntegrate: (v) => normIntegrate(v, ctx), set, get, goals, kidsOf, summary, childField, scan, scanFresh, gitRuns: () => runs };
 }

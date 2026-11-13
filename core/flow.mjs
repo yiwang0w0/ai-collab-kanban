@@ -147,6 +147,9 @@ export function actorLabel(actor, kind, labels = {}, nameOf = null) {
   return cut(name || (kind === "line" && labels[base]) || (a === "worker" ? "执行线" : a === "executor" ? "执行者" : base), 32);
 }
 
+const PKG_STEP = { declare: "报了包", freeze: "冻结了包", commit: "报了包的提交", commit_check: "核了包的提交", issue: "出了包",
+  ran: "记下跑完了包", pin: "报了包的一项核对", pin_card: "为包出了核对卡" };
+const PKG_STATE = { draft: "草稿", frozen: "已冻结", committed: "已提交", issued: "已出包", ran: "已跑", pinned: "已钉住" };
 const dispositionOf = (d) => d.disposition || (d.status === "done" ? "close" : d.status === "not_started" ? "hand_back" : "hold");
 
 /** 一条事件 → 一条历史条目(或 null = 不出条目)。runtimeOf(run_id) 由 task_runs 补运行时。 */
@@ -217,6 +220,10 @@ export function entryOf(e, ctx = {}) {
     case "base.set": summary = d.commit ? `${who}设了底提交 ${safeText(d.commit, 12)}${d.onto ? `(在 ${safeText(d.onto, 40)} 上)` : ""}` : `${who}撤销了底提交`; break;
     case "task.stuck": summary = `卡死了:连着${({ reaped: "被回收", handed_back: "被退回", failed: "交回没做完", same_reason: "以同一原因停下" })[d.kind] || "出问题"} ${Number(d.count) || "?"} 次`; break;
     case "stuck.cleared": summary = `${who}把卡死计数清零${d.note ? ":" + safeText(d.note, 50) : ""}`; break;
+    // 合同 I10d(core/packages.mjs):包的每一步;I10e(core/env-gap.mjs):目标环境、执行者自报的环境差。
+    case "package.changed": summary = `${actor_kind === "system" ? "看板" : who}${PKG_STEP[d.step] || "更新了包"}「${safeText(d.name, 30)}」(${PKG_STATE[d.state] || "?"}${d.drift ? " · 对不上" : ""})`; break;
+    case "target_env.set": summary = d.target_env ? `${who}设目标环境:${safeText(d.target_env, 40)}` : `${who}撤销了目标环境`; break;
+    case "env_diff.reported": summary = `${who}报了与目标环境的差 ${Number(d.count) || 0} 项(自报)`; break;
     default: summary = `记录:${cut(e.kind, 24)}`;
   }
   return { at: e.at, kind: e.kind, actor: who0, actor_kind, step, summary: cut(summary, 120) };
