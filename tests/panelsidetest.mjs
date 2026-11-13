@@ -89,7 +89,7 @@ function fixture(extra = {}) {
     meta: { wf_labels: { review: "审阅" } }, verdictDraft: new Map(), fleetApi: null, REVIEW_LINES: [],
     // 留言跟随用面板自己的 syncHandoff;方案包不在这些用例里,syncDecision 不会被走到。
     taskForView: (id) => context.byId.get(Number(id)), PROFILE_RELEASE_NOTE: "取消放行说明",
-    homeMulti: () => false, homeLocalName: () => "本机", lineLabel: (line) => line,
+    homeMulti: () => false, homeLocalName: () => "本机", lineLabel: (line) => line, icon: (name) => `<svg data-icon="${name}"></svg>`,
     // 跨机数据:默认单机(没有多机列表、没有委派记录);用例按需放进夹具。
     homeFleet: null, homeActions: null, sideDetail: null, homeGet: async () => ({}), copyError: (e) => String(e?.message || e),
     // 用量:卡面读数(refresh 给的)与面板的请求。默认 404 = 这块看板还没有单卡用量接口。
@@ -107,7 +107,9 @@ function fixture(extra = {}) {
   const copy = section("// ── display-copy(pure;tests/panelcopytest.mjs)──", "// ── /display-copy ──");
   const optional = section("// ── optional-read(tests/panelsidetest.mjs)──", "// ── /optional-read ──");
   const side = section("function sideCard(){", "function sideFromHash(){");
-  vm.runInContext([copy, pure, optional, declaration("ago"), declaration("localTime"), declaration("hbClass"), declaration("tick"), declaration("syncHandoff"), side].join("\n"), context);
+  // 第 7 波(H7):侧栏证据区的文案在 cred-copy(纯函数),画面在侧栏这一段里。
+  const cred = section("// ── cred-copy(pure;tests/panelcopytest.mjs)──", "// ── /cred-copy ──");
+  vm.runInContext([copy, pure, optional, cred, declaration("ago"), declaration("localTime"), declaration("hbClass"), declaration("tick"), declaration("syncHandoff"), side].join("\n"), context);
   return { context, task, root, document, setTime: (value) => { clock = value; }, time: () => clock,
     body: document.getElementById("task-side-body"), state: () => document.getElementById("task-side-state") };
 }
@@ -741,6 +743,32 @@ test("首页点开的跨机事项记进地址栏：刷新后按 种类:编号 �
   assert.deepEqual(params(mixed), { "fleet-task": "abc", action: "proposal:r2" });
   mixed.context.closeSide();
   assert.deepEqual(params(mixed), { "fleet-task": "abc" });
+});
+
+test("第 7 波(H7):待验收的卡有证据区(徽标、标记、三栏计数、必需检查、实查 / 推断);确认处逐条写缺口,通过按钮照旧;没交付过的卡不出这一节", () => {
+  const D = "c".repeat(64);
+  const f = fixture({ status: "waiting", waiting_for: "review", required_checks: ["unit", "e2e"], spec_version: 2, acked_spec_version: 1, based_on_stale_spec: true,
+    badge: { level: "independent_rerun", flags: ["based_on_stale_spec"], provenance: [{ what: "fingerprint", by: "executor", at: "2026-11-14T01:00:00Z", digest: D },
+      { what: "check:unit", by: "reviewer", at: "2026-11-14T01:05:00Z", digest: D }] },
+    evidence_counts: { verified: { passed: 1, failed: 0, unverified: 0, baseline_failed: 0 }, self: { passed: 1, failed: 0, unverified: 1, baseline_failed: 0 } },
+    checks: [{ name: "unit", status: "pass", by: "reviewer", how: "ran", digest: D, stale: false }, { name: "e2e", status: "pass", by: "executor", how: "ran", digest: D, stale: false },
+      { name: "read", status: "unverified", by: "executor", how: "inferred", digest: D, stale: false }],
+    conclusions: [], baseline: { base_commit: null, red: [], self: 0, verified: 0 }, fingerprint: { digest: D, verified: null, mismatch: [] }, evidence: [] });
+  f.context.renderSide();
+  const sec = f.document.getElementById("task-side-cred");
+  assert.ok(sec && f.body.children.indexOf(sec) === 1, "证据区紧跟给人看的小块");
+  assert.match(sec.textContent, /独立复跑/); assert.match(sec.textContent, /基于旧版说明/); assert.match(sec.textContent, /说明 v2 · 对方确认到 v1/);
+  assert.match(sec.querySelector("table.cred-counts").textContent, /通过失败未验证已核100自报101/, "已核与自报两行分开");
+  assert.deepEqual(sec.querySelector(".cred-req").querySelectorAll("li").map((li) => li.dataset.state), ["ok", "self"]);
+  assert.match(sec.querySelector(".cred-how").textContent, /实查 2.*推断 1/);
+  assert.equal(sec.querySelector(".cred-thumbs"), null, "没有图不占位");
+  const gaps = f.body.querySelector(".cred-gaps");
+  assert.ok(gaps, "确认处有缺口列表");
+  assert.deepEqual(gaps.querySelectorAll("li").map((li) => li.textContent), ["必需检查「e2e」只有自报，没有看板或审阅座席的结果", "交付基于旧版说明：说明 v2 · 对方确认到 v1"]);
+  assert.ok(f.body.querySelector('[data-a="approve"]'), "人的显式裁定照旧可按");
+  const fresh = fixture({ status: "in_progress" }); fresh.context.renderSide();
+  assert.equal(fresh.document.getElementById("task-side-cred"), null, "没交付过、没设必需检查:不出这一节");
+  assert.ok(fresh.body.querySelectorAll("button").some((b) => b.textContent === "改必需检查"), "这时入口在「更多操作」里");
 });
 
 // 设置页协作区的面板测试在 tests/panelcoordtest.mjs,用的是同一种最小节点模拟。它还没单独登记进 package.json 与 CI 的

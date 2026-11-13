@@ -364,7 +364,15 @@ export function openCredibility({ db, err, ERR, git = () => null, repoForLine = 
     const missing = [];
     const required = requiredOf(id);
     const cur = current(id);
-    if (required.length) {
+    // 板手里最近一次记下的指纹,得是卡上这一次交付的(同一轮、同一份交付正文)。这次交付的指纹没记上(写库失败等),
+    //   current 就还是上一次交付的 —— 拿它当「当前」会让旧指纹上的检查替新交付作保。对不上 → 不自动通过,转人工。
+    //   一次指纹都没记过的卡(旧路径交付)不在此列,规则同现状。
+    //   交付正文为 null 时卡上存的是 "null"、指纹按空串算(两处各自的既有写法),两种都认。
+    const bodyOk = task.result == null || cur?.evidence_sha256 === sha256(String(task.result))
+      || (task.result === "null" && cur?.evidence_sha256 === sha256(""));
+    if (cur && (cur.run_id !== (task.run_id ?? null) || !bodyOk))
+      missing.push("这次交付的指纹没记上,看板手里只有上一次交付的指纹");
+    if (required.length && !missing.length) {
       const D = cur?.digest ?? null;
       const rows = D == null ? [] : db.prepare("SELECT * FROM cred_checks WHERE task_id=? AND digest=? ORDER BY id").all(id, D);
       const last = new Map(); for (const c of rows) if (VERIFIED_BY.has(c.by_)) last.set(c.name, c);

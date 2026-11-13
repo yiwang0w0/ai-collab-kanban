@@ -600,6 +600,7 @@
   .hcard[data-tone="warn"] .hc-st{color:var(--warn)}
   .home-empty{color:var(--dim);padding:var(--sp-2) var(--sp-1);font-size:var(--fs-sm)}
   .home-more{align-self:flex-start}
+  .hs-line .hs-more{margin-left:auto;min-height:0;padding:0 var(--sp-2);font-size:var(--fs-sm);color:var(--dim)}
   .home-note{color:var(--dim);font-size:var(--fs-sm);margin:var(--sp-2) 0 0}
   .fleet-next{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-2);margin:var(--sp-3) 0;padding:var(--sp-2) var(--sp-3);
               border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:var(--r-sm);background:color-mix(in srgb,var(--accent) 5%,transparent)}
@@ -1409,6 +1410,56 @@
   .hg-dot[data-state="now"] i{border:2px solid var(--cc)}
   .hg-dot[data-state="now"]{color:var(--fg)}
   @media (prefers-reduced-motion: reduce){ .bg-fold .fold-ic,.hr-acts .ic{transition:none} }
+  /* 第 7 波(合同 H7):可信度徽标、弱化标记、侧栏证据区、证据图、验收确认处。强调色只给「要本人做的事」:这里一律 --dim / --ok / --warn。 */
+  .cred-marks{display:flex;flex-wrap:wrap;align-items:center;gap:2px var(--sp-2);font-size:var(--fs-xs);color:var(--dim);min-width:0}
+  .hcard .cred-marks{margin-top:2px}
+  .cred-badge{font-size:var(--fs-xs);padding:0 6px;gap:3px}
+  .cred-badge .bg-i{color:inherit;opacity:.7}
+  .cred-badge[data-tone="quiet"]{color:var(--dim);border-color:var(--line);background:transparent}
+  .cred-flag{color:var(--dim);font-size:var(--fs-xs);overflow-wrap:anywhere;cursor:help}
+  .cred-flag::before{content:"· ";color:var(--dim2)}
+  .cred-marks > .cred-flag:first-child::before{content:""}
+  .tag.cred-tag[data-level="machine_verified"]{color:var(--ok);border-color:color-mix(in srgb,var(--ok) 45%,transparent)}
+  .tag.cred-tag,.tag.cred-flag{color:var(--dim)}
+  .tag.cred-flag::before{content:""}
+  .side-cred{display:flex;flex-direction:column;gap:var(--sp-2)}
+  .side-cred .cred-head{display:flex;align-items:center;justify-content:space-between;gap:var(--sp-2)}
+  .side-cred .cred-head h3{margin:0}
+  .side-cred .cred-head .icon-btn{min-height:28px;width:28px;padding:0;color:var(--dim)}
+  .cred-counts{border-collapse:collapse;font-size:var(--fs-sm);font-variant-numeric:tabular-nums;width:max-content}
+  .cred-counts th,.cred-counts td{padding:2px var(--sp-3) 2px 0;text-align:right;font-weight:400}
+  .cred-counts thead th{color:var(--dim);font-size:var(--fs-xs)}
+  .cred-counts tbody th{text-align:left;color:var(--dim)}
+  .cred-counts td{font-family:var(--mono)}
+  .cred-counts td[data-tone="warn"]{color:var(--warn)}
+  .cred-base,.cred-none,.cred-msg{margin:0;font-size:var(--fs-sm);color:var(--dim)}
+  .cred-k{margin:0 0 2px;font-size:var(--fs-xs);color:var(--dim)}
+  .cred-req ul,.cred-how ul{list-style:none;margin:0;padding:0;font-size:var(--fs-sm)}
+  .cred-req li,.cred-how li{display:flex;flex-wrap:wrap;gap:0 var(--sp-2);align-items:baseline;padding:1px 0}
+  .cred-name{font-family:var(--mono);overflow-wrap:anywhere}
+  .cred-st{color:var(--dim)}
+  .cred-req li[data-state="ok"] .cred-st{color:var(--ok)}
+  .cred-req li[data-state="fail"] .cred-st,.cred-how li[data-status="fail"] .cred-st{color:var(--warn)}
+  .cred-how{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:var(--sp-3)}
+  .cred-thumbs{display:flex;flex-wrap:wrap;gap:var(--sp-2)}
+  .cred-thumbs figure{margin:0;display:flex;flex-direction:column;gap:2px;width:120px}
+  .cred-thumb{padding:0;min-height:0;width:120px;height:80px;border:1px solid var(--line);border-radius:var(--r-sm);background:var(--panel2);overflow:hidden;cursor:zoom-in}
+  .cred-thumb img{width:100%;height:100%;object-fit:cover;display:block}
+  .cred-thumbs figcaption{font-size:var(--fs-xs);color:var(--dim);overflow-wrap:anywhere}
+  .cred-err{font-size:var(--fs-xs);color:var(--warn)}
+  .cred-edit{display:flex;flex-direction:column;gap:var(--sp-1)}
+  .cred-edit textarea{font-family:var(--mono);font-size:var(--fs-sm)}
+  .cred-gaps{margin:0 0 var(--sp-2);padding-left:var(--sp-2);border-left:2px solid var(--warn);font-size:var(--fs-sm)}
+  .cred-gaps-h{margin:0;color:var(--warn)}
+  .cred-gaps ul{margin:2px 0 0;padding-left:1.2em}
+  .cred-gaps li{overflow-wrap:anywhere}
+  .cred-viewer{max-width:94vw;max-height:92vh;padding:0;border:1px solid var(--line);border-radius:var(--r-md);background:var(--panel);color:var(--fg)}
+  .cred-viewer::backdrop{background:rgba(0,0,0,.55)}
+  .cred-viewer .cv-top{position:sticky;top:0;display:flex;align-items:center;justify-content:space-between;gap:var(--sp-3);padding:var(--sp-2) var(--sp-3);
+                       background:var(--panel);border-bottom:1px solid var(--line);font-size:var(--fs-sm);color:var(--dim)}
+  .cred-viewer .cv-cap{overflow-wrap:anywhere}
+  .cred-viewer .cv-img{overflow:auto;max-height:calc(92vh - 48px);max-width:94vw}
+  .cred-viewer .cv-img img{display:block;max-width:none}
   /* 卡面「它现在在做什么」与侧栏「历史」 */
   .live-note{display:flex;align-items:baseline;gap:var(--sp-1);margin:0 0 var(--sp-2);color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
   .hist{list-style:none;margin:var(--sp-2) 0;padding:0;font-size:var(--fs-sm)}
@@ -2362,14 +2413,6 @@ function bgRunCounts(rows, extra = 0){
   const list = Array.isArray(rows) ? rows : [], queued = list.filter(bgQueued).length;
   return { running: list.length - queued + (Number(extra) || 0), queued };
 }
-const BG_VERB = { accept: "验收", decide: "去裁定", release: "放行", confirm: "确认", hands: "去做", fault: "查看" };
-/** 接口没给 type 的行(别的电脑、跨机事项、读到之前):按首页那一行的 action 给个动词;落不到就按裁定。 */
-function bgLocalType(item){
-  const a = item && item.action, k = item && item.kind;
-  const type = a === "executor" ? "fault" : a === "approval" ? (k === "request" ? "decide" : "confirm")
-    : a === "fleet" ? (k === "result" ? "accept" : k === "proposal" ? "confirm" : "decide") : "decide";
-  return { type, verb: BG_VERB[type] };
-}
 /** 来源措辞:origin 是对方自报,只写「称」,不写成已核实;缺 origin 只写谁挂的。 */
 function bgSourceText(s){
   if (!s || typeof s !== "object" || !String(s.label || "").trim()) return null;
@@ -2415,13 +2458,169 @@ function bgQuotaSeg(p, fmt = (s) => s){
   const runway = p.runway && Number.isFinite(p.runway.minutes) && p.runway.basis === "projected" ? " · 约还能跑 " + p.runway.minutes + " 分" : "";
   return { label, text: wins.map((w) => (w.label ? w.label + " " : "") + Math.round(w.used_pct) + "%").join(" · ") + runway, tone: p.state === "low" ? "warn" : "" };
 }
-/** 已完成一行的一句结果 + 打回次数(可信度徽标是第 7 波,这里不画)。 */
+/** 已完成一行的一句结果 + 打回次数(可信度徽标另画,见 cred-copy)。 */
 function bgDoneText(d){
   const by = d && d.resolved_by, back = Number(d && d.handed_back) || 0;
   const head = by === "auto" ? "自动审阅通过" : by === "cascade" ? "随上级关闭" : by ? "验收通过" : "已完成";
   return head + (back ? " · 打回 " + back + " 次" : "");
 }
 // ── /bg-copy ──
+// ── cred-copy(pure;tests/panelcopytest.mjs)──
+// 第 7 波「可信」(合同 H7):徽标与来历、弱化标记、说明版本、证据三栏、实查 / 推断、基线红、必需检查、验收确认处的缺口。
+// 只读任务对象上 credibility / spec-version / evidence 给的字段;读不到不画、不编。时刻格式化由调用方传进来(fmt)。
+const CRED_LEVEL = { machine_verified: "机器验证", cross_model_reviewed: "另一家模型审过", independent_rerun: "独立复跑", self_reported: "只是自报" };
+const CRED_BY = { board: "看板宿主实跑", reviewer: "审阅座席实跑", executor: "执行者自报" };
+const CRED_FAMILY = { claude: "Claude", codex: "Codex", zcode: "Zcode" };
+const CRED_STATUS = { pass: "通过", fail: "失败", unverified: "未验证" };
+const CRED_KIND = { review: "审阅结论", acceptance: "人工验收结论" };
+/** 一条来历 → 一行。 */
+function credProvLine(p, fmt = (s) => s){
+  const what = String(p && p.what || ""), at = p && p.at ? fmt(p.at) : "";
+  let head;
+  if (what === "fingerprint") head = p.by === "board" ? "指纹 · 看板在工作仓里核过" : "指纹 · 执行者自报，看板没核";
+  else if (what.startsWith("check:")) head = "检查「" + what.slice(6) + "」" + (CRED_BY[p.by] || "") + "通过";
+  else if (what.startsWith("review:")) head = (CRED_FAMILY[what.slice(7)] || what.slice(7)) + " 家族审阅判通过";
+  else head = what;
+  return [head, at].filter(Boolean).join(" · ");
+}
+/** 徽标:{ level, text, tone, tip };没有交付过(badge 为 null)= null。tip = 来历,一行一条。 */
+function credBadge(t, fmt = (s) => s){
+  const b = t && t.badge;
+  if (!b || !Object.hasOwn(CRED_LEVEL, b.level)) return null;
+  const prov = (Array.isArray(b.provenance) ? b.provenance : []).map((p) => credProvLine(p, fmt));
+  return { level: b.level, text: CRED_LEVEL[b.level], tone: b.level === "machine_verified" ? "ok" : "quiet",
+           tip: ["来历：", ...prov].join(String.fromCharCode(10)) };
+}
+/** 指纹对不上的原因(服务端原文)→ 人话。认不出的照原样。 */
+function credMismatchText(s){
+  const x = String(s || "").trim(), name = (f) => f === "base_commit" ? "底提交" : "交付提交";
+  let m;
+  if ((m = /^(base_commit|head_commit) 在工作仓里不存在$/.exec(x))) return "工作仓里没有这个" + name(m[1]);
+  if ((m = /^(base_commit|head_commit) 不是提交$/.exec(x))) return "给的" + name(m[1]) + "不是一个提交";
+  if ((m = /^(.+) 不在 head_commit 里$/.exec(x))) return "交付提交里没有 " + m[1];
+  if ((m = /^(.+) 的 sha256 与 head_commit 里的内容不同$/.exec(x))) return m[1] + " 与交付提交里的内容不同";
+  return x;
+}
+/** 过期结论:旧指纹上的结论 / 检查,当前指纹上还没有同类结论 / 同名检查顶上的。只在徽标带 stale 时有。 */
+function credStale(t){
+  if (!t || !t.badge || !(t.badge.flags || []).includes("stale")) return [];
+  const cs = Array.isArray(t.conclusions) ? t.conclusions : [], ck = Array.isArray(t.checks) ? t.checks : [];
+  const freshKind = new Set(cs.filter((c) => !c.stale).map((c) => c.kind)), freshCheck = new Set(ck.filter((c) => !c.stale).map((c) => c.name));
+  const out = [], seen = new Set();
+  for (const c of cs) if (c.stale && c.digest != null && !freshKind.has(c.kind) && !seen.has("k:" + c.kind)) {
+    seen.add("k:" + c.kind);
+    out.push({ what: CRED_KIND[c.kind] || "结论", files: Array.isArray(c.changed_files) ? c.changed_files : null });
+  }
+  for (const c of ck) if (c.stale && c.digest != null && !freshCheck.has(c.name) && !seen.has("c:" + c.name)) {
+    seen.add("c:" + c.name); out.push({ what: "检查「" + c.name + "」", files: null });
+  }
+  return out;
+}
+const credFiles = (files, n = 3) => !files || !files.length ? "" : files.slice(0, n).join("、") + (files.length > n ? " 等 " + files.length + " 个文件" : "");
+/** 基线已红:「基线已红 2 项（自报）」;没有 = null。 */
+function credBaselineText(t){
+  const b = t && t.baseline, red = b && Array.isArray(b.red) ? b.red : [];
+  if (!red.length) return null;
+  const s = Number(b.self) || 0, v = Number(b.verified) || 0;
+  return "基线已红 " + red.length + " 项（" + (s && v ? "自报 " + s + " · 已核 " + v : v ? "已核" : "自报") + "）";
+}
+/** 弱化标记:[{ key, text, tip }]。四种各一个;强调色不给它们。 */
+function credFlags(t){
+  const flags = t && t.badge && Array.isArray(t.badge.flags) ? t.badge.flags : [], out = [];
+  for (const f of flags) {
+    if (f === "fingerprint_mismatch") {
+      const why = (t.fingerprint && Array.isArray(t.fingerprint.mismatch) ? t.fingerprint.mismatch : []).map(credMismatchText).filter(Boolean);
+      out.push({ key: f, text: "指纹对不上" + (why.length ? "：" + why[0] + (why.length > 1 ? " 等 " + why.length + " 项" : "") : ""),
+                 tip: [...why, "交付照收；徽标按自报算，不会自动通过"].join(String.fromCharCode(10)) });
+    } else if (f === "stale") {
+      const st = credStale(t), files = st.find((x) => x.files && x.files.length)?.files || null;
+      out.push({ key: f, text: "结论已过期", tip: (st.length ? st.map((x) => x.what).join("、") + "是在上一版内容上做的" : "有结论是在上一版内容上做的") +
+                 (files ? String.fromCharCode(10) + "这次交付改了：" + credFiles(files, 8) : "") + String.fromCharCode(10) + "不计入徽标，在当前内容上重做后消失" });
+    } else if (f === "baseline_red") {
+      out.push({ key: f, text: credBaselineText(t) || "基线已红", tip: "底提交上本来就红的检查，单列，不算进失败" });
+    } else if (f === "based_on_stale_spec") {
+      out.push({ key: f, text: "基于旧版说明", tip: "交付时对方确认到的说明版本落后于当前版本；不会自动通过" });
+    }
+  }
+  return out;
+}
+/** 卡面一行「说明 v3 · 对方确认到 v2」;两者相等、或这一轮还没人领(没有确认版本)= null。 */
+function credSpecLine(t){
+  const v = t && t.spec_version, a = t && t.acked_spec_version;
+  if (!Number.isInteger(v) || !Number.isInteger(a) || v === a) return null;
+  return "说明 v" + v + " · 对方确认到 v" + a;
+}
+/** 当前指纹上的检查,每组每个名字取最近一条:[{ name, status, how, verified, by, baseline }]。 */
+function credCurrentChecks(t){
+  const m = new Map();
+  for (const c of Array.isArray(t && t.checks) ? t.checks : []) {
+    if (!c || c.stale) continue;
+    const verified = c.by === "board" || c.by === "reviewer";
+    m.set((verified ? "v:" : "s:") + c.name, { name: c.name, status: c.status, how: c.how, verified, by: c.by, baseline: !!c.baseline });
+  }
+  return [...m.values()];
+}
+/** 检查一项的状态字 + 谁:「通过 · 审阅座席实跑」「失败 · 执行者自报」「基线已红 · 执行者自报」。 */
+function credCheckText(c){
+  const st = c.status === "fail" && c.baseline ? "基线已红" : CRED_STATUS[c.status] || "待核实";
+  return st + " · " + (CRED_BY[c.by] || (c.verified ? "已核" : "自报"));
+}
+/** 实查 / 推断两栏:{ ran:[…], inferred:[…] }。每栏已核的在前、自报的在后。 */
+function credByHow(t){
+  const all = credCurrentChecks(t).sort((a, b) => Number(b.verified) - Number(a.verified));
+  return { ran: all.filter((c) => c.how === "ran"), inferred: all.filter((c) => c.how !== "ran") };
+}
+/** 三栏计数的两行:已核 / 自报,各自 通过 · 失败 · 未验证(基线已红另列,不算进失败)。读不到 = null。 */
+function credCountRows(t){
+  const e = t && t.evidence_counts;
+  if (!e || !e.verified || !e.self) return null;
+  const row = (label, c) => ({ label, passed: Number(c.passed) || 0, failed: Number(c.failed) || 0, unverified: Number(c.unverified) || 0 });
+  return [row("已核", e.verified), row("自报", e.self)];
+}
+/** 必需检查逐项:{ name, key:"ok"|"fail"|"self"|"missing", text }。key = 已核通过 / 已核未通过 / 只有自报 / 缺。 */
+function credRequired(t){
+  const req = Array.isArray(t && t.required_checks) ? t.required_checks : [];
+  if (!req.length) return [];
+  const cur = credCurrentChecks(t);
+  return req.map((name) => {
+    const v = cur.find((c) => c.verified && c.name === name), s = cur.find((c) => !c.verified && c.name === name);
+    if (v && v.how === "ran" && v.status === "pass") return { name, key: "ok", text: "已核通过" };
+    if (v && v.status === "fail") return { name, key: "fail", text: "已核未通过" };
+    if (s) return { name, key: "self", text: "只有自报" };
+    return { name, key: "missing", text: "缺" };
+  });
+}
+/** 人工验收的确认处要逐条写明的:缺的必需检查、过期结论、旧版说明、指纹对不上。没有 = []。不拦人,只写明。 */
+function credGaps(t){
+  if (!t) return [];
+  const out = [];
+  for (const r of credRequired(t)) if (r.key !== "ok")
+    out.push("必需检查「" + r.name + "」" + (r.key === "self" ? "只有自报，没有看板或审阅座席的结果" : r.key === "fail" ? "已核未通过" : "缺，没有任何结果"));
+  for (const s of credStale(t)) out.push(s.what + "是上一版内容上的" + (s.files && s.files.length ? "，之后改了 " + credFiles(s.files) : ""));
+  if (t.based_on_stale_spec === true || (t.badge && (t.badge.flags || []).includes("based_on_stale_spec"))) {
+    const line = credSpecLine(t);
+    out.push("交付基于旧版说明" + (line ? "：" + line : ""));
+  }
+  if (t.badge && (t.badge.flags || []).includes("fingerprint_mismatch")) {
+    const why = (t.fingerprint && Array.isArray(t.fingerprint.mismatch) ? t.fingerprint.mismatch : []).map(credMismatchText).filter(Boolean);
+    out.push("指纹对不上" + (why.length ? "：" + why.join("；") : ""));
+  }
+  return out;
+}
+/** 证据图一张的说明行:「png · 120 KB · 执行者备注」。 */
+function credEvidenceLine(e, fmt = (s) => s){
+  if (!e) return "";
+  const kb = Number(e.bytes) > 0 ? (Number(e.bytes) >= 1048576 ? (Number(e.bytes) / 1048576).toFixed(1) + " MB" : Math.max(1, Math.round(Number(e.bytes) / 1024)) + " KB") : "";
+  const kind = { "image/png": "png", "image/jpeg": "jpeg", "image/webp": "webp" }[e.mime] || "";
+  return [kind, kb, e.at ? fmt(e.at) : "", typeof e.note === "string" ? e.note.trim() : ""].filter(Boolean).join(" · ");
+}
+/** 必需检查编辑框:一行一个名字 → 数组(去空行、去重、保序)。 */
+function credParseRequired(text){
+  const out = [];
+  for (const line of String(text || "").split(/\r?\n/)) { const n = line.trim(); if (n && !out.includes(n)) out.push(n); }
+  return out;
+}
+// ── /cred-copy ──
 // ── wave2-copy(pure;tests/panelcopytest.mjs)──
 // 第 2 波三块的文案与判定:设置 →「接入的 AI」(合同 A)、设置 →「本地会话」(合同 D)、效率(合同 C)。
 // 只读服务端给的字段;未知写「待核实」不当 0。时间、计数的格式化由调用方传进来(fmt),这一段不碰时钟和 DOM。
@@ -3065,6 +3264,12 @@ function cardParts(t){
   // panel only shows it; the card is waiting for YOU or for another family's reviewer.
   // 打回次数(合同 B:handed_back):图标 + 文字,不用强调色;字段缺或为 0 不出。
   if (flowBack(t.handed_back)) meta2.push(`<span class="tag back" title="这张卡被打回重做的次数，原因在卡详情的「历史」里">${icon("undo")}${esc(flowBack(t.handed_back))}</span>`);
+  // 第 7 波(H7):可信度徽标(来历在悬停)、弱化标记、说明版本。强调色不给它们。
+  { const b = credBadge(t, localTime);
+    if (b) meta2.push(`<span class="tag cred-tag" data-level="${esc(b.level)}" title="${esc(b.tip)}">${esc(b.text)}</span>`);
+    for (const f of credFlags(t)) meta2.push(`<span class="tag cred-flag" data-flag="${esc(f.key)}" title="${esc(f.tip)}">${esc(f.text)}</span>`);
+    const sv = credSpecLine(t);
+    if (sv) meta2.push(`<span class="tag cred-flag cred-spec" title="卡的说明放行后改过；对方确认过的版本落后时，交付会标「基于旧版说明」">${esc(sv)}</span>`); }
   if (t.review_hold === "same_family") {
     meta2.push(`<span class="tag" title="当前自动审阅方与交付方属于同一模型家族，不能互相验收。请由操作者或其他模型家族审阅。">待独立审阅</span>`);
   }
@@ -3149,6 +3354,9 @@ function cardParts(t){
     //   doing a different thing, and the old 「结案」 read like paperwork.
     if (!t.decision_package?.options?.length){
       const q = t.waiting_for === "decision";
+      // 第 7 波(H7):验收的确认处逐条写明缺什么(不拦人的显式裁定)。
+      const gaps = q ? [] : credGaps(t);
+      if (gaps.length) more += `<div class="cred-gaps"><p class="cred-gaps-h">通过前请看 · ${gaps.length} 项</p><ul>${gaps.map((g) => `<li>${esc(g)}</li>`).join("")}</ul></div>`;
       acts += `<button class="pri" data-a="approve" data-id="${t.id}" data-kind="${q ? "decide" : "accept"}">${q ? "同意" : "通过"}</button>`;
       if (q) acts += `<button class="danger" data-a="reject" data-id="${t.id}" data-kind="decide">否决</button>`;
     }
@@ -5757,7 +5965,8 @@ ${r.memo}`);
     // 目标卡没有执行配置,这一下放开的是它下面的子任务:上膛的字照按钮写(「再按=确认放行这个目标」)。
     armSwap(b, a === "release" ? (byId.get(Number(id))?.kind === "goal" ? armedLabel(b.dataset.orig) : "再按=确认按此配置放行") : a === "archive" ? "再按=确认归档"
               : a === "reject" ? "再按=确认否决"
-              : hasNote ? (q ? "再按=同意并交回" : "再按=确认打回") : (q ? "再按=确认同意" : "再按=确认通过"));
+              : hasNote ? (q ? "再按=同意并交回" : "再按=确认打回")
+              : q ? "再按=确认同意" : credGaps(byId.get(Number(id))).length ? "再按=仍要通过 · " + credGaps(byId.get(Number(id))).length + " 项待看" : "再按=确认通过");
     setTimeout(() => { if (b.dataset.armed === "1") {
       b.dataset.armed = ""; b.classList.remove("armed");
       disarmRestore(b);
@@ -6455,6 +6664,27 @@ function homeResolved(t) {
   if (t.kind === "goal") return "目标完成";
   return t.resolved_by === "auto" ? "自动通过" : t.resolved_by === "cascade" ? "联动关闭" : t.resolved_by ? "手动通过" : "已完成";
 }
+/** 「要本人做的事」的类与按钮字(合同 G2):验收 · 裁定 · 放行 · 确认 · 亲自动手 · 故障要你看。 */
+const HOME_ATTN_VERB = { accept: "验收", decide: "去裁定", release: "放行", confirm: "确认", hands: "去做", fault: "查看" };
+/** 一行是哪一类。row = homeLists 的一行(或 { action:"line_fault" } = 执行线故障);t = 这一行落在本机的卡,没有 = null。
+ *  hands = 卡上 ask.needs:"hands"(合同 G5);卡上没有 ask = 按裁定。 */
+function homeAttnType(row, t) {
+  const a = row && row.action, k = row && row.kind;
+  let type;
+  if (a === "line_fault" || a === "executor") type = "fault";
+  else if (a === "approval") type = k === "request" ? "decide" : "confirm";        // 执行者请求 = 裁定;逾期锁 = 确认
+  else if (a === "fleet") type = k === "result" ? "accept" : k === "proposal" ? "confirm" : "decide";
+  else if (!t) type = "decide";                                                     // 别的电脑的卡:在它那边处理
+  else {
+    const hands = !!t.ask && t.ask.needs === "hands";
+    if (t.status === "not_started") type = t.human_gate ? (hands ? "hands" : "decide") : "release";
+    else if (t.status === "waiting" && t.waiting_for === "review") type = "accept";
+    else if (t.status === "waiting" && (t.waiting_for === "confirm" || t.waiting_for === "decision")) type = hands ? "hands" : t.waiting_for === "confirm" ? "confirm" : "decide";
+    else if (t.status === "waiting") type = hands ? "hands" : t.human_gate ? "decide" : "fault";   // 受阻卡 = 故障要你看;有人工闸 = 裁定
+    else type = hands ? "hands" : "decide";
+  }
+  return { type, verb: HOME_ATTN_VERB[type] };
+}
 /** The two home lists and the history list. `tasks` = this board's cards, each carrying `hb`;
  *  `remote` = /api/fleet rows (only other computers' cached copies are read from it);
  *  `actions` = /api/fleet/actions; `nodeNames` = node_id → display name;
@@ -6525,6 +6755,10 @@ function homeLists({ tasks = [], localName = "本机", remote = [], actions = nu
       title: String(e.label || e.id || "接入的 AI") + " 卡住了" + (cards ? " · 手上有 " + cards : ""), computer: here,
       updated: String(e.last_seen_at || ""), state: "卡住", tone: "", next: "到设置里查看", rank: 2, fullTitle: true });
   }
+  // 「要本人做的事」每一行是哪一类(合同 G2 的 type / verb):只在这里判一次。首页面板与 GET /api/home/background
+  //   (server 经 core/home-model.mjs 切这一段来跑)都读行上的 type,不各写一份。
+  const localById = new Map(tasks.map((t) => [Number(t.id), t]));
+  for (const r of mine) Object.assign(r, homeAttnType(r, r.localId != null ? localById.get(Number(r.localId)) || null : null));
   const byWait = (a, b) => a.rank - b.rank || a.updated.localeCompare(b.updated);   // longest waiting first
   mine.sort(byWait); running.sort(byWait);
   history.sort((a, b) => b.updated.localeCompare(a.updated));
@@ -7118,7 +7352,8 @@ const HOME_VIEWS = ["home", "board", "history", "settings"];
 let homeView = (() => { try { const v = localStorage.getItem("tb_view"); return HOME_VIEWS.includes(v) ? v : "home"; } catch { return "home"; } })();
 let homeReady = false, homeFleet = null, homeFleetError = null, homeHealth = null, homeHealthError = null, homeActions = null;
 let homeExtrasAt = 0, homeExtrasBusy = false, historyLimit = 40;
-const homeExpanded = { mine: false, running: false }, homeSig = new Map();
+const homeExpanded = { mine: false, running: false, alerts: false }, homeSig = new Map();
+const HOME_ALERT_CAP = 2;   // 首页顶部告警先放几条(多于 HOME_ALERT_CAP + 1 条才收起)
 // 后台任务(合同 F)的状态:读到的那份、展开 / 折叠、每张卡最近几步的缓存、停止中的卡与没停成的原因。用法见 bgLoad 一段。
 let bgData = null, bgTimer = 0, bgSeq = 0, bgDoneOpen = false, bgQuota = null, bgMenu = null;
 const bgOpen = new Set(), bgFolded = new Set(), bgStepCache = new Map(), bgBusy = new Set(), bgMsg = new Map(), bgAttnOpen = new Set();
@@ -7399,6 +7634,9 @@ function sideControlsBox(t, ctl){
     const no = homeEl("button", "否决", "danger"); no.type = "button";
     no.dataset.a = "reject"; no.dataset.id = String(t.id); no.dataset.kind = "decide"; acts.append(no);
   }
+  // 第 7 波(H7):验收的确认处逐条写明缺的必需检查、过期结论、旧版说明(不拦人的显式裁定)。
+  const gaps = ctl.kind === "accept" ? credGapsNode(t) : null;
+  if (gaps) box.append(gaps);
   box.append(ta, acts);
   // 按钮上的字随留言变(syncHandoff):留空是「通过」,写了是「打回并交回原线」。这里只留显式执行配置卡的那一句。
   if (ctl.kind === "accept" && t.execution_profile) box.append(homeEl("p", PROFILE_RELEASE_NOTE));
@@ -7747,7 +7985,11 @@ function renderSide(){
                                   t.verdict_note, t.description, t.acceptance, (t.decision_package?.options || []).length,
                                   ctl.kind, ctl.primary, t.brief, t.result_summary, t.released, t.pinned_at, goal, !!step?.hold, !!fleetApi,
                                   fs && [fs.lane, fs.state, fs.next, act(fs.primary), fs.more.map(act), fs.hold, fs.delivery, fleet.links.results.length],
-                                  !!homeActions?.enabled && homeMulti()]
+                                  !!homeActions?.enabled && homeMulti(),
+                                  // 第 7 波(H7):证据区读的字段、菜单与编辑框的开合
+                                  [t.badge, t.evidence_counts, t.checks, t.conclusions, t.required_checks, t.baseline, t.spec_version, t.acked_spec_version,
+                                   t.based_on_stale_spec, t.fingerprint?.mismatch, (t.evidence || []).map((e) => [e.sha256, e.note]), credMenu === t.id, credEdit === t.id,
+                                   credMsg?.id === t.id ? credMsg.text : null]]
                                : ["remote", sideRef.uid, row && [row.subject, row.owner_name, row.status, row.waiting_for, row.aggregate_version, row.brief, row.result_summary],
                                   !!homeFleet, detail && [!!detail.value, !!detail.error], !!fleetApi, item?.title]);
   if (sig === sideSig) { updateSideLive(); updateSideContext(t); return; }
@@ -7766,6 +8008,8 @@ function renderSide(){
   if (ctlBox && (step?.hold || fs?.primary)) for (const b of ctlBox.querySelectorAll("button")) b.classList.remove("pri");
   out.push(sideBrief(t, step, item, ctlBox, ctl, { row, fleet }));
   if (t) {
+    const cred = sideCred(t);
+    if (cred) out.push(cred);
     out.push(sideExecution(t, sideReleaseNeed(t), sideProtocolRelease(t)));
     // 用量:有读数才有这一节。它不在 sideSig 里,读数到了由 sideUsagePlace 局部放进来。
     const usage = sideUsageSection(t);
@@ -7801,6 +8045,7 @@ function renderSide(){
       if (goal[1] && t.status !== "done") act("起评审卡").dataset.rev = String(t.id);
     }
     if (t.status === "waiting" || t.status === "not_started") act("编辑").dataset.edit = String(t.id);
+    { const rq = credEditButton(t); if (rq) acts.append(rq); }
     if (t.status === "done" || t.status === "waiting" || t.kind === "goal") {
       const ar = act("归档", "danger"); ar.dataset.a = "archive"; ar.dataset.id = String(t.id);
     }
@@ -7995,6 +8240,203 @@ async function sideDispatch(t, box){
     out.push(note);
   }
   box.replaceChildren(...out);
+}
+// ── 第 7 波「可信」(合同 H7)的画面:徽标、弱化标记、侧栏证据区、证据图、验收确认处的缺口。文案在 cred-copy。
+/** 徽标 + ⓘ(来历)。没有交付过 = null。 */
+function credBadgeNode(t){
+  const b = credBadge(t, localTime);
+  if (!b) return null;
+  const el = homeEl("span", undefined, "badge cred-badge"); el.dataset.tone = b.tone; el.dataset.level = b.level;
+  el.append(homeEl("span", b.text));
+  const i = homeEl("span", "ⓘ", "bg-i"); i.title = b.tip; i.setAttribute("aria-label", b.tip);
+  el.append(i);
+  return el;
+}
+/** 一行:徽标 · 弱化标记 · 说明版本(spec:false = 不写说明版本,已完成行用;skip = 这里不画的标记,侧栏另起一行写的基线红)。什么都没有 = null。 */
+function credMarks(t, { spec = true, skip = [] } = {}){
+  if (!t) return null;
+  const line = homeEl("span", undefined, "cred-marks"), badge = credBadgeNode(t);
+  if (badge) line.append(badge);
+  for (const f of credFlags(t)) { if (skip.includes(f.key)) continue; const x = homeEl("span", f.text, "cred-flag"); x.dataset.flag = f.key; x.title = f.tip; line.append(x); }
+  const sv = spec ? credSpecLine(t) : null;
+  if (sv) { const x = homeEl("span", sv, "cred-flag cred-spec"); x.title = "卡的说明放行后改过；对方确认过的版本落后时，交付会标「基于旧版说明」"; line.append(x); }
+  return line.children.length ? line : null;
+}
+/** 验收确认处的缺口列表(不拦人,只逐条写明)。没有缺口 = null。 */
+function credGapsNode(t){
+  const gaps = credGaps(t);
+  if (!gaps.length) return null;
+  const box = homeEl("div", undefined, "cred-gaps");
+  const head = homeEl("p", "通过前请看 · " + gaps.length + " 项", "cred-gaps-h");
+  const i = homeEl("span", " ⓘ", "bg-i"); i.title = "这些只拦自动通过；你照常可以通过或打回。打回时写一句要补什么"; head.append(i);
+  const ul = homeEl("ul");
+  for (const g of gaps) ul.append(homeEl("li", g));
+  box.append(head, ul);
+  return box;
+}
+// 证据图:GET /api/tasks/:id/evidence/:sha256(只有操作员能取)。面板的 CSP 只放行 'self' 与 data: 图片,
+//   所以经带凭据的 fetch 读成 data: 地址再画;后端的 nosniff / 沙箱头不动。同一张图只读一次。
+const credImg = new Map();   // sha256 → { url|null, err|null, loading }
+const CRED_IMG_TYPES = new Set(["image/png", "image/jpeg", "image/webp"]);
+async function credImgLoad(taskId, sha){
+  const c = credImg.get(sha);
+  if (c && (c.loading || c.url)) return;
+  credImg.set(sha, { url: null, err: null, loading: true });
+  let url = null, err = null;
+  try {
+    const r = await fetch("/api/tasks/" + encodeURIComponent(taskId) + "/evidence/" + encodeURIComponent(sha), { cache: "no-store" });
+    if (!r.ok) throw Error(r.status === 404 ? "图不在了" : "读取失败 " + r.status);
+    const type = (r.headers.get("content-type") || "").split(";")[0].trim();
+    if (!CRED_IMG_TYPES.has(type)) throw Error("不是图片");
+    const blob = await r.blob();
+    url = await new Promise((ok, no) => { const fr = new FileReader(); fr.onload = () => ok(String(fr.result)); fr.onerror = () => no(fr.error); fr.readAsDataURL(new Blob([blob], { type })); });
+    if (!url.startsWith("data:" + type + ";base64,")) throw Error("不是图片");
+  } catch (e) { err = copyError(e); url = null; }
+  credImg.set(sha, { url, err, loading: false });
+  for (const img of document.querySelectorAll('img[data-ev-sha="' + sha + '"]')) { if (url) img.src = url; }
+  for (const el of document.querySelectorAll('[data-ev-err="' + sha + '"]')) { el.hidden = !err; el.textContent = err ? "读不到：" + err : ""; }
+}
+/** 点开看原图:页内浮层,原尺寸,超出就滚动;Esc 或「关闭」收起。 */
+function credImgOpen(e){
+  const c = credImg.get(e.sha256);
+  if (!c?.url) return;
+  let dlg = document.getElementById("cred-viewer");
+  if (!dlg) {
+    dlg = document.createElement("dialog"); dlg.id = "cred-viewer"; dlg.className = "cred-viewer";
+    dlg.addEventListener("click", (ev) => { if (ev.target === dlg) dlg.close(); });
+    document.body.append(dlg);
+  }
+  const head = homeEl("div", undefined, "cv-top"), close = homeEl("button", "关闭"); close.type = "button";
+  close.addEventListener("click", () => dlg.close());
+  head.append(homeEl("span", credEvidenceLine(e, localTime), "cv-cap"), close);
+  const wrap = homeEl("div", undefined, "cv-img"), img = homeEl("img"); img.src = c.url; img.alt = e.note || "证据图";
+  wrap.append(img);
+  dlg.replaceChildren(head, wrap);
+  dlg.showModal();
+  close.focus();
+}
+/** 侧栏「其他」菜单与必需检查编辑框的状态(按卡号)。 */
+let credMenu = null, credEdit = null, credMsg = null;
+document.addEventListener("click", (e) => { if (credMenu != null && !e.target.closest?.(".cred-menu-wrap")) { credMenu = null; sideSig = ""; renderSide(); } });
+async function credSaveRequired(t, ta, btn){
+  const names = credParseRequired(ta.value);
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/tasks/" + t.id + "/required-checks", { method: "POST", headers: WH, cache: "no-store", body: JSON.stringify({ required_checks: names }) });
+    const v = await r.json().catch(() => ({}));
+    if (!r.ok) throw Error(v.error || "保存失败 " + r.status);
+    credEdit = null; credMsg = { id: t.id, text: names.length ? "必需检查已改成 " + names.length + " 项" : "已清掉必需检查" };
+  } catch (e) { credMsg = { id: t.id, text: "没改成：" + copyError(e) }; }
+  btn.disabled = false; sideSig = "";
+  await refresh();
+}
+/** 侧栏证据区出不出:有徽标、必需检查、证据图、标记,或正在改必需检查 / 刚改完。 */
+function credHasSection(t){
+  if (!t || t.kind === "goal") return false;
+  return !!(t.badge || (t.required_checks || []).length || (t.evidence || []).length || credSpecLine(t) || credEdit === t.id || credMsg?.id === t.id);
+}
+/** 证据区不出时,「更多操作」里给改必需检查的入口(同一个编辑框)。 */
+function credEditButton(t){
+  if (!t || t.kind === "goal" || credHasSection(t)) return null;
+  const b = homeEl("button", "改必需检查"); b.type = "button";
+  b.title = "定哪些检查必须有看板或审阅座席的通过结果才能自动通过。放行后改一次，说明版本加一";
+  b.addEventListener("click", () => { credEdit = t.id; credMsg = null; sideSig = ""; renderSide(); });
+  return b;
+}
+/** 侧栏证据区:徽标与标记、三栏计数(已核 / 自报分开)、基线已红、必需检查逐项、实查 / 推断两栏、证据图;「其他」里改必需检查。 */
+function sideCred(t){
+  if (!t || t.kind === "goal") return null;
+  const rows = credCountRows(t), req = credRequired(t), how = credByHow(t), ev = Array.isArray(t.evidence) ? t.evidence : [];
+  const base = credBaselineText(t), marks = credMarks(t, { skip: base ? ["baseline_red"] : [] }), editing = credEdit === t.id;
+  // 没交付过、没设必需检查、没有图、没有标记:整节不出(改必需检查的入口这时在「更多操作」里,见 credEditButton)。
+  if (!credHasSection(t)) return null;
+  const sec = homeEl("section", undefined, "side-sec side-cred"); sec.id = "task-side-cred";
+  const head = homeEl("div", undefined, "cred-head"), h = homeEl("h3", "证据与检查");
+  const tip = homeEl("span", " ⓘ", "bg-i"); tip.tabIndex = 0;
+  tip.title = "已核 = 看板宿主或审阅座席在当前指纹上实跑；自报 = 执行者报来的，抬不动徽标。指纹一变，旧结论不再计入";
+  h.append(tip); head.append(h);
+  // 「其他」菜单:改必需检查(操作者;放行后改一次说明版本 +1)。
+  const wrap = homeEl("div", undefined, "bg-menu-wrap cred-menu-wrap"), more = homeEl("button", undefined, "icon-btn ghost"); more.type = "button";
+  const open = credMenu === t.id;
+  more.setAttribute("aria-haspopup", "menu"); more.setAttribute("aria-expanded", String(open)); more.setAttribute("aria-label", "证据与检查的其他操作");
+  more.title = "其他"; more.innerHTML = icon("menu"); more.dataset.act = "cred-more";
+  more.addEventListener("click", () => { credMenu = open ? null : t.id; sideSig = ""; renderSide(); });
+  wrap.append(more);
+  if (open) {
+    const menu = homeEl("div", undefined, "bg-menu"); menu.setAttribute("role", "menu");
+    const b = homeEl("button", "改必需检查"); b.type = "button"; b.setAttribute("role", "menuitem");
+    b.title = "定哪些检查必须有看板或审阅座席的通过结果才能自动通过。放行后改一次，说明版本加一";
+    b.addEventListener("click", () => { credMenu = null; credEdit = t.id; credMsg = null; sideSig = ""; renderSide(); });
+    menu.append(b); wrap.append(menu);
+  }
+  head.append(wrap); sec.append(head);
+  if (marks) sec.append(marks);
+  if (credMsg?.id === t.id) sec.append(homeEl("p", credMsg.text, "cred-msg"));
+  if (editing) {
+    const box = homeEl("div", undefined, "cred-edit"), ta = homeEl("textarea"); ta.rows = 3; ta.id = "cred-req-input";
+    ta.value = (t.required_checks || []).join(String.fromCharCode(10)); ta.setAttribute("aria-label", "必需检查，一行一个名字");
+    ta.placeholder = "一行一个检查名；清空 = 不设";
+    const acts = homeEl("div", undefined, "side-acts"), save = homeEl("button", "保存必需检查", "pri"), cancel = homeEl("button", "取消");
+    save.type = cancel.type = "button";
+    save.addEventListener("click", () => credSaveRequired(t, ta, save));
+    cancel.addEventListener("click", () => { credEdit = null; sideSig = ""; renderSide(); });
+    acts.append(save, cancel); box.append(ta, acts); sec.append(box);
+  }
+  // 三栏计数:列 = 通过 / 失败 / 未验证,行 = 已核 / 自报(不混加)。
+  const any = rows && rows.some((r) => r.passed || r.failed || r.unverified);
+  if (rows && (any || base)) {
+    const tb = homeEl("table", undefined, "cred-counts"), hr = homeEl("tr");
+    hr.append(homeEl("th", ""), homeEl("th", "通过"), homeEl("th", "失败"), homeEl("th", "未验证"));
+    const thead = homeEl("thead"); thead.append(hr); tb.append(thead);
+    const body = homeEl("tbody");
+    for (const r of rows) {
+      const tr = homeEl("tr"); tr.append(homeEl("th", r.label));
+      for (const k of ["passed", "failed", "unverified"]) { const td = homeEl("td", String(r[k])); if (k === "failed" && r[k]) td.dataset.tone = "warn"; tr.append(td); }
+      body.append(tr);
+    }
+    tb.append(body); sec.append(tb);
+  } else if (t.badge) sec.append(homeEl("p", "这次交付没有检查记录", "cred-none"));
+  if (base) sec.append(homeEl("p", base, "cred-base"));
+  // 必需检查逐项(已核通过 / 已核未通过 / 只有自报 / 缺)。
+  if (req.length) {
+    const box = homeEl("div", undefined, "cred-req"), ul = homeEl("ul");
+    box.append(homeEl("p", "必需检查", "cred-k"));
+    for (const r of req) { const li = homeEl("li"); li.dataset.state = r.key; li.append(homeEl("span", r.name, "cred-name"), homeEl("span", r.text, "cred-st")); ul.append(li); }
+    box.append(ul); sec.append(box);
+  }
+  // 检查项按「实查 / 推断」分栏。
+  if (how.ran.length || how.inferred.length) {
+    const grid = homeEl("div", undefined, "cred-how");
+    for (const [label, list] of [["实查", how.ran], ["推断", how.inferred]]) {
+      const col = homeEl("div"); col.append(homeEl("p", label + " " + list.length, "cred-k"));
+      const ul = homeEl("ul");
+      if (!list.length) ul.append(homeEl("li", "没有", "cred-none"));
+      for (const c of list) { const li = homeEl("li"); li.dataset.status = c.status; li.append(homeEl("span", c.name, "cred-name"), homeEl("span", credCheckText(c), "cred-st")); ul.append(li); }
+      col.append(ul); grid.append(col);
+    }
+    sec.append(grid);
+  }
+  // 证据图:缩略图,点开看原图;没有图不占位。
+  if (ev.length) {
+    const strip = homeEl("div", undefined, "cred-ev");
+    strip.append(homeEl("p", "证据图 " + ev.length, "cred-k"));
+    const list = homeEl("div", undefined, "cred-thumbs");
+    for (const e of ev) {
+      const fig = homeEl("figure"), btn = homeEl("button", undefined, "cred-thumb"); btn.type = "button";
+      const line = credEvidenceLine(e, localTime);
+      btn.setAttribute("aria-label", "看原图" + (line ? "：" + line : "")); btn.title = "看原图";
+      const img = homeEl("img"); img.alt = e.note || "证据图"; img.dataset.evSha = e.sha256; img.loading = "lazy";
+      const c = credImg.get(e.sha256); if (c?.url) img.src = c.url;
+      btn.append(img);
+      btn.addEventListener("click", () => credImgOpen(e));
+      const err = homeEl("span", c?.err ? "读不到：" + c.err : "", "cred-err"); err.dataset.evErr = e.sha256; err.hidden = !c?.err;
+      fig.append(btn, homeEl("figcaption", line), err);
+      list.append(fig);
+      credImgLoad(t.id, e.sha256);
+    }
+    strip.append(list); sec.append(strip);
+  }
+  return sec;
 }
 function sideFromHash(){
   const hash = new URLSearchParams(location.hash.slice(1)), ref = hash.get("task");
@@ -8338,8 +8780,9 @@ function bgRunRow(item){
 /** 「要本人做的事」一行(G2):动词按钮 + 标题 + 一句证据;展开才有 做什么 / 实物在哪 / 期待看到什么 / 解锁的下游 / 来源。
  *  动词按钮与标题都带到这件事原来处理的地方(侧栏的裁定 / 放行核对区、设置里的待你批准),那里的接口与确认框照旧;本行不发任何写请求。 */
 function bgAttnRow(item){
-  const a = item.localId != null ? (bgData?.attention || []).find((x) => x.task_id === Number(item.localId) && x.type) : null;
-  const { type, verb } = a ? { type: a.type, verb: a.verb || BG_VERB[a.type] } : bgLocalType(item);
+  // 类与按钮字只有一份:homeLists 写在行上的(homeAttnType,接口 /api/home/background 也读这一份);接口只补一句证据与展开区。
+  const a = item.localId != null ? (bgData?.attention || []).find((x) => x.task_id === Number(item.localId)) : null;
+  const type = item.type || "decide", verb = item.verb || "查看";
   const ev = a ? a.evidence : item.state || null, rows = a ? bgDetailRows(a.detail) : [];
   const row = homeEl("div", undefined, "hrow bg-attn"); row.dataset.type = type;
   if (item.localId != null) row.dataset.taskId = String(item.localId);
@@ -8412,9 +8855,15 @@ function bgDoneLane(){
   homeFill(list, JSON.stringify([bgDoneOpen, rows]), () => {
     if (!bgDoneOpen) return [];
     if (!rows.length) return [homeEmpty("近 24 小时没有完成的任务", "更早的在「历史」里。", "history")];
-    return rows.map((d) => homeCardMarked({ key: "done:" + d.task_id, localId: d.task_id, uid: byId.get(d.task_id)?.task_uid || null,
-      title: d.title, computer: bgWhoText(d.who) || homeName(homeLocalName(), "本机"), state: bgDoneText(d),
-      next: localTime(d.done_at), tone: "", updated: d.done_at }, "done"));
+    return rows.map((d) => {
+      const card = homeCardMarked({ key: "done:" + d.task_id, localId: d.task_id, uid: byId.get(d.task_id)?.task_uid || null,
+        title: d.title, computer: bgWhoText(d.who) || homeName(homeLocalName(), "本机"), state: bgDoneText(d),
+        next: localTime(d.done_at), tone: "", updated: d.done_at }, "done");
+      // 第 7 波(H7):一个可信度徽标 + 弱化标记,来历在 ⓘ 悬停。徽标取自卡表里那张卡(任务对象自带),读不到不画。
+      const marks = credMarks(byId.get(d.task_id), { spec: false });
+      if (marks) card.append(marks);
+      return card;
+    });
   });
 }
 /** 空状态:一句「现在怎样」加一句「可以做什么」(style-guide §五 空态)。 */
@@ -8512,11 +8961,19 @@ function renderHomeViews(){
     document.getElementById("home-view").classList.toggle("stale", !!boardDown);
     // 上次故障:服务端带出 last_fault 才有这一行;断开时只说断开这一件事。
     const fault = boardDown ? null : lastSetup?.last_fault || meta.last_fault, faultText = homeLastFault(fault);
-    homeFill(document.getElementById("home-status"), JSON.stringify([known, s, faultText && [fault.at, faultText]]), () => {
+    // 告警多于 3 条时先放 2 条,其余点「全部展开」(第 7 波收第 6 波欠账:1440×900 下告警多了,右栏「已完成」组头被挤出视口)。
+    //   件数照旧写在第一行;展开后与以前一样(整块仍有 32vh 上限,超了块内滚动)。
+    const alerts = known ? s.alerts : [], alertCap = homeExpanded.alerts || alerts.length <= HOME_ALERT_CAP + 1 ? alerts.length : HOME_ALERT_CAP;
+    homeFill(document.getElementById("home-status"), JSON.stringify([known, s, faultText && [fault.at, faultText], alertCap]), () => {
       const line = homeEl("div", undefined, "hs-line");
       line.append(homeEl("span", undefined, "dot" + (!known || s.tone === "ok" ? "" : s.tone === "bad" ? " off" : " warn")),
                   homeEl("span", known ? s.line : "正在读取设备状态…", "hs-text"));
-      const rows = [line, ...(known ? s.alerts : []).map((a) => homeAlertRow(a))];
+      const rows = [line, ...alerts.slice(0, alertCap).map((a) => homeAlertRow(a))];
+      if (alerts.length > alertCap) {   // 「全部展开」放在第一行行尾,不另占一行
+        const more = homeEl("button", "还有 " + (alerts.length - alertCap) + " 项 · 全部展开", "ghost hs-more"); more.type = "button";
+        more.addEventListener("click", () => { homeExpanded.alerts = true; renderHomeViews(); });
+        line.append(more);
+      }
       if (known && faultText) {
         const last = homeEl("div", "上次故障：" + localTime(fault.at) + " " + faultText, "hs-fault"), tip = homeLastFaultTip(fault);
         last.dataset.tone = "quiet"; if (tip) last.title = tip;

@@ -1238,7 +1238,7 @@ test("接真接口后的收口:live_note 只改那一处、登记确认框、刚
 
 // ── 首页「后台任务」(合同 F;core/panel.html 的 bg-copy 段) ──
 const bgSource = panelSection("// ── bg-copy(pure;tests/panelcopytest.mjs)──", "// ── /bg-copy ──");
-const bg = new Function(bgSource + "\nreturn { bgModelName, bgWhoText, bgElapsed, bgGroupText, bgStopInfo, bgStopConfirm, bgStopResult, bgSteps, bgAutostartNote, bgHolderText, bgOneLineText, bgQueued, bgRunCounts, bgLocalType, bgSourceText, bgDetailRows, bgStageDots, bgQuotaSeg, bgDoneText, BG_LINE, BG_VERB };")();
+const bg = new Function(bgSource + "\nreturn { bgModelName, bgWhoText, bgElapsed, bgGroupText, bgStopInfo, bgStopConfirm, bgStopResult, bgSteps, bgAutostartNote, bgHolderText, bgOneLineText, bgQueued, bgRunCounts, bgSourceText, bgDetailRows, bgStageDots, bgQuotaSeg, bgDoneText, BG_LINE };")();
 
 test("后台任务文案:谁在做 = 模型(没有就运行时)· 显示名;已用时按分钟;组头 N 个任务 · M 个在跑", () => {
   assert.equal(bg.bgWhoText({ label: "实现线", kind: "managed", runtime: "claude", model: "claude-opus-5" }), "Opus · 实现线");
@@ -1302,10 +1302,7 @@ test("第 6 波文案(G1):卡在谁手上 · 一句话按 code 生成;none 与�
 });
 
 test("第 6 波文案(G2):动词、来源措辞不写成已核实、展开区字段为 null 不出", () => {
-  assert.deepEqual(bg.bgLocalType({ action: "approval", kind: "request" }), { type: "decide", verb: "去裁定" });
-  assert.deepEqual(bg.bgLocalType({ action: "approval", kind: "lock" }), { type: "confirm", verb: "确认" });
-  assert.deepEqual(bg.bgLocalType({ action: "executor" }), { type: "fault", verb: "查看" });
-  assert.deepEqual(bg.bgLocalType({ action: "fleet", kind: "result" }), { type: "accept", verb: "验收" });
+  // 动词与类:只在 home-model 区的 homeAttnType 判一次(tests/hometest.mjs 第 7 波那一例),这里不再有第二张表。
   assert.equal(bg.bgSourceText({ label: "助手甲", origin: "operator_said", quote: "明天前改好" }), "助手甲 称：本人原话「明天前改好」");
   assert.equal(bg.bgSourceText({ label: "助手甲", origin: "ai_inferred" }), "助手甲：AI 推断");
   assert.equal(bg.bgSourceText({ label: "助手甲", origin: null }), "助手甲 挂上", "缺 origin 不写来源措辞");
@@ -1328,4 +1325,95 @@ test("第 6 波文案(G3/G4/已完成):额度各池一段读不到写待核实;�
   assert.equal(bg.bgDoneText({ resolved_by: "human", handed_back: 2 }), "验收通过 · 打回 2 次");
   assert.equal(bg.bgDoneText({ resolved_by: "auto", handed_back: 0 }), "自动审阅通过");
   assert.equal(bg.bgDoneText({ resolved_by: null }), "已完成");
+});
+
+// ── 第 7 波「可信」(合同 H7;core/panel.html 的 cred-copy 段) ──
+const credSource = panelSection("// ── cred-copy(pure;tests/panelcopytest.mjs)──", "// ── /cred-copy ──");
+const cred = new Function(credSource + "\nreturn { credBadge, credProvLine, credMismatchText, credFlags, credSpecLine, credBaselineText, credCountRows, credByHow, credCheckText, credRequired, credGaps, credStale, credEvidenceLine, credParseRequired, CRED_LEVEL };")();
+const D1 = "a".repeat(64), D0 = "b".repeat(64);
+const credCard = (o = {}) => ({ id: 9, status: "waiting", waiting_for: "review", required_checks: [],
+  badge: { level: "self_reported", flags: [], provenance: [{ what: "fingerprint", by: "executor", at: "2026-11-14T01:00:00Z", digest: D1 }] },
+  evidence_counts: { verified: { passed: 0, failed: 0, unverified: 0, baseline_failed: 0 }, self: { passed: 0, failed: 0, unverified: 0, baseline_failed: 0 } },
+  checks: [], conclusions: [], baseline: null, fingerprint: { digest: D1, verified: null, mismatch: [] }, spec_version: 1, acked_spec_version: 1, ...o });
+
+test("第 7 波文案(H7):四档徽标各有一个名字,来历一行一条进 ⓘ;没交付过不画", () => {
+  assert.deepEqual(Object.values(cred.CRED_LEVEL), ["机器验证", "另一家模型审过", "独立复跑", "只是自报"]);
+  const b = cred.credBadge(credCard({ badge: { level: "machine_verified", flags: [], provenance: [
+    { what: "fingerprint", by: "board", at: "x", digest: D1 }, { what: "check:unit", by: "reviewer", at: "y", digest: D1 }] } }), (s) => "T" + s);
+  assert.deepEqual([b.text, b.tone], ["机器验证", "ok"]);
+  assert.ok(b.tip.includes("指纹 · 看板在工作仓里核过 · Tx") && b.tip.includes("检查「unit」审阅座席实跑通过 · Ty"), b.tip);
+  assert.equal(cred.credBadge(credCard()).tone, "quiet", "非机器验证不用彩色");
+  assert.equal(cred.credProvLine({ what: "review:codex", by: "reviewer" }), "Codex 家族审阅判通过");
+  assert.equal(cred.credBadge(credCard({ badge: null })), null);
+  assert.equal(cred.credBadge({}), null);
+});
+
+test("第 7 波文案(H7):弱化标记四种;指纹对不上写成人话原因;说明版本两者相等不出;基线已红写明自报 / 已核", () => {
+  for (const [raw, said] of [["head_commit 在工作仓里不存在", "工作仓里没有这个交付提交"], ["base_commit 在工作仓里不存在", "工作仓里没有这个底提交"],
+    ["head_commit 不是提交", "给的交付提交不是一个提交"], ["src/a.txt 不在 head_commit 里", "交付提交里没有 src/a.txt"],
+    ["b.txt 的 sha256 与 head_commit 里的内容不同", "b.txt 与交付提交里的内容不同"], ["别的原因", "别的原因"]]) assert.equal(cred.credMismatchText(raw), said);
+  const mm = cred.credFlags(credCard({ badge: { level: "self_reported", flags: ["fingerprint_mismatch"], provenance: [] },
+    fingerprint: { digest: D1, verified: false, mismatch: ["head_commit 在工作仓里不存在"] } }));
+  assert.equal(mm[0].text, "指纹对不上：工作仓里没有这个交付提交", "不只写「对不上」");
+  const st = cred.credFlags(credCard({ badge: { level: "self_reported", flags: ["stale", "based_on_stale_spec", "baseline_red"], provenance: [] },
+    baseline: { base_commit: null, red: [{ check: "flaky", by: "executor" }], self: 1, verified: 0 },
+    conclusions: [{ kind: "review", verdict: "reject", digest: D0, stale: true, changed_files: ["b.txt", "c.txt"] }] }));
+  assert.deepEqual(st.map((f) => f.text), ["结论已过期", "基于旧版说明", "基线已红 1 项（自报）"]);
+  assert.ok(st[0].tip.includes("审阅结论是在上一版内容上做的") && st[0].tip.includes("b.txt、c.txt"), st[0].tip);
+  assert.equal(cred.credBaselineText({ baseline: { red: [{}, {}], self: 1, verified: 1 } }), "基线已红 2 项（自报 1 · 已核 1）");
+  assert.equal(cred.credBaselineText({ baseline: { red: [{}], self: 0, verified: 1 } }), "基线已红 1 项（已核）");
+  assert.equal(cred.credBaselineText({ baseline: { red: [] } }), null);
+  assert.equal(cred.credSpecLine({ spec_version: 3, acked_spec_version: 2 }), "说明 v3 · 对方确认到 v2");
+  assert.equal(cred.credSpecLine({ spec_version: 2, acked_spec_version: 2 }), null, "相等不显示");
+  assert.equal(cred.credSpecLine({ spec_version: 2, acked_spec_version: null }), null, "还没人领 = 不显示");
+});
+
+test("第 7 波文案(H7):证据三栏已核与自报分开;实查 / 推断分栏;必需检查逐项四态;旧指纹上的不算", () => {
+  const t = credCard({ required_checks: ["unit", "e2e", "lint", "doc"],
+    evidence_counts: { verified: { passed: 1, failed: 1, unverified: 0, baseline_failed: 0 }, self: { passed: 2, failed: 0, unverified: 1, baseline_failed: 1 } },
+    checks: [
+      { name: "unit", status: "pass", by: "reviewer", how: "ran", digest: D1, stale: false },
+      { name: "e2e", status: "pass", by: "executor", how: "ran", digest: D1, stale: false },
+      { name: "lint", status: "fail", by: "board", how: "ran", digest: D1, stale: false },
+      { name: "doc", status: "pass", by: "reviewer", how: "ran", digest: D0, stale: true },
+      { name: "read", status: "unverified", by: "executor", how: "inferred", digest: D1, stale: false },
+      { name: "flaky", status: "fail", by: "executor", how: "ran", baseline: true, digest: D1, stale: false }] });
+  assert.deepEqual(cred.credCountRows(t), [{ label: "已核", passed: 1, failed: 1, unverified: 0 }, { label: "自报", passed: 2, failed: 0, unverified: 1 }]);
+  const how = cred.credByHow(t);
+  assert.deepEqual(how.ran.map((c) => [c.name, cred.credCheckText(c)]), [["unit", "通过 · 审阅座席实跑"], ["lint", "失败 · 看板宿主实跑"], ["e2e", "通过 · 执行者自报"], ["flaky", "基线已红 · 执行者自报"]], "已核在前");
+  assert.deepEqual(how.inferred.map((c) => c.name), ["read"]);
+  assert.deepEqual(cred.credRequired(t).map((r) => [r.name, r.text]), [["unit", "已核通过"], ["e2e", "只有自报"], ["lint", "已核未通过"], ["doc", "缺"]], "旧指纹上的 doc 不算");
+  assert.equal(cred.credCountRows({}), null);
+});
+
+test("第 7 波文案(H7):验收确认处逐条写明缺的必需检查、过期结论、旧版说明、指纹对不上;齐了就是空", () => {
+  assert.deepEqual(cred.credGaps(credCard()), []);
+  const g = cred.credGaps(credCard({ required_checks: ["unit", "e2e"], spec_version: 3, acked_spec_version: 2, based_on_stale_spec: true,
+    badge: { level: "self_reported", flags: ["stale", "based_on_stale_spec", "fingerprint_mismatch"], provenance: [] },
+    fingerprint: { digest: D1, verified: false, mismatch: ["src/a.txt 不在 head_commit 里"] },
+    checks: [{ name: "e2e", status: "pass", by: "executor", how: "ran", digest: D1, stale: false }],
+    conclusions: [{ kind: "review", verdict: "approve", digest: D0, stale: true, changed_files: ["a.txt", "b.txt", "c.txt", "d.txt"] }] }));
+  assert.deepEqual(g, ["必需检查「unit」缺，没有任何结果", "必需检查「e2e」只有自报，没有看板或审阅座席的结果",
+    "审阅结论是上一版内容上的，之后改了 a.txt、b.txt、c.txt 等 4 个文件", "交付基于旧版说明：说明 v3 · 对方确认到 v2", "指纹对不上：交付提交里没有 src/a.txt"]);
+  // 新结论顶上了同类旧结论 = 不再算过期
+  assert.deepEqual(cred.credStale(credCard({ badge: { level: "self_reported", flags: ["stale"], provenance: [] },
+    conclusions: [{ kind: "review", digest: D0, stale: true }, { kind: "review", digest: D1, stale: false }], checks: [{ name: "x", digest: D0, stale: true }] })).map((x) => x.what), ["检查「x」"]);
+  for (const text of g) assert.deepEqual(copyFindings(text), [], text);
+  // 面板:确认处不拦人(按钮照旧),上膛的字写明还有几项待看
+  assert.ok(source.includes('"再按=仍要通过 · " + credGaps(byId.get(Number(id))).length + " 项待看"'));
+  const box = source.slice(source.indexOf("function sideControlsBox("), source.indexOf("\n}", source.indexOf("function sideControlsBox(")));
+  assert.ok(box.includes('const gaps = ctl.kind === "accept" ? credGapsNode(t) : null;') && box.includes('ok.dataset.a = "approve"'), "缺口写在确认处,通过按钮照旧");
+});
+
+test("第 7 波画面(H7):证据图经带凭据的读取画成 data: 地址,不放宽后端头;没有图不占位;必需检查只经「其他」菜单改", () => {
+  assert.equal(cred.credEvidenceLine({ mime: "image/png", bytes: 150000, note: "首页截图", at: "t" }, () => "11-14"), "png · 146 KB · 11-14 · 首页截图");
+  assert.equal(cred.credEvidenceLine({ mime: "image/webp", bytes: 2 * 1048576 }), "webp · 2.0 MB");
+  assert.deepEqual(cred.credParseRequired(" unit \n\ne2e\nunit\r\n lint"), ["unit", "e2e", "lint"]);
+  const load = source.slice(source.indexOf("async function credImgLoad("), source.indexOf("\n}", source.indexOf("async function credImgLoad(")));
+  assert.ok(load.includes('"/api/tasks/" + encodeURIComponent(taskId) + "/evidence/"') && load.includes("CRED_IMG_TYPES.has(type)") && load.includes("readAsDataURL"));
+  const side = source.slice(source.indexOf("function sideCred("), source.indexOf("\n}", source.indexOf("function sideCred(")));
+  assert.ok(side.includes("if (ev.length) {"), "没有图不占位");
+  assert.ok(side.includes('homeEl("button", "改必需检查")') && side.includes('role", "menu"'), "编辑入口在「其他」菜单");
+  assert.ok(source.includes('fetch("/api/tasks/" + t.id + "/required-checks", { method: "POST"'));
+  for (const text of ["这次交付没有检查记录", "通过前请看 · ", "证据与检查", "改必需检查", "保存必需检查"]) assert.deepEqual(copyFindings(text), [], text);
 });

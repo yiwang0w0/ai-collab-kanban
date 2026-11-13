@@ -1428,3 +1428,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-13 公告板 v3 第 7 波证据与说明版本(claude/board-v3-w7-spec,合同 H5–H6):桥工具 attach_evidence(本侧验文件头与大小再传字节),POST /api/tasks/:id/evidence 只收 png / jpeg / webp、≤2MB 边收边断、每卡 ≤10、同哈希去重、只给持卡执行者;GET …/evidence/:sha256 只给操作员(nosniff + 沙箱 CSP),图存数据目录 evidence_files/(受管线禁读);md 导出只写件数与哈希。
 - 说明版本:放行后标题 / 说明 / 验收 / 必需检查每改一次 spec_version +1(spec_history),get_card / claim_card / wait_for_card 带版本,heartbeat / report 可带 seen_spec_version(板记 acked,落后时 spec_changed),旧版交付标 based_on_stale_spec 并进卡历史;受管线领卡记版本、心跳与交付带回;老桥不带也不被误标。
 - evidencetest、specversiontest 新增并登记(含与可信核心的联合例:旧版说明的交付不自动通过、改 required_checks 计版本、证据带当前 digest);execmcptest 工具表 + attach_evidence。ask_operator 现有参数里没有推荐项,recommended_by 未加。阻塞:无。
+- 2026-11-14 公告板 v3 第 7 波面板(claude/board-v3-w7-panel,合同 H7):已完成行 / 卡片 / 侧栏一个徽标(来历在 ⓘ)与弱化标记(指纹对不上写人话原因、说明 v3 · 对方确认到 v2);侧栏「证据与检查」三栏计数已核与自报分开、实查 / 推断、基线已红、必需检查逐项、证据图缩略图与原图;「其他」里改必需检查;验收确认处逐条写缺口,不拦人。
+- 收第 6 波欠账:「要本人做的事」的类只在 homeLists(homeAttnType)判一次,面板与 /api/home/background 读同一份;告警多于 3 条先放 2 条。可信核心:这次交付的指纹没记上 → 审阅判通过也不自动通过(credibilitytest 增例)。
+- panelcopytest、panelsidetest、hometest、homebackgroundtest 增改;临时板真鼠标走查截图。没有调用模型。阻塞:无。

@@ -92,20 +92,9 @@ export function holderAndLine(t, ctx = {}) {
 export const isQueued = (r) => r?.holder?.kind === "queue" || r?.holder?.kind === "dep";
 
 // ── G2:要本人做的事 = briefModel 的 attention 原样 + type / verb / evidence / detail,不另写判定 ───────────────
-export const ATTENTION_VERB = { accept: "验收", decide: "去裁定", release: "放行", confirm: "确认", hands: "去做", fault: "查看" };
+// type / verb 只有一份:panel.html home-model 区的 homeAttnType(homeLists 写在每一行上),server 按行对上后放进条目;
+//   这里只读条目上的 type,不再自己从 kind 推(第 6 波欠账:原先面板与这里各有一张对照表)。
 const UNLOCKS_MAX = 5, ASK_MAX = 200;
-/** 简报条目的 kind + 卡 → type。卡上没有 ask(G5 未到)= 按 decide。 */
-export function attentionType(a, t) {
-  const hands = !!t?.ask && t.ask.needs === "hands";
-  switch (a?.kind) {
-    case "review": return "accept";
-    case "release": return "release";
-    case "stalled": case "line_fault": return "fault";
-    case "decision": return hands ? "hands" : t?.waiting_for === "confirm" ? "confirm" : "decide";
-    case "blocked": return !t ? "confirm" : hands ? "hands" : t.human_gate ? "decide" : "fault";
-    default: return hands ? "hands" : "decide";
-  }
-}
 const oneText = (v) => typeof v === "string" && v.trim() ? cut(redactText(v.replace(/\s+/g, " ").trim()), ASK_MAX) : null;
 /** 一句证据:只取结构化字段(自动审阅看过没有、方案个数、打回次数);只有自报时写「<执行者> 自报完成 · 未经复核」;没有 = null。 */
 export function evidenceOf(type, t, who) {
@@ -143,9 +132,9 @@ export function sourceOf(t) {
 }
 /** 一条 attention 加上 G2 的四个字段。work = 本板未归档的非目标卡(找下游用)。 */
 export function attentionDecor(a, t, { work = [], whoOf = () => null } = {}) {
-  const type = attentionType(a, t), ask = t?.ask && typeof t.ask === "object" ? t.ask : null;
+  const type = typeof a?.type === "string" ? a.type : null, ask = t?.ask && typeof t.ask === "object" ? t.ask : null;
   const why = blockersOf(t).find((b) => b.code !== "NOT_RELEASED" && typeof b.message === "string" && b.message.trim());
-  return { ...a, type, verb: ATTENTION_VERB[type], evidence: evidenceOf(type, t, t ? whoOf(t) : null),
+  return { ...a, type, verb: typeof a?.verb === "string" ? a.verb : null, evidence: evidenceOf(type, t, t ? whoOf(t) : null),
            detail: { what: oneText(ask?.what) ?? (why ? clean(why.message, ASK_MAX) : null), where: oneText(ask?.where), expect: oneText(ask?.expect),
                      ...unlocksOf(t, work), source: sourceOf(t) } };
 }

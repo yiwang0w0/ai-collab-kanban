@@ -3360,7 +3360,13 @@ function backgroundNow() {
   const m = briefModel({ lists, faults, tasks, now });
   const execs = new Map(connect.list().map((e) => [String(e.id), e]));
   const attentionIds = (lists.mine || []).filter((r) => r.localId != null).map((r) => Number(r.localId));
-  return backgroundModel({ tasks, attention: m.attention, attentionTotal: m.attention_total, attentionIds, now,
+  // 合同 G2 的 type / verb:只取 homeLists 写在行上的那一份(面板同一个函数)。briefModel 按「先 mine 各行、后线故障」的顺序出条目,
+  //   这里按同一顺序对上;线故障行用同一个 homeAttnType 补。条数对不上就不给 type(不另判)。
+  const kinds = [...(lists.mine || []).map((r) => ({ type: r.type, verb: r.verb })), ...faults.map(() => attentionModel.homeAttnType({ action: "line_fault" }, null))];
+  const typed = kinds.length === m.all.attention.length;
+  if (!typed) console.log(`后台任务:要本人做的事 ${m.all.attention.length} 条与首页行 ${kinds.length} 条对不上,本次不给 type`);
+  const attention = m.attention.map((a, i) => (typed ? { ...a, ...kinds[i] } : a));
+  return backgroundModel({ tasks, attention, attentionTotal: m.attention_total, attentionIds, now,
     whoOf: (t) => bgWhoOf(t, execs), sinceOf: (t) => bgRun(t.run_id)?.started_at ?? null, stopOf: bgStopOf,
     lineOf: bgLineOf(new Map()), lineLabel: (l) => LINE_LABEL?.[l] || l,
     sourceGate: () => process.env.BOARD_ALLOW_UNPINNED !== "1" && blessStep().state !== "done" });

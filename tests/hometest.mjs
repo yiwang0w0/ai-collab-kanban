@@ -12,7 +12,7 @@ const src = readFileSync(new URL("../core/panel.html", import.meta.url), "utf8")
 const b0 = src.indexOf("// ── home-model(pure;tests/hometest.mjs)──"), b1 = src.indexOf("// ── /home-model ──");
 assert.ok(b0 > 0 && b1 > b0, "home-model block not found in core/panel.html");
 const M = new Function(src.slice(src.indexOf("\n", b0) + 1, b1) +
-  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels,homeLineFaults,homeLogLines,homeLastFault,homeLastFaultTip};")();
+  ";return {homeName,homeStep,homeLists,homeStatus,homeHealthWhat,sideControls,newTaskBody,sideFallback,sideRelations,homeHealthAlerts,fleetLinks,fleetStep,fleetInbox,fleetUids,homeNodeLabels,homeLineFaults,homeLogLines,homeLastFault,homeLastFaultTip,homeAttnType};")();
 const UUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const NODE_B = "83d5fb7d-b622-44fc-a230-252f8f767824";
 const at = (h) => `2026-10-08T${String(h).padStart(2, "0")}:00:00Z`;
@@ -1280,4 +1280,43 @@ test("第 6 波(G1–G4):额度条在右栏最上;运行中用接口那份(同�
   const quota = fn("bgQuotaBar");
   assert.ok(quota.length > 100 && !/fetch\(|post\(|chatApi\(|workerStop|setTimeout/.test(quota), "额度条纯显示");
   assert.ok(src.includes('chatApi("GET", "/api/home/quota")'), "读 GET /api/home/quota");
+});
+
+test("第 7 波收第 6 波欠账:「要本人做的事」每行的类只在 homeLists 判一次;面板读行上的 type,接口经 home-model 切片读同一份", () => {
+  const nr = [{ code: "NOT_RELEASED", message: "NOT_RELEASED", next_action: "核对任务后显式放行" }];
+  const tasks = [
+    card(1, { waiting_for: "review" }),
+    card(2, { waiting_for: "decision" }),
+    card(3, { waiting_for: "decision", ask: { needs: "hands", what: "插上测试机" } }),
+    card(4, { waiting_for: "confirm" }),
+    card(5, { status: "not_started", released: 0, progress_blockers: nr }),
+    card(6, { waiting_for: "dep", progress_blockers: [{ code: "BROKEN_DEPENDENCIES", message: "依赖字段损坏" }] }),
+  ];
+  const approvals = [{ id: "lock:7:1", kind: "lock", title: "device:x", created_at: at(6) }, { id: "request:3:1", kind: "request", summary: "重启", created_at: at(5) }];
+  const executors = [{ id: "zc", label: "Zcode 甲", state: "stalled", holding: [] }];
+  const { mine } = M.homeLists({ tasks, approvals, executors });
+  const got = Object.fromEntries(mine.map((r) => [String(r.localId ?? r.action + ":" + (r.kind || "")), [r.type, r.verb]]));
+  assert.deepEqual(got, { 1: ["accept", "验收"], 2: ["decide", "去裁定"], 3: ["hands", "去做"], 4: ["confirm", "确认"], 5: ["release", "放行"], 6: ["fault", "查看"],
+    "approval:lock": ["confirm", "确认"], "approval:request": ["decide", "去裁定"], "executor:": ["fault", "查看"] });
+  assert.deepEqual(M.homeAttnType({ action: "line_fault" }, null), { type: "fault", verb: "查看" }, "线故障行(只在接口里)用同一个函数");
+  assert.deepEqual(M.homeAttnType({ action: "fleet", kind: "result" }, null), { type: "accept", verb: "验收" });
+  assert.deepEqual(M.homeAttnType({}, null).type, "decide", "别的电脑的卡:在它那边处理");
+  // 面板不再有第二张对照表;接口一侧(home-background.mjs)也不再从 kind 推 type。
+  assert.ok(!src.includes("function bgLocalType(") && !src.includes("const BG_VERB"), "面板的 bgLocalType / BG_VERB 已删");
+  const attn = src.slice(src.indexOf("function bgAttnRow("), src.indexOf("\n}", src.indexOf("function bgAttnRow(")));
+  assert.ok(attn.includes("const type = item.type"), "面板一行读 homeLists 写在行上的 type");
+  const hb = readFileSync(new URL("../core/home-background.mjs", import.meta.url), "utf8");
+  assert.ok(!/export function attentionType\(/.test(hb) && !hb.includes("ATTENTION_VERB"), "接口一侧不另判");
+  const sv = readFileSync(new URL("../core/server.mjs", import.meta.url), "utf8");
+  assert.ok(sv.includes("attentionModel.homeAttnType({ action: \"line_fault\" }, null)"), "server 线故障行也走同一个函数");
+});
+
+test("第 7 波收第 6 波欠账:告警多于 3 条时首页先放 2 条,「全部展开」在第一行行尾不另占一行;件数照旧写在第一行", () => {
+  assert.ok(src.includes("const HOME_ALERT_CAP = 2;"));
+  assert.ok(src.includes("const alerts = known ? s.alerts : [], alertCap = homeExpanded.alerts || alerts.length <= HOME_ALERT_CAP + 1 ? alerts.length : HOME_ALERT_CAP;"));
+  assert.ok(src.includes('const rows = [line, ...alerts.slice(0, alertCap).map((a) => homeAlertRow(a))];') && src.includes("line.append(more);"), "展开按钮放进第一行");
+  assert.ok(src.includes('const homeExpanded = { mine: false, running: false, alerts: false }'));
+  const s = M.homeStatus({ localName: "台式机 A", setup: { steps: [{ state: "todo", title: "确认当前版本" }], total: 3, done: 2, complete: false },
+    workers: [{ line: "a", desired_running: true, running: false }, { line: "b", exit_code: 3, running: false }, { line: "c", stop_reason: { reason: "crash" }, running: false }] });
+  assert.ok(s.alerts.length > 3 && /项需要注意/.test(s.line), "多条告警时第一行写件数");
 });

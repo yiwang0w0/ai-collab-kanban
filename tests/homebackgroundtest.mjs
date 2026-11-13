@@ -13,8 +13,9 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { backgroundModel, stopVerdict, runAutostart, autostartText, goalOf, DONE_MAX, holderAndLine, isRunning, attentionDecor, attentionType,
-         stageOf, quotaModel, unlocksOf, ONE_LINE_CODES, ATTENTION_VERB, NOTE_FRESH_MS } from "../core/home-background.mjs";
+import { backgroundModel, stopVerdict, runAutostart, autostartText, goalOf, DONE_MAX, holderAndLine, isRunning, attentionDecor,
+         stageOf, quotaModel, unlocksOf, ONE_LINE_CODES, NOTE_FRESH_MS } from "../core/home-background.mjs";
+import { loadAttentionModel } from "../core/home-model.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const FAKE = join(ROOT, "tests", "helpers", "fake-coordinator-cli.mjs");
@@ -33,7 +34,7 @@ test("三组:运行中 = 执行中的非目标卡(按领取先后);已完成 = 2
     { id: 7, kind: "task", subject: "等验收", status: "waiting", waiting_for: "review" },
   ];
   const since = { 2: iso(10), 4: iso(40) };
-  const m = backgroundModel({ tasks, attention: [{ kind: "review", task_id: 7, title: "等验收" }], now: NOW,
+  const m = backgroundModel({ tasks, attention: [{ kind: "review", task_id: 7, title: "等验收", type: "accept", verb: "验收" }], now: NOW,
     whoOf: (t) => ({ label: "L" + t.id, kind: "managed", runtime: "claude", model: null }), sinceOf: (t) => since[t.id] ?? null,
     stopOf: (t) => t.id === 2 ? { stoppable: true } : { stoppable: false, reason: "外部" } });
   assert.deepEqual(m.running.map((r) => r.task_id), [4, 2], "先领的在前");
@@ -45,7 +46,7 @@ test("三组:运行中 = 执行中的非目标卡(按领取先后);已完成 = 2
   assert.deepEqual(m.groups, [{ goal_id: 1, title: "计划甲", total: 3, done: 1, running: 1, queued: 0, stage: "execute", stage_detail: { done: 1, total: 3 } }], "组头:N 个任务 · M 个在跑 · 四段");
   assert.equal(m.done[0].resolved_by, null, "已完成行带 resolved_by(读不到 = null)");
   assert.equal(m.attention_total, 1); assert.equal(m.running_total, 2); assert.equal(m.queued_total, 0);
-  assert.deepEqual([m.attention[0].type, m.attention[0].verb], ["accept", "验收"], "attention 原样 + type / verb");
+  assert.deepEqual([m.attention[0].type, m.attention[0].verb], ["accept", "验收"], "attention 原样(type / verb 由 server 从首页行对上)");
   const many = Array.from({ length: 30 }, (_, i) => ({ id: 100 + i, kind: "task", subject: "d" + i, status: "done", updated_at: iso(i) }));
   const d = backgroundModel({ tasks: many, now: NOW }).done;
   assert.equal(d.length, DONE_MAX); assert.equal(d[0].task_id, 100, "最近完成的在前");
@@ -150,12 +151,14 @@ test("G1 holder 各 kind 与 one_line 各 code:只读状态字段,判不出 = no
   assert.equal(cut.running.length, 0, "attention 截到 20 条之外的卡也不进运行中(server 传全量卡号)");
 });
 
-test("G2 attention:各 type 与动词、证据只取结构化字段、解锁的下游、来源措辞所需字段;缺 ask 按 decide", () => {
+test("G2 attention:type / verb 只读条目上的(首页 homeAttnType 那一份);证据只取结构化字段、解锁的下游、来源措辞所需字段", () => {
   const work = [
     { id: 20, subject: "下游甲", status: "not_started", blocked_by: "[10]" }, { id: 21, subject: "下游乙", status: "not_started", blocked_by: "[10,11]" },
     { id: 22, subject: "完成的下游", status: "done", blocked_by: "[10]" }, { id: 23, subject: "坏字段", status: "not_started", blocked_by: "{" }];
   const who = () => ({ label: "实现线" });
-  const D = (a, t) => attentionDecor(a, t, { work, whoOf: who });
+  // 条目上的 type / verb = 首页 homeLists 写在行上的那一份;这里用同一个函数给,不另写对照表。
+  const { homeAttnType } = loadAttentionModel();
+  const D = (a, t) => attentionDecor({ ...a, ...homeAttnType(a.row || {}, t) }, t, { work, whoOf: who });
   const acc = D({ kind: "review", task_id: 10, title: "交付" }, { id: 10, status: "waiting", waiting_for: "review", handed_back: 2 });
   assert.deepEqual([acc.type, acc.verb, acc.evidence], ["accept", "验收", "实现线 自报完成 · 未经复核 · 打回过 2 次"]);
   assert.deepEqual([acc.detail.unlocks, acc.detail.unlocks_total], [[{ id: 20, title: "下游甲" }, { id: 21, title: "下游乙" }], 2], "完成的、字段坏的不算下游");
@@ -173,13 +176,12 @@ test("G2 attention:各 type 与动词、证据只取结构化字段、解锁的�
   assert.deepEqual(D({ kind: "release", task_id: 15 }, { id: 15, posted_by: { label: "助手甲" } }).detail.source, { label: "助手甲", origin: null }, "缺 origin = null,面板不写来源措辞");
   assert.deepEqual(D({ kind: "release", task_id: 15 }, { id: 15, posted_by: { label: "助手甲", origin: "made_up", quote: "x" } }).detail.source, { label: "助手甲", origin: null }, "认不出的 origin 不认");
   assert.equal(D({ kind: "release", task_id: 15 }, { id: 15, posted_by: { label: "助手甲", origin: "ai_inferred", quote: "x" } }).detail.source.quote, undefined, "原话只跟本人原话走");
-  for (const k of ["stalled", "line_fault"]) assert.deepEqual([D({ kind: k, title: "x" }, null).type, D({ kind: k }, null).verb], ["fault", "查看"]);
-  assert.equal(D({ kind: "blocked" }, null).type, "confirm", "逾期锁这类不落在卡上的 = 确认");
+  assert.deepEqual([D({ kind: "line_fault", title: "x", row: { action: "line_fault" } }, null).type, D({ kind: "stalled", row: { action: "executor" } }, null).verb], ["fault", "查看"]);
+  assert.equal(D({ kind: "blocked", row: { action: "approval", kind: "lock" } }, null).type, "confirm", "逾期锁这类不落在卡上的 = 确认");
   const blk = D({ kind: "blocked", task_id: 16 }, { id: 16, status: "waiting", waiting_for: "dep", progress_blockers: [{ code: "BROKEN_DEPENDENCIES", message: "依赖字段损坏" }] });
   assert.deepEqual([blk.type, blk.detail.what], ["fault", "依赖字段损坏"], "受阻卡 = 故障要你看,what 用服务端的原因");
-  assert.equal(D({ kind: "blocked", task_id: 17 }, { id: 17, human_gate: 1 }).type, "decide");
-  assert.equal(attentionType({ kind: "other" }, null), "decide");
-  assert.deepEqual(Object.keys(ATTENTION_VERB).sort(), ["accept", "confirm", "decide", "fault", "hands", "release"]);
+  assert.equal(D({ kind: "blocked", task_id: 17 }, { id: 17, status: "waiting", waiting_for: "dep", human_gate: 1 }).type, "decide");
+  assert.deepEqual([attentionDecor({ kind: "other" }, null).type, attentionDecor({ kind: "other" }, null).verb], [null, null], "条目上没有 type 就不给,这里不另判");
   assert.equal(unlocksOf({ id: 1 }, Array.from({ length: 8 }, (_, i) => ({ id: 30 + i, subject: "d", status: "not_started", blocked_by: [1] }))).unlocks.length, 5, "≤5 条");
 });
 

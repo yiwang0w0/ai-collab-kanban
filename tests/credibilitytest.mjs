@@ -161,6 +161,39 @@ test("H3 徽标:executor 报全 pass 仍是 self_reported;已核检查才抬档;
   assert.throws(() => c.addVerifiedCheck(1, { name: "x", ok: true, by: "executor" }), /board \/ reviewer/);
 });
 
+test("H3 硬闸:这次交付的指纹没记上(写库失败)→ 不拿上一次交付的指纹当当前,不自动通过", async () => {
+  const db = new DatabaseSync(":memory:");
+  let failNext = false, t = 0;
+  // 模拟写库失败:下一次写 cred_deliveries 抛错,其余照常。
+  const shim = { exec: (s) => db.exec(s), prepare: (s) => {
+    if (failNext && /INSERT INTO cred_deliveries/.test(s)) { failNext = false; throw new Error("database is locked"); }
+    return db.prepare(s);
+  } };
+  const c = openCredibility({ db: shim, err, ERR, now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)).toISOString(), commandHash: (k) => sha("argv:" + k) });
+  c.migrate();
+  c.setRequired(7, ["unit"], "operator");
+  const first = { id: 7, line: "x", run_id: "run-1", result: "第一版" };
+  await c.recordDelivery(first, c.parseDelivery({}), { runId: "run-1", evidence: "第一版" });
+  c.addVerifiedCheck(7, { name: "unit", ok: true, by: "reviewer" });
+  assert.equal(c.autoGate(first).ok, true);
+  // 第二次交付:卡上已是新一轮、新正文,但指纹没写进去
+  const second = { id: 7, line: "x", run_id: "run-2", result: "第二版" };
+  failNext = true;
+  await assert.rejects(c.recordDelivery(second, c.parseDelivery({}), { runId: "run-2", evidence: "第二版" }), /locked/);
+  // 审阅随后复跑通过 —— 这一条只能绑到上一次的 digest;闸不能因此放行
+  c.addVerifiedCheck(7, { name: "unit", ok: true, by: "reviewer" });
+  const g = c.autoGate(second);
+  assert.equal(g.ok, false);
+  assert.match(g.missing.join(), /指纹没记上/);
+  // 同一轮重交(正文变了)也算:run 相同、正文不同
+  assert.equal(c.autoGate({ ...first, result: "第一版改" }).ok, false);
+  // 交付正文为 null:卡上存 "null"、指纹按空串算,不误判
+  const third = { id: 7, line: "x", run_id: "run-3", result: "null" };
+  await c.recordDelivery(third, c.parseDelivery({}), { runId: "run-3", evidence: null });
+  c.addVerifiedCheck(7, { name: "unit", ok: true, by: "reviewer" });
+  assert.equal(c.autoGate(third).ok, true, JSON.stringify(c.autoGate(third)));
+});
+
 test("H3 cross_model_reviewed:两边家族都已知且不同才算;未知不算;digest 不是当前不算", async () => {
   for (const [author, reviewer, want] of [["codex", "claude", "cross_model_reviewed"], ["claude", "claude", "self_reported"],
        ["other", "claude", "self_reported"], [null, "claude", "self_reported"], ["zcode", null, "self_reported"], ["zcode", "codex", "cross_model_reviewed"]]) {
