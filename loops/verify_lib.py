@@ -45,6 +45,7 @@ PROTECTED = (
     "worker_settings.json", "lineage.json",          # 座席设置;个人会话 id
     "desktop_lineage.json", "desktop_forks.json",    # 面板登记的桌面会话继承表 / 看板 fork 出的副本清单(都是完整会话 id)
     "desktop_sessions_selected.json*",               # 「本地会话」的勾选清单(会话 id,个人信息;含写入时的 .tmp)
+    "home_prefs.json",                               # 首页「建卡后自动开工」的勾选(看板级设置,不是模型出件)
     "pool_state.json", "pool_global_stop.json",      # 池状态(pool-quota skill:改标记≠额度回来)
     "spend_ledger.jsonl", "usage_ledger.jsonl",      # 账本
     "board.log",

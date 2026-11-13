@@ -1243,3 +1243,22 @@ test("接入的 AI 卡住了：进「待我处理」，写名称与手上的卡�
   assert.ok(open.includes('if (item.action === "executor") { aiGo(item.id); return; }'));
   assert.ok(src.includes('executors: (typeof aiSlot === "object" && aiSlot?.value?.executors) || [],'), "首页把接入的 AI 交给 homeLists");
 });
+
+test("首页右栏 = 后台任务三组(等你处理 / 运行中 / 已完成),已完成默认折叠;强调色只给等你处理;停止先确认再发", () => {
+  const aside = src.slice(src.indexOf('<aside class="home-work" id="home-work" aria-label="后台任务">'), src.indexOf("</aside>", src.indexOf('id="home-work"')));
+  assert.ok(aside.length > 100, "右栏标成「后台任务」");
+  const pos = ["data-lane=\"mine\"", "data-lane=\"running\"", "data-lane=\"done\""].map((k) => aside.indexOf(k));
+  assert.ok(pos.every((p) => p > 0) && pos[0] < pos[1] && pos[1] < pos[2], "自上而下:等你处理、运行中、已完成");
+  assert.ok(aside.includes(">等你处理 <span class=\"n\" id=\"home-mine-n\">") && aside.includes(">运行中 <span class=\"n\" id=\"home-running-n\">"));
+  assert.ok(aside.includes('id="home-done-t" aria-expanded="false"') && aside.includes('<div class="home-list" id="home-done" hidden></div>'), "已完成默认折叠");
+  // 新加的样式里不用强调色(强调色只给「等你处理」)
+  const css = src.slice(src.indexOf("/* 后台任务(合同 F)"), src.indexOf("@media (prefers-reduced-motion: reduce){ .bg-fold"));
+  assert.ok(css.length > 200 && !css.includes("--accent"), "后台任务样式不用 --accent");
+  const stop = src.slice(src.indexOf("async function bgStop("), src.indexOf("/** 「已完成」:默认折叠"));
+  assert.ok(stop.indexOf("confirm(bgStopConfirm(r))") >= 0 && stop.indexOf("confirm(") < stop.indexOf('fetch("/api/home/background/'), "先确认再停");
+  // live_note 到了只换「运行中」那一行的小字(与卡面、流转条同一个就地换字函数)
+  const paint = src.slice(src.indexOf("function liveNotePaint("), src.indexOf("// SSE: pushed on change only"));
+  assert.ok(paint.includes('.hrow[data-bg-id="${id}"] .hcard') && paint.includes("n.textContent = text;"));
+  assert.ok(src.includes("bgLoadSoon();   // 后台任务"), "refresh 里重读后台任务(事件驱动,不另造事件)");
+  assert.ok(src.includes('<p class="coord-seat" id="set-coordinator" hidden></p>'), "设置里协调线一行(只读)");
+});

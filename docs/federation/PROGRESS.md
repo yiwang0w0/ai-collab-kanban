@@ -1413,3 +1413,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-11 公告板 v3 第 4 波(claude/board-v3-w4):连接器的「助手」角色(合同 E)——发码 role=assistant 不建线不绑线;助手令牌只读简报与卡面、挂未放行卡(posted_by、同时 ≤20 张),SSE / 领卡 / 交付 / 裁定 / 放行 / 会话一律拒;GET /api/brief 复用首页「待我处理」切片,文字是纯函数;桥按令牌角色给五个助手工具(wait_for_attention 同一件只提醒一次);面板表单加角色、助手徽标、「<名称> 挂上 · 待你放行」。
 - 并入 premain-fix(1b717f4);总复审 C7(同屏单主按钮、说明进 title)与 H2(公开代码不写测试板端口)顺手修;本地会话勾选清单归入受管线禁读表,扫描认得 join(dataDir, …) 写法;sdkrunnerstest 补认令牌目录拒绝规则(premain-fix 带来的红)。
 - 新增 assistanttest 5/0;受影响套件全绿(servertest 229/0、selftest 402/0、prompt-selftest 90/0、fourchannelhttp 9/0);全套 npm test 只红 sdkrunnerstest 一处,修后 test:channels 117/0、usagetest 4/0;临时看板 + 真 stdio 桥走查通过。没有调用模型。阻塞:无。
+- 2026-11-13 公告板 v3 第 5 波(claude/board-v3-w5):首页右栏改「后台任务」(等你处理 / 运行中 / 已完成;GET /api/home/background,attention 与简报同一份),运行中带谁在做 · 已用时 · 实时进度、计划归组可折叠、展开最近 5 步、受管线卡「停止」= workerStop 停该槽 + releaseHeldBy 收回卡(外部 AI 无停止)。
+- 「按计划建卡」加「建卡后自动开工」(看板级记在 home_prefs.json,初始不勾):apply 带 autostart:true 才对计划里的受管线逐条过源码闸 / 座席 / 额度池后调 workerStart,结果进应答与 system 消息;设置里协调线一行只读显示模型与强度。
+- 新增 homebackgroundtest 5/0;受影响套件与最终提交上的完整 npm test 结果见本批回报;临时看板(假协调线 + spawn-echo)走通建卡→自动开工→运行中→停止→交付→验收。没有调用模型。阻塞:无。

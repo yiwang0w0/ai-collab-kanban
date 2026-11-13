@@ -34,7 +34,8 @@ import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
 import {openConnect,isLoopback,defaultTokenDir,cardText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
-import {briefOf,maxCharsOf} from "./brief.mjs";
+import {briefOf,briefModel,maxCharsOf} from "./brief.mjs";
+import {backgroundModel,stopVerdict,runAutostart,autostartText} from "./home-background.mjs";
 import {loadAttentionModel} from "./home-model.mjs";
 import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
@@ -45,7 +46,7 @@ import {directoryIdentity} from "./artifacts/git-workspace.mjs";
 import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
 import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX,
         MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel,cleanLabelChars,loadDeskForks,addDeskForks} from "./desktop-sessions.mjs";
-import {createFlow} from "./flow.mjs";
+import {createFlow,redactText,cut} from "./flow.mjs";
 import {openMdHandoff} from "./md-handoff.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
 
@@ -3191,8 +3192,8 @@ function requestApprovalEntry(r) {
 // ── 看板简报(合同 E):「等你处理」= 首页「待我处理」(panel.html home-model 区的 homeLists)+ 执行线故障(homeLineFaults),
 //    同一份切片在这里跑,不另写判定;文字由 core/brief.mjs 的纯函数生成。
 const attentionModel = loadAttentionModel();
-function briefNow(maxChars) {
-  const now = Date.now();
+/** 简报与首页「后台任务」共用的一份输入:本板未归档的卡(taskOut 形)+「待我处理」切片 + 线故障。 */
+function attentionInputs() {
   const tasks = store.list(db, { archived: "false" }).tasks.map((t) => {
     const o = taskOut(t);
     const who = o.status === "in_progress" ? (coord.isExecutor(db, o.worker) ? connect.nameOf(o.worker) : (LINE_LABEL[o.line] || o.line || o.worker || null)) : null;
@@ -3202,8 +3203,123 @@ function briefNow(maxChars) {
   const lists = attentionModel.homeLists({ tasks, autoReview: workersNow.some((w) => w.line === "review" && w.running),
     approvals: approvalEntries().map((e) => e.item), executors: connect.list() });
   const faults = attentionModel.homeLineFaults(workersNow, LINE_LABEL || {});
+  return { tasks, lists, faults };
+}
+function briefNow(maxChars) {
+  const now = Date.now();
+  const { tasks, lists, faults } = attentionInputs();
   let headline = null; try { headline = efficiency.compute({}).headline ?? null; } catch { headline = null; }
   return briefOf({ lists, faults, tasks, headline, now }, maxChars);
+}
+
+// ── 首页「后台任务」(合同 F,core/home-background.mjs)。attention 用上面同一份判定(briefModel),不另写。
+const bgClaimStmt = db.prepare("SELECT actor FROM task_events WHERE task_id=? AND kind='claim' ORDER BY id DESC LIMIT 1");
+const bgRunStmt = db.prepare("SELECT started_at, runtime FROM task_runs WHERE run_id=?");
+const bgRun = (runId) => { if (!runId) return null; try { return bgRunStmt.get(String(runId)) || null; } catch { return null; } };
+/** worker 名 → 它是哪条受管线的槽位(slotKey 的逆:「线」或「线@k」);外部线、不在受管表里的返回 null。 */
+function lineOfWorker(worker) {
+  const w = String(worker ?? ""), m = w.match(/^(.+)@([1-9][0-9]*)$/);
+  const line = m && Number(m[2]) <= MAX_PARALLEL ? m[1] : w;
+  return SUPERVISED.includes(line) && !LINE_EXTERNAL?.[line] ? line : null;
+}
+const liveSlotCount = (line) => slotsOf(line).filter((s) => s.proc).length;
+function bgStopOf(t) {
+  return stopVerdict(t, { isExecutor: (w) => coord.isExecutor(db, w), lineOfWorker, external: (l) => !!LINE_EXTERNAL?.[l], liveSlots: liveSlotCount });
+}
+/** 谁在做(做过):执行者 → 登记时的显示名与种类(kind 是发码时操作者选的),模型看板不知道 → null;
+ *  受管线 → 线的显示名;运行时取这一轮 task_runs 记的,再退到槽位设置、卡上的 last_runtime;
+ *  模型只认这一刻在跑的那个槽位的座席设置(进程不在 = 不知道这一轮用的什么 → null)。 */
+function bgWhoOf(t, execs) {
+  const worker = t.status === "in_progress" ? t.worker : (bgClaimStmt.get(Number(t.id))?.actor ?? null);
+  if (!worker) return null;
+  if (coord.isExecutor(db, worker)) {
+    const e = execs.get(String(worker));
+    return { label: cut(redactText(connect.nameOf(worker)), 32), kind: "external", runtime: e?.kind ?? null, model: null };
+  }
+  const line = lineOfWorker(worker) ?? (t.line || null);
+  const slot = t.status === "in_progress" ? workers.get(String(worker)) : null;
+  const live = slot && (slot.proc || slot.echo) ? slot.settings : null;
+  const runtime = (t.status === "in_progress" ? bgRun(t.run_id)?.runtime : null) || live?.runtime || t.last_runtime || null;
+  return { label: LINE_LABEL?.[line] || line || String(worker), kind: "managed", runtime: runtime ? String(runtime) : null, model: live?.model ?? null };
+}
+function backgroundNow() {
+  const now = Date.now();
+  const { tasks, lists, faults } = attentionInputs();
+  const m = briefModel({ lists, faults, tasks, now });
+  const execs = new Map(connect.list().map((e) => [String(e.id), e]));
+  return backgroundModel({ tasks, attention: m.attention, attentionTotal: m.attention_total, now,
+    whoOf: (t) => bgWhoOf(t, execs), sinceOf: (t) => bgRun(t.run_id)?.started_at ?? null, stopOf: bgStopOf });
+}
+/** 「停止」= 两步,都用现有的那一份:① 停该槽 —— 与 POST /api/workers/:line/stop 同一个 workerStop(树杀进程、清运行意图、
+ *  按槽名放回在途卡);② 收回这张卡 —— ① 之后这张卡若仍被同一槽位领着,再按领取方 releaseHeldBy 一次(与停线、退出回收同一函数)。
+ *  ① 失败就不做 ②(进程可能还活着,先放回卡会让它和下一个领取方撞车),应答写明停在哪一步。 */
+async function backgroundStop(id) {
+  const t = store.get(db, id);
+  if (!t) return [404, { error: `卡 #${id} 不存在` }];
+  const v = bgStopOf(t);
+  if (!v.stoppable) return [409, { code: "NOT_STOPPABLE", error: v.reason, task_id: id }];
+  const steps = [];
+  let stopped;
+  try {
+    stopped = await workerStop(v.line);
+    steps.push({ step: "stop_slot", ok: true, line: v.line, detail: stopped.stop_text || (stopped.already_idle ? "进程本就不在" : "已停") });
+  } catch (e) {
+    steps.push({ step: "stop_slot", ok: false, line: v.line, error: String(e?.message || e) });
+    return [500, { ok: false, task_id: id, line: v.line, steps, error: `停线「${v.line}」没成,卡没有收回(进程可能还在跑):${e?.message || e}` }];
+  }
+  let after = store.get(db, id);
+  if (after.status === "in_progress" && after.worker === t.worker) {
+    try {
+      const freed = store.releaseHeldBy(db, t.worker);
+      if (freed.length) emit("task.reaped", { count: freed.length });
+    } catch (e) { console.error(`停止 #${id}:收回失败`, e.message); }
+    after = store.get(db, id);
+  }
+  const back = !(after.status === "in_progress" && after.worker === t.worker);
+  steps.push({ step: "release_card", ok: back, status: after.status,
+               ...(back ? {} : { error: "线已停,但这张卡还挂在原领取方名下;等租约到期自动回收,或到「全部任务」里处理" }) });
+  console.log(`首页停止 #${id}:停线 ${v.line} → ${back ? "卡已收回(" + after.status + ")" : "卡未收回"}`);
+  emit("task.updated", { id });
+  return [back ? 200 : 409, { ok: back, task_id: id, line: v.line, steps, released: stopped.released || [] }];
+}
+/** 「建卡后自动开工」那个勾选,看板级记住(数据目录,不进 git;受管线禁读表里登记了这个文件名)。 */
+const HOME_PREFS_FILE = join(store.DATA_DIR, "home_prefs.json");
+function homePrefs() {
+  try { const v = JSON.parse(readFileSync(HOME_PREFS_FILE, "utf8")); return { autostart: v?.autostart === true }; }
+  catch { return { autostart: false }; }
+}
+function saveHomePrefs(next) {
+  const tmp = HOME_PREFS_FILE + ".tmp";
+  writeFileSync(tmp, JSON.stringify(next), "utf8"); renameSync(tmp, HOME_PREFS_FILE);
+  return next;
+}
+/** 自动开工的闸:按顺序,源码闸(与协调线、执行线同一道 blessStep)→ 座席解禁 / 命令路径 / 执行配置(deskStartBlocked 同一判据)
+ *  → 额度池(effectiveAgents,与起线同一个)。过了这三道才调 workerStart,它自己的拒绝(看板窗已过、槽已满、脚本缺失…)照原样作原因。 */
+const SEAT_WORD = { SEAT_LOCKED: "座席未解禁", SEAT_CMD_MISSING: "座席缺命令路径" };
+function autostartGate(line) {
+  if (process.env.BOARD_ALLOW_UNPINNED !== "1") {
+    const bl = blessStep();
+    if (bl.state !== "done") return `源码闸没过(${bl.detail})`;
+  }
+  const seat = deskStartBlocked(line);
+  if (seat) return SEAT_WORD[seat.code] || seat.message;
+  if (bothPoolsDown()) return "两个额度池都用尽了";
+  if (!effectiveAgents(line)) return "这条线的额度池用尽,也没有能换过去的座席";
+  return null;
+}
+function autostartAfterApply(convId, out) {
+  const lines = out.task_ids.map((id) => store.get(db, id)?.line).filter(Boolean);
+  const r = runAutostart(lines, {
+    external: (l) => !!LINE_EXTERNAL?.[l], supervised: (l) => SUPERVISED.includes(l),
+    running: (l) => slotsOf(l).some((s) => s.proc), gateOf: autostartGate,
+    start: (l) => { workerStart(l, store.DEFAULT_ROUTE); resetLadder(l); },   // 与 POST /api/workers/:line/start 同一步
+  });
+  if (r.started.length || r.blocked.length || r.already_running.length) {
+    conversations.addSystemMessage(db, convId, { kind: "autostart", text: autostartText(r, (l) => LINE_LABEL?.[l] || l) });
+    emit("conversation.changed", { id: convId });
+  }
+  console.log(`对话 #${convId} 建卡后自动开工:起 ${r.started.join(",") || "无"}${r.blocked.length ? ";没起:" + r.blocked.map((b) => b.line).join(",") : ""}`);
+  return r;
 }
 function approvalEntries() {
   const now = Date.now(), out = [];
@@ -3978,7 +4094,13 @@ async function conversationsRoute(req, res, url, p, m, boardRole) {
     if (mp && mp[3] && m === "POST") {
       const b = await readBody(req);
       const via = isPanelCredential(req.headers["x-board-token"]) ? "panel" : "local";
-      return json(res, 201, applyConversationPlan(Number(mp[1]), Number(mp[2]), b.expected_rev, via));
+      const out = applyConversationPlan(Number(mp[1]), Number(mp[2]), b.expected_rev, via);
+      // 建卡后自动开工(合同 F):只在明确带 autostart:true 时做;卡已经建好,起线没成不影响建卡,原因进应答与对话。
+      if (b.autostart === true) {
+        try { out.autostart = autostartAfterApply(Number(mp[1]), out); }
+        catch (e) { console.error("建卡后自动开工失败:", e.message); out.autostart = { started: [], blocked: [], already_running: [], error: String(e.message || e) }; }
+      }
+      return json(res, 201, out);
     }
     return json(res, mp ? 405 : 404, { error: "未知的对话接口" });
   } catch (e) {
@@ -4119,6 +4241,23 @@ const server = http.createServer(async (req, res) => {
       if (boardRole !== "operator" && boardRole !== "assistant") return json(res, 403, { error: "简报只给操作员与助手", role: boardRole });
       let max; try { max = maxCharsOf(url.searchParams.get("max_chars")); } catch (e) { return json(res, 400, { code: "BAD_INPUT", error: e.message }); }
       return json(res, 200, briefNow(max));
+    }
+    // ── 首页「后台任务」(合同 F):读写都只给操作员(面板会话或 board_token);执行者、助手、执行线、审阅令牌 403。
+    if (p === "/api/home/background" || p.startsWith("/api/home/")) {
+      if (boardRole !== "operator") return json(res, 403, { error: "首页后台任务只属于操作员", role: boardRole });
+      if (m === "GET" && p === "/api/home/background") return json(res, 200, backgroundNow());
+      const ms = p.match(/^\/api\/home\/background\/(\d+)\/stop$/);
+      if (m === "POST" && ms) return json(res, ...(await backgroundStop(Number(ms[1]))));
+      if (p === "/api/home/prefs") {
+        if (m === "GET") return json(res, 200, homePrefs());
+        if (m === "PUT") {
+          const b = await readBody(req);
+          if (!b || typeof b !== "object" || Array.isArray(b) || typeof b.autostart !== "boolean" || Object.keys(b).some((k) => k !== "autostart"))
+            return json(res, 400, { code: "BAD_INPUT", error: "正文要是 {autostart: true|false}" });
+          return json(res, 200, saveHomePrefs({ ...homePrefs(), autostart: b.autostart }));
+        }
+      }
+      return json(res, 404, { error: "没有这个接口或不接受该方法" });
     }
     // 令牌自己是谁(桥握手时按角色给工具组):执行者与助手令牌可读,只回自己。
     if (m === "GET" && p === "/api/connect/me") {

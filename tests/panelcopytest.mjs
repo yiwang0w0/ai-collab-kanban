@@ -1235,3 +1235,51 @@ test("接真接口后的收口:live_note 只改那一处、登记确认框、刚
   const ss = source.slice(source.indexOf("function sideSteps("), source.indexOf("function sideRelationshipBox("));
   assert.ok(ss.includes('steps.push(["启动", at(t.self_reported_started_at) || "对方自报", "done", "外部执行者自报，看板没有观察到进程"]);') && ss.includes("if (tip) li.title = tip;"));
 });
+
+// ── 首页「后台任务」(合同 F;core/panel.html 的 bg-copy 段) ──
+const bgSource = panelSection("// ── bg-copy(pure;tests/panelcopytest.mjs)──", "// ── /bg-copy ──");
+const bg = new Function(bgSource + "\nreturn { bgModelName, bgWhoText, bgElapsed, bgGroupText, bgStopInfo, bgStopConfirm, bgStopResult, bgSteps, bgAutostartNote };")();
+
+test("后台任务文案:谁在做 = 模型(没有就运行时)· 显示名;已用时按分钟;组头 N 个任务 · M 个在跑", () => {
+  assert.equal(bg.bgWhoText({ label: "实现线", kind: "managed", runtime: "claude", model: "claude-opus-5" }), "Opus · 实现线");
+  assert.equal(bg.bgWhoText({ label: "外部", kind: "external", runtime: "codex", model: null }), "Codex · 外部");
+  assert.equal(bg.bgWhoText({ label: "眼前的 AI", kind: "external", runtime: null, model: null }), "外部 AI · 眼前的 AI", "外部读不到运行时就写外部 AI");
+  assert.equal(bg.bgWhoText({ label: "beta", kind: "managed", runtime: null, model: null }), "beta", "读不到的不猜");
+  assert.equal(bg.bgWhoText(null), "");
+  assert.equal(bg.bgModelName("gpt-5.5-codex"), "Codex"); assert.equal(bg.bgModelName("my-model"), "my-model"); assert.equal(bg.bgModelName(""), null);
+  const t0 = Date.parse("2026-11-13T08:00:00Z");
+  assert.equal(bg.bgElapsed("2026-11-13T08:00:00Z", t0 + 30000), "刚开始");
+  assert.equal(bg.bgElapsed("2026-11-13T08:00:00Z", t0 + 12 * 60000), "已用 12 分");
+  assert.equal(bg.bgElapsed("2026-11-13T08:00:00Z", t0 + 65 * 60000), "已用 1 小时 5 分");
+  assert.equal(bg.bgElapsed("2026-11-13T08:00:00Z", t0 + 120 * 60000), "已用 2 小时");
+  assert.equal(bg.bgElapsed(null, t0), "", "没有领取时刻就不写");
+  assert.equal(bg.bgGroupText({ total: 5, running: 2 }), "5 个任务 · 2 个在跑");
+  assert.equal(bg.bgGroupText({ total: null, running: 1 }), "1 个在跑");
+});
+
+test("后台任务文案:停止只给受管线;外部 AI 写去哪撤销;确认框说清两步;两步的结果各说一句", () => {
+  assert.deepEqual(bg.bgStopInfo({ stoppable: true, who: { kind: "managed" } }).button, true);
+  assert.deepEqual(bg.bgStopInfo({ stoppable: false, who: { kind: "external" } }), { button: false, title: "外部 AI，只能在『接入的 AI』里撤销" });
+  assert.deepEqual(bg.bgStopInfo({ stoppable: false, who: { kind: "managed" }, stop_note: "这条线有 2 个槽在跑" }), { button: false, title: "这条线有 2 个槽在跑" });
+  const c = bg.bgStopConfirm({ title: "补导出", who: { label: "实现线", kind: "managed", model: "claude-opus-5" } });
+  assert.ok(c.includes("停止「补导出」") && c.includes("「Opus · 实现线」的进程") && c.includes("收回到未开始") && c.includes("不会自己再起来"), c);
+  assert.deepEqual(bg.bgStopResult({ ok: true, steps: [{ step: "stop_slot", ok: true }, { step: "release_card", ok: true }] }), { ok: true, text: "已停下，卡已收回" });
+  assert.equal(bg.bgStopResult({ steps: [{ step: "stop_slot", ok: false, error: "x" }] }).text, "停线没成，卡没有收回：x");
+  assert.equal(bg.bgStopResult({ steps: [{ step: "stop_slot", ok: true }, { step: "release_card", ok: false, error: "y" }] }).text, "线已停，但卡没有收回：y");
+  const e = [1, 2, 3, 4, 5, 6, 7].map((n) => ({ at: "2026-11-13T08:0" + n + ":00Z", summary: "第 " + n + " 步" }));
+  assert.deepEqual(bg.bgSteps(e).map((s) => s.text), ["第 3 步", "第 4 步", "第 5 步", "第 6 步", "第 7 步"], "只看末 5 条");
+  assert.deepEqual(bg.bgSteps(null), []);
+  for (const t of [c, ...["已停下，卡已收回", "外部 AI，只能在『接入的 AI』里撤销"]]) assert.deepEqual(copyFindings(t), [], t);
+});
+
+test("建卡后自动开工:计划卡下的一句只在有线没起来时要人看;勾选看板级记住、初始不勾、apply 只在勾上时带 autostart", () => {
+  assert.equal(bg.bgAutostartNote(undefined), null, "没勾:应答里没有 autostart");
+  assert.deepEqual(bg.bgAutostartNote({ started: ["alpha", "beta"], blocked: [], already_running: [] }), { tone: "", text: "已让 2 条线开工。" });
+  assert.deepEqual(bg.bgAutostartNote({ started: ["alpha"], blocked: [{ line: "beta", reason: "座席未解禁" }] }),
+                   { tone: "warn", text: "已让 1 条线开工；线「beta」没起来：座席未解禁。" });
+  assert.equal(bg.bgAutostartNote({ error: "x" }).tone, "warn");
+  assert.ok(source.includes('{ expected_rev: plan.rev, ...(chatAuto === true ? { autostart: true } : {}) }'), "只在勾上时带 autostart:true");
+  assert.ok(source.includes('chatApi("PUT", "/api/home/prefs", { autostart: !!on })'), "勾选存到看板(数据目录),不放浏览器");
+  assert.ok(source.includes('let chatAuto = null, chatAutoBusy = false;'), "初始状态由看板给;读不到(旧版)不出勾选");
+  assert.ok(source.includes('lab.append(box, "建卡后自动开工");'));
+});
