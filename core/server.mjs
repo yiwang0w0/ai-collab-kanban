@@ -35,7 +35,7 @@ import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
 import {openConnect,isLoopback,defaultTokenDir,cardText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
 import {briefOf,briefModel,maxCharsOf} from "./brief.mjs";
-import {backgroundModel,stopVerdict,runAutostart,autostartText} from "./home-background.mjs";
+import {backgroundModel,stopVerdict,runAutostart,autostartText,quotaModel} from "./home-background.mjs";
 import {loadAttentionModel} from "./home-model.mjs";
 import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
@@ -3242,13 +3242,36 @@ function bgWhoOf(t, execs) {
   const runtime = (t.status === "in_progress" ? bgRun(t.run_id)?.runtime : null) || live?.runtime || t.last_runtime || null;
   return { label: LINE_LABEL?.[line] || line || String(worker), kind: "managed", runtime: runtime ? String(runtime) : null, model: live?.model ?? null };
 }
+/** G1 的线现况(只读进程表与现有闸):受管不受管、有没有槽在跑、额度池能不能换到座席、座席闸码。一次请求内每条线只算一次。 */
+function bgLineOf(cache) {
+  return (line) => {
+    if (cache.has(line)) return cache.get(line);
+    let v = null;
+    if (LINES.includes(line)) {
+      const managed = SUPERVISED.includes(line) && !LINE_EXTERNAL?.[line];
+      let seat = null, pool = false;
+      if (managed) { try { seat = deskStartBlocked(line)?.code ?? null; } catch { seat = null; } try { pool = !effectiveAgents(line); } catch { pool = false; } }
+      v = { managed, running: slotsOf(line).some((s) => s.proc || s.echo), pool_down: pool, seat };
+    }
+    cache.set(line, v);
+    return v;
+  };
+}
 function backgroundNow() {
   const now = Date.now();
   const { tasks, lists, faults } = attentionInputs();
   const m = briefModel({ lists, faults, tasks, now });
   const execs = new Map(connect.list().map((e) => [String(e.id), e]));
-  return backgroundModel({ tasks, attention: m.attention, attentionTotal: m.attention_total, now,
-    whoOf: (t) => bgWhoOf(t, execs), sinceOf: (t) => bgRun(t.run_id)?.started_at ?? null, stopOf: bgStopOf });
+  const attentionIds = (lists.mine || []).filter((r) => r.localId != null).map((r) => Number(r.localId));
+  return backgroundModel({ tasks, attention: m.attention, attentionTotal: m.attention_total, attentionIds, now,
+    whoOf: (t) => bgWhoOf(t, execs), sinceOf: (t) => bgRun(t.run_id)?.started_at ?? null, stopOf: bgStopOf,
+    lineOf: bgLineOf(new Map()), lineLabel: (l) => LINE_LABEL?.[l] || l,
+    sourceGate: () => process.env.BOARD_ALLOW_UNPINNED !== "1" && blessStep().state !== "done" });
+}
+/** G3 额度条:只读 GET /api/pools 那份池状态(poolState),各池各一段;不新增采集、不读任何登录目录。 */
+function quotaNow() {
+  const label = (id) => CFG.runtimes.find((r) => r.id === id)?.label || id;
+  return quotaModel({ pools: POOL_IDS.map((id) => ({ id, label: label(id), ...(poolState[id] || {}) })), now: Date.now() });
 }
 /** 「停止」= 两步,都用现有的那一份:① 停该槽 —— 与 POST /api/workers/:line/stop 同一个 workerStop(树杀进程、清运行意图、
  *  按槽名放回在途卡);② 收回这张卡 —— ① 之后这张卡若仍被同一槽位领着,再按领取方 releaseHeldBy 一次(与停线、退出回收同一函数)。
@@ -4246,6 +4269,7 @@ const server = http.createServer(async (req, res) => {
     if (p === "/api/home/background" || p.startsWith("/api/home/")) {
       if (boardRole !== "operator") return json(res, 403, { error: "首页后台任务只属于操作员", role: boardRole });
       if (m === "GET" && p === "/api/home/background") return json(res, 200, backgroundNow());
+      if (m === "GET" && p === "/api/home/quota") return json(res, 200, quotaNow());   // G3:只读
       const ms = p.match(/^\/api\/home\/background\/(\d+)\/stop$/);
       if (m === "POST" && ms) return json(res, ...(await backgroundStop(Number(ms[1]))));
       if (p === "/api/home/prefs") {

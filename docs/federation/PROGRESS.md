@@ -1416,3 +1416,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-13 公告板 v3 第 5 波(claude/board-v3-w5):首页右栏改「后台任务」(等你处理 / 运行中 / 已完成;GET /api/home/background,attention 与简报同一份),运行中带谁在做 · 已用时 · 实时进度、计划归组可折叠、展开最近 5 步、受管线卡「停止」= workerStop 停该槽 + releaseHeldBy 收回卡(外部 AI 无停止)。
 - 「按计划建卡」加「建卡后自动开工」(看板级记在 home_prefs.json,初始不勾):apply 带 autostart:true 才对计划里的受管线逐条过源码闸 / 座席 / 额度池后调 workerStart,结果进应答与 system 消息;设置里协调线一行只读显示模型与强度。
 - 新增 homebackgroundtest 5/0;受影响套件与最终提交上的完整 npm test 结果见本批回报;临时看板(假协调线 + spawn-echo)走通建卡→自动开工→运行中→停止→交付→验收。没有调用模型。阻塞:无。
+- 2026-11-13 公告板 v3 第 6 波首页侧(claude/board-v3-w6,合同 G1–G4):运行中 = 已放行、未完成、不在本人手上(面板与接口同一份),行带 holder / one_line(只读状态字段);
+  「要本人做的事」attention 加 type / verb / evidence / detail(动词按钮只带去原处理处);GET /api/home/quota + 右栏额度条(待核实不当 ok);计划组头流水线 stage;已完成一句结果。
+- homebackgroundtest 10/0、hometest、panelcopytest 扩;临时看板脚本扮演执行者截图(无头 Edge 真鼠标)。没有调用模型。阻塞:无。

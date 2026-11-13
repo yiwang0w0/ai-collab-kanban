@@ -1249,7 +1249,7 @@ test("首页右栏 = 后台任务三组(等你处理 / 运行中 / 已完成),�
   assert.ok(aside.length > 100, "右栏标成「后台任务」");
   const pos = ["data-lane=\"mine\"", "data-lane=\"running\"", "data-lane=\"done\""].map((k) => aside.indexOf(k));
   assert.ok(pos.every((p) => p > 0) && pos[0] < pos[1] && pos[1] < pos[2], "自上而下:等你处理、运行中、已完成");
-  assert.ok(aside.includes(">等你处理 <span class=\"n\" id=\"home-mine-n\">") && aside.includes(">运行中 <span class=\"n\" id=\"home-running-n\">"));
+  assert.ok(aside.includes(">要本人做的事 <span class=\"n\" id=\"home-mine-n\">") && aside.includes(">运行中 <span class=\"n\" id=\"home-running-n\">"));
   assert.ok(aside.includes('id="home-done-t" aria-expanded="false"') && aside.includes('<div class="home-list" id="home-done" hidden></div>'), "已完成默认折叠");
   // 新加的样式里不用强调色(强调色只给「等你处理」)
   const css = src.slice(src.indexOf("/* 后台任务(合同 F)"), src.indexOf("@media (prefers-reduced-motion: reduce){ .bg-fold"));
@@ -1261,4 +1261,23 @@ test("首页右栏 = 后台任务三组(等你处理 / 运行中 / 已完成),�
   assert.ok(paint.includes('.hrow[data-bg-id="${id}"] .hcard') && paint.includes("n.textContent = text;"));
   assert.ok(src.includes("bgLoadSoon();   // 后台任务"), "refresh 里重读后台任务(事件驱动,不另造事件)");
   assert.ok(src.includes('<p class="coord-seat" id="set-coordinator" hidden></p>'), "设置里协调线一行(只读)");
+});
+
+test("第 6 波(G1–G4):额度条在右栏最上;运行中用接口那份(同一判定)且组头分「排队 M」;动词按钮只带去原处理处、不发写请求;不做「全部处理」;说明收进 ⓘ", () => {
+  const aside = src.slice(src.indexOf('<aside class="home-work" id="home-work" aria-label="后台任务">'), src.indexOf("</aside>", src.indexOf('id="home-work"')));
+  assert.ok(aside.indexOf('id="bg-quota"') > 0 && aside.indexOf('id="bg-quota"') < aside.indexOf('data-lane="mine"'), "额度条在三组之上");
+  assert.ok(aside.includes('id="home-running-q" hidden'), "组头「运行中 N · 排队 M」");
+  assert.ok((aside.match(/class="bg-i" tabindex="0" title="/g) || []).length >= 2, "组头说明在 ⓘ 悬停里");
+  const fn = (name) => src.slice(src.indexOf("function " + name + "("), src.indexOf("\n}", src.indexOf("function " + name + "(")));
+  const attn = fn("bgAttnRow");
+  assert.ok(attn.length > 200 && !/fetch\(|post\(|chatApi\(/.test(attn), "要本人做的事这一行不发任何写请求");
+  assert.ok((attn.match(/openHomeItem\(item\)/g) || []).length === 2, "动词按钮与标题都带去原处理处(侧栏 / 设置里的确认照旧)");
+  assert.ok(!src.includes("全部处理"), "本波不做「全部处理」");
+  const run = fn("bgRunRow");
+  assert.ok(run.includes("bgStop(r)") && run.includes('role", "menu"'), "停止收进「其他」菜单,仍走 bgStop(先确认)");
+  assert.ok(!run.includes('item1("追加说明"'), "现有接口没有追加说明的途径,不做");
+  assert.ok(src.includes('const runItems = bgRunItems(lists.running)'), "运行中行取接口的 running[](面板与接口同源)");
+  const quota = fn("bgQuotaBar");
+  assert.ok(quota.length > 100 && !/fetch\(|post\(|chatApi\(|workerStop|setTimeout/.test(quota), "额度条纯显示");
+  assert.ok(src.includes('chatApi("GET", "/api/home/quota")'), "读 GET /api/home/quota");
 });

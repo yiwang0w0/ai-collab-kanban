@@ -1,12 +1,190 @@
-// 首页「后台任务」(合同 F):GET /api/home/background 的组装、「停止」能不能按的判定、「建卡后自动开工」的逐线走闸。
-// 本文件全是纯函数:库、时钟、进程表都由 server 注入(whoOf / sinceOf / stopOf / gateOf / start),这里不读不写。
-// 「等你处理」不另写判定:server 把助手简报那一份(core/brief.mjs 的 briefModel,底下是首页 homeLists + 线故障)传进来原样放进 attention。
+// 首页「后台任务」(合同 F)与第 6 波「看清」(合同 G1–G4):GET /api/home/background 的组装、「停止」能不能按的判定、
+// 「建卡后自动开工」的逐线走闸、GET /api/home/quota 的额度条。
+// 本文件全是纯函数:库、时钟、进程表都由 server 注入(whoOf / sinceOf / stopOf / lineOf / gateOf / start),这里不读不写。
+// 只读状态字段,不解析回报正文;判不出的一律给 null / none,不编。
+// 「要本人做的事」不另写判定:server 把助手简报那一份(core/brief.mjs 的 briefModel,底下是首页 homeLists + 线故障)传进来原样放进 attention。
 import { redactText, cut } from "./flow.mjs";
 
 export const DONE_WINDOW_MS = 24 * 3600000;   // 「已完成」= 近 24 小时内完成的
 export const DONE_MAX = 20, RUNNING_MAX = 100;
 const TITLE_MAX = 80;
 const clean = (s, max = TITLE_MAX) => cut(redactText(String(s ?? "")), max);
+
+// ── G1:运行中 = 「已放行、未完成、不在本人手上」的全部卡,面板与接口同一份 ──────────────────────────────
+export const NOTE_FRESH_MS = 15 * 60000;   // live_note 多久内算「新鲜」:超过就不当作一句实时进度
+export const ONE_LINE_CODES = ["stalled", "line_stopped", "seat_not_ready", "pool_down", "source_gate", "wip_limit",
+  "waiting_dep", "waiting_review_auto", "waiting_peer", "rearm", "unclaimed"];
+const DEP_BLOCKERS = new Set(["DEPENDENCIES_UNFINISHED", "ANCESTOR_NOT_RELEASED", "CHILDREN_UNFINISHED", "LOCK_HELD"]);
+
+/** 心跳新鲜度,与面板 hbClass 同一判据:租约过了 / 没有心跳 / 静默超过 3 分钟 = dead,超过 1 分钟 = stale。 */
+export function hbOf(t, now) {
+  if (!t || t.status !== "in_progress") return "";
+  if (t.lease_until && now > t.lease_until) return "dead";
+  if (!t.heartbeat_at) return "dead";
+  const age = (now - t.heartbeat_at) / 1000;
+  return age > 180 ? "dead" : age > 60 ? "stale" : "fresh";
+}
+const blockersOf = (t) => (Array.isArray(t?.progress_blockers) ? t.progress_blockers : []).filter((b) => b && typeof b.code === "string");
+const idsOf = (b) => (Array.isArray(b?.related_task_ids) ? b.related_task_ids : []).map(Number).filter((n) => Number.isSafeInteger(n) && n > 0);
+const depLabel = (ids) => ids.length ? "等 " + ids.slice(0, 3).map((n) => "#" + n).join("、") + (ids.length > 3 ? " 等" : "") : "等依赖";
+const oneLine = (kind, code = null, params = {}, text = null, at = null) => ({ kind, code, params, text, at });
+
+/** 这张卡算不算「运行中」:已放行、未完成、不在本人手上(attentionIds = 要本人做的事里出现的卡号)。目标卡不算。 */
+export function isRunning(t, attentionIds = new Set()) {
+  if (!t || t.archived_at || t.kind === "goal" || t.status === "done") return false;
+  if (attentionIds.has(Number(t.id))) return false;
+  if (t.status === "in_progress" || t.status === "waiting") return true;
+  if (t.status === "not_started") return !!t.released && !t.human_gate;
+  return false;
+}
+
+/**
+ * 一行的 holder 与 one_line。ctx:{ now, who(= whoOf 的结果), since(= sinceOf), lineOf(line) → 线的现况 | null,
+ * lineLabel(line) → 显示名, sourceGate() → 源码闸没过 = true }。线的现况 = { managed, running, pool_down, seat:座席闸码 | null }。
+ */
+export function holderAndLine(t, ctx = {}) {
+  const now = ctx.now ?? 0, bl = blockersOf(t), ls = t.line ? (ctx.lineOf?.(t.line) ?? null) : null;
+  const updated = t.updated_at || null;
+  if (t.status === "in_progress") {
+    const holder = { kind: "ai", label: ctx.who?.label ? String(ctx.who.label) : t.worker ? clean(t.worker, 32) : "AI", since: ctx.since ?? null };
+    if (hbOf(t, now) === "dead") {
+      if (ls?.managed && !ls.running) return { holder, one_line: oneLine("blocked", "line_stopped", { line: t.line }) };
+      return { holder, one_line: oneLine("blocked", "stalled", { heartbeat_at: t.heartbeat_at ? new Date(t.heartbeat_at).toISOString() : null }) };
+    }
+    const at = Date.parse(t.live_note_at || "");
+    if (typeof t.live_note === "string" && t.live_note.trim() && Number.isFinite(at) && now - at <= NOTE_FRESH_MS)
+      return { holder, one_line: oneLine("progress", null, {}, clean(t.live_note, 120), t.live_note_at) };
+    return { holder, one_line: oneLine("none") };
+  }
+  if (t.status === "waiting") {
+    if (t.waiting_for === "review") return { holder: { kind: "reviewer", label: "自动审阅", since: updated }, one_line: oneLine("waiting", "waiting_review_auto") };
+    if (t.waiting_for === "rearm") {
+      const kids = idsOf(bl.find((b) => b.code === "CHILDREN_UNFINISHED"));
+      return { holder: { kind: "dep", label: depLabel(kids), since: updated }, one_line: oneLine("waiting", "rearm", { ids: kids }) };
+    }
+    if (t.waiting_for === "dep") {
+      const deps = idsOf(bl.find((b) => DEP_BLOCKERS.has(b.code)));
+      return { holder: { kind: "dep", label: depLabel(deps), since: updated }, one_line: oneLine("waiting", "waiting_dep", { ids: deps }) };
+    }
+    return { holder: { kind: "dep", label: "等待中", since: updated }, one_line: oneLine("none") };
+  }
+  // 未开始、已放行:跨机等对端 → 等依赖 → 同树在途上限 → 排队(看线能不能来领)。
+  const released = t.execution_trace?.released_at || updated;
+  if (bl.some((b) => b.code === "DELEGATION_NOT_READY"))
+    return { holder: { kind: "peer", label: "对端电脑", since: released }, one_line: oneLine("waiting", "waiting_peer") };
+  const dep = bl.find((b) => DEP_BLOCKERS.has(b.code));
+  if (dep) return { holder: { kind: "dep", label: depLabel(idsOf(dep)), since: released }, one_line: oneLine("waiting", "waiting_dep", { ids: idsOf(dep) }) };
+  const holder = { kind: "queue", label: t.line ? clean(ctx.lineLabel?.(t.line) || t.line, 32) : "未指定线", since: released };
+  const wip = bl.find((b) => b.code === "ROOT_WIP_LIMIT");
+  if (wip) return { holder, one_line: oneLine("blocked", "wip_limit", { ids: idsOf(wip) }) };
+  if (bl.length) return { holder, one_line: oneLine("none") };   // 别的阻塞(次数上限、任务树…):原因在侧栏,这里不编
+  if (ls?.managed && !ls.running) {
+    if (ctx.sourceGate?.()) return { holder, one_line: oneLine("blocked", "source_gate", { line: t.line }) };
+    if (ls.seat) return { holder, one_line: oneLine("blocked", "seat_not_ready", { line: t.line, seat: String(ls.seat) }) };
+    if (ls.pool_down) return { holder, one_line: oneLine("blocked", "pool_down", { line: t.line }) };
+    return { holder, one_line: oneLine("blocked", "line_stopped", { line: t.line }) };
+  }
+  const rel = Date.parse(released || "");
+  if (Number.isFinite(rel) && rel <= now) return { holder, one_line: oneLine("waiting", "unclaimed", { minutes: Math.floor((now - rel) / 60000) }) };
+  return { holder, one_line: oneLine("none") };
+}
+/** 排队 = holder 为 queue / dep 的行(组头「排队 M」,排在后面、弱化)。 */
+export const isQueued = (r) => r?.holder?.kind === "queue" || r?.holder?.kind === "dep";
+
+// ── G2:要本人做的事 = briefModel 的 attention 原样 + type / verb / evidence / detail,不另写判定 ───────────────
+export const ATTENTION_VERB = { accept: "验收", decide: "去裁定", release: "放行", confirm: "确认", hands: "去做", fault: "查看" };
+const UNLOCKS_MAX = 5, ASK_MAX = 200;
+/** 简报条目的 kind + 卡 → type。卡上没有 ask(G5 未到)= 按 decide。 */
+export function attentionType(a, t) {
+  const hands = !!t?.ask && t.ask.needs === "hands";
+  switch (a?.kind) {
+    case "review": return "accept";
+    case "release": return "release";
+    case "stalled": case "line_fault": return "fault";
+    case "decision": return hands ? "hands" : t?.waiting_for === "confirm" ? "confirm" : "decide";
+    case "blocked": return !t ? "confirm" : hands ? "hands" : t.human_gate ? "decide" : "fault";
+    default: return hands ? "hands" : "decide";
+  }
+}
+const oneText = (v) => typeof v === "string" && v.trim() ? cut(redactText(v.replace(/\s+/g, " ").trim()), ASK_MAX) : null;
+/** 一句证据:只取结构化字段(自动审阅看过没有、方案个数、打回次数);只有自报时写「<执行者> 自报完成 · 未经复核」;没有 = null。 */
+export function evidenceOf(type, t, who) {
+  if (!t) return null;
+  const seg = [];
+  if (type === "accept") {
+    if (t.auto_review_at) seg.push("自动审阅看过,留给你验收");
+    else if (who?.label) seg.push(clean(who.label, 24) + " 自报完成 · 未经复核");
+  }
+  if ((type === "decide" || type === "confirm") && Array.isArray(t.decision_package?.options) && t.decision_package.options.length)
+    seg.push("有 " + t.decision_package.options.length + " 个方案可选");
+  const back = Number(t.handed_back) || 0;
+  if (back > 0 && ["accept", "decide", "confirm"].includes(type)) seg.push("打回过 " + back + " 次");
+  return seg.length ? seg.join(" · ") : null;
+}
+/** 解锁的下游 = blocked_by 里有本卡号的未完成卡(现有依赖关系),按卡号,≤5 条 + 总数。 */
+export function unlocksOf(t, work = []) {
+  if (!t) return { unlocks: [], unlocks_total: 0 };
+  const id = Number(t.id), out = [];
+  for (const x of work) {
+    if (!x || x.archived_at || x.status === "done" || Number(x.id) === id) continue;
+    let deps; try { deps = typeof x.blocked_by === "string" ? JSON.parse(x.blocked_by) : x.blocked_by; } catch { deps = null; }
+    if (Array.isArray(deps) && deps.map(Number).includes(id)) out.push({ id: Number(x.id), title: clean(x.subject, 60) });
+  }
+  out.sort((a, b) => a.id - b.id);
+  return { unlocks: out.slice(0, UNLOCKS_MAX), unlocks_total: out.length };
+}
+/** 来源:助手挂的卡 = posted_by。origin 是对方自报(G6),只认两个值,缺省 = null(面板不写来源措辞);quote 只跟「本人原话」走。 */
+export function sourceOf(t) {
+  const p = t?.posted_by;
+  if (!p || typeof p.label !== "string" || !p.label.trim()) return null;
+  const origin = p.origin === "operator_said" || p.origin === "ai_inferred" ? p.origin : null;
+  const quote = origin === "operator_said" ? oneText(p.quote) : null;
+  return { label: clean(p.label, 24), origin, ...(quote ? { quote } : {}) };
+}
+/** 一条 attention 加上 G2 的四个字段。work = 本板未归档的非目标卡(找下游用)。 */
+export function attentionDecor(a, t, { work = [], whoOf = () => null } = {}) {
+  const type = attentionType(a, t), ask = t?.ask && typeof t.ask === "object" ? t.ask : null;
+  const why = blockersOf(t).find((b) => b.code !== "NOT_RELEASED" && typeof b.message === "string" && b.message.trim());
+  return { ...a, type, verb: ATTENTION_VERB[type], evidence: evidenceOf(type, t, t ? whoOf(t) : null),
+           detail: { what: oneText(ask?.what) ?? (why ? clean(why.message, ASK_MAX) : null), where: oneText(ask?.where), expect: oneText(ask?.expect),
+                     ...unlocksOf(t, work), source: sourceOf(t) } };
+}
+
+// ── G4:计划组头的流水线四段 ───────────────────────────────────────────────────────────────────────────
+export const STAGES = ["decompose", "execute", "integrate", "accept", "done"];
+/**
+ * 由目标卡与它的直属子卡得出所在段:目标完成 = done;没有子卡、或拆好了还没放行 = decompose;
+ * 子卡没做完 = execute(没做完的全都在等本人验收 / 裁定时 = accept);子卡全做完而目标还没收尾 = accept。
+ * 「整合」看板没有可读的状态字段 → 从不给出(面板不画这一段)。读不到计数 = null。
+ */
+export function stageOf(goal, kids = []) {
+  if (!goal) return { stage: null, stage_detail: null };
+  const total = Number.isInteger(goal.children_total) ? goal.children_total : null, done = Number.isInteger(goal.children_done) ? goal.children_done : null;
+  const detail = total === null || done === null ? null : { done, total };
+  if (goal.status === "done") return { stage: "done", stage_detail: detail };
+  if (!detail) return { stage: null, stage_detail: null };
+  if (total === 0 || (goal.status === "not_started" && !goal.released)) return { stage: "decompose", stage_detail: detail };
+  if (done < total) {
+    const open = kids.filter((k) => k && !k.archived_at && k.status !== "done");
+    const human = open.length > 0 && open.every((k) => k.status === "waiting" && ["review", "confirm", "decision"].includes(k.waiting_for));
+    return { stage: human ? "accept" : "execute", stage_detail: detail };
+  }
+  return { stage: "accept", stage_detail: detail };
+}
+
+// ── G3:额度条(只读;只复用 GET /api/pools 那份池状态,不新增采集)───────────────────────────────────────
+/**
+ * pools = [{ id, label, exhausted_at, until }](server 的 poolState:看板只在调用被限流时记「用完」)。
+ * 看板读不到用量百分比与重置时刻:used_pct 一律 null;没记用完 = unknown(「待核实」),不当作 ok。runway 推不出 = unknown。
+ */
+export function quotaModel({ pools = [], now = 0 } = {}) {
+  return { pools: pools.map((p) => {
+    const down = !!p.exhausted_at, until = Date.parse(p.until || "");
+    return { id: String(p.id), label: clean(p.label || p.id, 24),
+             windows: [{ label: down ? "看板暂停到" : "用量", used_pct: null, resets_at: down && Number.isFinite(until) ? new Date(until).toISOString() : null }],
+             state: down ? "down" : "unknown", runway: { minutes: null, basis: "unknown" } };
+  }), generated_at: Number.isFinite(now) ? new Date(now).toISOString() : null };
+}
 
 /** 往上找所属目标(最多 10 层):{ id, title } 或 null。目标卡自己不算属于自己。 */
 export function goalOf(t, byId) {
@@ -27,25 +205,36 @@ export function goalOf(t, byId) {
  * stopOf(t) → { stoppable, reason? }。now = 毫秒。
  */
 export function backgroundModel({ tasks = [], attention = [], attentionTotal = null, now = 0,
-                                  whoOf = () => null, sinceOf = () => null, stopOf = () => ({ stoppable: false }) } = {}) {
+                                  whoOf = () => null, sinceOf = () => null, stopOf = () => ({ stoppable: false }),
+                                  lineOf = () => null, lineLabel = (l) => l, sourceGate = () => false, attentionIds = null } = {}) {
   const live = tasks.filter((t) => t && !t.archived_at);
   const byId = new Map(live.map((t) => [Number(t.id), t]));
   const work = live.filter((t) => t.kind !== "goal");
-  const running = work.filter((t) => t.status === "in_progress").map((t) => {
-    const s = stopOf(t) || {};
-    return { task_id: Number(t.id), title: clean(t.subject), goal: goalOf(t, byId), who: whoOf(t) ?? null, since: sinceOf(t) ?? null,
+  // G2:attention 原样(同一份判定)+ type / verb / evidence / detail。
+  attention = attention.map((a) => attentionDecor(a, a?.task_id != null ? byId.get(Number(a.task_id)) ?? null : null, { work, whoOf }));
+  // G1:运行中 = 已放行、未完成、不在本人手上;在跑的(ai / reviewer / peer)按开始先后在前,排队的(queue / dep)在后。
+  // attentionIds = 截到 20 条之前的全部卡号(server 从 homeLists 给);没给就用 attention 里的。
+  const attIds = new Set(attentionIds ? [...attentionIds].map(Number) : attention.filter((a) => a?.task_id != null).map((a) => Number(a.task_id)));
+  let gate; const gateOnce = () => (gate ??= !!sourceGate());
+  const running = work.filter((t) => isRunning(t, attIds)).map((t) => {
+    const busy = t.status === "in_progress", s = busy ? stopOf(t) || {} : { stoppable: false };
+    const who = busy ? whoOf(t) ?? null : null, since = busy ? sinceOf(t) ?? null : null;
+    const h = holderAndLine(t, { now, who, since, lineOf, lineLabel, sourceGate: gateOnce });
+    return { task_id: Number(t.id), title: clean(t.subject), goal: goalOf(t, byId), who, since,
              live_note: typeof t.live_note === "string" ? t.live_note : null, live_note_at: t.live_note_at ?? null,
-             stoppable: s.stoppable === true, ...(s.reason ? { stop_note: String(s.reason) } : {}) };
-  }).sort((a, b) => String(a.since || "~").localeCompare(String(b.since || "~")) || a.task_id - b.task_id);
+             stoppable: s.stoppable === true, ...(busy && s.reason ? { stop_note: String(s.reason) } : {}),
+             holder: h.holder, one_line: h.one_line };
+  }).sort((a, b) => isQueued(a) - isQueued(b) || String(a.holder.since || "~").localeCompare(String(b.holder.since || "~")) || a.task_id - b.task_id);
   const done = work.filter((t) => {
     if (t.status !== "done") return false;
     const at = Date.parse(t.updated_at);
     return Number.isFinite(at) && at <= now && now - at <= DONE_WINDOW_MS;
   }).sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || b.id - a.id).slice(0, DONE_MAX)
     .map((t) => ({ task_id: Number(t.id), title: clean(t.subject), goal: goalOf(t, byId), who: whoOf(t) ?? null,
-                   done_at: t.updated_at, handed_back: Number(t.handed_back) || 0 }));
+                   done_at: t.updated_at, handed_back: Number(t.handed_back) || 0, resolved_by: t.resolved_by ?? null }));
   // 组:出现在三组里任何一项所属的目标。total / done 用目标卡上与流转条同口径的 children_total / children_done(直属子卡);
-  // running = 「运行中」里归到这个目标的张数。目标读不到(已归档等)就不出组,行上的 goal 照旧。
+  // running = 「运行中」里归到这个目标、不在排队的张数;queued = 排队的张数;stage / stage_detail = G4 流水线四段。
+  // 目标读不到(已归档等)就不出组,行上的 goal 照旧。
   const order = [], seen = new Set();
   const note = (g) => { if (g && !seen.has(g.id)) { seen.add(g.id); order.push(g.id); } };
   for (const a of attention) if (a?.task_id != null) { const t = byId.get(Number(a.task_id)); note(t?.kind === "goal" ? null : t && goalOf(t, byId)); }
@@ -54,9 +243,11 @@ export function backgroundModel({ tasks = [], attention = [], attentionTotal = n
   const groups = order.map((id) => byId.get(id)).filter(Boolean).map((g) => ({
     goal_id: Number(g.id), title: clean(g.subject, 60),
     total: Number.isInteger(g.children_total) ? g.children_total : null, done: Number.isInteger(g.children_done) ? g.children_done : null,
-    running: running.filter((r) => r.goal?.id === Number(g.id)).length }));
+    running: running.filter((r) => r.goal?.id === Number(g.id) && !isQueued(r)).length,
+    queued: running.filter((r) => r.goal?.id === Number(g.id) && isQueued(r)).length,
+    ...stageOf(g, work.filter((k) => Number(k.parent_id) === Number(g.id))) }));
   return { attention, attention_total: attentionTotal ?? attention.length,
-           running: running.slice(0, RUNNING_MAX), running_total: running.length, done, groups,
+           running: running.slice(0, RUNNING_MAX), running_total: running.length, queued_total: running.filter(isQueued).length, done, groups,
            generated_at: Number.isFinite(now) ? new Date(now).toISOString() : null };
 }
 

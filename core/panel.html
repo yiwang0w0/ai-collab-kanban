@@ -589,6 +589,9 @@
          background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-sm);color:var(--fg);font:var(--fs-md)/1.45 var(--font)}
   .hcard:hover{background:var(--panel2);border-color:var(--dim2)}
   .home-sec[data-lane="mine"] .hcard{border-left:3px solid var(--accent)}
+  /* 要本人做的事(G2):行首动词按钮是这组唯一的强调色实心按钮;标题卡不再带左边条。 */
+  .home-sec[data-lane="mine"] .bg-attn .hcard{border-left:1px solid var(--line)}
+  .bg-verb{flex:none;align-self:flex-start;min-height:28px;padding:2px 10px;font-size:var(--fs-sm);white-space:nowrap}
   .hc-title{font-weight:500;overflow:hidden;overflow-wrap:anywhere;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical}
   .hc-meta{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--sp-3);font-size:var(--fs-sm);color:var(--dim);min-width:0}
   .hc-pc,.hc-st{min-width:0;overflow-wrap:anywhere}
@@ -1369,6 +1372,42 @@
   .coord-seat{margin:0;padding:var(--sp-2) var(--sp-4);border-top:1px solid var(--line);font-size:var(--fs-sm);color:var(--dim)}
   .coord-seat b{color:var(--fg);font-weight:500}
   .coord-seat code{font-family:var(--mono)}
+  /* 第 6 波(合同 G1–G4):额度条一行、ⓘ 悬停、运行中一行的三样与排队弱化、「其他」菜单、展开区、组头四段小点。 */
+  .bg-i{color:var(--dim2);font-weight:400;cursor:help;font-size:var(--fs-xs)}
+  .bg-i:focus-visible{outline:2px solid var(--dim);outline-offset:1px}
+  .bg-quota{display:flex;flex-wrap:wrap;align-items:baseline;gap:2px var(--sp-3);font-size:var(--fs-sm);color:var(--dim)}
+  .bq-k{font-weight:600}
+  .bq-seg{display:inline-flex;gap:var(--sp-1);font-variant-numeric:tabular-nums}
+  .bq-seg b{font-weight:500;color:var(--fg)}
+  .bq-seg[data-tone="warn"] span{color:var(--warn)}
+  .bq-seg[data-tone="quiet"] span{color:var(--dim2)}
+  .hcard.bg-run{gap:2px}
+  .home-work .hcard.bg-run,.home-work .bg-attn .hcard{padding:6px 10px;gap:2px}
+  .hc-line{display:flex;align-items:baseline;gap:0 var(--sp-1);min-width:0;font-size:var(--fs-sm);color:var(--dim);white-space:nowrap}
+  .hc-line .hc-who{flex:none;max-width:60%;overflow:hidden;text-overflow:ellipsis}
+  .hc-line .hc-note{flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:inherit}
+  .hc-line .hc-note::before{content:"· "}
+  .hcard.bg-run .hc-note[data-tone="warn"]{color:var(--warn)}
+  .hcard.bg-run[data-queued]{opacity:.72}
+  .hcard.bg-run[data-queued] .hc-title{font-weight:400}
+  .hc-ev{display:block;color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .bg-attn .hrow-main{align-items:flex-start}
+  .bg-menu-wrap{position:relative}
+  .bg-menu{position:absolute;right:0;top:100%;z-index:5;display:flex;flex-direction:column;min-width:120px;padding:var(--sp-1);
+           background:var(--panel);border:1px solid var(--line);border-radius:var(--r-sm);box-shadow:0 6px 18px rgba(0,0,0,.14)}
+  .bg-menu button{justify-content:flex-start;border:0;background:transparent;text-align:left;min-height:28px;padding:2px var(--sp-2)}
+  .bg-menu button:hover:not(:disabled){background:var(--side-hover,var(--panel2))}
+  .bg-menu button:disabled{color:var(--dim2)}
+  .hr-cost{margin:0 0 0 var(--sp-2);padding-left:var(--sp-2);font-size:var(--fs-xs);color:var(--dim);font-variant-numeric:tabular-nums}
+  .bg-detail{display:grid;grid-template-columns:auto minmax(0,1fr);gap:2px var(--sp-2);margin:0 0 0 var(--sp-2);padding-left:var(--sp-2);
+             border-left:2px solid var(--line);font-size:var(--fs-sm)}
+  .bg-detail dt{color:var(--dim)} .bg-detail dd{margin:0;overflow-wrap:anywhere}
+  .hg-stage{grid-column:1 / -1;display:flex;flex-wrap:wrap;align-items:center;gap:2px var(--sp-2);font-size:var(--fs-xs);color:var(--dim2)}
+  .hg-dot{display:inline-flex;align-items:center;gap:3px}
+  .hg-dot i{width:7px;height:7px;border-radius:50%;border:1px solid var(--dim2)}
+  .hg-dot[data-state="done"] i{background:var(--ok);border-color:var(--ok)}
+  .hg-dot[data-state="now"] i{border:2px solid var(--cc)}
+  .hg-dot[data-state="now"]{color:var(--fg)}
   @media (prefers-reduced-motion: reduce){ .bg-fold .fold-ic,.hr-acts .ic{transition:none} }
   /* 卡面「它现在在做什么」与侧栏「历史」 */
   .live-note{display:flex;align-items:baseline;gap:var(--sp-1);margin:0 0 var(--sp-2);color:var(--dim);font-size:var(--fs-sm);overflow-wrap:anywhere}
@@ -1734,16 +1773,17 @@
         </div>
       </div>
     </section>
-    <!-- 后台任务(合同 F):等你处理 / 运行中 / 已完成。「运行中」的谁在做、已用时、实时进度、停止读 GET /api/home/background。 -->
+    <!-- 后台任务(合同 F / G):额度条 / 要本人做的事 / 运行中 / 已完成。读 GET /api/home/background 与 /api/home/quota。 -->
     <aside class="home-work" id="home-work" aria-label="后台任务">
       <h2 class="bg-title" id="bg-title">后台任务</h2>
+      <div class="bg-quota" id="bg-quota" role="group" aria-label="额度" hidden></div>
       <div class="home-cols">
         <section class="home-sec" data-lane="mine" aria-labelledby="home-mine-h">
-          <h2 id="home-mine-h"><svg class="ic" aria-hidden="true"><use href="#i-wait"/></svg>等你处理 <span class="n" id="home-mine-n"></span></h2>
+          <h2 id="home-mine-h"><svg class="ic" aria-hidden="true"><use href="#i-wait"/></svg>要本人做的事 <span class="n" id="home-mine-n"></span><span class="bg-i" tabindex="0" title="只有你能做的事：验收、裁定、放行、确认、亲自动手、故障要你看。按钮带你到原来处理的地方，确认照旧">ⓘ</span></h2>
           <div class="home-list" id="home-mine"></div>
         </section>
         <section class="home-sec" data-lane="running" aria-labelledby="home-running-h">
-          <h2 id="home-running-h"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>运行中 <span class="n" id="home-running-n"></span></h2>
+          <h2 id="home-running-h"><svg class="ic" aria-hidden="true"><use href="#i-play"/></svg>运行中 <span class="n" id="home-running-n"></span><span class="n" id="home-running-q" hidden></span><span class="bg-i" tabindex="0" title="已放行、未完成、不在你手上的卡。每行：卡在谁手上 · 多久 · 一句话；排队 = 还没人领或在等依赖，排在后面。花费和最近几步在展开里">ⓘ</span></h2>
           <div class="home-list" id="home-running"></div>
         </section>
         <section class="home-sec" data-lane="done" aria-labelledby="home-done-h">
@@ -2259,7 +2299,8 @@ function bgElapsed(since, now){
 function bgGroupText(g){
   if (!g) return "";
   const run = Number(g.running) || 0;
-  return (Number.isInteger(g.total) ? g.total + " 个任务 · " : "") + run + " 个在跑";
+  const q = Number(g.queued) || 0;
+  return (Number.isInteger(g.total) ? g.total + " 个任务 · " : "") + run + " 个在跑" + (q ? " · 排队 " + q : "");
 }
 /** 停止按钮:受管线给按钮;外部 AI 不给按钮(title 写去哪撤销);其余不给,原因写进 title。 */
 function bgStopInfo(row){
@@ -2293,6 +2334,92 @@ function bgAutostartNote(a){
   if (a.error) return { tone: "warn", text: "卡已建好，自动开工没做成：" + a.error };
   if (!blocked.length) return started.length ? { tone: "", text: "已让 " + started.length + " 条线开工。" } : null;
   return { tone: "warn", text: (started.length ? "已让 " + started.length + " 条线开工；" : "") + blocked.map((b) => "线「" + b.line + "」没起来：" + b.reason).join("；") + "。" };
+}
+// 第 6 波「看清」(合同 G1–G4):运行中一行的三样、要本人做的事的动词与展开区、额度条、计划组头四段、已完成一句结果。
+// 只读 GET /api/home/background 与 /api/home/quota 的字段;读不到的写「待核实」或不显示,不编。
+/** 卡在谁手上:在跑 = 谁在做(同 bgWhoText,读不到用 holder.label);排队 = 「排队 · 线名」;其余照 holder.label。 */
+function bgHolderText(row){
+  const h = row && row.holder;
+  if (!h) return bgWhoText(row && row.who);
+  const label = String(h.label || "").trim();
+  if (h.kind === "ai") return bgWhoText(row.who) || label;
+  if (h.kind === "queue") return "排队 · " + label;
+  return label;
+}
+const BG_LINE = { stalled: "心跳中断，可能卡住了", line_stopped: "执行线没在跑", seat_not_ready: "座席未就绪，线起不来", pool_down: "额度池用尽，线起不来",
+  source_gate: "源码闸没过，线起不来", wip_limit: "同一计划在途已满，等前面的结清", waiting_dep: "依赖做完后才会被领", waiting_review_auto: "等自动审阅",
+  waiting_peer: "等对端电脑回传", rearm: "等子任务做完后重审" };
+/** 一句话:progress 用执行者报的那句;其余按 code 生成;none 或认不出的 code = 空串(不编)。 */
+function bgOneLineText(o){
+  if (!o || typeof o !== "object") return "";
+  if (o.kind === "progress") return typeof o.text === "string" ? o.text.trim() : "";
+  if (o.code === "unclaimed") { const n = Number(o.params && o.params.minutes); return Number.isFinite(n) && n >= 1 ? "已放行 " + n + " 分钟没人领" : "刚放行，还没人领"; }
+  return Object.hasOwn(BG_LINE, o.code || "") ? BG_LINE[o.code] : "";
+}
+const bgQueued = (row) => !!row && !!row.holder && (row.holder.kind === "queue" || row.holder.kind === "dep");
+/** 组头「运行中 N · 排队 M」的两个数。rows = running[];另有别的电脑的行(extra)算进在跑。 */
+function bgRunCounts(rows, extra = 0){
+  const list = Array.isArray(rows) ? rows : [], queued = list.filter(bgQueued).length;
+  return { running: list.length - queued + (Number(extra) || 0), queued };
+}
+const BG_VERB = { accept: "验收", decide: "去裁定", release: "放行", confirm: "确认", hands: "去做", fault: "查看" };
+/** 接口没给 type 的行(别的电脑、跨机事项、读到之前):按首页那一行的 action 给个动词;落不到就按裁定。 */
+function bgLocalType(item){
+  const a = item && item.action, k = item && item.kind;
+  const type = a === "executor" ? "fault" : a === "approval" ? (k === "request" ? "decide" : "confirm")
+    : a === "fleet" ? (k === "result" ? "accept" : k === "proposal" ? "confirm" : "decide") : "decide";
+  return { type, verb: BG_VERB[type] };
+}
+/** 来源措辞:origin 是对方自报,只写「称」,不写成已核实;缺 origin 只写谁挂的。 */
+function bgSourceText(s){
+  if (!s || typeof s !== "object" || !String(s.label || "").trim()) return null;
+  const label = String(s.label).trim();
+  if (s.origin === "operator_said") return label + " 称：本人原话" + (typeof s.quote === "string" && s.quote.trim() ? "「" + s.quote.trim() + "」" : "");
+  if (s.origin === "ai_inferred") return label + "：AI 推断";
+  return label + " 挂上";
+}
+/** 展开区:字段为 null 的那一行不出。 */
+function bgDetailRows(d){
+  if (!d || typeof d !== "object") return [];
+  const rows = [], put = (k, v) => { if (typeof v === "string" && v.trim()) rows.push([k, v.trim()]); };
+  put("做什么", d.what); put("实物在哪", d.where); put("期待看到什么", d.expect);
+  const un = Array.isArray(d.unlocks) ? d.unlocks : [], total = Number(d.unlocks_total) || un.length;
+  if (un.length) put("解锁的下游", un.map((u) => "#" + u.id + " " + String(u.title || "")).join("、") + (total > un.length ? " 等 " + total + " 张" : ""));
+  put("来源", bgSourceText(d.source));
+  return rows;
+}
+const BG_STAGES = [["decompose", "拆解"], ["execute", "执行"], ["integrate", "整合"], ["accept", "验收"]];
+const BG_STAGE_TIP = "流水线：拆解 · 执行 · 整合 · 验收。实心 = 已过，描边 = 现在这一段。整合没有可读的状态，读不到就不画";
+/** 计划组头的小点:stage 读不到 = null(整组不画);整合只有接口给了才画。 */
+function bgStageDots(g){
+  const stage = g && g.stage;
+  if (!stage) return null;
+  const order = BG_STAGES.map((s) => s[0]), cur = stage === "done" ? order.length : order.indexOf(stage);
+  if (cur < 0) return null;
+  const d = g.stage_detail;
+  return BG_STAGES.filter(([k]) => k !== "integrate" || stage === "integrate").map(([k, name]) => {
+    const i = order.indexOf(k);
+    const label = k === "execute" && d && Number.isInteger(d.done) && Number.isInteger(d.total) ? name + " " + d.done + "/" + d.total : name;
+    return { key: k, label, state: i < cur ? "done" : i === cur ? "now" : "todo" };
+  });
+}
+/** 额度条一段:各池各一段,不合成一个数;读不到写「待核实」。fmt = 时刻格式化。 */
+function bgQuotaSeg(p, fmt = (s) => s){
+  const label = String(p && p.label || p && p.id || "额度池");
+  const wins = (Array.isArray(p && p.windows) ? p.windows : []).filter((w) => w && Number.isFinite(w.used_pct));
+  if (p && p.state === "down") {
+    const at = (p.windows || []).map((w) => w && w.resets_at).find(Boolean);
+    return { label, text: "已用完" + (at ? " · " + fmt(at) + " 后再试" : ""), tone: "warn" };
+  }
+  if (!p || p.state === "unknown" || !wins.length) return { label, text: "待核实", tone: "quiet" };
+  const runway = p.runway && Number.isFinite(p.runway.minutes) && p.runway.basis === "projected" ? " · 约还能跑 " + p.runway.minutes + " 分" : "";
+  return { label, text: wins.map((w) => (w.label ? w.label + " " : "") + Math.round(w.used_pct) + "%").join(" · ") + runway, tone: p.state === "low" ? "warn" : "" };
+}
+/** 已完成一行的一句结果 + 打回次数(可信度徽标是第 7 波,这里不画)。 */
+function bgDoneText(d){
+  const by = d && d.resolved_by, back = Number(d && d.handed_back) || 0;
+  const head = by === "auto" ? "自动审阅通过" : by === "cascade" ? "随上级关闭" : by ? "验收通过" : "已完成";
+  return head + (back ? " · 打回 " + back + " 次" : "");
 }
 // ── /bg-copy ──
 // ── wave2-copy(pure;tests/panelcopytest.mjs)──
@@ -6018,9 +6145,10 @@ function liveNotePaint(id, t){
   }
   // 首页「运行中」那一行的实时进度(合同 F):只换这一句小字,不重画右栏。
   for (const card of document.querySelectorAll(`.hrow[data-bg-id="${id}"] .hcard`)) {
-    let n = card.querySelector(":scope > .hc-note");
+    let n = card.querySelector(".hc-note");
     if (!text) { n?.remove(); continue; }
-    if (!n) { n = homeEl("span", undefined, "hc-note"); n.title = "执行者报的进度；下一条覆盖上一条"; card.append(n); }
+    if (!n) { n = homeEl("span", undefined, "hc-note"); n.title = "执行者报的进度；下一条覆盖上一条"; (card.querySelector(".hc-line") || card).append(n); }
+    delete n.dataset.tone;
     n.textContent = text;
   }
   for (const row of document.querySelectorAll(`[data-flow-id="${id}"]`)) {
@@ -6992,8 +7120,8 @@ let homeReady = false, homeFleet = null, homeFleetError = null, homeHealth = nul
 let homeExtrasAt = 0, homeExtrasBusy = false, historyLimit = 40;
 const homeExpanded = { mine: false, running: false }, homeSig = new Map();
 // 后台任务(合同 F)的状态:读到的那份、展开 / 折叠、每张卡最近几步的缓存、停止中的卡与没停成的原因。用法见 bgLoad 一段。
-let bgData = null, bgTimer = 0, bgSeq = 0, bgDoneOpen = false;
-const bgOpen = new Set(), bgFolded = new Set(), bgStepCache = new Map(), bgBusy = new Set(), bgMsg = new Map();
+let bgData = null, bgTimer = 0, bgSeq = 0, bgDoneOpen = false, bgQuota = null, bgMenu = null;
+const bgOpen = new Set(), bgFolded = new Set(), bgStepCache = new Map(), bgBusy = new Set(), bgMsg = new Map(), bgAttnOpen = new Set();
 const homeNarrow = matchMedia("(max-width:620px)");
 
 function setView(v){
@@ -8016,15 +8144,17 @@ function homeLane(lane, items, empty){
   const list = document.getElementById("home-" + lane);
   document.getElementById("home-" + lane + "-n").textContent = items.length ? String(items.length) : "";
   // 右栏三组的组头要在 1440×900 下不滚屏都看得到:桌面每组先放 4 项,其余点「全部展开」。
-  const base = homeNarrow.matches ? 3 : 4, cap = homeExpanded[lane] || items.length <= base + 1 ? items.length : base;
+  // 第 6 波:额度条占一行、运行中多了排队行,桌面「要本人做的事」与「运行中」各先放 3 项。
+  const base = homeNarrow.matches || lane === "mine" || lane === "running" ? 3 : 4, cap = homeExpanded[lane] || items.length <= base + 1 ? items.length : base;
   // 「运行中」里同一目标的卡归成一组,组头 = 目标标题 + N 个任务 · M 个在跑;不属于目标的卡照旧一张一张排。
   const groups = lane === "running" ? homeGroups(items.slice(0, cap), homeGoalOf, homeGoalInfo) : null;
   // 「运行中」的行带后台任务的字段(谁在做、已用时、停止、展开的步骤):读到的那份与展开 / 折叠状态都进签名,变了才重画。
-  const bgSig = lane === "running" ? [items.slice(0, cap).map((item) => bgRowSig(item)), bgData?.groups || null] : null;
+  const bgSig = lane === "running" ? [items.slice(0, cap).map((item) => bgRowSig(item)), bgData?.groups || null]
+    : lane === "mine" ? [bgData?.attention || null, [...bgAttnOpen]] : null;
   homeFill(list, JSON.stringify([homeReady, cap, items, groups && groups.map((g) => [g.goal, g.goal && bgFolded.has(Number(g.goal.id))]), bgSig]), () => {
     if (!homeReady) return [homeEl("p", "正在读取…", "home-empty")];
     if (!items.length) return [homeEmpty(...empty)];
-    const one = (item) => lane === "running" ? bgRunRow(item) : homeCardMarked(item, lane);
+    const one = (item) => lane === "running" ? bgRunRow(item) : lane === "mine" ? bgAttnRow(item) : homeCardMarked(item, lane);
     const out = groups ? groups.flatMap((g) => g.goal ? [homeGroupBox(g, lane)] : g.items.map(one))
       : items.slice(0, cap).map(one);
     if (items.length > cap){
@@ -8074,13 +8204,22 @@ function homeGroupBox(g, lane){
   box.setAttribute("aria-label", "目标「" + g.goal.title + "」，" + (bgG ? nText : "子任务 " + g.goal.text + " 完成"));
   const head = homeEl("button", undefined, "hg-head"); head.type = "button"; head.title = "打开目标；细条是子任务 完成/总数（" + g.goal.text + "）";
   head.append(homeEl("span", g.goal.title, "hg-title"), homeEl("span", nText, "hg-n"), flowBar(g.goal.done, g.goal.total));
+  // G4:流水线四段小点(得不出的段不画;含义放 ⓘ 悬停)。
+  const dots = bgStageDots(bgG);
+  if (dots) {
+    const st = homeEl("span", undefined, "hg-stage"); st.title = BG_STAGE_TIP;
+    st.setAttribute("aria-label", "流水线：" + dots.map((d) => d.label + (d.state === "now" ? "，现在" : d.state === "done" ? "，已过" : "")).join("；"));
+    for (const d of dots) { const x = homeEl("span", undefined, "hg-dot"); x.dataset.state = d.state; x.append(homeEl("i"), homeEl("span", d.label)); st.append(x); }
+    st.append(homeEl("span", "ⓘ", "bg-i"));
+    head.append(st);
+  }
   head.addEventListener("click", () => openSide({ id: g.goal.id, uid: byId.get(id)?.task_uid || null, item: null }));
   const folded = bgFolded.has(id), fold = homeEl("button", undefined, "icon-btn ghost bg-fold"); fold.type = "button";
   fold.setAttribute("aria-expanded", String(!folded)); fold.setAttribute("aria-label", (folded ? "展开" : "收起") + "目标「" + g.goal.title + "」下的任务");
   fold.title = folded ? "展开这个计划的任务" : "收起这个计划的任务"; fold.innerHTML = icon("chevron");
   fold.addEventListener("click", () => { if (bgFolded.has(id)) bgFolded.delete(id); else bgFolded.add(id); renderHomeViews(); });
   const row = homeEl("div", undefined, "hg-row"); row.append(head, fold);
-  box.append(row, ...(folded ? [] : g.items.map((item) => lane === "running" ? bgRunRow(item) : homeCardMarked(item, lane))));
+  box.append(row, ...(folded ? [] : g.items.map((item) => lane === "running" ? bgRunRow(item) : lane === "mine" ? bgAttnRow(item) : homeCardMarked(item, lane))));
   return box;
 }
 // ── 后台任务(合同 F):GET /api/home/background 的那份存在 bgData。卡状态 / 心跳 / 线 / 执行者的事件到了 0.4 秒内重读一次
@@ -8089,18 +8228,41 @@ function bgLoadSoon(){ if (homeView !== "home") return; clearTimeout(bgTimer); b
 async function bgLoad(){
   const seq = ++bgSeq;
   let v = null;
-  try { v = await chatApi("GET", "/api/home/background"); } catch (e) { if (e?.status !== 404) console.error("后台任务读取失败", e); }
+  let q = null;
+  const [rb, rq] = await Promise.allSettled([chatApi("GET", "/api/home/background"), chatApi("GET", "/api/home/quota")]);
+  if (rb.status === "fulfilled") v = rb.value; else if (rb.reason?.status !== 404) console.error("后台任务读取失败", rb.reason);
+  if (rq.status === "fulfilled") q = rq.value; else if (rq.reason?.status !== 404) console.error("额度读取失败", rq.reason);
   if (seq !== bgSeq) return;
   bgData = v && Array.isArray(v.running) ? v : null;
+  bgQuota = q && Array.isArray(q.pools) ? q : rq.status === "fulfilled" ? null : (rq.reason?.status === 404 ? null : { pools: [], error: true });
   for (const id of bgOpen) bgStepsLoad(id);
   try { renderHomeViews(); } catch (e) { console.error("home view", e); }
 }
 const bgRunning = (id) => (bgData?.running || []).find((r) => r.task_id === Number(id)) || null;
+/** 「运行中」的条目(G1):读到后台任务那份就用它的 running[](面板与接口同一份判定),别的电脑的行接在后面;读到之前退回 homeLists 的。 */
+function bgRunItems(fallback){
+  if (!bgData) return fallback;
+  const local = bgData.running.map((r) => ({ key: "bg:" + r.task_id, uid: byId.get(r.task_id)?.task_uid || null, localId: r.task_id,
+    title: r.title, computer: "", state: "", tone: "", next: "", updated: String(r.holder?.since || ""), bg: r }));
+  return [...local, ...fallback.filter((x) => x.localId == null)];
+}
+/** 多久:在跑的写「已用」,在等的写「已等」;排队行的「多久」在那一句话里(已放行 n 分钟没人领)。 */
+function bgHeldFor(r, now){
+  if (!r?.holder || r.holder.kind === "queue") return "";
+  const t = bgElapsed(r.holder.since ?? r.since, now);
+  return r.holder.kind === "ai" ? t : t.startsWith("已用") ? t.replace(/^已用/, "已等") : "";
+}
+function bgCostText(id){
+  const u = usageByCard[id];
+  if (!u || !(u.rows || u.in || u.out)) return "还没有用量记录";
+  return "词元 " + usageValue(u, ["in", "out"]) + (u.cost_usd != null ? " · 费用 " + usageValue(u, "cost_usd") + usageCostMark(u) : "");
+}
 function bgRowSig(item){
-  const r = item.localId != null ? bgRunning(item.localId) : null, t = item.localId != null ? byId.get(Number(item.localId)) : null;
+  const r = item.bg || (item.localId != null ? bgRunning(item.localId) : null), t = item.localId != null ? byId.get(Number(item.localId)) : null;
   if (!r) return null;
-  return [r.who, bgElapsed(r.since, Date.now()), r.stoppable, r.stop_note || "", t?.live_note || r.live_note || "",
-          bgOpen.has(r.task_id), bgStepCache.get(r.task_id)?.sig || "", bgMsg.get(r.task_id) || "", bgBusy.has(r.task_id)];
+  const open = bgOpen.has(r.task_id);
+  return [r.who, r.holder, r.one_line, bgHeldFor(r, Date.now()), r.stoppable, r.stop_note || "", t?.live_note || "", open, bgMenu === r.task_id,
+          open ? bgStepCache.get(r.task_id)?.sig || "" : "", open ? bgCostText(r.task_id) : "", bgMsg.get(r.task_id) || "", bgBusy.has(r.task_id)];
 }
 /** 展开某张卡的最近几步:GET /api/tasks/:id/history?limit=5,同一张卡同一时刻只读一次。 */
 async function bgStepsLoad(id){
@@ -8113,36 +8275,97 @@ async function bgStepsLoad(id){
   bgStepCache.set(id, { entries, err, steps, loading: false, sig: JSON.stringify([steps, err]) });
   try { renderHomeViews(); } catch (e) { console.error("home view", e); }
 }
-/** 「运行中」一行:卡(点开侧栏)+ 行尾「展开最近几步」「停止」;展开时下面列最近 5 步。读不到后台任务那份就退回原来的卡。 */
+/** 「其他」菜单:同一时刻只开一个;点别处或按 Esc 收起。 */
+function bgMenuSet(id){ bgMenu = id; renderHomeViews(); }
+document.addEventListener("click", (e) => { if (bgMenu != null && !e.target.closest?.(".bg-menu-wrap")) bgMenuSet(null); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && bgMenu != null) bgMenuSet(null); });
+/** 「运行中」一行(G1):卡在谁手上 · 多久 · 一句话;行尾展开(花费 + 最近五步)与「其他」菜单(停止带确认)。读不到后台任务那份就退回原来的卡。 */
 function bgRunRow(item){
-  const r = item.localId != null ? bgRunning(item.localId) : null;
+  const r = item.bg || (item.localId != null ? bgRunning(item.localId) : null);
   if (!r) return homeCardMarked(item, "running");
-  const t = byId.get(r.task_id), note = t && typeof t.live_note === "string" ? t.live_note.trim() : (r.live_note || "").trim();
-  const card = homeCardMarked({ ...item, computer: [bgWhoText(r.who) || item.computer, bgElapsed(r.since, Date.now())].filter(Boolean).join(" · ") }, "running");
-  if (note) { const p = homeEl("span", note, "hc-note"); p.title = "执行者报的进度；下一条覆盖上一条"; card.append(p); }
+  const t = byId.get(r.task_id), q = bgQueued(r), now = Date.now();
+  const live = r.one_line?.kind === "progress" && t && typeof t.live_note === "string" && t.live_note.trim() ? t.live_note.trim() : "";
+  const say = live || bgOneLineText(r.one_line), who = bgHolderText(r), held = bgHeldFor(r, now);
+  const card = homeEl("button", undefined, "hcard bg-run"); card.type = "button"; card.dataset.taskId = String(r.task_id);
+  if (q) card.dataset.queued = "";
+  const top = homeEl("span", undefined, "hc-top"); top.append(homeEl("span", r.title, "hc-title"));
+  // 一行三样:卡在谁手上 · 多久 · 一句话(窄了截断,全文在 title 与读屏文字里)。
+  const line = homeEl("span", undefined, "hc-line"); line.append(homeEl("span", [who, held].filter(Boolean).join(" · "), "hc-who"));
+  if (say) { const p = homeEl("span", say, "hc-note"); if (r.one_line?.kind === "blocked") p.dataset.tone = "warn"; line.append(p); }
+  line.title = [who, held, say].filter(Boolean).join(" · ");
+  card.append(top, line);
+  card.setAttribute("aria-label", [r.title, who, held, say].filter(Boolean).join("，"));
+  card.addEventListener("click", () => openHomeItem(item));
   const row = homeEl("div", undefined, "hrow"); row.dataset.bgId = String(r.task_id);
   const main = homeEl("div", undefined, "hrow-main"), acts = homeEl("div", undefined, "hr-acts");
   const open = bgOpen.has(r.task_id), ex = homeEl("button", undefined, "icon-btn ghost"); ex.type = "button"; ex.dataset.act = "steps";
-  ex.setAttribute("aria-expanded", String(open)); ex.setAttribute("aria-label", (open ? "收起" : "展开") + "「" + r.title + "」最近几步");
-  ex.title = open ? "收起最近几步" : "展开：这张卡最近几步（领取、开始、交付、打回…）"; ex.innerHTML = icon("chevron");
+  ex.setAttribute("aria-expanded", String(open)); ex.setAttribute("aria-label", (open ? "收起" : "展开") + "「" + r.title + "」的花费与最近几步");
+  ex.title = open ? "收起" : "展开：花费与最近五步"; ex.innerHTML = icon("chevron");
   ex.addEventListener("click", () => { if (bgOpen.has(r.task_id)) bgOpen.delete(r.task_id); else { bgOpen.add(r.task_id); bgStepsLoad(r.task_id); } renderHomeViews(); });
-  acts.append(ex);
-  const stop = bgStopInfo(r);
-  if (stop.button) {
-    const b = homeEl("button", undefined, "icon-btn ghost"); b.type = "button"; b.dataset.act = "stop"; b.title = stop.title;
-    b.setAttribute("aria-label", "停止「" + r.title + "」"); b.innerHTML = icon("stop"); b.disabled = bgBusy.has(r.task_id);
-    b.addEventListener("click", () => bgStop(r));
-    acts.append(b);
-  } else if (stop.title) card.title = stop.title;
+  // 「其他」菜单:停止(受管线、带确认,沿用 F);停不了的写原因。追加说明:现有接口没有给在途卡追加说明的途径,不做。
+  const wrap = homeEl("div", undefined, "bg-menu-wrap"), more = homeEl("button", undefined, "icon-btn ghost"); more.type = "button"; more.dataset.act = "more";
+  const menuOpen = bgMenu === r.task_id;
+  more.setAttribute("aria-haspopup", "menu"); more.setAttribute("aria-expanded", String(menuOpen)); more.setAttribute("aria-label", "「" + r.title + "」的其他操作");
+  more.title = "其他"; more.innerHTML = icon("menu");
+  more.addEventListener("click", () => bgMenuSet(menuOpen ? null : r.task_id));
+  wrap.append(more);
+  if (menuOpen) {
+    const menu = homeEl("div", undefined, "bg-menu"); menu.setAttribute("role", "menu");
+    const item1 = (label, fn, tip, disabled = false) => { const b = homeEl("button", label); b.type = "button"; b.setAttribute("role", "menuitem");
+      if (tip) b.title = tip; b.disabled = disabled; if (fn) b.addEventListener("click", () => { bgMenuSet(null); fn(); }); menu.append(b); };
+    item1("打开卡片", () => openHomeItem(item));
+    if (r.holder?.kind === "ai") {
+      const stop = bgStopInfo(r);
+      if (stop.button) item1("停止", () => bgStop(r), stop.title, bgBusy.has(r.task_id));
+      else item1("停止", null, stop.title || "这张卡停不了", true);
+    }
+    wrap.append(menu);
+  }
+  acts.append(ex, wrap);
   main.append(card, acts); row.append(main);
   if (bgMsg.has(r.task_id)) row.append(homeEl("p", bgMsg.get(r.task_id), "hr-msg"));
   if (open) {
+    row.append(homeEl("p", "花费：" + bgCostText(r.task_id), "hr-cost"));
     const c = bgStepCache.get(r.task_id), ol = homeEl("ol", undefined, "hr-steps");
     if (c?.err) ol.append(homeEl("li", "读不到历史：" + c.err));
     else if (!c?.steps) ol.append(homeEl("li", "正在读取…"));
     else if (!c.steps.length) ol.append(homeEl("li", "还没有记录"));
     else for (const s of c.steps) { const li = homeEl("li"), tm = homeEl("time", hhmm(s.at)); tm.dateTime = s.at; li.append(tm, homeEl("span", s.text)); ol.append(li); }
     row.append(ol);
+  }
+  return row;
+}
+/** 「要本人做的事」一行(G2):动词按钮 + 标题 + 一句证据;展开才有 做什么 / 实物在哪 / 期待看到什么 / 解锁的下游 / 来源。
+ *  动词按钮与标题都带到这件事原来处理的地方(侧栏的裁定 / 放行核对区、设置里的待你批准),那里的接口与确认框照旧;本行不发任何写请求。 */
+function bgAttnRow(item){
+  const a = item.localId != null ? (bgData?.attention || []).find((x) => x.task_id === Number(item.localId) && x.type) : null;
+  const { type, verb } = a ? { type: a.type, verb: a.verb || BG_VERB[a.type] } : bgLocalType(item);
+  const ev = a ? a.evidence : item.state || null, rows = a ? bgDetailRows(a.detail) : [];
+  const row = homeEl("div", undefined, "hrow bg-attn"); row.dataset.type = type;
+  if (item.localId != null) row.dataset.taskId = String(item.localId);
+  const main = homeEl("div", undefined, "hrow-main");
+  const go = homeEl("button", verb || "查看", "pri bg-verb"); go.type = "button"; go.dataset.type = type;
+  go.setAttribute("aria-label", (verb || "查看") + "「" + item.title + "」");
+  go.addEventListener("click", () => openHomeItem(item));
+  const card = homeEl("button", undefined, "hcard"); card.type = "button";
+  card.append(homeEl("span", item.title, "hc-title" + (item.fullTitle ? " hc-full" : "")));
+  if (ev) card.append(homeEl("span", ev, "hc-ev"));
+  card.setAttribute("aria-label", [item.title, ev].filter(Boolean).join("，"));
+  card.addEventListener("click", () => openHomeItem(item));
+  main.append(go, card);
+  const key = item.key, open = bgAttnOpen.has(key);
+  if (rows.length) {
+    const acts = homeEl("div", undefined, "hr-acts"), ex = homeEl("button", undefined, "icon-btn ghost"); ex.type = "button"; ex.dataset.act = "detail";
+    ex.setAttribute("aria-expanded", String(open)); ex.setAttribute("aria-label", (open ? "收起" : "展开") + "「" + item.title + "」的细节");
+    ex.title = open ? "收起" : "展开：做什么、实物在哪、期待看到什么、解锁的下游、来源"; ex.innerHTML = icon("chevron");
+    ex.addEventListener("click", () => { if (bgAttnOpen.has(key)) bgAttnOpen.delete(key); else bgAttnOpen.add(key); renderHomeViews(); });
+    acts.append(ex); main.append(acts);
+  }
+  row.append(main);
+  if (open && rows.length) {
+    const dl = homeEl("dl", undefined, "bg-detail");
+    for (const [k, v] of rows) dl.append(homeEl("dt", k), homeEl("dd", v));
+    row.append(dl);
   }
   return row;
 }
@@ -8160,6 +8383,27 @@ async function bgStop(r){
   if (text) bgMsg.set(r.task_id, text);
   await Promise.allSettled([refresh(), bgLoad()]);
 }
+/** 额度条(G3):各池各一段,不合成一个数;读不到写「待核实」。纯显示,不触发任何动作。接口不在(旧版看板)整条不出。 */
+function bgQuotaBar(){
+  const bar = document.getElementById("bg-quota");
+  if (!bar) return;
+  bar.hidden = !bgQuota;
+  homeFill(bar, JSON.stringify(bgQuota), () => {
+    if (!bgQuota) return [];
+    const out = [homeEl("span", "额度", "bq-k")];
+    if (bgQuota.error) out.push(homeEl("span", "暂时读不到", "bq-seg"));
+    for (const p of bgQuota.pools) {
+      const seg = bgQuotaSeg(p, (iso) => hhmm(iso)), el = homeEl("span", undefined, "bq-seg");
+      if (seg.tone) el.dataset.tone = seg.tone;
+      el.append(homeEl("b", seg.label), homeEl("span", seg.text));
+      out.push(el);
+    }
+    const i = homeEl("span", "ⓘ", "bg-i"); i.tabIndex = 0;
+    i.title = "只显示看板已有的额度池状态：调用被限流时记「已用完」，暂停到复查时刻。用量百分比和还能跑多久看板读不到，写「待核实」。这里不会因此停线或改派";
+    out.push(i);
+    return out;
+  });
+}
 /** 「已完成」:默认折叠;近 24 小时、最多 20 条(服务端截好);点行打开侧栏。 */
 function bgDoneLane(){
   const rows = bgData?.done || [], list = document.getElementById("home-done"), t = document.getElementById("home-done-t");
@@ -8169,7 +8413,7 @@ function bgDoneLane(){
     if (!bgDoneOpen) return [];
     if (!rows.length) return [homeEmpty("近 24 小时没有完成的任务", "更早的在「历史」里。", "history")];
     return rows.map((d) => homeCardMarked({ key: "done:" + d.task_id, localId: d.task_id, uid: byId.get(d.task_id)?.task_uid || null,
-      title: d.title, computer: bgWhoText(d.who) || homeName(homeLocalName(), "本机"), state: d.handed_back ? "完成 · 打回过 " + d.handed_back + " 次" : "完成",
+      title: d.title, computer: bgWhoText(d.who) || homeName(homeLocalName(), "本机"), state: bgDoneText(d),
       next: localTime(d.done_at), tone: "", updated: d.done_at }, "done"));
   });
 }
@@ -8282,11 +8526,16 @@ function renderHomeViews(){
     });
     effHomeLine();
     homeLane("mine", lists.mine, ["没有需要你处理的事", "交付和提问到了会出现在这里。"]);
-    homeLane("running", lists.running, ["没有运行中的任务", "排队中的任务在「全部任务」里。", "play"]);
+    const runItems = bgRunItems(lists.running), runN = bgData ? bgRunCounts(bgData.running, runItems.length - bgData.running.length) : { running: runItems.length, queued: 0 };
+    homeLane("running", runItems, ["没有运行中的任务", "已放行的卡会出现在这里。", "play"]);
+    // 组头「运行中 N · 排队 M」:排队的另计。
+    document.getElementById("home-running-n").textContent = homeReady && (runN.running || runN.queued) ? String(runN.running) : "";
+    const qn = document.getElementById("home-running-q"); qn.hidden = !homeReady || !runN.queued; qn.textContent = runN.queued ? "· 排队 " + runN.queued : "";
+    bgQuotaBar();
     bgDoneLane();
     // 手机顶部一行:三组的件数。有待处理的才用强调色。
     const sum = document.getElementById("home-work-toggle");
-    document.getElementById("home-work-sum").textContent = homeReady ? "等你处理 " + lists.mine.length + " · 运行中 " + lists.running.length +
+    document.getElementById("home-work-sum").textContent = homeReady ? "要本人做的事 " + lists.mine.length + " · 运行中 " + runN.running + (runN.queued ? " · 排队 " + runN.queued : "") +
       (bgData?.done?.length ? " · 已完成 " + bgData.done.length : "") : "正在读取…";
     if (homeReady && lists.mine.length) sum.dataset.need = ""; else delete sum.dataset.need;
     renderChat();

@@ -13,7 +13,8 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
-import { backgroundModel, stopVerdict, runAutostart, autostartText, goalOf, DONE_MAX } from "../core/home-background.mjs";
+import { backgroundModel, stopVerdict, runAutostart, autostartText, goalOf, DONE_MAX, holderAndLine, isRunning, attentionDecor, attentionType,
+         stageOf, quotaModel, unlocksOf, ONE_LINE_CODES, ATTENTION_VERB, NOTE_FRESH_MS } from "../core/home-background.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const FAKE = join(ROOT, "tests", "helpers", "fake-coordinator-cli.mjs");
@@ -24,9 +25,9 @@ const iso = (minAgo) => new Date(NOW - minAgo * 60000).toISOString();
 test("三组:运行中 = 执行中的非目标卡(按领取先后);已完成 = 24 小时内、最多 20 条、新的在前;归档的不算", () => {
   const tasks = [
     { id: 1, kind: "goal", subject: "计划甲", status: "in_progress", children_total: 3, children_done: 1 },
-    { id: 2, kind: "task", parent_id: 1, subject: "子一", status: "in_progress", live_note: "读第二章", live_note_at: iso(1), updated_at: iso(2) },
+    { id: 2, kind: "task", parent_id: 1, subject: "子一", status: "in_progress", live_note: "读第二章", live_note_at: iso(1), updated_at: iso(2), heartbeat_at: NOW - 10000 },
     { id: 3, kind: "task", parent_id: 1, subject: "子二", status: "done", updated_at: iso(30), handed_back: 2 },
-    { id: 4, kind: "task", subject: "散卡", status: "in_progress", updated_at: iso(5) },
+    { id: 4, kind: "task", subject: "散卡", status: "in_progress", updated_at: iso(5), heartbeat_at: NOW - 10000 },
     { id: 5, kind: "task", subject: "昨天的", status: "done", updated_at: iso(25 * 60) },
     { id: 6, kind: "task", subject: "归档的", status: "in_progress", archived_at: iso(1) },
     { id: 7, kind: "task", subject: "等验收", status: "waiting", waiting_for: "review" },
@@ -37,11 +38,14 @@ test("三组:运行中 = 执行中的非目标卡(按领取先后);已完成 = 2
     stopOf: (t) => t.id === 2 ? { stoppable: true } : { stoppable: false, reason: "外部" } });
   assert.deepEqual(m.running.map((r) => r.task_id), [4, 2], "先领的在前");
   assert.deepEqual(m.running.find((r) => r.task_id === 2), { task_id: 2, title: "子一", goal: { id: 1, title: "计划甲" },
-    who: { label: "L2", kind: "managed", runtime: "claude", model: null }, since: iso(10), live_note: "读第二章", live_note_at: iso(1), stoppable: true });
+    who: { label: "L2", kind: "managed", runtime: "claude", model: null }, since: iso(10), live_note: "读第二章", live_note_at: iso(1), stoppable: true,
+    holder: { kind: "ai", label: "L2", since: iso(10) }, one_line: { kind: "progress", code: null, params: {}, text: "读第二章", at: iso(1) } });
   assert.equal(m.running.find((r) => r.task_id === 4).stop_note, "外部");
   assert.deepEqual(m.done.map((d) => [d.task_id, d.handed_back, d.done_at]), [[3, 2, iso(30)]], "超过 24 小时的不进");
-  assert.deepEqual(m.groups, [{ goal_id: 1, title: "计划甲", total: 3, done: 1, running: 1 }], "组头:N 个任务 · M 个在跑");
-  assert.equal(m.attention_total, 1); assert.equal(m.running_total, 2);
+  assert.deepEqual(m.groups, [{ goal_id: 1, title: "计划甲", total: 3, done: 1, running: 1, queued: 0, stage: "execute", stage_detail: { done: 1, total: 3 } }], "组头:N 个任务 · M 个在跑 · 四段");
+  assert.equal(m.done[0].resolved_by, null, "已完成行带 resolved_by(读不到 = null)");
+  assert.equal(m.attention_total, 1); assert.equal(m.running_total, 2); assert.equal(m.queued_total, 0);
+  assert.deepEqual([m.attention[0].type, m.attention[0].verb], ["accept", "验收"], "attention 原样 + type / verb");
   const many = Array.from({ length: 30 }, (_, i) => ({ id: 100 + i, kind: "task", subject: "d" + i, status: "done", updated_at: iso(i) }));
   const d = backgroundModel({ tasks: many, now: NOW }).done;
   assert.equal(d.length, DONE_MAX); assert.equal(d[0].task_id, 100, "最近完成的在前");
@@ -80,6 +84,125 @@ test("自动开工逐线走闸:外部线不动、不是受管线 / 在跑 / 闸�
   assert.equal(autostartText({ started: ["alpha", "b2"], blocked: [{ line: "x", reason: "座席未解禁" }], already_running: [] }, (l) => ({ alpha: "开发" })[l]),
                "已让 2 条线开工(「开发」、「b2」);线「x」没起来:座席未解禁。");
   assert.equal(autostartText({ started: [], blocked: [], already_running: ["run"] }), "没有线开工;「run」本来就在跑。");
+});
+
+// ── 第 6 波「看清」(合同 G1–G4)纯函数 ─────────────────────────────────────────────────────────────────
+const fresh = { heartbeat_at: NOW - 10000 };
+const LS = { up: { managed: true, running: true, pool_down: false, seat: null }, down: { managed: true, running: false, pool_down: false, seat: null },
+             seat: { managed: true, running: false, pool_down: false, seat: "SEAT_LOCKED" }, pool: { managed: true, running: false, pool_down: true, seat: null } };
+const hl = (t, o = {}) => holderAndLine({ updated_at: iso(7), ...t }, { now: NOW, lineOf: (l) => LS[l] ?? null, lineLabel: (l) => "线" + l, ...o });
+
+test("G1 运行中判定:已放行、未完成、不在本人手上;未放行 / 人工闸 / 目标 / 完成 / 在 attention 里的都不算", () => {
+  const att = new Set([9]);
+  assert.equal(isRunning({ id: 1, status: "in_progress" }, att), true);
+  assert.equal(isRunning({ id: 2, status: "waiting", waiting_for: "review" }, att), true, "不在 attention 的等待 = 机器在处理");
+  assert.equal(isRunning({ id: 3, status: "not_started", released: 1 }, att), true);
+  assert.equal(isRunning({ id: 4, status: "not_started", released: 0 }, att), false);
+  assert.equal(isRunning({ id: 5, status: "not_started", released: 1, human_gate: 1 }, att), false);
+  assert.equal(isRunning({ id: 6, kind: "goal", status: "in_progress" }, att), false);
+  assert.equal(isRunning({ id: 7, status: "done" }, att), false);
+  assert.equal(isRunning({ id: 9, status: "waiting", waiting_for: "review" }, att), false, "在本人手上");
+  assert.equal(isRunning({ id: 8, status: "in_progress", archived_at: iso(1) }, att), false);
+});
+
+test("G1 holder 各 kind 与 one_line 各 code:只读状态字段,判不出 = none", () => {
+  const codes = new Set();
+  const seen = (r) => { if (r.one_line.code) codes.add(r.one_line.code); return r; };
+  // ai:progress(新鲜的 live_note)/ 过期 live_note = none / 心跳中断 = stalled / 心跳中断且线没在跑 = line_stopped
+  let r = seen(hl({ status: "in_progress", line: "up", worker: "up", live_note: "跑测试", live_note_at: iso(2), ...fresh }, { who: { label: "开发" }, since: iso(9) }));
+  assert.deepEqual(r, { holder: { kind: "ai", label: "开发", since: iso(9) }, one_line: { kind: "progress", code: null, params: {}, text: "跑测试", at: iso(2) } });
+  r = hl({ status: "in_progress", line: "up", live_note: "旧的", live_note_at: new Date(NOW - NOTE_FRESH_MS - 1000).toISOString(), ...fresh });
+  assert.deepEqual(r.one_line, { kind: "none", code: null, params: {}, text: null, at: null }, "过期的进度不当实时进度");
+  r = seen(hl({ status: "in_progress", line: "up", heartbeat_at: NOW - 200000 }));
+  assert.deepEqual([r.one_line.kind, r.one_line.code], ["blocked", "stalled"]);
+  r = seen(hl({ status: "in_progress", line: "down", heartbeat_at: NOW - 200000 }));
+  assert.equal(r.one_line.code, "line_stopped");
+  // reviewer / dep(rearm、waiting_dep)/ peer
+  r = seen(hl({ status: "waiting", waiting_for: "review" }));
+  assert.deepEqual([r.holder, r.one_line.code], [{ kind: "reviewer", label: "自动审阅", since: iso(7) }, "waiting_review_auto"]);
+  r = seen(hl({ status: "waiting", waiting_for: "rearm", progress_blockers: [{ code: "CHILDREN_UNFINISHED", related_task_ids: [12, 13] }] }));
+  assert.deepEqual([r.holder.kind, r.holder.label, r.one_line.code, r.one_line.params], ["dep", "等 #12、#13", "rearm", { ids: [12, 13] }]);
+  r = seen(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "DEPENDENCIES_UNFINISHED", related_task_ids: [12] }] }));
+  assert.deepEqual([r.holder.kind, r.holder.label, r.one_line.code], ["dep", "等 #12", "waiting_dep"]);
+  r = seen(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "DELEGATION_NOT_READY" }] }));
+  assert.deepEqual([r.holder.kind, r.one_line.code], ["peer", "waiting_peer"]);
+  // queue:同树在途上限 / 源码闸 / 座席 / 额度池 / 线停 / 没人领(n 分钟)/ 别的阻塞 = none
+  r = seen(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "ROOT_WIP_LIMIT", related_task_ids: [3] }] }));
+  assert.deepEqual([r.holder.kind, r.one_line.kind, r.one_line.code], ["queue", "blocked", "wip_limit"]);
+  r = seen(hl({ status: "not_started", released: 1, line: "down" }, { sourceGate: () => true }));
+  assert.equal(r.one_line.code, "source_gate", "线没在跑时,源码闸先说");
+  assert.equal(seen(hl({ status: "not_started", released: 1, line: "seat" })).one_line.code, "seat_not_ready");
+  assert.equal(seen(hl({ status: "not_started", released: 1, line: "pool" })).one_line.code, "pool_down");
+  assert.equal(hl({ status: "not_started", released: 1, line: "down" }).one_line.code, "line_stopped");
+  r = seen(hl({ status: "not_started", released: 1, line: "up", execution_trace: { released_at: iso(12) } }));
+  assert.deepEqual([r.holder, r.one_line], [{ kind: "queue", label: "线up", since: iso(12) }, { kind: "waiting", code: "unclaimed", params: { minutes: 12 }, text: null, at: null }]);
+  assert.equal(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "ATTEMPT_LIMIT" }] }).one_line.kind, "none", "别的阻塞不编原因");
+  assert.equal(hl({ status: "not_started", released: 1, line: "up" }, { sourceGate: () => true }).one_line.code, "unclaimed", "线在跑就不看源码闸");
+  assert.deepEqual([...codes].sort(), [...ONE_LINE_CODES].sort(), "每个 code 至少一例");
+  // 整份应答:排队的在后,组里 running 只数在跑的、queued 数排队的
+  const m = backgroundModel({ now: NOW, tasks: [
+    { id: 1, kind: "goal", subject: "G", status: "in_progress", released: 1, children_total: 2, children_done: 0 },
+    { id: 2, parent_id: 1, subject: "排队", status: "not_started", released: 1, line: "up", updated_at: iso(30) },
+    { id: 3, parent_id: 1, subject: "在跑", status: "in_progress", line: "up", ...fresh, updated_at: iso(1) }], lineOf: (l) => LS[l] });
+  assert.deepEqual(m.running.map((x) => [x.task_id, x.holder.kind]), [[3, "ai"], [2, "queue"]]);
+  assert.deepEqual([m.groups[0].running, m.groups[0].queued, m.queued_total], [1, 1, 1]);
+  const cut = backgroundModel({ now: NOW, attentionIds: [2], tasks: [{ id: 2, subject: "x", status: "not_started", released: 1 }] });
+  assert.equal(cut.running.length, 0, "attention 截到 20 条之外的卡也不进运行中(server 传全量卡号)");
+});
+
+test("G2 attention:各 type 与动词、证据只取结构化字段、解锁的下游、来源措辞所需字段;缺 ask 按 decide", () => {
+  const work = [
+    { id: 20, subject: "下游甲", status: "not_started", blocked_by: "[10]" }, { id: 21, subject: "下游乙", status: "not_started", blocked_by: "[10,11]" },
+    { id: 22, subject: "完成的下游", status: "done", blocked_by: "[10]" }, { id: 23, subject: "坏字段", status: "not_started", blocked_by: "{" }];
+  const who = () => ({ label: "实现线" });
+  const D = (a, t) => attentionDecor(a, t, { work, whoOf: who });
+  const acc = D({ kind: "review", task_id: 10, title: "交付" }, { id: 10, status: "waiting", waiting_for: "review", handed_back: 2 });
+  assert.deepEqual([acc.type, acc.verb, acc.evidence], ["accept", "验收", "实现线 自报完成 · 未经复核 · 打回过 2 次"]);
+  assert.deepEqual([acc.detail.unlocks, acc.detail.unlocks_total], [[{ id: 20, title: "下游甲" }, { id: 21, title: "下游乙" }], 2], "完成的、字段坏的不算下游");
+  assert.equal(D({ kind: "review", task_id: 10 }, { id: 10, status: "waiting", waiting_for: "review", auto_review_at: iso(1) }).evidence, "自动审阅看过,留给你验收");
+  const dec = D({ kind: "decision", task_id: 11 }, { id: 11, status: "waiting", waiting_for: "decision" });
+  assert.deepEqual([dec.type, dec.verb, dec.evidence, dec.detail.what, dec.detail.source], ["decide", "去裁定", null, null, null], "没有 ask = decide;没证据 = null");
+  const hands = D({ kind: "decision", task_id: 12 }, { id: 12, status: "waiting", waiting_for: "decision",
+    ask: { needs: "hands", what: "插上\n测试机", where: "C:\\Users\\you\\box", expect: "灯亮" } });
+  assert.deepEqual([hands.type, hands.verb, hands.detail.what, hands.detail.expect], ["hands", "去做", "插上 测试机", "灯亮"]);
+  assert.ok(!hands.detail.where.includes("Users\\you"), "where 过脱敏:" + hands.detail.where);
+  const conf = D({ kind: "decision", task_id: 13 }, { id: 13, status: "waiting", waiting_for: "confirm", decision_package: { options: [1, 2, 3] } });
+  assert.deepEqual([conf.type, conf.verb, conf.evidence], ["confirm", "确认", "有 3 个方案可选"]);
+  const rel = D({ kind: "release", task_id: 14 }, { id: 14, status: "not_started", posted_by: { label: "助手甲", origin: "operator_said", quote: "明天前\n改好" } });
+  assert.deepEqual([rel.type, rel.verb, rel.detail.source], ["release", "放行", { label: "助手甲", origin: "operator_said", quote: "明天前 改好" }]);
+  assert.deepEqual(D({ kind: "release", task_id: 15 }, { id: 15, posted_by: { label: "助手甲" } }).detail.source, { label: "助手甲", origin: null }, "缺 origin = null,面板不写来源措辞");
+  assert.deepEqual(D({ kind: "release", task_id: 15 }, { id: 15, posted_by: { label: "助手甲", origin: "made_up", quote: "x" } }).detail.source, { label: "助手甲", origin: null }, "认不出的 origin 不认");
+  assert.equal(D({ kind: "release", task_id: 15 }, { id: 15, posted_by: { label: "助手甲", origin: "ai_inferred", quote: "x" } }).detail.source.quote, undefined, "原话只跟本人原话走");
+  for (const k of ["stalled", "line_fault"]) assert.deepEqual([D({ kind: k, title: "x" }, null).type, D({ kind: k }, null).verb], ["fault", "查看"]);
+  assert.equal(D({ kind: "blocked" }, null).type, "confirm", "逾期锁这类不落在卡上的 = 确认");
+  const blk = D({ kind: "blocked", task_id: 16 }, { id: 16, status: "waiting", waiting_for: "dep", progress_blockers: [{ code: "BROKEN_DEPENDENCIES", message: "依赖字段损坏" }] });
+  assert.deepEqual([blk.type, blk.detail.what], ["fault", "依赖字段损坏"], "受阻卡 = 故障要你看,what 用服务端的原因");
+  assert.equal(D({ kind: "blocked", task_id: 17 }, { id: 17, human_gate: 1 }).type, "decide");
+  assert.equal(attentionType({ kind: "other" }, null), "decide");
+  assert.deepEqual(Object.keys(ATTENTION_VERB).sort(), ["accept", "confirm", "decide", "fault", "hands", "release"]);
+  assert.equal(unlocksOf({ id: 1 }, Array.from({ length: 8 }, (_, i) => ({ id: 30 + i, subject: "d", status: "not_started", blocked_by: [1] }))).unlocks.length, 5, "≤5 条");
+});
+
+test("G4 stage:由目标与直属子卡的状态得出;整合从不给出;读不到 = null", () => {
+  const g = (o) => ({ id: 1, kind: "goal", status: "in_progress", released: 1, children_total: 3, children_done: 1, ...o });
+  assert.deepEqual(stageOf(g({ children_total: 0, children_done: 0 })), { stage: "decompose", stage_detail: { done: 0, total: 0 } });
+  assert.equal(stageOf(g({ status: "not_started", released: 0 })).stage, "decompose", "拆好了还没放行");
+  assert.deepEqual(stageOf(g({}), [{ status: "in_progress" }, { status: "done" }, { status: "not_started" }]), { stage: "execute", stage_detail: { done: 1, total: 3 } });
+  assert.equal(stageOf(g({}), [{ status: "waiting", waiting_for: "review" }, { status: "done" }, { status: "waiting", waiting_for: "decision" }]).stage, "accept");
+  assert.equal(stageOf(g({ children_done: 3 })).stage, "accept", "子卡全完、目标没收尾");
+  assert.equal(stageOf(g({ status: "done", children_done: 3 })).stage, "done");
+  assert.deepEqual(stageOf(g({ children_total: undefined })), { stage: null, stage_detail: null });
+  assert.deepEqual(stageOf(null), { stage: null, stage_detail: null });
+});
+
+test("G3 quota:各池各一段;没记用完 = unknown(待核实)不当 ok;used_pct 与 runway 一律未知", () => {
+  const q = quotaModel({ now: NOW, pools: [{ id: "claude", label: "Claude", exhausted_at: null, until: null },
+    { id: "codex", label: "Codex", exhausted_at: iso(10), until: iso(-290) }, { id: "x" }] });
+  assert.deepEqual(q.pools[0], { id: "claude", label: "Claude", windows: [{ label: "用量", used_pct: null, resets_at: null }], state: "unknown", runway: { minutes: null, basis: "unknown" } });
+  assert.deepEqual([q.pools[1].state, q.pools[1].windows[0]], ["down", { label: "看板暂停到", used_pct: null, resets_at: iso(-290) }]);
+  assert.deepEqual([q.pools[2].label, q.pools[2].state], ["x", "unknown"], "没有显示名用 id");
+  assert.equal(q.generated_at, new Date(NOW).toISOString());
+  assert.ok(!("total" in q) && !("used_pct" in q), "不合成一个数");
 });
 
 // ── 真看板 ─────────────────────────────────────────────────────────────────────
@@ -178,7 +301,12 @@ test("真看板:勾选记在数据目录;未勾选不起线;勾上后起 alpha�
     let bg = (await b.api("GET", "/api/home/background", O)).body;
     assert.ok(bg.attention.some((x) => x.kind === "review" && x.task_id === a1), "交付了 → 等你处理(与简报同一份判定)");
     const brief = (await b.api("GET", "/api/brief", O)).body;
-    assert.deepEqual(bg.attention, brief.attention, "attention 与助手简报同一份");
+    const base = (a) => { const { type, verb, evidence, detail, ...rest } = a; return rest; };
+    assert.deepEqual(bg.attention.map(base), brief.attention, "attention 与助手简报同一份(首页只在其上加 type / verb / evidence / detail)");
+    const acc = bg.attention.find((x) => x.task_id === a1);
+    assert.deepEqual([acc.type, acc.verb, acc.evidence], ["accept", "验收", "开发 自报完成 · 未经复核"], "只有自报 = 写明未经复核");
+    assert.deepEqual(Object.keys(acc.detail).sort(), ["expect", "source", "unlocks", "unlocks_total", "what", "where"]);
+    assert.ok(!bg.running.some((r) => r.task_id === a1), "在本人手上的卡不进运行中");
     k = await card(a1);
     const ok = await b.api("POST", `/api/tasks/${a1}/resolve`, O, { verdict: "approve", expected_version: k.aggregate_version });
     assert.equal(ok.status, 200, JSON.stringify(ok.body));
@@ -194,16 +322,33 @@ test("真看板:勾选记在数据目录;未勾选不起线;勾上后起 alpha�
     assert.equal((await b.api("POST", `/api/tasks/${extCard.id}/heartbeat`, ex.token, { run_id: xc.body.task.run_id, note: "正在读第二章" })).status, 200);
 
     bg = (await b.api("GET", "/api/home/background", O)).body;
-    assert.deepEqual(Object.keys(bg).sort(), ["attention", "attention_total", "done", "generated_at", "groups", "running", "running_total"]);
+    assert.deepEqual(Object.keys(bg).sort(), ["attention", "attention_total", "done", "generated_at", "groups", "queued_total", "running", "running_total"]);
     const run = bg.running.find((r) => r.task_id === b1);
-    assert.deepEqual({ ...run, since: !!run.since }, { task_id: b1, title: "甲", goal: { id: rb.body.goal_id, title: "导出功能改造" },
-      who: { label: "开发", kind: "managed", runtime: "claude", model: "claude-opus-5" }, since: true, live_note: null, live_note_at: null, stoppable: true });
+    assert.deepEqual({ ...run, since: !!run.since, holder: { ...run.holder, since: run.holder.since === run.since } }, { task_id: b1, title: "甲", goal: { id: rb.body.goal_id, title: "导出功能改造" },
+      who: { label: "开发", kind: "managed", runtime: "claude", model: "claude-opus-5" }, since: true, live_note: null, live_note_at: null, stoppable: true,
+      holder: { kind: "ai", label: "开发", since: true }, one_line: { kind: "none", code: null, params: {}, text: null, at: null } }, "没有进度 = none,不编");
     const xr = bg.running.find((r) => r.task_id === extCard.id);
     assert.deepEqual([xr.who, xr.live_note, xr.stoppable, xr.stop_note], [{ label: "外部甲", kind: "external", runtime: "codex", model: null }, "正在读第二章", false, "外部 AI,只能在「接入的 AI」里撤销"]);
+    assert.deepEqual([xr.holder.kind, xr.holder.label, xr.one_line.kind, xr.one_line.text], ["ai", "外部甲", "progress", "正在读第二章"], "执行者心跳带的进度 = progress");
     const dn = bg.done.find((d) => d.task_id === a1);
     assert.deepEqual([dn.who, dn.handed_back, dn.goal.id], [{ label: "开发", kind: "managed", runtime: "claude", model: null }, 0, ra.body.goal_id], "做完的卡:谁做的取最后一次领取,运行时取卡上记的;模型读不到给 null");
-    assert.deepEqual(bg.groups.find((g) => g.goal_id === rb.body.goal_id), { goal_id: rb.body.goal_id, title: "导出功能改造", total: 2, done: 0, running: 1 });
-    assert.ok(!bg.running.some((r) => r.task_id === b2), "没领的不算运行中");
+    const q2 = bg.running.find((r) => r.task_id === b2);
+    assert.ok(q2 && ["queue", "dep"].includes(q2.holder.kind), "已放行没人领 = 运行中里排队(G1;第 5 波不算)" + JSON.stringify(q2));
+    assert.ok(bg.running.indexOf(q2) > bg.running.indexOf(run), "排队的排在后面");
+    assert.deepEqual([q2.who, q2.since, q2.stoppable, q2.stop_note], [null, null, false, undefined], "排队的没有谁在做、没有停止");
+    assert.deepEqual(bg.groups.find((g) => g.goal_id === rb.body.goal_id), { goal_id: rb.body.goal_id, title: "导出功能改造", total: 2, done: 0, running: 1, queued: 1,
+      stage: "execute", stage_detail: { done: 0, total: 2 } });
+    assert.equal(bg.queued_total, bg.running.filter((r) => ["queue", "dep"].includes(r.holder.kind)).length);
+
+    // ── G3 额度条:只读池状态;没记用完 = 待核实(unknown),记了用完 = down;不合成一个数
+    const q0 = (await b.api("GET", "/api/home/quota", O)).body;
+    assert.deepEqual(Object.keys(q0).sort(), ["generated_at", "pools"]);
+    assert.ok(q0.pools.length >= 2 && q0.pools.every((p) => p.state === "unknown" && p.windows.every((w) => w.used_pct === null) && p.runway.basis === "unknown"), JSON.stringify(q0));
+    assert.equal((await b.api("POST", "/api/pools/exhausted", O, { runtime: "codex" })).status, 200);
+    const q1 = (await b.api("GET", "/api/home/quota", O)).body;
+    const cx = q1.pools.find((p) => p.id === "codex");
+    assert.equal(cx.state, "down"); assert.ok(Date.parse(cx.windows[0].resets_at) > Date.now(), "看板暂停到的时刻");
+    assert.ok(q1.pools.filter((p) => p.id !== "codex").every((p) => p.state === "unknown"), "各池各一段,别的池不受影响");
 
     // ── 停止:外部执行者的卡 409;受管线的卡两步(停该槽 → 收回卡),线的运行意图清掉
     const nx = await b.api("POST", `/api/home/background/${extCard.id}/stop`, O, {});
@@ -223,7 +368,7 @@ test("真看板:勾选记在数据目录;未勾选不起线;勾上后起 alpha�
     const ac = await b.api("POST", "/api/connect/codes", O, { kind: "claude", role: "assistant" });
     const as = (await b.api("POST", "/api/connect/redeem", null, { code: ac.body.code })).body;
     for (const [who, tok] of [["执行者", ex.token], ["助手", as.token], ["执行线", b.token("worker_token")], ["审阅", b.token("review_token")], ["无令牌", null]]) {
-      for (const [m, p, body] of [["GET", "/api/home/background"], ["GET", "/api/home/prefs"], ["PUT", "/api/home/prefs", { autostart: false }], ["POST", `/api/home/background/${extCard.id}/stop`, {}]]) {
+      for (const [m, p, body] of [["GET", "/api/home/background"], ["GET", "/api/home/prefs"], ["PUT", "/api/home/prefs", { autostart: false }], ["POST", `/api/home/background/${extCard.id}/stop`, {}], ["GET", "/api/home/quota"]]) {
         const r = await b.api(m, p, tok, body);
         assert.ok([401, 403, 404].includes(r.status), `${who} ${m} ${p} → ${r.status}`);   // 绑线执行者的读在前面就被 404(F2),其余 403/401
       }

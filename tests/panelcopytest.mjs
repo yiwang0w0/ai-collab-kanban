@@ -1238,7 +1238,7 @@ test("接真接口后的收口:live_note 只改那一处、登记确认框、刚
 
 // ── 首页「后台任务」(合同 F;core/panel.html 的 bg-copy 段) ──
 const bgSource = panelSection("// ── bg-copy(pure;tests/panelcopytest.mjs)──", "// ── /bg-copy ──");
-const bg = new Function(bgSource + "\nreturn { bgModelName, bgWhoText, bgElapsed, bgGroupText, bgStopInfo, bgStopConfirm, bgStopResult, bgSteps, bgAutostartNote };")();
+const bg = new Function(bgSource + "\nreturn { bgModelName, bgWhoText, bgElapsed, bgGroupText, bgStopInfo, bgStopConfirm, bgStopResult, bgSteps, bgAutostartNote, bgHolderText, bgOneLineText, bgQueued, bgRunCounts, bgLocalType, bgSourceText, bgDetailRows, bgStageDots, bgQuotaSeg, bgDoneText, BG_LINE, BG_VERB };")();
 
 test("后台任务文案:谁在做 = 模型(没有就运行时)· 显示名;已用时按分钟;组头 N 个任务 · M 个在跑", () => {
   assert.equal(bg.bgWhoText({ label: "实现线", kind: "managed", runtime: "claude", model: "claude-opus-5" }), "Opus · 实现线");
@@ -1282,4 +1282,50 @@ test("建卡后自动开工:计划卡下的一句只在有线没起来时要人�
   assert.ok(source.includes('chatApi("PUT", "/api/home/prefs", { autostart: !!on })'), "勾选存到看板(数据目录),不放浏览器");
   assert.ok(source.includes('let chatAuto = null, chatAutoBusy = false;'), "初始状态由看板给;读不到(旧版)不出勾选");
   assert.ok(source.includes('lab.append(box, "建卡后自动开工");'));
+});
+
+test("第 6 波文案(G1):卡在谁手上 · 一句话按 code 生成;none 与认不出的 code 不编;排队另计", () => {
+  assert.equal(bg.bgHolderText({ holder: { kind: "ai", label: "开发" }, who: { label: "开发", kind: "managed", runtime: "claude", model: "claude-opus-5" } }), "Opus · 开发");
+  assert.equal(bg.bgHolderText({ holder: { kind: "queue", label: "开发" } }), "排队 · 开发");
+  assert.equal(bg.bgHolderText({ holder: { kind: "dep", label: "等 #12" } }), "等 #12");
+  assert.equal(bg.bgHolderText({ holder: { kind: "reviewer", label: "自动审阅" } }), "自动审阅");
+  assert.equal(bg.bgOneLineText({ kind: "progress", text: " 跑测试 " }), "跑测试");
+  assert.equal(bg.bgOneLineText({ kind: "waiting", code: "unclaimed", params: { minutes: 12 } }), "已放行 12 分钟没人领");
+  assert.equal(bg.bgOneLineText({ kind: "waiting", code: "unclaimed", params: { minutes: 0 } }), "刚放行，还没人领");
+  for (const c of ["stalled", "line_stopped", "seat_not_ready", "pool_down", "source_gate", "wip_limit", "waiting_dep", "waiting_review_auto", "waiting_peer", "rearm"])
+    assert.ok(bg.bgOneLineText({ kind: "blocked", code: c }).length > 2, c);
+  assert.equal(bg.bgOneLineText({ kind: "none", code: null }), "");
+  assert.equal(bg.bgOneLineText({ kind: "blocked", code: "made_up" }), "", "认不出的 code 不编");
+  assert.deepEqual(bg.bgRunCounts([{ holder: { kind: "ai" } }, { holder: { kind: "queue" } }, { holder: { kind: "dep" } }, { holder: { kind: "reviewer" } }], 1), { running: 3, queued: 2 });
+  assert.equal(bg.bgGroupText({ total: 5, running: 2, queued: 1 }), "5 个任务 · 2 个在跑 · 排队 1");
+  for (const text of Object.values(bg.BG_LINE)) assert.deepEqual(copyFindings(text), [], text);
+});
+
+test("第 6 波文案(G2):动词、来源措辞不写成已核实、展开区字段为 null 不出", () => {
+  assert.deepEqual(bg.bgLocalType({ action: "approval", kind: "request" }), { type: "decide", verb: "去裁定" });
+  assert.deepEqual(bg.bgLocalType({ action: "approval", kind: "lock" }), { type: "confirm", verb: "确认" });
+  assert.deepEqual(bg.bgLocalType({ action: "executor" }), { type: "fault", verb: "查看" });
+  assert.deepEqual(bg.bgLocalType({ action: "fleet", kind: "result" }), { type: "accept", verb: "验收" });
+  assert.equal(bg.bgSourceText({ label: "助手甲", origin: "operator_said", quote: "明天前改好" }), "助手甲 称：本人原话「明天前改好」");
+  assert.equal(bg.bgSourceText({ label: "助手甲", origin: "ai_inferred" }), "助手甲：AI 推断");
+  assert.equal(bg.bgSourceText({ label: "助手甲", origin: null }), "助手甲 挂上", "缺 origin 不写来源措辞");
+  for (const o of ["operator_said", "ai_inferred", null]) assert.ok(!/核实|确认过|已验证/.test(bg.bgSourceText({ label: "x", origin: o })), "不得写成已核实");
+  assert.deepEqual(bg.bgDetailRows({ what: "插上测试机", where: null, expect: "  ", unlocks: [{ id: 20, title: "甲" }, { id: 21, title: "乙" }], unlocks_total: 7, source: null }),
+    [["做什么", "插上测试机"], ["解锁的下游", "#20 甲、#21 乙 等 7 张"]]);
+  assert.deepEqual(bg.bgDetailRows(null), []);
+});
+
+test("第 6 波文案(G3/G4/已完成):额度各池一段读不到写待核实;四段小点得不出不画、整合不画;已完成一句结果 + 打回次数", () => {
+  assert.deepEqual(bg.bgQuotaSeg({ id: "claude", label: "Claude", state: "unknown", windows: [{ used_pct: null }] }), { label: "Claude", text: "待核实", tone: "quiet" });
+  assert.deepEqual(bg.bgQuotaSeg({ id: "codex", label: "Codex", state: "down", windows: [{ resets_at: "2026-11-13T15:00:00Z" }] }, () => "15:00"), { label: "Codex", text: "已用完 · 15:00 后再试", tone: "warn" });
+  assert.deepEqual(bg.bgQuotaSeg({ id: "x", state: "ok", windows: [{ label: "5 小时", used_pct: 41.6 }], runway: { minutes: null, basis: "unknown" } }), { label: "x", text: "5 小时 42%", tone: "" });
+  assert.equal(bg.bgQuotaSeg(null).text, "待核实");
+  assert.equal(bg.bgStageDots({ stage: null }), null);
+  assert.equal(bg.bgStageDots(null), null);
+  assert.deepEqual(bg.bgStageDots({ stage: "execute", stage_detail: { done: 1, total: 3 } }),
+    [{ key: "decompose", label: "拆解", state: "done" }, { key: "execute", label: "执行 1/3", state: "now" }, { key: "accept", label: "验收", state: "todo" }], "整合读不到不画");
+  assert.ok(bg.bgStageDots({ stage: "done", stage_detail: null }).every((d) => d.state === "done"));
+  assert.equal(bg.bgDoneText({ resolved_by: "human", handed_back: 2 }), "验收通过 · 打回 2 次");
+  assert.equal(bg.bgDoneText({ resolved_by: "auto", handed_back: 0 }), "自动审阅通过");
+  assert.equal(bg.bgDoneText({ resolved_by: null }), "已完成");
 });
