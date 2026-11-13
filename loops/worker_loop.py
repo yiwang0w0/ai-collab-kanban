@@ -447,6 +447,23 @@ def charter_block():
 
 AGENT_INSTANCE_ID = str(uuid.uuid4())
 
+# 合同 H6:领卡时读到的说明版本(spec_version),按 (卡号, run_id) 记;心跳与交付时以 seen_spec_version 带回。
+#   提示词是领卡那一刻的卡面拼的,运行中不重读 —— 所以「读到的版本」就是领卡时的版本。旧看板不给 spec_version = 不带。
+_SEEN_SPEC = {}
+
+
+def remember_spec(task):
+    v = (task or {}).get("spec_version")
+    if isinstance(v, int) and not isinstance(v, bool) and v >= 1 and task.get("id") is not None and task.get("run_id"):
+        if len(_SEEN_SPEC) > 1000:
+            _SEEN_SPEC.clear()
+        _SEEN_SPEC[(task["id"], task["run_id"])] = v
+
+
+def seen_spec(tid, run_id):
+    v = _SEEN_SPEC.get((tid, run_id))
+    return {"seen_spec_version": v} if v else {}
+
 
 def deliver(tid, worker, outcome, evidence, *, run_id, what="交付", vr=None, _call=None, _log=None):
     """report 的着弹判定 —— 看板的**拒收必须被读**。
@@ -457,7 +474,7 @@ def deliver(tid, worker, outcome, evidence, *, run_id, what="交付", vr=None, _
     返回 True = 着床;False = 被拒收(已显式记录;调用方**不得**再当成 done)。
     _call/_log 可注入,给自测用(照 pool_state.report_exhausted 的形)。"""
     c, lg = (_call or call), (_log or log)
-    body = {"worker": worker, "run_id": run_id, "outcome": outcome, "evidence": evidence}
+    body = {"worker": worker, "run_id": run_id, "outcome": outcome, "evidence": evidence, **seen_spec(tid, run_id)}
     # 合同 H3:本循环实际跑过的登记验证(键 + 通过与否)。看板只在本座席的独立凭据下把它记成 by:"board";
     #   共享 worker 令牌带来的一概不收。旧 server 忽略这个字段。
     if vr is not None and vr.get("key") and outcome == "done":
@@ -482,7 +499,8 @@ class Heartbeat(threading.Thread):
         while not self.stop.wait(HB_SEC):
             try:
                 s, _ = call("POST", f"/api/tasks/{self.task_id}/heartbeat",
-                            {"worker": self.worker, "lease_minutes": LEASE, "run_id": self.run_id})
+                            {"worker": self.worker, "lease_minutes": LEASE, "run_id": self.run_id,
+                             **seen_spec(self.task_id, self.run_id)})
                 if s == 200: self.beats += 1
                 else: log(f"  心跳被拒 {s}(卡可能已被回收),停止续命"); return
             except Exception as e:
@@ -704,6 +722,8 @@ def claim_task(worker, line, route):
         if guard:
             raise HostCommitError("领取结果未知，已保留仓库占用；人工核实原卡后恢复：" + str(error)) from error
         raise
+    if status == 200:
+        remember_spec((body or {}).get("task"))
     if guard:
         task = (body or {}).get("task") if status == 200 else None
         if not task:
@@ -1130,6 +1150,14 @@ def prompt_selftest():
        sent[-1][1] == "/api/tasks/7/report" and sent[-1][2]["outcome"] == "done" and sent[-1][2]["evidence"] == "证据" and sent[-1][2]["run_id"] == AGENT_INSTANCE_ID)
     seen.clear()
     ok("着床(200)→ True 且不吵", deliver(7, "alpha", "wait", "x", run_id=AGENT_INSTANCE_ID, _call=fake200, _log=seen.append) is True and not seen)
+    # 合同 H6:领卡时读到的 spec_version 在交付时以 seen_spec_version 带回;旧看板不给 = 不带。
+    ok("H6 没记过版本 → 交付不带 seen_spec_version", "seen_spec_version" not in sent[-1][2])
+    remember_spec({"id": 7, "run_id": AGENT_INSTANCE_ID, "spec_version": 3})
+    deliver(7, "alpha", "done", "y", run_id=AGENT_INSTANCE_ID, _call=fake200, _log=seen.append)
+    ok("H6 领卡时记下的版本随交付带回", sent[-1][2].get("seen_spec_version") == 3)
+    remember_spec({"id": 8, "run_id": "r", "spec_version": True})
+    ok("H6 非正整数的版本不记", seen_spec(8, "r") == {})
+    _SEEN_SPEC.clear()
 
     # ── 登记簿锚在看板代码根,不跟 BOARD_REPO 走(P1-3)─────────────────────────
     # verify_lib 在本进程已带真实 env import 过,所以用子进程量;两种 env 都该指到同一个文件。

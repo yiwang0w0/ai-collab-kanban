@@ -3459,7 +3459,7 @@ module.exports = {
   markAutoReviewed, pendingReview, relatedIds, setPinned, reapExpired, claimById, releaseHeldBy,
   noProgressHold, stateFingerprint, fpDiff, heldByNoProgress, openChildrenOnLines,
   reopen, rearmDone, deferToRearm, completeGoals, stuckWhy,
-  list, get, counts, events, taskHistoryRecord, taskHistoryRefs, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
+  list, get, counts, events, appendEvent, taskHistoryRecord, taskHistoryRefs, DB_PATH, DATA_DIR, STATUS, WAITING_FOR, VALID_STATUS, STATUS_LABEL, WF_LABEL, DEFAULT_LEASE_MIN, MAX_LEASE_MIN, defuseRulingHeads,
   DEFAULT_ROUTE,
   verifyRegistry, assertVerify,
   // 给人看的两段白话:判据各一处(面板只渲染,不自己解析证据、不自己算退路)。

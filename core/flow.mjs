@@ -193,6 +193,10 @@ export function entryOf(e, ctx = {}) {
     case "snapshot": summary = "旧数据导入时的状态"; break;
     case "unattested": summary = "旧执行记录(无启动凭据)"; break;
     case "node_recovery": summary = "节点恢复"; break;
+    // 合同 H6(core/spec-version.mjs):放行后说明改了一版;交付时对方确认到的版本落后。
+    // 不是从编辑接口来的修改(由事件或读卡时的核对发现)actor 是 system:不写成「看板改了」。
+    case "spec.changed": summary = `${actor_kind === "system" ? "说明有改动" : who + "改了说明"}(现为 v${Number(d.version) || "?"})`; break;
+    case "spec.stale_delivery": summary = `${who}的交付基于旧版说明(对方确认到 v${Number(d.base) || "?"},当前 v${Number(d.current) || "?"})`; break;
     default: summary = `记录:${cut(e.kind, 24)}`;
   }
   return { at: e.at, kind: e.kind, actor: who0, actor_kind, step, summary: cut(summary, 120) };

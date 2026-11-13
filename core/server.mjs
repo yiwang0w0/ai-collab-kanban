@@ -49,6 +49,8 @@ import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMI
         MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel,cleanLabelChars,loadDeskForks,addDeskForks} from "./desktop-sessions.mjs";
 import {createFlow,redactText,cut} from "./flow.mjs";
 import {openMdHandoff} from "./md-handoff.mjs";
+import {openEvidence} from "./evidence.mjs";
+import {openSpecVersion,checkSeen} from "./spec-version.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
 import {openCredibility} from "./credibility.mjs";
 
@@ -354,6 +356,9 @@ const taskOutBase = (t) => { if(!t)return t; const profile=taskProfilePreview(t)
   posted_by: connect.postedBy(t.id),
   // ask_operator 交回时说的「等什么」(合同 G5):{needs:"decision"|"hands", what, where, expect};卡不在这一轮的「等你决定」= null(按 decision)。
   ask: connect.askOf(t),
+  // 合同 H6:spec_version / spec_history / acked_spec_version / based_on_stale_spec;H5:evidence 列表与 evidence_count(图本身只走读取接口)。
+  ...spec.fields(t),
+  ...evidence.fields(t),
   // Zcode 线的卡:最近一个分派请求的状态、拒收码与白话及其来源、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
   ...zcodeTaskField(db, t, CFG.zcode_worker_config ?? null),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
@@ -503,7 +508,13 @@ const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVI
                           executorName: (id) => coord.isExecutor(db, id) ? (db.prepare("SELECT name FROM coord_executors WHERE id=?").get(String(id))?.name || null) : null,
                           selfStarts: (taskId) => connect.heartbeatStartsOf(taskId) });
 // md 交接(core/md-handoff.mjs):卡面导出成 md / md 队列文件批量挂卡(一律未放行)。线表在读时取(加线免重启)。
-const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t) });
+// 合同 H6「说明的版本确认」(core/spec-version.mjs)与 H5「证据文件」(core/evidence.mjs)。
+//   证据图在数据目录的 evidence_files/(受管线禁读表登记了这个目录名);digest(当时的指纹)由可信核心给,没接上时为 null。
+const spec = openSpecVersion({ db, store, appendEvent: store.appendEvent, requiredOf: (id) => cred.requiredOf(id) });
+spec.migrate();
+const evidence = openEvidence({ db, store, dir: join(store.DATA_DIR, "evidence_files"), cleanText, digestOf: (t) => cred.currentDigest(t.id), emit: (type, data) => emit(type, data) });
+evidence.migrate();
+const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t), evidenceOf: (id) => evidence.listOf(id) });
 mdHandoff.migrate();
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
 { const cut = conversations.recoverInterrupted(db);
@@ -2410,8 +2421,12 @@ function emit(type, data = {}) {
   const payload = `event: ${wire}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
   for (const res of clients) { try { res.write(payload); } catch {} }
   if (wire === "change") flow.notify(type, data);   // 子卡变化 → 建卡对话的进度(2 秒合并后推 conversation.changed)
+  // 合同 H6:每个 task.* 变化都核一次说明的内容哈希(放行即记 v1;放行后内容变了 +1),不靠每条编辑路记得调用。
+  if (wire === "change" && String(type).startsWith("task.") && Number.isSafeInteger(Number(data?.id)) && Number(data.id) > 0)
+    try { spec.observe(Number(data.id)); } catch {}
 }
 
+const badSpecInput = (m) => store.err(store.ERR.BAD_INPUT, m);
 const json = (res, code, body) => {
   const s = JSON.stringify(body);
   res.writeHead(code, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
@@ -2616,7 +2631,7 @@ const WORKER_WRITES = (p) =>
 //   裁定、bless、起停线、改设置都不在这里。
 const EXECUTOR_WRITES = (p) =>
   p === "/api/claim" ||
-  /^\/api\/tasks\/\d+\/(?:claim|heartbeat|report)$/.test(p) ||
+  /^\/api\/tasks\/\d+\/(?:claim|heartbeat|report|evidence)$/.test(p) ||
   /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
   /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p) ||
   p === "/api/approvals/request";
@@ -2711,7 +2726,7 @@ function boundExecutorMayRead(req, p) {
 }
 // 助手看到的卡(合同 E):只给卡面、状态与来源这几项(允许清单);交付证据(result)、裁定附件、运行轨迹、live_note 不给。
 const ASSISTANT_CARD = ["id", "kind", "subject", "summary", "description", "acceptance", "status", "waiting_for", "line", "released", "human_gate",
-  "parent_id", "created_at", "updated_at", "archived_at", "handed_back", "children_done", "children_total", "posted_by", "ask"];
+  "parent_id", "created_at", "updated_at", "archived_at", "handed_back", "children_done", "children_total", "posted_by", "ask", "evidence_count"];
 function assistantCard(t) {
   const out = Object.fromEntries(ASSISTANT_CARD.filter((k) => Object.hasOwn(t, k)).map((k) => [k, t[k]]));
   out.blockers = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).slice(0, 10).map((b) => ({ code: b?.code ?? null, message: b?.message ?? null }));
@@ -4271,6 +4286,8 @@ const server = http.createServer(async (req, res) => {
     // 凭码接入的执行者(绑线):读接口只开桥用得到的几条,且按线过滤;别的读接口(含 SSE、全量历史、设置、用量)一律 404(F2)。
     //   用令牌直接登记的执行者不绑线,行为不变。表见 docs/多执行者协作.md「绑线执行者能看到什么」。
     req.boundLine = boardRole === "executor" ? connect.lineOf(req.executor.id) : null;
+    // 合同 H5 证据文件(core/evidence.mjs):上传只给持卡的执行者;读取只给操作员,别的身份(含助手、绑线执行者)一律 404。
+    if (await evidence.route(req, res, p, m, boardRole)) return;
     if (req.boundLine && (m === "GET" || m === "HEAD") && !boundExecutorMayRead(req, p))
       return json(res, 404, { error: "不存在" });
     // 助手令牌(合同 E):读只有简报、卡面、卡历史、自己的身份;SSE 也不给——它只通过 get_brief / wait_for_attention 获知变化。
@@ -4957,6 +4974,7 @@ const server = http.createServer(async (req, res) => {
         if (held.length) return json(res, 200, { task: null, held: held.length, held_ids: held.slice(0, 20) });
         res.writeHead(204); return res.end();
       }
+      spec.onClaim(got);                        // 合同 H6:记下这一轮领到时的说明版本
       emit("task.claimed", { id: got.id, worker: b.worker });
       return json(res, 200, { task: taskOut(got) });
     }
@@ -5028,7 +5046,9 @@ const server = http.createServer(async (req, res) => {
       const b = await readBody(req);
       const rq = cred.normRequired(b?.required_checks);
       if (rq === null) throw store.err(store.ERR.BAD_INPUT, "required_checks 要名字数组(空数组 = 清掉)");
+      spec.observe(id);                        // 合同 H6:改之前先核一次(放行后从没被看过的卡先记下基线)
       cred.setRequired(id, rq, "operator");
+      spec.observe(id, "operator");            // required_checks 属于说明:放行后改了 → spec_version +1,by 记操作员
       emit("task.updated", { id });
       return json(res, 200, { task: taskOut(store.get(db, id)) });
     }
@@ -5083,6 +5103,7 @@ const server = http.createServer(async (req, res) => {
         // — hence it goes through statusFor, so unclassified refusals still raise
         // the alarm.
         if (!r.ok) return json(res, statusFor({ code: r.code, message: r.why }, "claim"), { error: r.why, id });
+        spec.onClaim(r.task);                    // 合同 H6:记下这一轮领到时的说明版本
         emit("task.claimed", { id, worker: b.worker });
         return json(res, 200, { task: taskOut(r.task) });
       }
@@ -5097,7 +5118,10 @@ const server = http.createServer(async (req, res) => {
           if (boardRole === "executor") lease = Math.min(lease, coord.EXECUTOR_MAX_LEASE_MIN);
         }
         const note = b.note === undefined ? undefined : connect.checkNote(b.note);   // 先校验:不合规就不续租
+        const seen = checkSeen(b.seen_spec_version, badSpecInput), before = store.get(db, id);
+        if (before) spec.assertSeen(before, seen, badSpecInput);
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: lease });
+        Object.assign(r, spec.onHeartbeat(before, b.run_id, seen));   // 合同 H6:spec_version;落后时 spec_changed:{current, yours}
         if (boardRole === "executor") {
           coord.touch(db, req.executor.id);
           // 外部执行者这一轮第一次心跳 = 「已启动」(合同 B 订正);推一个 task.* 让流转条与首页跟着亮。
@@ -5136,7 +5160,12 @@ const server = http.createServer(async (req, res) => {
         if (ask && b.outcome !== "wait") throw store.err(store.ERR.BAD_INPUT, "ask 只配 outcome=wait(交回给人)");
         // 合同 H1/H3:base_commit / head_commit / files / checks(全部可选)先校验,不合规就不收这次交付。
         const credIn = cred.parseDelivery(b);
+        // 合同 H6:seen_spec_version 先校验;交付前按这一轮领到 / 确认到的版本判是否基于旧版说明,交付落盘后再记。
+        const seen = checkSeen(b.seen_spec_version, badSpecInput), before = store.get(db, id);
+        if (before) spec.assertSeen(before, seen, badSpecInput);
+        const sj = before?.status === "in_progress" && before.worker === String(b.worker) && before.run_id === b.run_id ? spec.judgeReport(before, b.run_id, seen) : null;
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });
+        spec.record(sj, b.worker);
         connect.clearNote(id);          // 交付即清掉临时进度
         if (ask) connect.setAsk(id, b.run_id, ask); else connect.clearAsk(id);
         if (selfUsage) usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome });
@@ -5205,7 +5234,9 @@ const server = http.createServer(async (req, res) => {
         // Domain gate at the single mandatory pass (the store does not know
         // LINES/ROUTES — layers do not cross).
         if (badRoutable(res, b)) return;
+        spec.observe(id);                        // 合同 H6:改之前先核一次(放行后从没被看过的卡先记下基线)
         const r = store.update(db, { ...b, id, expectedVersion:b.expected_version });
+        spec.observe(id, "operator");            // 改了说明 → +1,by 记操作员
         emit("task.updated", { id });
         return json(res, 200, { task: store.get(db, id), ...r });
       }

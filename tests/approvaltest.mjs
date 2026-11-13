@@ -23,9 +23,13 @@ const memdb = () => { const db = new DatabaseSync(":memory:"); approvals.migrate
 const cp = (...n) => String.fromCodePoint(...n);
 const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
 const hasUnsafe = (text) => [...String(text)].some((ch) => isUnsafeCp(ch.codePointAt(0)));
+// fetch 拒绝浏览器「坏端口」表里的端口(6000、6665–6669、10080 等):随机端口撞上就重取,免得整套偶发红。
+const BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
 const freePort = async (host = "127.0.0.1") => {
-  const l = createServer(); await new Promise((r) => l.listen(0, host, r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
+  for (;;) {
+    const l = createServer(); await new Promise((r) => l.listen(0, host, r));
+    const port = l.address().port; await new Promise((r) => l.close(r)); if (!BAD_PORTS.has(port)) return port;
+  }
 };
 
 /** 临时看板:配置额外键、数据目录里的预置文件、环境变量都可指定。 */

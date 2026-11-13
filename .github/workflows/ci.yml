@@ -291,6 +291,12 @@ jobs:
       - name: "homebackgroundtest (home background tasks: three groups, plan groups, who, stop in two steps, autostart after plan apply with gates, auth)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/homebackgroundtest.mjs
+      - name: "evidencetest (evidence files: magic-byte check, 2MB cap without landing, 10 per card, holder only, operator-only read with nosniff and sandbox CSP, md export counts only)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/evidencetest.mjs
+      - name: "specversiontest (spec versions: no count before release, +1 after, heartbeat spec_changed, stale delivery flagged, old bridge not flagged)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/specversiontest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

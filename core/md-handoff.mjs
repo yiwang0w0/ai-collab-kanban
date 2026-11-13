@@ -17,7 +17,7 @@ const SUBJECT_MAX = 200;
 
 // 小节名 → 卡面字段。导出才有的小节(回报 / 裁定)导入时跳过,往返不报错。
 const FIELD_OF = { "说明": "description", "验收": "acceptance", "线": "line", "依赖": "deps" };
-const EXPORT_ONLY = new Set(["回报", "裁定"]);
+const EXPORT_ONLY = new Set(["回报", "裁定", "附图"]);   // 「附图」= 证据图的件数与哈希(合同 H5),导入时同样跳过
 
 /** 只清字符、不改语义:换行与制表保留;别的控制字符、行/段分隔符(换成换行)、零宽、双向控制符、BOM 去掉。 */
 export function cleanBlock(s) {
@@ -143,7 +143,7 @@ export function sectionHash({ subject, description, acceptance, line, deps, goal
     [...deps].sort((a, b) => a - b), goal ?? null])).digest("hex");
 }
 
-export function openMdHandoff({ db, store, lines = () => [], askOf = () => null }) {
+export function openMdHandoff({ db, store, lines = () => [], askOf = () => null, evidenceOf = () => [] }) {
   function migrate() {
     db.exec(`CREATE TABLE IF NOT EXISTS md_imports (
       hash TEXT PRIMARY KEY, task_id INTEGER NOT NULL, at TEXT NOT NULL)`);
@@ -257,6 +257,10 @@ export function openMdHandoff({ db, store, lines = () => [], askOf = () => null 
     }
     if (ev.length) out.push("### 回报", "", ...ev.flat());
     if (dec.length) out.push("### 裁定", "", ...dec.flat());
+    // 合同 H5:证据图不进导出,只写件数与哈希(图在看板上看)。
+    let pics = []; try { pics = evidenceOf(t.id) || []; } catch {}
+    if (pics.length) out.push("### 附图", "", `附图 ${pics.length} 张(图不随导出;在看板上看)`, "",
+      ...pics.map((e) => `- sha256 ${String(e.sha256).replace(/[^0-9a-f]/g, "")}`), "");
     return out.join("\n");
   }
 
@@ -266,7 +270,7 @@ export function openMdHandoff({ db, store, lines = () => [], askOf = () => null 
     if (!t) return null;
     const now = new Date().toISOString();
     const head = ["<!-- 看板 md 交接文件。导入:python cli/board.py import-md <本文件> [--line 线] [--goal 目标号];" +
-      "导入一律未放行。「回报」「裁定」小节导入时跳过。 -->"];
+      "导入一律未放行。「回报」「裁定」「附图」小节导入时跳过。 -->"];
     if (t.kind === "goal") {
       const kids = kidsStmt.all(t.id).map((r) => store.get(db, Number(r.id))).filter(Boolean);
       head.push(`# 目标 #${t.id}:${oneLine(t.subject)}`, "",

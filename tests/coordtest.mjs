@@ -25,11 +25,18 @@ const cp = (...n) => String.fromCodePoint(...n);
 const isUnsafeCp = (c) => c <= 0x1f || (c >= 0x7f && c <= 0x9f) || c === 0x2028 || c === 0x2029 || (c >= 0x202a && c <= 0x202e) || (c >= 0x2066 && c <= 0x2069);
 const hasUnsafe = (text) => [...String(text)].some((ch) => isUnsafeCp(ch.codePointAt(0)));
 
+// fetch 拒绝浏览器「坏端口」表里的端口(6000、6665–6669、10080 等):随机端口撞上就重取,免得整套偶发红。
+const BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
+async function freePort(host) {
+  for (;;) {
+    const l = createServer(); await new Promise((r) => l.listen(0, host, r));
+    const port = l.address().port; await new Promise((r) => l.close(r)); if (!BAD_PORTS.has(port)) return port;
+  }
+}
 async function board(env = {}, extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), "coordtest-")), config = join(dir, "fleet.json");
   writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", external: true }], roles: [], routes: ["default"], repo: dir, ...extra }));
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r));
+  const port = await freePort("127.0.0.1");
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     env: { ...HOST_ENV, BOARD_HOST: "127.0.0.1", BOARD_PORT: String(port), BOARD_CONFIG: config, BOARD_DATA_DIR: dir,
            BOARD_DB: join(dir, "board.db"), BOARD_REPO: dir, BOARD_ALLOW_UNPINNED: "1", BOARD_NO_RESTORE: "1",
@@ -717,8 +724,7 @@ test("协作安全:board.py journal ls 的查询参数做 URL 编码,带 + 时�
 });
 
 test("协作安全:操作员可以注销执行者;在持卡或持锁时拒绝,其他令牌与远程入口不能注销,留流水", { timeout: 120000 }, async () => {
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.2", r));
-  const rport = l.address().port; await new Promise((r) => l.close(r));
+  const rport = await freePort("127.0.0.2");
   const B = await board({}, { remote_access: { enabled: true, listen: [`127.0.0.2:${rport}`], allow_ips: ["127.0.0.0/8"] } });
   try {
     const del = (id, token) => B.api("DELETE", `/api/coord/executors/${encodeURIComponent(id)}`, token);
