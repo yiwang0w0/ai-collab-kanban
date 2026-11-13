@@ -208,7 +208,10 @@ const brief=t=>({id:t.id,subject:t.subject,summary:t.summary??null,status:t.stat
  line:t.line??null,released:!!t.released,aggregate_version:t.aggregate_version,worker:t.worker??null});
 const full=t=>({...brief(t),...(Number.isSafeInteger(t.spec_version)?{spec_version:t.spec_version}:{}),...(Number.isSafeInteger(t.evidence_count)?{evidence_count:t.evidence_count}:{}),kind:t.kind,description:t.description??"",acceptance:t.acceptance??"",human_gate:!!t.human_gate,
  attempts:t.attempts,max_attempts:t.max_attempts,lease_until:iso(t.lease_until),
- blockers:Array.isArray(t.progress_blockers)?t.progress_blockers.map(String).slice(0,20):[],content_is_untrusted:true});
+ blockers:Array.isArray(t.progress_blockers)?t.progress_blockers.map(b=>typeof b==="string"?b:String(b?.code??b)).slice(0,20):[],
+ // 合同 I1 / I2:被谁取代、依赖被重开过(旧看板没有这两项 = 不带)。
+ ...(Number.isSafeInteger(t.superseded_by)?{superseded_by:t.superseded_by}:{}),...(Array.isArray(t.basis_changed)&&t.basis_changed.length?{basis_changed:t.basis_changed.slice(0,20)}:{}),
+ content_is_untrusted:true});
 
 export function createExecBridge({url,tokenFile,line=null,send=boardRequest,pollMs=2000,attentionPollMs=3000}){
  const base=boardEndpoint(url),token=loadExecutorToken(tokenFile);
@@ -252,13 +255,17 @@ export function createExecBridge({url,tokenFile,line=null,send=boardRequest,poll
    const seen=a.seen_spec_version??seenSpec.get(a.id);
    const r=await board("POST",`/api/tasks/${a.id}/heartbeat`,{run_id:run,...(a.lease_minutes?{lease_minutes:a.lease_minutes}:{}),...(a.note!==undefined?{note:a.note}:{}),...(seen?{seen_spec_version:seen}:{})});
    const sc=r?.spec_changed&&Number.isSafeInteger(r.spec_changed.current)?{spec_changed:{current:r.spec_changed.current,yours:r.spec_changed.yours},next:"说明改过了:先 get_card 重读卡面,按新版做"}:{};
+   // 合同 I1 / I2:被取代 → 停手交回(板不强收);依赖被重开 → 前提可能变了。取代的 next 优先。
+   const bc=Array.isArray(r?.basis_changed)&&r.basis_changed.length?{basis_changed:r.basis_changed.slice(0,20),next:"依赖被重开过:做的前提可能变了,先 get_card 再确认"}:{};
+   const sp=Number.isSafeInteger(r?.superseded?.by)?{superseded:{by:r.superseded.by},next:`这张卡已被 #${r.superseded.by} 取代:停手,用 report_result outcome=wait 交回并说明停在哪`}:{};
    return {id:a.id,lease_until:iso(r?.task?.lease_until??null),...(a.note!==undefined?{note:a.note.trim()||null}:{}),
-    ...(Number.isSafeInteger(r?.spec_version)?{spec_version:r.spec_version}:{}),...sc};
+    ...(Number.isSafeInteger(r?.spec_version)?{spec_version:r.spec_version}:{}),...sc,...bc,...sp};
   },
   // 桥内轮询:每 pollMs 查一次本线未开始的卡,不在看板上挂长连接。
   async wait_for_card(a){
    const end=Date.now()+(a.timeout_sec??30)*1000;
-   const q=new URLSearchParams({status:"not_started",archived:"false"});if(line)q.set("line",line);
+   // claimable=1(合同 I5):看板只列现在能领的(与 claim_card 同一份判定);旧看板不认这个参数 = 照旧,下面仍按 released 筛。
+   const q=new URLSearchParams({status:"not_started",archived:"false",claimable:"1"});if(line)q.set("line",line);
    for(;;){
     const ready=((await board("GET",`/api/tasks?${q}`))?.tasks??[]).find(t=>t.released&&t.status==="not_started");
     if(ready)return {card:{id:ready.id,subject:ready.subject,summary:ready.summary??null,aggregate_version:ready.aggregate_version,...(Number.isSafeInteger(ready.spec_version)?{spec_version:ready.spec_version}:{})},

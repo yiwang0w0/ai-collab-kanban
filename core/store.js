@@ -371,6 +371,10 @@ const ADDED_COLUMNS = [
   //   marches back into re-review. Same deliverable + same acceptance + same machine
   //   result ⇒ the previous verdict stands, and no reviewer is paid to reach it again.
   ["review_fp", "TEXT"],
+  // 合同 I3 同批:同键的卡是一批;依赖指向批里任何一张 = 等全批完成。只由操作者写(建卡 / 计划项 / update)。
+  ["batch_key", "TEXT"],
+  // 合同 I4 互斥资源:这张卡要独占的资源名(JSON 数组,≤8,名字规则同 coord 锁)。占用不另存,由执行中的卡与 coord 锁现算。
+  ["needs", "TEXT"],
 ];
 
 // ── Human-gate literal sniff (the safety net behind explicit humanGate) ──────────
@@ -818,6 +822,8 @@ function migrateInner(db) {
                 ") — fell back to the fixed-depth-12 version (equivalent up to 12 levels)");
   }
 
+  migrateRelations(db);   // 合同 I1 / I2:取代与依赖作废两张只追加的表
+
   // An existing database cannot recover the bounces and line moves that happened
   // before this table existed. Lay down ONE snapshot at migration time and start
   // appending from there — never manufacture a past out of created_at / work_spans /
@@ -932,17 +938,282 @@ function rootOf(db, id) {
  *  ⚠ The definition of "done" is captured HERE, once (callers must not sweep the
  *  whole table for status='done' themselves). */
 function depsSatisfied(db, t) {
+  const tg = depTargets(db, t);
+  if (tg.broken) return { ok: false, broken: true, pending: [], archived: [] };
+  // 合同 I1 / I3:依赖先沿取代链解析到最新一张,再按同批展开成全批成员;「完成」的定义仍只在这里(status='done')。
+  //   合同 I2:没做完就被归档的目标单列 archived(阻塞码 DEP_ARCHIVED),不再混在 pending 里永远等。
+  const pending = [], archived = [];
+  for (const x of tg.targets) {
+    if (x.status === "done") continue;
+    (x.archived ? archived : pending).push(x.id);
+  }
+  return { ok: pending.length === 0 && archived.length === 0, broken: false, pending, archived };
+}
+
+// ── 合同 I1–I4:取代 / 依赖作废 / 同批 / 互斥资源(第 8 波 8a)──────────────────────────────────────────────
+// 关系只由操作者写(server 按角色挡);这里只管语义。审计表只追加:撤销 = 追加一行撤销,不改不删(库层触发器挡)。
+const REL_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._:\/@-]{0,79}$/;   // 与 coord.js 的 RESOURCE_RE 同一条规则(relationstest 核两者相等)
+const BATCH_MAX = 20, NEEDS_MAX = 8, SUPERSEDE_CHAIN_MAX = 32, BATCH_KEY_MAX = 64;
+
+function migrateRelations(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS task_supersedes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    old_id INTEGER NOT NULL,
+    by_id INTEGER,
+    actor TEXT NOT NULL
+  )`);
+  db.exec("CREATE INDEX IF NOT EXISTS ix_task_supersedes_old ON task_supersedes(old_id, id)");
+  db.exec("CREATE INDEX IF NOT EXISTS ix_task_supersedes_by ON task_supersedes(by_id)");
+  db.exec(`CREATE TABLE IF NOT EXISTS task_basis_changes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    at TEXT NOT NULL,
+    task_id INTEGER NOT NULL,
+    dep_id INTEGER,
+    kind TEXT NOT NULL CHECK(kind IN ('reopened','ack')),
+    actor TEXT NOT NULL
+  )`);
+  db.exec("CREATE INDEX IF NOT EXISTS ix_task_basis_task ON task_basis_changes(task_id, id)");
+  for (const tb of ["task_supersedes", "task_basis_changes"]) {
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${tb}_no_update BEFORE UPDATE ON ${tb}
+             BEGIN SELECT RAISE(ABORT, '${tb} 只追加'); END`);
+    db.exec(`CREATE TRIGGER IF NOT EXISTS trg_${tb}_no_delete BEFORE DELETE ON ${tb}
+             BEGIN SELECT RAISE(ABORT, '${tb} 只追加'); END`);
+  }
+}
+
+/** 这张卡现在被谁取代(最后一行;撤销行 by_id=NULL)。 */
+function supersededBy(db, id) {
+  const r = db.prepare("SELECT by_id FROM task_supersedes WHERE old_id=? ORDER BY id DESC LIMIT 1").get(Number(id));
+  return r && r.by_id != null ? Number(r.by_id) : null;
+}
+/** 这张卡现在取代了哪些卡(按卡号)。 */
+function supersedesOf(db, id) {
+  return db.prepare(`SELECT s.old_id FROM task_supersedes s
+                      WHERE s.by_id=? AND s.id=(SELECT MAX(x.id) FROM task_supersedes x WHERE x.old_id=s.old_id)
+                      ORDER BY s.old_id`).all(Number(id)).map((r) => Number(r.old_id));
+}
+/** 沿取代链走到最新一张。环或超过链深 → broken(拒绝侧:写入时已挡环,这里是防线)。 */
+function resolveSuperseded(db, id) {
+  let cur = Number(id); const seen = new Set([cur]);
+  for (let hops = 0; ; hops++) {
+    const nx = supersededBy(db, cur);
+    if (nx == null) return { id: cur, broken: false, hops };
+    if (seen.has(nx) || hops >= SUPERSEDE_CHAIN_MAX) return { id: cur, broken: true, hops };
+    seen.add(nx); cur = nx;
+  }
+}
+/**
+ * 一张卡实际等的那些卡:blocked_by 每一项 → 取代链解析 → 解析到的卡有 batch_key 就展开成全批(批里每张再各自解析;
+ * 不含这张卡自己)。返回 { broken, targets:[{id, status, archived}] }(按出现顺序去重)。
+ * 没有取代、没有同批时 targets 与 blocked_by 一一对应、顺序相同 = 旧口径。
+ */
+function depTargets(db, t) {
   let deps;
-  try { deps = JSON.parse(t.blocked_by); } catch { return { ok: false, broken: true, pending: [] }; }
-  if (!Array.isArray(deps)) return { ok: false, broken: true, pending: [] };
-  if (!deps.length) return { ok: true, broken: false, pending: [] };
+  try { deps = typeof t.blocked_by === "string" ? JSON.parse(t.blocked_by) : t.blocked_by; } catch { return { broken: true, targets: [] }; }
+  if (!Array.isArray(deps)) return { broken: true, targets: [] };
   const ids = deps.map(Number).filter(Number.isInteger);
-  if (ids.length !== deps.length) return { ok: false, broken: true, pending: [] };
-  const done = new Set(db.prepare(
-    `SELECT id FROM tasks WHERE status='done' AND id IN (${ids.map(() => "?").join(",")})`
-  ).all(...ids).map((r) => Number(r.id)));
-  const pending = ids.filter((d) => !done.has(d));
-  return { ok: pending.length === 0, broken: false, pending };
+  if (ids.length !== deps.length) return { broken: true, targets: [] };
+  const self = Number(t.id), out = [], seen = new Set();
+  const one = db.prepare("SELECT id, status, archived_at, batch_key FROM tasks WHERE id=?");
+  const push = (id) => {
+    if (seen.has(id)) return; seen.add(id);
+    const r = one.get(id);
+    out.push(r ? { id, status: r.status, archived: !!r.archived_at } : { id, status: null, archived: false });
+  };
+  for (const d of ids) {
+    const rs = resolveSuperseded(db, d);
+    if (rs.broken) return { broken: true, targets: [] };
+    const r = one.get(rs.id);
+    if (r && r.batch_key != null) {
+      const members = db.prepare("SELECT id FROM tasks WHERE batch_key=? ORDER BY id").all(r.batch_key).map((x) => Number(x.id));
+      for (const m of members) {
+        if (m === self) continue;
+        const rm = resolveSuperseded(db, m);
+        if (rm.broken) return { broken: true, targets: [] };
+        if (rm.id !== self) push(rm.id);
+      }
+    } else push(rs.id);
+  }
+  return { broken: false, targets: out };
+}
+
+/** 同批键:去首尾空白,1–64 字,不含控制字符;空串 / null = 不设。不合规抛 BAD_INPUT。 */
+function normBatchKey(v) {
+  if (v == null) return null;
+  if (typeof v !== "string") throw err(ERR.BAD_INPUT, "batch 要字符串(null = 不在任何批里)");
+  const s = v.trim();
+  if (!s) return null;
+  if ([...s].length > BATCH_KEY_MAX || /[\u0000-\u001f\u007f\u2028\u2029]/.test(s))
+    throw err(ERR.BAD_INPUT, `batch 名最多 ${BATCH_KEY_MAX} 字、不含控制字符`);
+  return s;
+}
+function assertBatchRoom(db, key, selfId = null) {
+  if (key == null) return;
+  const n = db.prepare("SELECT COUNT(*) c FROM tasks WHERE batch_key=? AND archived_at IS NULL AND id<>?").get(key, Number(selfId ?? 0)).c;
+  if (n >= BATCH_MAX) throw err(ERR.BAD_INPUT, `批「${key}」已有 ${n} 张卡(上限 ${BATCH_MAX})`);
+}
+/** 资源名数组:规则同 coord 锁,去重排序,≤8;空数组 / null = 不声明。不合规抛 BAD_INPUT。 */
+function normNeeds(v) {
+  if (v == null) return [];
+  if (!Array.isArray(v)) throw err(ERR.BAD_INPUT, "needs 要资源名数组(空数组 = 清掉)");
+  const out = [];
+  for (const x of v) {
+    if (typeof x !== "string" || !REL_NAME_RE.test(x))
+      throw err(ERR.BAD_INPUT, `资源名只允许字母、数字和 . _ : / @ -,1-80 位,以字母或数字开头 —— 收到 ${JSON.stringify(x).slice(0, 90)}`);
+    if (!out.includes(x)) out.push(x);
+  }
+  if (out.length > NEEDS_MAX) throw err(ERR.BAD_INPUT, `一张卡最多声明 ${NEEDS_MAX} 个资源`);
+  return out.sort();
+}
+const needsOf = (t) => { try { const v = JSON.parse(t?.needs || "[]"); return Array.isArray(v) ? v.filter((x) => typeof x === "string") : []; } catch { return []; } };
+
+function setBatch(db, { id, batch, actor = "operator" }) {
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT store_set_batch");
+  try {
+    const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
+    if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
+    const key = normBatchKey(batch);
+    if (key !== (t.batch_key ?? null)) {
+      assertBatchRoom(db, key, id);
+      db.prepare("UPDATE tasks SET batch_key=?, updated_at=? WHERE id=?").run(key, now(), Number(id));
+      appendEvent(db, { taskId: id, kind: "batch.set", actor, detail: eventState(t, { from: t.batch_key ?? null, to: key }) });
+    }
+    db.exec(own ? "COMMIT" : "RELEASE store_set_batch");
+    return { id: Number(id), batch: key };
+  } catch (e) { try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO store_set_batch; RELEASE store_set_batch"); } catch {} throw e; }
+}
+function setNeeds(db, { id, needs, actor = "operator" }) {
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT store_set_needs");
+  try {
+    const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
+    if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
+    const list = normNeeds(needs), before = needsOf(t);
+    if (JSON.stringify(list) !== JSON.stringify(before)) {
+      db.prepare("UPDATE tasks SET needs=?, updated_at=? WHERE id=?").run(list.length ? JSON.stringify(list) : null, now(), Number(id));
+      appendEvent(db, { taskId: id, kind: "needs.set", actor, detail: eventState(t, { from: before, to: list }) });
+    }
+    db.exec(own ? "COMMIT" : "RELEASE store_set_needs");
+    return { id: Number(id), needs: list };
+  } catch (e) { try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO store_set_needs; RELEASE store_set_needs"); } catch {} throw e; }
+}
+
+/**
+ * 合同 I1:`by` = 新卡号(存在、未归档、不是自己、不成环);`by:null` = 撤销。表只追加。
+ * 旧卡未开始 → 不可领(SUPERSEDED);执行中 → 心跳带 superseded(板不强收);已完成 → 只标记。
+ */
+function supersede(db, { id, by, actor = "operator" }) {
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT store_supersede");
+  try {
+    const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
+    if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
+    const cur = supersededBy(db, id);
+    let target = null;
+    if (by !== null) {
+      target = Number(by);
+      if (!Number.isSafeInteger(target) || target < 1) throw err(ERR.BAD_INPUT, "by 要新卡的卡号(null = 撤销取代)");
+      if (target === Number(id)) throw err(ERR.BAD_INPUT, `不能让 #${id} 取代它自己`);
+      const n = db.prepare("SELECT id, archived_at FROM tasks WHERE id=?").get(target);
+      if (!n) throw err(ERR.NOT_FOUND, `新卡 #${target} 不存在`);
+      if (n.archived_at) throw err(ERR.BAD_INPUT, `#${target} 已归档,不能用来取代别的卡`);
+      // 不成环:从新卡沿现有取代链往后走,走回旧卡 = 环;走不完(超深 / 已有环)也拒(证明不了无环)。
+      let walk = target; const seen = new Set([walk]);
+      for (let hops = 0; ; hops++) {
+        const nx = supersededBy(db, walk);
+        if (nx == null) break;
+        if (nx === Number(id)) throw err(ERR.BAD_INPUT, `会形成取代环:#${target} 已经(间接)被 #${id} 取代`);
+        if (seen.has(nx) || hops >= SUPERSEDE_CHAIN_MAX) throw err(ERR.BAD_INPUT, `#${target} 的取代链超过 ${SUPERSEDE_CHAIN_MAX} 层或已成环 —— 拒绝`);
+        seen.add(nx); walk = nx;
+      }
+    }
+    const changed = cur !== target;
+    if (changed) {
+      db.prepare("INSERT INTO task_supersedes (at, old_id, by_id, actor) VALUES (?,?,?,?)").run(now(), Number(id), target, String(actor || "operator"));
+      db.prepare("UPDATE tasks SET updated_at=? WHERE id=?").run(now(), Number(id));
+      appendEvent(db, { taskId: id, kind: target == null ? "supersede.revoked" : "supersede", actor,
+                        detail: eventState(t, { by: target, from: cur }) });
+    }
+    db.exec(own ? "COMMIT" : "RELEASE store_supersede");
+    return { id: Number(id), superseded_by: target, changed };
+  } catch (e) { try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO store_supersede; RELEASE store_supersede"); } catch {} throw e; }
+}
+
+/** 合同 I2:依赖卡 depId 从 done 回到非 done。实际等它的下游(沿取代链、按同批展开后包含它)里已完成 / 执行中 / 已交付待验收的,
+ *  各追加一行 basis_changed 并记卡历史 dep.reopened。未开始的照现状由依赖判定挡住,不另记。返回挂上的卡号。 */
+function markBasisChanged(db, depId, actor = "system") {
+  const out = [], at = now();
+  for (const r of db.prepare(`SELECT * FROM tasks WHERE archived_at IS NULL AND id<>? AND blocked_by<>'[]'
+                                AND status IN ('done','in_progress','waiting') ORDER BY id`).all(Number(depId))) {
+    const tg = depTargets(db, r);
+    if (tg.broken || !tg.targets.some((x) => x.id === Number(depId))) continue;
+    db.prepare("INSERT INTO task_basis_changes (at, task_id, dep_id, kind, actor) VALUES (?,?,?,'reopened',?)").run(at, Number(r.id), Number(depId), String(actor || "system"));
+    appendEvent(db, { taskId: r.id, kind: "dep.reopened", actor, detail: eventState(r, { dep: Number(depId) }) });
+    out.push(Number(r.id));
+  }
+  return out;
+}
+/** 尚未被操作者「已看过」的依赖作废记录:[{dep, at, kind}]。 */
+function basisChanged(db, id) {
+  const ack = db.prepare("SELECT MAX(id) m FROM task_basis_changes WHERE task_id=? AND kind='ack'").get(Number(id))?.m ?? 0;
+  return db.prepare("SELECT dep_id, at, kind FROM task_basis_changes WHERE task_id=? AND kind='reopened' AND id>? ORDER BY id")
+    .all(Number(id), Number(ack)).map((r) => ({ dep: Number(r.dep_id), at: r.at, kind: r.kind }));
+}
+function ackBasis(db, { id, actor = "operator" }) {
+  const own = !db.isTransaction;
+  db.exec(own ? "BEGIN IMMEDIATE" : "SAVEPOINT store_ack_basis");
+  try {
+    const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
+    if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
+    const open = basisChanged(db, id);
+    if (open.length) {
+      db.prepare("INSERT INTO task_basis_changes (at, task_id, dep_id, kind, actor) VALUES (?,?,NULL,'ack',?)").run(now(), Number(id), String(actor || "operator"));
+      appendEvent(db, { taskId: id, kind: "basis.ack", actor, detail: eventState(t, { deps: open.map((x) => x.dep) }) });
+    }
+    db.exec(own ? "COMMIT" : "RELEASE store_ack_basis");
+    return { id: Number(id), acked: open.length };
+  } catch (e) { try { db.exec(own ? "ROLLBACK" : "ROLLBACK TO store_ack_basis; RELEASE store_ack_basis"); } catch {} throw e; }
+}
+
+/** 任务对象上的关系字段(合同 I1–I4):superseded_by / supersedes / batch / needs / basis_changed。 */
+function relationFields(db, t) {
+  if (!t) return {};
+  const id = Number(t.id), raw = Object.hasOwn(t, "batch_key") ? t : db.prepare("SELECT * FROM tasks WHERE id=?").get(id);
+  const key = raw?.batch_key ?? null;
+  let batch = null;
+  if (key != null) {
+    const members = db.prepare("SELECT id, subject, status FROM tasks WHERE batch_key=? AND archived_at IS NULL ORDER BY id").all(key)
+      .map((r) => ({ id: Number(r.id), title: String(r.subject), status: r.status }));
+    batch = { key, members, done: members.filter((m) => m.status === "done").length, total: members.length };
+  }
+  return { superseded_by: supersededBy(db, id), supersedes: supersedesOf(db, id), batch, needs: needsOf(raw), basis_changed: basisChanged(db, id) };
+}
+
+/** 资源被谁占着(合同 I4):别的执行中卡声明了同名资源,或 coord 锁有人持着(超期也算,只标记不释放)。 */
+function resourceHolders(db, t, memo = {}) {
+  const want = needsOf(t);
+  if (!want.length) return [];
+  memo.runningNeeds ??= db.prepare("SELECT id, worker, needs, heartbeat_at FROM tasks WHERE status='in_progress' AND needs IS NOT NULL").all()
+    .map((r) => ({ id: Number(r.id), worker: r.worker, needs: needsOf(r), since: r.heartbeat_at }));
+  if (memo.locks === undefined) {
+    const has = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='coord_locks'").get();
+    memo.locks = has ? db.prepare("SELECT id, resource, holder, started_at FROM coord_locks WHERE released_at IS NULL").all() : [];
+  }
+  const out = [], nowMs = Date.now();
+  for (const res of want) {
+    for (const c of memo.runningNeeds) if (c.id !== Number(t.id) && c.needs.includes(res)) {
+      const span = db.prepare("SELECT work_spans FROM tasks WHERE id=?").get(c.id)?.work_spans;
+      let since = null; try { const s = JSON.parse(span || "[]"); since = s.length ? s[s.length - 1].s : null; } catch {}
+      out.push({ resource: res, kind: "card", card_id: c.id, holder: c.worker ?? null, lock_id: null, since,
+                 minutes: since && Number.isFinite(Date.parse(since)) ? Math.max(0, Math.floor((nowMs - Date.parse(since)) / 60000)) : null });
+    }
+    for (const l of memo.locks) if (l.resource === res)
+      out.push({ resource: res, kind: "lock", card_id: null, holder: l.holder, lock_id: Number(l.id), since: new Date(Number(l.started_at)).toISOString(),
+                 minutes: Math.max(0, Math.floor((nowMs - Number(l.started_at)) / 60000)) });
+  }
+  return out;
 }
 
 /** ⭐ Validation on the WRITE path of dependency edges.
@@ -1335,9 +1606,13 @@ function addInner(db, {
   route = DEFAULT_ROUTE, line = null, lockKey = null, needsBash = 0,
   released = 1, maxAttempts = DEFAULT_MAX_ATTEMPTS, evidencePath = null,
   kind = "task", parentId = null, treeMode, verifyCmd = null, weight = "standard",
-  oneofKey = null, provesParent = false, humanGate = null,
+  oneofKey = null, provesParent = false, humanGate = null, batch = undefined, needs = undefined,
 }) {
   if (!["goal", "task"].includes(kind)) throw err(ERR.BAD_INPUT, "kind 必须是 goal 或 task");
+  // 合同 I3 / I4:同批键与互斥资源(只由操作者 / 计划项带来;server 按角色挡)。先校验,不合规整张不建。
+  const batchKey = normBatchKey(batch === undefined ? null : batch);
+  assertBatchRoom(db, batchKey);
+  const needList = normNeeds(needs === undefined ? null : needs);
   if (!subject || !String(subject).trim()) throw err(ERR.BAD_INPUT, "subject 不能为空");
   // Ruling-type cards default to human_gate=1 at creation. The real law is "the card
   // author gates explicitly"; this literal sniff is only the safety net (subjects
@@ -1371,8 +1646,8 @@ function addInner(db, {
     `INSERT INTO tasks (subject, description, acceptance, summary, blocked_by, created_at, updated_at,
                         route, line, lock_key, needs_bash, released, max_attempts, evidence_path,
                         kind, parent_id, tree_mode, verify_cmd, weight, oneof_key, proves_parent,
-                        human_gate, human_gate_src, task_uid, owner_node_id)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+                        human_gate, human_gate_src, task_uid, owner_node_id, batch_key, needs)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
   ).run(String(subject), String(description), String(acceptance),
         // 给人看的「要做什么」。空白与只有空格的输入都落成 NULL ⇒ 读的一侧只有「有」和「没有」两种,
         //   不会出现空字符串这第三种(空字符串会让退路判断多一个分支,而分支就是将来分叉的地方)。
@@ -1400,7 +1675,8 @@ function addInner(db, {
         oneofKey ? String(oneofKey) : null, provesParent ? 1 : 0,
         // The lock and its source (sniffed = machine lock / explicit = deliberate
         // lock). Unknown values landed on explicit = human-only unlock.
-        hg, hg ? (humanGate == null ? "detect" : "explicit") : null, taskUid, ownerNodeId);
+        hg, hg ? (humanGate == null ? "detect" : "explicit") : null, taskUid, ownerNodeId,
+        batchKey, needList.length ? JSON.stringify(needList) : null);
   return Number(r.lastInsertRowid);
 }
 
@@ -1450,7 +1726,18 @@ function stateFingerprint(db, t, opts = {}) {
     if (!Array.isArray(ids) || !ids.length) return fpHash(null);
     const rows = ids.map((id) =>
       db.prepare("SELECT id, status, verdict FROM tasks WHERE id=?").get(Number(id)) || { id, status: "?", verdict: null });
-    return fpHash(rows.map((r) => [r.id, r.status, r.verdict]));
+    const base = rows.map((r) => [r.id, r.status, r.verdict]);
+    // 合同 I1 / I3:依赖实际等的卡(沿取代链、按同批展开)与 blocked_by 不同时,把它们也算进这一分量 ——
+    //   否则「旧依赖被取代、新卡做完了」在指纹上看不出变化,无进展闸会把重新派发挡住。
+    //   与 blocked_by 一一相同时不加任何东西:没用到取代 / 同批的卡,指纹与旧版逐字节相同(已存的 dispatch_fp 不会因升级而松闸)。
+    const tg = depTargets(db, t);
+    const plain = !tg.broken && tg.targets.length === ids.length && tg.targets.every((x, i) => x.id === Number(ids[i]));
+    if (plain) return fpHash(base);
+    const extra = tg.broken ? ["broken"] : tg.targets.map((x) => {
+      const r = db.prepare("SELECT status, verdict, archived_at FROM tasks WHERE id=?").get(x.id) || {};
+      return [x.id, r.status ?? "?", r.verdict ?? null, r.archived_at ? 1 : 0];
+    });
+    return fpHash(base, extra);
   })();
   return {
     card: fpHash(t.subject, t.description, t.acceptance, t.verify_cmd, t.max_attempts,
@@ -1572,27 +1859,10 @@ function claim(db, worker, leaseMin = DEFAULT_LEASE_MIN, opts = {}) {
     //   have to grow the history entry a second time, and only one copy ever gets it.
     reapExpiredInner(db);
 
-    // ⛔ The old full-table `SELECT id FROM tasks WHERE status='done'` is gone:
-    //   depsSatisfied pulls only the dependency ids via IN (cheaper, and the
-    //   definition of "done" stays in one place).
-    const heldLocks = new Set(
-      db.prepare("SELECT lock_key FROM tasks WHERE status='in_progress' AND lock_key IS NOT NULL")
-        .all().map((r) => r.lock_key)
-    );
-
-    // ⭐ Parent gate (ruling: a card whose children are unfinished must not enter
-    //   in_progress): measured, a parent with 0/2 children done was claimed and
-    //   idle-burned to attempt 4/3. When all children are done, rearmDone carries
-    //   the parent to waiting — the road where a worker grabs the parent first is
-    //   closed STRUCTURALLY (not by remembering to fill in blockedBy). The
-    //   condition matches deferToRearm: "has a child with status<>'done'"
-    //   (narrowing to not_started/in_progress would let waiting children slip the
-    //   gap).
-    const unfinishedKids = new Set(
-      db.prepare(`SELECT DISTINCT parent_id FROM tasks
-                   WHERE parent_id IS NOT NULL AND archived_at IS NULL AND status<>'done'`)
-        .all().map((r) => Number(r.parent_id))
-    );
+    // ⭐ Parent gate / lock / WIP cap / ancestor release / deps / no-progress brake etc. all
+    //   live in claimBlockers (合同 I5:一份判定). The parent-gate condition matches
+    //   deferToRearm: "has a child with status<>'done'" (narrowing to
+    //   not_started/in_progress would let waiting children slip the gap).
 
     // ⭐ Children of a pinned goal come out first. When a human says "push THIS
     //   stream now", workers should pick from it — this is the single place where
@@ -1617,33 +1887,18 @@ function claim(db, worker, leaseMin = DEFAULT_LEASE_MIN, opts = {}) {
         ORDER BY t.id`
     ).all(String(route), String(line), opts.strictLine ? 1 : 0);
 
-    // ⭐ WIP cap: in-flight count per root chain (all lines combined); count once,
-    //   then look up per candidate.
-    const wipByRoot = new Map();
-    for (const r of db.prepare("SELECT id FROM tasks WHERE status='in_progress'").all()) {
-      const rt = rootOf(db, r.id);
-      wipByRoot.set(rt, (wipByRoot.get(rt) || 0) + 1);
-    }
-
     const cands = cands0
       .map((t) => ({ ...t, pin: pinnedAncestor(db, t.parent_id) }))
       .sort((a, b) => (a.pin == null) - (b.pin == null)
                    || String(b.pin || "").localeCompare(String(a.pin || ""))
                    || a.id - b.id);
 
-    const pick = cands.find((t) => {
-      if (!matchesExecutionProfile(db, t, opts.executionProfile)) return false;
-      if(progressHolds(db,t,"claim").length)return false;
-      if (t.lock_key && heldLocks.has(t.lock_key)) return false;  // lock held -> skip to next candidate
-      if (unfinishedKids.has(Number(t.id))) return false;         // parent gate: children unfinished
-      if (unreleasedAncestor(db, t.parent_id) != null) return false;  // ⭐ ancestor-release invariant
-      if ((wipByRoot.get(rootOf(db, t.id)) || 0) >= WIP_PER_ROOT) return false;  // ⭐ WIP cap
-      // ⭐ No-progress brake: nothing about this card has changed since the dispatch
-      //   that produced nothing. Skipping here is what makes it free — one line
-      //   further down, `attempts` has already been spent.
-      if (noProgressHold(db, t, opts)) return false;
-      return depsSatisfied(db, t).ok;   // broken blocked_by falls on the REFUSAL side
-    });
+    // ⭐ 合同 I5:挑卡 = 第一张 claimBlockers 为空的候选(被拦的跳到下一张,原因不点名)。
+    //   ⭐ No-progress brake inside it: skipping here is what makes it free — one line
+    //   further down, `attempts` has already been spent.
+    const memo = {};
+    const pick = cands.find((t) => claimBlockers(db, t, { claimant: true, executionProfile: opts.executionProfile ?? null,
+                                                          noProgress: opts, memo }).length === 0);
     if (!pick) { db.exec("COMMIT"); return null; }
 
     // ⭐ A claim = a new dispatch = a new budget. The anchor (attempts_base) is
@@ -1787,61 +2042,18 @@ function claimById(db, { id, worker, leaseMin = DEFAULT_LEASE_MIN, runtime = nul
     //   endpoints 400).
     const no = (why, code = ERR.CONFLICT) => { db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_claim_by_id"); return { ok: false, why, code }; };
     if (!t) return no(`卡 #${id} 不存在`, ERR.NOT_FOUND);
-    if (!matchesExecutionProfile(db, t, executionProfile)) return no("任务绑定的执行通道、模型或配置版本与执行器不一致");
-    const structuralHold=progressHolds(db,t,"claim").find(x=>x.code!=="HUMAN_GATE");
-    if(structuralHold)return no(structuralHold.message,structuralHold.code==="TASK_TREE_HELD"?ERR.BAD_INPUT:ERR.CONFLICT);
-    if (t.kind === "goal") return no(`#${id} 是目标,目标不能被认领`);
-    if (t.archived_at) return no(`#${id} 已归档`);
-    if (t.status !== "not_started") return no(`#${id} 现在是 ${t.status}(持有者 ${t.worker || "-"}),不是未开始`);
-    if (!Number(t.released)) return no(`#${id} 未放行`);
-    // Same judgment as claim. Broken ⇒ refuse WITH the reason (never treat as
-    // zero-dependency).
-    const ds = depsSatisfied(db, t);
-    if (ds.broken)
-      return no(`#${id} 的 blocked_by 在库里解析不出来 —— 拒绝领取(不当作零依赖)`, ERR.BAD_INPUT);
-    if (!ds.ok) return no(`#${id} 依赖未完成: #${ds.pending.join(" #")}`);
-    if (t.lock_key) {
-      const held = db.prepare(
-        "SELECT id FROM tasks WHERE status='in_progress' AND lock_key=? AND id<>?"
-      ).get(t.lock_key, Number(id));
-      if (held) return no(`#${id} 的锁 ${t.lock_key} 正被 #${held.id} 占用`);
-    }
-    // ⭐ Lifetime ceiling (same criterion as claim's SQL gate). Refuse by name.
-    if (Number(t.attempts) >= lifetimeCap(t))
-      return no(`#${id} 生涯尝试上限已尽(累计 ${t.attempts} 次 ≥ ${lifetimeCap(t)} = ` +
-                `max_attempts ${t.max_attempts} × 派发轮数上限 ${LIFETIME_DISPATCH_CAP})—— ` +
-                `本轮预算不是问题(每次认领都回满),是这张卡已经烧掉太多轮: ` +
-                `需人工拆分卡、补齐前提或编辑卡提高上限`);
-    // Parent gate (same ruling). Not even by name — refuse and say why.
-    const kids = db.prepare(
-      `SELECT id FROM tasks WHERE parent_id=? AND archived_at IS NULL AND status<>'done'`
-    ).all(Number(id)).map((x) => Number(x.id));
-    if (kids.length)
-      return no(`#${id} 有未完成子任务: #${kids.join(" #")} —— 子任务全部完成后再认领`);
-    // ⭐ Human-gated pre-filter: a card waiting on a human is refused even by name —
-    //   its attempts must not burn at all.
-    if (Number(t.human_gate))
-      return no(`#${id} 是 human-gated(待人工裁定)—— 人裁定后自动开闸,或 update humanGate=0 显式开`);
-    // ⭐ Ancestor-release invariant: an unreleased ancestor blocks all descendants.
-    const ua = unreleasedAncestor(db, t.parent_id);
-    if (ua != null)
-      return no(`#${id} 的祖先 #${ua} 未放行 —— 先放行祖先(release ${ua})或改挂链`);
-    // ⭐ WIP cap: when the root chain is at the cap, no queue-jumping even by name.
-    const rt = rootOf(db, Number(id));
-    const wip = db.prepare("SELECT id FROM tasks WHERE status='in_progress'").all()
-      .map((r) => Number(r.id)).filter((rid) => rootOf(db, rid) === rt);
-    if (wip.length >= WIP_PER_ROOT)
-      return no(`根 #${rt} 的在途卡已达 WIP 上限 ${WIP_PER_ROOT}(在途: #${wip.join(" #")})—— 等在途结清再领`);
-    // ⭐ No-progress brake, by name and with the way out. `force` is the deliberate
-    //   override — a human saying "run it anyway", which IS a reason, unlike a timer
-    //   firing. It is a parameter and not a silent exception because a door that
+    // ⭐ 合同 I5:与挑卡、stuckWhy、首页、wait_for_card 同一份判定(claimBlockers);拒绝时点名最先拦它的那一条
+    //   (先后见 CLAIM_BY_ID_ORDER,与改造前逐条 if 的顺序相同)。原因带类型:claimById 用返回值拒绝,不抛错。
+    // ⭐ No-progress brake: `force` is the deliberate override — a human saying "run it
+    //   anyway". It is a parameter and not a silent exception because a door that
     //   quietly skips the gate is the gate's failure mode.
     const npOpts = { treeRev, extra };
-    const hold = force ? null : noProgressHold(db, t, npOpts);
-    if (hold)
-      return no(`#${id} 自上次派发(${hold.since || "?"})以来状态没有变化 —— 拒绝重复调用模型。` +
-                `要让它再跑,给它新的输入(补充卡面/写裁定意见/推进依赖/更新工作树),` +
-                `或显式强制(force)`);
+    const blockers = claimBlockers(db, t, { claimant: true, executionProfile, noProgress: npOpts, force });
+    const first = firstClaimBlocker(blockers);
+    if (first) {
+      db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_claim_by_id");
+      return { ok: false, why: first.why, code: first.status, blocker: { code: first.code, detail: first.detail }, blockers: publicBlockers(blockers) };
+    }
     // Anchor re-stamp in the SAME shape as claim (so the calibers cannot split
     // between the two doors; SQLite right-hand sides are evaluated on the
     // pre-update row — details at claim's identical UPDATE).
@@ -2742,6 +2954,122 @@ function progressHolds(db,t,action) {
   return out;
 }
 
+/**
+ * ⭐ 合同 I5:「能不能领」的唯一判定。排队领(claim 的挑卡)、按号领(claimById 的拒绝)、stuckWhy(progress_blockers →
+ *   首页一句话 / 面板 / 简报)、桥 wait_for_card 用的列卡口(server 按它过滤)全调这一个函数。返回 [{code, detail, ...}],空 = 能领。
+ *   每项另带 why(按号领拒绝时的原文)、message / next_action(诊断用的原文)、related(相关卡号)、status(按号领拒绝的错误类)。
+ *   返回顺序 = stuckWhy 的顺序;按号领挑「第一个拦它的」按 CLAIM_BY_ID_ORDER(两边原有的先后各自不变)。
+ * ctx:
+ *   claimant      true = 有具体领卡方(核执行配置:ctx.executionProfile,null = 不带配置的执行器)
+ *   noProgress    无进展闸的宿主上下文({treeRev, extra, failFp});不给 = 不核(诊断侧没有工作树指纹,另有 no_progress 字段)
+ *   force         操作者显式强制(只放过无进展闸)
+ *   memo          同一次挑卡里复用的查询结果(在途根计数、在途锁、资源占用)
+ * ⚠ 只读、不跑 git、不碰远端;在 claim 的 BEGIN IMMEDIATE 里调用也安全。
+ */
+const CLAIM_CHECKS = new Map();
+/** 第二轮的登记口(引用过期、底提交丢失、卡死):fn(db, rawTask, ctx) → null | {code, detail?, why?, message?, next_action?}。 */
+function registerClaimCheck(name, fn) {
+  if (typeof name !== "string" || !name || typeof fn !== "function") throw err(ERR.BAD_INPUT, "registerClaimCheck(name, fn)");
+  CLAIM_CHECKS.set(name, fn);
+  return () => CLAIM_CHECKS.delete(name);
+}
+const CLAIM_BY_ID_ORDER = ["EXECUTION_PROFILE_MISMATCH", "TASK_TREE_HELD", "TOPOLOGY_NOT_READY", "DELEGATION_NOT_READY",
+  "NOT_CLAIMABLE_KIND", "ARCHIVED", "NOT_STARTED_REQUIRED", "NOT_RELEASED", "SUPERSEDED",
+  "BROKEN_DEPENDENCIES", "DEPENDENCIES_UNFINISHED", "DEP_ARCHIVED", "LOCK_HELD", "RESOURCE_BUSY", "ATTEMPT_LIMIT",
+  "CHILDREN_UNFINISHED", "HUMAN_GATE", "ANCESTOR_NOT_RELEASED", "ROOT_WIP_LIMIT", "NO_PROGRESS"];
+function claimBlockers(db, task, ctx = {}) {
+  const t = task && typeof task.blocked_by === "string" && Object.hasOwn(task, "needs") ? task
+    : db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(task?.id ?? task));
+  if (!t) return [{ code: "NOT_FOUND", detail: {}, why: `卡 #${task?.id ?? task} 不存在`, status: ERR.NOT_FOUND, message: "任务不存在", next_action: "核对卡号" }];
+  const id = Number(t.id), memo = ctx.memo || {}, out = [];
+  const push = (code, o) => out.push({ code, detail: o.detail ?? {}, why: o.why, message: o.message, next_action: o.next_action,
+                                       ...(o.related ? { related: o.related } : {}), status: o.status ?? ERR.CONFLICT });
+  if (t.archived_at) push("ARCHIVED", { why: `#${id} 已归档`, message: "任务已归档", next_action: "恢复后再领" });
+  if (t.kind === "goal") push("NOT_CLAIMABLE_KIND", { why: `#${id} 是目标,目标不能被认领`, message: "目标不能被认领", next_action: "领它下面的子任务" });
+  if (t.status !== "not_started")
+    push("NOT_STARTED_REQUIRED", { detail: { status: t.status }, why: `#${id} 现在是 ${t.status}(持有者 ${t.worker || "-"}),不是未开始`,
+                                   message: "任务不在未开始", next_action: "等它回到未开始" });
+  if (ctx.claimant && !matchesExecutionProfile(db, t, ctx.executionProfile ?? null))
+    push("EXECUTION_PROFILE_MISMATCH", { why: "任务绑定的执行通道、模型或配置版本与执行器不一致", message: "任务绑定的执行配置与领卡方不一致", next_action: "由绑定的执行配置来领" });
+  for (const h of progressHolds(db, t, "claim"))
+    push(h.code, { why: h.code === "HUMAN_GATE" ? `#${id} 是 human-gated(待人工裁定)—— 人裁定后自动开闸,或 update humanGate=0 显式开` : h.message,
+                   message: h.message, next_action: h.next_action, status: h.code === "TASK_TREE_HELD" ? ERR.BAD_INPUT : ERR.CONFLICT });
+  if (!Number(t.released)) push("NOT_RELEASED", { why: `#${id} 未放行`, message: "任务尚未放行", next_action: "核对任务后显式放行" });
+  const sup = supersededBy(db, id);
+  if (sup != null) push("SUPERSEDED", { detail: { by: sup }, related: [sup], why: `#${id} 已被 #${sup} 取代 —— 去领新卡;要恢复先撤销取代`,
+                                        message: "任务已被新卡取代", next_action: "领新卡;要恢复这张就撤销取代" });
+  const ds = depsSatisfied(db, t);
+  if (ds.broken) push("BROKEN_DEPENDENCIES", { related: [], why: `#${id} 的 blocked_by 在库里解析不出来 —— 拒绝领取(不当作零依赖)`,
+                                               message: "依赖字段损坏，拒绝按零依赖处理", next_action: "核对依赖任务与定义", status: ERR.BAD_INPUT });
+  else {
+    if (ds.pending.length) push("DEPENDENCIES_UNFINISHED", { detail: { ids: ds.pending }, related: ds.pending, why: `#${id} 依赖未完成: #${ds.pending.join(" #")}`,
+                                                             message: "依赖任务尚未完成", next_action: "核对依赖任务与定义" });
+    if (ds.archived.length) push("DEP_ARCHIVED", { detail: { ids: ds.archived }, related: ds.archived, why: `#${id} 依赖的 #${ds.archived.join(" #")} 没做完就被归档了 —— 永远等不到`,
+                                                   message: "依赖任务没做完就被归档", next_action: "恢复依赖任务、改依赖或用新卡取代它" });
+  }
+  const ua = unreleasedAncestor(db, t.parent_id);
+  if (ua !== null) push("ANCESTOR_NOT_RELEASED", { related: [ua], why: `#${id} 的祖先 #${ua} 未放行 —— 先放行祖先(release ${ua})或改挂链`,
+                                                   message: "祖先任务尚未放行", next_action: "先核对并放行祖先" });
+  if (Number(t.attempts) >= lifetimeCap(t))
+    push("ATTEMPT_LIMIT", { why: `#${id} 生涯尝试上限已尽(累计 ${t.attempts} 次 ≥ ${lifetimeCap(t)} = ` +
+                                 `max_attempts ${t.max_attempts} × 派发轮数上限 ${LIFETIME_DISPATCH_CAP})—— ` +
+                                 `本轮预算不是问题(每次认领都回满),是这张卡已经烧掉太多轮: ` +
+                                 `需人工拆分卡、补齐前提或编辑卡提高上限`,
+                            message: "累计派发次数已达到上限", next_action: "人工核对失败原因并补充输入或调整任务" });
+  if (t.lock_key) {
+    memo.lockHolders ??= new Map();
+    if (!memo.lockHolders.has(t.lock_key))
+      memo.lockHolders.set(t.lock_key, db.prepare("SELECT id FROM tasks WHERE status='in_progress' AND lock_key=? ORDER BY id").all(t.lock_key).map((x) => Number(x.id)));
+    const held = memo.lockHolders.get(t.lock_key).filter((x) => x !== id);
+    if (held.length) push("LOCK_HELD", { detail: { lock_key: t.lock_key, ids: held }, related: held, why: `#${id} 的锁 ${t.lock_key} 正被 #${held[0]} 占用`,
+                                         message: "执行锁被其他在途任务持有", next_action: "等待在途执行结清" });
+  }
+  const busy = resourceHolders(db, t, memo);
+  if (busy.length) {
+    const cards = [...new Set(busy.filter((b) => b.card_id != null).map((b) => b.card_id))];
+    const first = busy[0];
+    push("RESOURCE_BUSY", { detail: { resources: busy }, related: cards,
+      why: `#${id} 需要的资源 ${first.resource} 正被${first.kind === "card" ? ` #${first.card_id}(${first.holder || "-"})` : `协作锁 ${first.lock_id}(${first.holder})`}占用` +
+           (first.minutes != null ? `,已 ${first.minutes} 分钟` : ""),
+      message: "需要的资源正被占用", next_action: "等占用方结清或释放资源" });
+  }
+  // WIP cap: in-flight count per root chain (all lines combined). 计一次,挑卡时逐张查。
+  if (!memo.wipByRoot) {
+    memo.wipByRoot = new Map();
+    for (const r of db.prepare("SELECT id FROM tasks WHERE status='in_progress' ORDER BY id").all()) {
+      const rt = rootOf(db, r.id);
+      if (!memo.wipByRoot.has(rt)) memo.wipByRoot.set(rt, []);
+      memo.wipByRoot.get(rt).push(Number(r.id));
+    }
+  }
+  const rt = rootOf(db, id), wip = (memo.wipByRoot.get(rt) || []).filter((x) => x !== id);
+  if (wip.length >= WIP_PER_ROOT)
+    push("ROOT_WIP_LIMIT", { related: wip, why: `根 #${rt} 的在途卡已达 WIP 上限 ${WIP_PER_ROOT}(在途: #${wip.join(" #")})—— 等在途结清再领`,
+                             message: "同一根树的在途任务已达上限", next_action: "等待已有执行结清" });
+  const open = db.prepare("SELECT id FROM tasks WHERE parent_id=? AND archived_at IS NULL AND status<>'done' ORDER BY id").all(id).map((x) => Number(x.id));
+  if (open.length) push("CHILDREN_UNFINISHED", { related: open, why: `#${id} 有未完成子任务: #${open.join(" #")} —— 子任务全部完成后再认领`,
+                                                 message: "子任务尚未全部完成", next_action: "先推进未完成子任务" });
+  if (ctx.noProgress && !ctx.force) {
+    const hold = noProgressHold(db, t, ctx.noProgress);
+    if (hold) push("NO_PROGRESS", { detail: { since: hold.since || null },
+      why: `#${id} 自上次派发(${hold.since || "?"})以来状态没有变化 —— 拒绝重复调用模型。` +
+           `要让它再跑,给它新的输入(补充卡面/写裁定意见/推进依赖/更新工作树),或显式强制(force)`,
+      message: "自上次派发以来没有新输入", next_action: "补充卡面、写裁定意见或推进依赖" });
+  }
+  for (const [name, fn] of CLAIM_CHECKS) {
+    let r; try { r = fn(db, t, ctx); } catch (e) { r = { code: "CLAIM_CHECK_FAILED", detail: { check: name }, why: `领卡检查 ${name} 出错:${String(e?.message || e).slice(0, 120)}` }; }
+    if (r && typeof r.code === "string") push(r.code, { detail: r.detail, why: r.why || r.message || r.code, message: r.message || r.why || r.code, next_action: r.next_action || "查看原因", related: r.related });
+  }
+  return out;
+}
+/** 按号领拒绝时报哪一条:CLAIM_BY_ID_ORDER 里最靠前的(登记口来的排最后)。 */
+function firstClaimBlocker(list) {
+  const rank = (c) => { const i = CLAIM_BY_ID_ORDER.indexOf(c); return i < 0 ? CLAIM_BY_ID_ORDER.length : i; };
+  return list.length ? [...list].sort((a, b) => rank(a.code) - rank(b.code))[0] : null;
+}
+/** 对外的形 [{code, detail}](合同 I5);内部字段不出门。 */
+const publicBlockers = (list) => list.map((b) => ({ code: b.code, detail: b.detail }));
+
 /** Current local reasons only; absence is not a grant to run a provider or a remote action. */
 function stuckWhy(db,task) {
   const id=typeof task==="object"&&task!==null?task.id:task;
@@ -2750,23 +3078,16 @@ function stuckWhy(db,task) {
   if(!t)throw err(ERR.NOT_FOUND,"任务不存在");
   if(t.archived_at||t.status==="done"||t.status==="in_progress")return [];
   const action=t.kind==="goal"?"complete_goal":t.status==="not_started"?"claim":t.waiting_for==="rearm"?"rearm":"review";
+  // 合同 I5:未开始的卡,阻塞原因 = claimBlockers 原样(同一份判定)。原有各码的形不变(code/action/message/next_action/related_task_ids);
+  //   第 8 波新码(SUPERSEDED / DEP_ARCHIVED / RESOURCE_BUSY 与登记口来的)另带 detail,首页一句话按 code + detail 拼。
+  if(action==="claim"){
+    const OLD_SHAPE=new Set(["TASK_TREE_HELD","TOPOLOGY_NOT_READY","DELEGATION_NOT_READY","HUMAN_GATE","NOT_RELEASED","BROKEN_DEPENDENCIES","DEPENDENCIES_UNFINISHED","ANCESTOR_NOT_RELEASED","ATTEMPT_LIMIT","LOCK_HELD","ROOT_WIP_LIMIT","CHILDREN_UNFINISHED"]);
+    return claimBlockers(db,t,{}).map(b=>({code:b.code,action,message:b.message,next_action:b.next_action,
+      ...(b.related?{related_task_ids:b.related}:{}),...(OLD_SHAPE.has(b.code)?{}:{detail:b.detail})}));
+  }
   const out=progressHolds(db,t,action);
   const push=(code,message,next_action,extra={})=>out.push({code,action,message,next_action,...extra});
-  if(action==="claim"){
-    if(!t.released)push("NOT_RELEASED","任务尚未放行","核对任务后显式放行");
-    const ds=depsSatisfied(db,t);
-    if(!ds.ok)push(ds.broken?"BROKEN_DEPENDENCIES":"DEPENDENCIES_UNFINISHED",ds.broken?"依赖字段损坏，拒绝按零依赖处理":"依赖任务尚未完成","核对依赖任务与定义",{related_task_ids:ds.pending??[]});
-    const ua=unreleasedAncestor(db,t.parent_id);
-    if(ua!==null)push("ANCESTOR_NOT_RELEASED","祖先任务尚未放行","先核对并放行祖先",{related_task_ids:[ua]});
-    if(t.attempts>=lifetimeCap(t))push("ATTEMPT_LIMIT","累计派发次数已达到上限","人工核对失败原因并补充输入或调整任务");
-    if(t.lock_key){
-      const held=db.prepare("SELECT id FROM tasks WHERE status='in_progress' AND lock_key=? AND id<>? ORDER BY id").all(t.lock_key,id);
-      if(held.length)push("LOCK_HELD","执行锁被其他在途任务持有","等待在途执行结清",{related_task_ids:held.map(x=>Number(x.id))});
-    }
-    const rt=rootOf(db,id),wip=db.prepare("SELECT id FROM tasks WHERE status='in_progress'").all().filter(x=>rootOf(db,x.id)===rt);
-    if(wip.length>=WIP_PER_ROOT)push("ROOT_WIP_LIMIT","同一根树的在途任务已达上限","等待已有执行结清",{related_task_ids:wip.map(x=>Number(x.id))});
-  }
-  if(action==="rearm"||action==="claim"){
+  if(action==="rearm"){
     const children=db.prepare("SELECT id,status FROM tasks WHERE parent_id=? AND archived_at IS NULL ORDER BY id").all(id),open=children.filter(x=>x.status!=="done");
     if(open.length)push("CHILDREN_UNFINISHED","子任务尚未全部完成","先推进未完成子任务",{related_task_ids:open.map(x=>Number(x.id))});
     else if(action==="rearm"&&!children.length)push("NO_REARM_CHILDREN","没有可用于重新送审的未归档子任务","核对派生关系与归档状态");
@@ -2959,7 +3280,7 @@ function update(db, args) {
 function updateInner(db, fields) {
   const { id, line, route, maxAttempts, lockKey, needsBash, verifyCmd,
           subject, description, acceptance, summary, parentId, weight, humanGate,
-          oneofKey, provesParent, blockedBy } = fields;
+          oneofKey, provesParent, blockedBy, batch } = fields;
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(id));
   if (!t) throw err(ERR.NOT_FOUND, `卡 #${id} 不存在`);
   // An in-progress card refuses edits to EVERY field, with exactly one exception: a
@@ -3022,6 +3343,12 @@ function updateInner(db, fields) {
   //   one group.
   if (oneofKey !== undefined)    { sets.push("oneof_key=?");    args.push(oneofKey ? String(oneofKey) : null); }
   if (provesParent !== undefined){ sets.push("proves_parent=?");args.push(provesParent ? 1 : 0); }
+  // 合同 I3:同批键经 update 改(null / 空串 = 移出批)。批满 20 张拒。
+  if (batch !== undefined) {
+    const key = normBatchKey(batch);
+    if (key !== (t.batch_key ?? null)) assertBatchRoom(db, key, id);
+    sets.push("batch_key=?"); args.push(key);
+  }
   // Ladder starting rung. Everyone who changes it — card author / coordinator /
   // review / re-orchestration — passes through HERE (set_weight goes via /update,
   // same mandatory pass as set_line). Same expression as add().
@@ -3144,6 +3471,8 @@ function reopen(db, args) {
         detail: eventState(after, { from_status: before?.status ?? null }),
       });
     }
+    // 合同 I2:做完的依赖被重开 → 实际等它的下游里已完成 / 执行中 / 已交付的挂 basis_changed(同一事务)。
+    if (out.changed && before?.status === "done") out.basis_changed = markBasisChanged(db, Number(args.id), args.actor || "human");
     db.exec(ownsTransaction ? "COMMIT" : "RELEASE store_reopen");
     return out;
   } catch (e) { try { db.exec(ownsTransaction ? "ROLLBACK" : "ROLLBACK TO store_reopen; RELEASE store_reopen"); } catch {} throw e; }
@@ -3474,6 +3803,10 @@ module.exports = {
   // fire it directly).
   LIFETIME_DISPATCH_CAP, DEFAULT_MAX_ATTEMPTS, backfillAttemptsBase,
   WIP_PER_ROOT, rootOf, unreleasedAncestor, depsSatisfied, normalizeDeps, dependentsOf,
+  // 合同 I1–I5(第 8 波 8a):领卡唯一判定与卡之间的关系。
+  claimBlockers, registerClaimCheck, publicBlockers, depTargets, supersede, supersededBy, supersedesOf, resolveSuperseded,
+  markBasisChanged, basisChanged, ackBasis, setBatch, setNeeds, normBatchKey, normNeeds, relationFields, resourceHolders,
+  REL_NAME_RE, BATCH_MAX, NEEDS_MAX, SUPERSEDE_CHAIN_MAX,
   // Verdict-caliber migration (one shot when the column is added; tests fire it
   // directly).
   backfillVerdictCaliber,

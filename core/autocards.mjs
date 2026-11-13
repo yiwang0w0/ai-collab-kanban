@@ -57,7 +57,8 @@ export function composeAssemble({ goal, target, target_sha = null, kids = [] }) 
   L.push(`待合提交(按依赖先后,${todo.length} 笔):`);
   if (!todo.length) L.push("  (没有:子卡的提交都已在目标分支里)");
   todo.forEach((k, i) => {
-    L.push(`${i + 1}. #${k.id}「${k.title}」 — ${k.head ? "提交 " + short(k.head) : "没有交付提交(只有交付正文),要人确认怎么合"} · ${STATE_TEXT[k.state] || STATE_TEXT.unknown}`);
+    L.push(`${i + 1}. #${k.id}「${k.title}」 — ${k.head ? "提交 " + short(k.head) : "没有交付提交(只有交付正文),要人确认怎么合"} · ${STATE_TEXT[k.state] || STATE_TEXT.unknown}` +
+           (k.batch ? ` · 同批「${k.batch.key}」${k.batch.done}/${k.batch.total}` : ""));
     const fmt = (xs) => xs.map((c) => `${c.name} ${STATUS_TEXT[c.status] || c.status}`).join("、");
     L.push(`   已核检查:${k.verified.length ? fmt(k.verified) : "无"};自报检查:${k.self.length ? fmt(k.self) : "无"}`);
     if (k.missing.length) L.push(`   没跑的必需检查:${k.missing.join("、")}`);
@@ -103,6 +104,8 @@ export function openAutocards({ db, store, cred, integ, occ, release, afterEdit 
     db.exec(`CREATE TABLE IF NOT EXISTS auto_triggers (rule TEXT NOT NULL, key TEXT NOT NULL, at TEXT NOT NULL, result TEXT, PRIMARY KEY (rule, key))`);
     db.exec(`CREATE TABLE IF NOT EXISTS auto_cards (task_id INTEGER PRIMARY KEY, kind TEXT NOT NULL, goal_id INTEGER NOT NULL, sig TEXT, at TEXT NOT NULL)`);
   }
+  // 合同 I1(8a):被取代的卡 —— 条件放行以它为源 = broken;候选组装清单不列它。旧 store 没有取代 = 恒 false。
+  const superseded = (id) => (typeof store.supersededBy === "function" ? store.supersededBy(db, Number(id)) != null : false);
   const trigger = (rule, key) => db.prepare("SELECT at, result FROM auto_triggers WHERE rule=? AND key=?").get(rule, String(key)) || null;
   /** 先写触发记录再做:写不进(已有)= 已经做过,返回 false。 */
   const claimTrigger = (rule, key, result = "pending") => db.prepare("INSERT OR IGNORE INTO auto_triggers(rule, key, at, result) VALUES(?,?,?,?)").run(rule, String(key), now(), result).changes > 0;
@@ -133,7 +136,8 @@ export function openAutocards({ db, store, cred, integ, occ, release, afterEdit 
     if (!r) return null;
     const src = store.get(db, Number(r.source)), trig = trigger("release_on", r.id);
     const failed = trig && String(trig.result || "").startsWith("failed") ? String(trig.result).slice("failed:".length).trim() || "放行没成功" : null;
-    return { card: Number(r.source), event: r.event, broken: !src || !!src.archived_at, fired: !!trig && !failed && trig.result !== "pending", failed, at: r.at };
+    // 源卡被取代(合同 I1 × I8)也算 broken:不沿取代链去等新卡,由人处理。
+    return { card: Number(r.source), event: r.event, broken: !src || !!src.archived_at || superseded(r.source), fired: !!trig && !failed && trig.result !== "pending", failed, at: r.at };
   }
   /** 「等条件放行」:未放行、未开始、规则有效且还没触发。首页「要本人做的事」不列这种卡(server 以阻塞码 RELEASE_ON_PENDING 表达)。 */
   function awaitsRule(t) {
@@ -149,7 +153,7 @@ export function openAutocards({ db, store, cred, integ, occ, release, afterEdit 
       const t = store.get(db, Number(r.task_id));
       if (!t || t.archived_at || t.released || t.status !== "not_started") continue;
       const src = store.get(db, Number(r.source));
-      if (!src || src.archived_at) continue;                         // broken:不触发,由人处理
+      if (!src || src.archived_at || superseded(src.id)) continue;   // broken(含源卡被取代):不触发,由人处理
       const hit = src.status === "done" || (r.event === "delivered" && ((src.status === "waiting" && src.waiting_for === "review") || deliveredSince(src.id, r.at)));
       if (!hit) continue;
       if (!claimTrigger("release_on", r.id)) continue;
@@ -176,14 +180,16 @@ export function openAutocards({ db, store, cred, integ, occ, release, afterEdit 
     const s = summary?.kids.find((x) => x.id === Number(k.id));
     const paths = [...new Set([...(f.fingerprint?.files || []).map((x) => x.path), ...occ.touchesOf(k.id)])];
     return { id: Number(k.id), title: clean(k.subject, 60), head: f.fingerprint?.head_commit ?? null, state: s?.state ?? "unknown",
-             verified, self, missing, baseline: (f.baseline?.red || []).map((b) => ({ check: b.check, by: b.by })), paths, blocked_by: k.blocked_by };
+             verified, self, missing, baseline: (f.baseline?.red || []).map((b) => ({ check: b.check, by: b.by })), paths, blocked_by: k.blocked_by,
+             // 合同 I3(8a):同批的卡标批名与 n/m(批里已完成 / 全部)。
+             batch: (() => { const b = typeof store.relationFields === "function" ? store.relationFields(db, k).batch : null; return b ? { key: clean(b.key, 64), done: b.done, total: b.total } : null; })() };
   }
   async function sweepAssemble() {
     for (const g of integ.goals()) {
       if (!g.assemble) continue;
       const goal = store.get(db, Number(g.id));
       if (!goal || goal.archived_at) continue;
-      const kids = integ.kidsOf(goal.id);
+      const kids = integ.kidsOf(goal.id).filter((k) => !superseded(k.id));   // 被取代的子卡不算、不列
       if (!kids.length || !kids.every((k) => k.status === "done")) continue;
       const sig = sha(JSON.stringify([g.target, ...kids.map((k) => [Number(k.id), cred.currentDigest(k.id)])]));
       const existing = db.prepare("SELECT * FROM auto_cards WHERE goal_id=? AND kind='assemble'").get(Number(goal.id));

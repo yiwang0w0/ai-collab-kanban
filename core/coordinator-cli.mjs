@@ -46,6 +46,8 @@ export const TURN_SCHEMA=freeze({
       subject:{type:"string",minLength:1},summary:{type:"string"},description:{type:"string"},acceptance:{type:"string"},
       line:{type:["string","null"]},after:{type:"array",items:{type:"integer",minimum:1}},
       needs_confirm:{type:"boolean"},needs_bash:{type:"boolean"},
+      // 合同 I3 / I4:可选。同批名、互斥资源名;不合规由建卡处静默不设。
+      batch:{type:"string"},needs:{type:"array",items:{type:"string"}},
      },
     }},
    },

@@ -200,6 +200,13 @@ export function entryOf(e, ctx = {}) {
     // 合同 I8(core/autocards.mjs):操作者事先写的条件到了,板按同一条放行路放行(或没能放行)。
     case "release.auto": summary = d.ok === false ? `条件到了(#${Number(d.source) || "?"} ${d.event === "done" ? "完成" : "交付"}),但没能自动放行${d.error ? ":" + safeText(d.error, 50) : ""}`
       : `按条件自动放行(#${Number(d.source) || "?"} ${d.event === "done" ? "已完成" : "已交付"})`; break;
+    // 合同 I1–I4(第 8 波):取代、依赖作废、同批、互斥资源。
+    case "supersede": summary = `${who}标记为被 #${Number(d.by) || "?"} 取代`; break;
+    case "supersede.revoked": summary = `${who}撤销了取代`; break;
+    case "dep.reopened": summary = `依赖 #${Number(d.dep) || "?"} 被重开,这张卡做的前提可能变了`; break;
+    case "basis.ack": summary = `${who}确认已看过依赖的变化`; break;
+    case "batch.set": summary = d.to ? `${who}放进批「${safeText(d.to, 24)}」` : `${who}移出了批`; break;
+    case "needs.set": summary = Array.isArray(d.to) && d.to.length ? `${who}设了要独占的资源:${safeText(d.to.join("、"), 60)}` : `${who}清掉了要独占的资源`; break;
     default: summary = `记录:${cut(e.kind, 24)}`;
   }
   return { at: e.at, kind: e.kind, actor: who0, actor_kind, step, summary: cut(summary, 120) };

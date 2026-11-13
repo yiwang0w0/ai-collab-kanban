@@ -13,8 +13,10 @@ const clean = (s, max = TITLE_MAX) => cut(redactText(String(s ?? "")), max);
 // ── G1:运行中 = 「已放行、未完成、不在本人手上」的全部卡,面板与接口同一份 ──────────────────────────────
 export const NOTE_FRESH_MS = 15 * 60000;   // live_note 多久内算「新鲜」:超过就不当作一句实时进度
 export const ONE_LINE_CODES = ["stalled", "line_stopped", "seat_not_ready", "pool_down", "source_gate", "wip_limit",
-  "waiting_dep", "waiting_review_auto", "waiting_peer", "rearm", "unclaimed"];
-const DEP_BLOCKERS = new Set(["DEPENDENCIES_UNFINISHED", "ANCESTOR_NOT_RELEASED", "CHILDREN_UNFINISHED", "LOCK_HELD"]);
+  "waiting_dep", "waiting_review_auto", "waiting_peer", "rearm", "unclaimed",
+  // 合同 I5(第 8 波):被取代 / 依赖没做完就归档 / 要的资源被占 / 执行锁被占(原先混在 waiting_dep 里)。
+  "superseded", "dep_archived", "resource_busy", "lock_held"];
+const DEP_BLOCKERS = new Set(["DEPENDENCIES_UNFINISHED", "ANCESTOR_NOT_RELEASED", "CHILDREN_UNFINISHED"]);
 
 /** 心跳新鲜度,与面板 hbClass 同一判据:租约过了 / 没有心跳 / 静默超过 3 分钟 = dead,超过 1 分钟 = stale。 */
 export function hbOf(t, now) {
@@ -62,19 +64,30 @@ export function holderAndLine(t, ctx = {}) {
       const kids = idsOf(bl.find((b) => b.code === "CHILDREN_UNFINISHED"));
       return { holder: { kind: "dep", label: depLabel(kids), since: updated }, one_line: oneLine("waiting", "rearm", { ids: kids }) };
     }
-    if (t.waiting_for === "dep") {
-      const deps = idsOf(bl.find((b) => DEP_BLOCKERS.has(b.code)));
-      return { holder: { kind: "dep", label: depLabel(deps), since: updated }, one_line: oneLine("waiting", "waiting_dep", { ids: deps }) };
-    }
     return { holder: { kind: "dep", label: "等待中", since: updated }, one_line: oneLine("none") };
   }
   // 未开始、已放行:跨机等对端 → 等依赖 → 同树在途上限 → 排队(看线能不能来领)。
   const released = t.execution_trace?.released_at || updated;
   if (bl.some((b) => b.code === "DELEGATION_NOT_READY"))
     return { holder: { kind: "peer", label: "对端电脑", since: released }, one_line: oneLine("waiting", "waiting_peer") };
+  const holder = { kind: "queue", label: t.line ? clean(ctx.lineLabel?.(t.line) || t.line, 32) : "未指定线", since: released };
+  // 合同 I5:码与参数取自 progress_blockers(= store.claimBlockers);文案在面板按 code + params 拼,这里不写句子。
+  const sup = bl.find((b) => b.code === "SUPERSEDED"), supBy = Number(sup?.detail?.by);
+  if (sup) return { holder, one_line: oneLine("blocked", "superseded", { by: Number.isSafeInteger(supBy) ? supBy : null }) };
+  const arch = bl.find((b) => b.code === "DEP_ARCHIVED");
+  if (arch) return { holder: { kind: "dep", label: depLabel(idsOf(arch)), since: released }, one_line: oneLine("blocked", "dep_archived", { ids: idsOf(arch) }) };
   const dep = bl.find((b) => DEP_BLOCKERS.has(b.code));
   if (dep) return { holder: { kind: "dep", label: depLabel(idsOf(dep)), since: released }, one_line: oneLine("waiting", "waiting_dep", { ids: idsOf(dep) }) };
-  const holder = { kind: "queue", label: t.line ? clean(ctx.lineLabel?.(t.line) || t.line, 32) : "未指定线", since: released };
+  const lock = bl.find((b) => b.code === "LOCK_HELD");
+  if (lock) return { holder: { kind: "dep", label: depLabel(idsOf(lock)), since: released }, one_line: oneLine("waiting", "lock_held", { ids: idsOf(lock) }) };
+  const busy = bl.find((b) => b.code === "RESOURCE_BUSY");
+  if (busy) {
+    const rs = (Array.isArray(busy.detail?.resources) ? busy.detail.resources : []).filter((r) => r && typeof r.resource === "string");
+    const names = [...new Set(rs.map((r) => clean(r.resource, 80)))];
+    return { holder: { kind: "dep", label: names.length ? "等资源 " + names.slice(0, 2).join("、") : "等资源", since: released },
+             one_line: oneLine("waiting", "resource_busy", { resources: names, ids: idsOf(busy),
+               locks: [...new Set(rs.filter((r) => r.kind === "lock" && Number.isSafeInteger(r.lock_id)).map((r) => r.lock_id))] }) };
+  }
   const wip = bl.find((b) => b.code === "ROOT_WIP_LIMIT");
   if (wip) return { holder, one_line: oneLine("blocked", "wip_limit", { ids: idsOf(wip) }) };
   if (bl.length) return { holder, one_line: oneLine("none") };   // 别的阻塞(次数上限、任务树…):原因在侧栏,这里不编

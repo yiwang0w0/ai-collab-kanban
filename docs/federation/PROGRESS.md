@@ -1433,3 +1433,4 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - panelcopytest、panelsidetest、hometest、homebackgroundtest 增改;临时板真鼠标走查截图。没有调用模型。阻塞:无。
 - 2026-11-14 公告板 v3 第 8 波占用与整合(claude/board-v3-w8-occ,合同 I6–I9):文件占用表(touches / declare_paths / 未验收交付的 files,只提示)、目标的整合阶段(只读 git 定时扫缓存)、条件放行 release_on(actor=rule,只触发一次)、候选组装卡(未放行,只出一次、重开后重拼);新写字段只给操作者。
 - 第 7 波欠账:指纹没记上时徽标降为 self_reported 带 fingerprint_missing;测试共用取端口函数 tests/helpers/free-port.mjs(过滤 fetch 拒绝的端口);首页 type 对不上时应答带 attention_type_mismatch。新增 occupancytest;没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 8 波关系与领卡判定(claude/board-v3-w8-rel,合同 I1–I5):领卡闸收成 store.claimBlockers 一份(排队领 / 按号领 / stuckWhy / 首页一句话 / 列卡口),按号领 409 带 code / detail;取代(只追加、沿链解析)、依赖重开 → basis_changed + ack、依赖归档 → DEP_ARCHIVED、同批 batch、互斥资源 needs(RESOURCE_BUSY);新写接口只给操作者。新增 cardrelationstest(含真 stdio 桥),homebackgroundtest 增例。没有调用模型。阻塞:无。

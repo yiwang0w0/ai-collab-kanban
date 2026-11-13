@@ -301,6 +301,9 @@ function normalizeCoordinatorPlan(raw) {
       else if (!task.after.includes(a)) task.after.push(a);
     }
     task.after.sort((a, b) => a - b);
+    // 合同 I3 / I4:计划项可带 batch(同批名)/ needs(互斥资源名);原样带到建卡,合规与否由建卡处判(不合规静默不设)。
+    if (typeof t?.batch === "string" && t.batch.trim()) task.batch = t.batch.trim();
+    if (Array.isArray(t?.needs) && t.needs.length) task.needs = t.needs.filter((x) => typeof x === "string").slice(0, 16);
     return task;
   });
   return issues.length ? { ok: false, issues } : { ok: true, plan: { goal, tasks } };

@@ -349,12 +349,7 @@ function wave8Fields(t, o) {
   const out = { touches: occ.touchesOf(t.id), overlaps: occ.overlapsFor(t), release_on, auto_kind: auto.autoKindOf(t.id) };
   if (t.kind === "goal") { const cfg = integ.get(t.id); out.integrate = cfg; }
   else out.integration = integ.childField(t);
-  if (auto.awaitsRule(t)) {
-    const blockers = Array.isArray(o.progress_blockers) ? o.progress_blockers : [];
-    out.progress_blockers = [...blockers, { code: "RELEASE_ON_PENDING", action: "claim",
-      message: `等 #${release_on.card} ${release_on.event === "done" ? "完成" : "交付"}后自动放行`, next_action: "无需操作:条件到了看板自动放行(要提前就撤销条件后手动放行)",
-      related_task_ids: [release_on.card] }];
-  }
+  // RELEASE_ON_PENDING 由 store.claimBlockers 的登记口给出(见 auto.migrate() 之后的 registerClaimCheck),这里不再追加。
   return out;
 }
 const taskOutBase = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
@@ -367,6 +362,8 @@ const taskOutBase = (t) => { if(!t)return t; const profile=taskProfilePreview(t)
   ...(repair.digest?{verification_repair_digest:repair.digest}:{}),
   ...(profile ? {execution_profile:profile} : {}),
   progress_blockers: store.stuckWhy(db,t),
+  // 合同 I1–I4:superseded_by / supersedes / batch{key,members,done,total} / needs / basis_changed(只读;写只经操作者接口)。
+  ...store.relationFields(db, t),
   // 执行者 heartbeat 带的临时进度(core/connect.mjs):只在这次 run 执行中时有值,不进历史。
   ...connect.liveNote(t),
   // 外部执行者「已启动」的依据(合同 B 裁定):最近这一轮(run_id)领取后第一次心跳的时刻 —— 对方自报,看板没有观察到进程。交付/完成后仍保留(侧栏五步条要显示);受管线恒 null。
@@ -535,7 +532,9 @@ const evidence = openEvidence({ db, store, dir: join(store.DATA_DIR, "evidence_f
 evidence.migrate();
 // 合同 I6–I9(第 8 波 8b):占用表(core/occupancy.mjs)、整合阶段(core/integrate.mjs,只读 git 只在定时扫里跑)、
 //   条件放行与候选组装卡(core/autocards.mjs,事件 → 动作一处登记)。表都在 board.db 里,不往数据目录写新文件。
+// 合同 I1(8a):被取代的卡不计入占用表(skip)。
 const occ = openOccupancy({ db, err: store.err, ERR: store.ERR, filesOf: (id) => cred.currentFiles(id), clean: (s) => cut(redactText(String(s ?? "")), 80),
+  skip: (t) => store.supersededBy(db, Number(t.id)) != null,
   emit: (type, data) => emit(type, data) });
 occ.migrate();
 const integ = openIntegrate({ db, err: store.err, ERR: store.ERR, git: () => GIT?.path || null,
@@ -551,6 +550,14 @@ const auto = openAutocards({ db, store, cred, integ, occ,
   deliveredSince: (id, at) => !!deliveredSinceStmt.get(Number(id), String(at)),
   clean: (s, max = 80) => cut(redactText(String(s ?? "")), max), emit: (type, data) => emit(type, data), log: (s) => console.log(s) });
 auto.migrate();
+// 合同 I5 × I8:「等条件放行」进同一份领卡判定(登记口),progress_blockers 里只出这一条(原先由 wave8Fields 另行追加)。
+store.registerClaimCheck("release_on", (_db, t) => {
+  if (!auto.awaitsRule(t)) return null;
+  const r = auto.releaseOnOf(t);
+  return { code: "RELEASE_ON_PENDING", detail: { card: r.card, event: r.event }, related: [r.card],
+           message: `等 #${r.card} ${r.event === "done" ? "完成" : "交付"}后自动放行`, why: `#${t.id} 等 #${r.card} ${r.event === "done" ? "完成" : "交付"}后自动放行`,
+           next_action: "无需操作:条件到了看板自动放行(要提前就撤销条件后手动放行)" };
+});
 const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t), evidenceOf: (id) => evidence.listOf(id) });
 mdHandoff.migrate();
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
@@ -1664,6 +1671,9 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
     // 合同 I6:计划项可带 touches(这张卡会动哪些路径;只提示)。不合规整项不设。
     if (t.touches != null) { try { const tv = occ.normTouches(t.touches, "touches"); if (tv?.length) occ.setTouches(made[i], tv, actor || "plan"); } catch {} }
     if (relOn) { try { auto.setReleaseOn(made[i], relOn, actor || "plan"); } catch { /* 源卡已归档等:卡已建成未放行,由人放行 */ } }
+    // 合同 I3 / I4:计划项可带 batch / needs(计划经操作者确认才建);不合规(名字、批满 20、资源多于 8)的项静默不设,同 required_checks。
+    if (t.batch != null) { try { const k = store.normBatchKey(t.batch); if (k) store.setBatch(db, { id: made[i], batch: k, actor: actor || "plan" }); } catch {} }
+    if (t.needs != null) { try { const nd = store.normNeeds(t.needs); if (nd.length) store.setNeeds(db, { id: made[i], needs: nd, actor: actor || "plan" }); } catch {} }
   });
   return { made, demoted, held };
 }
@@ -4669,6 +4679,17 @@ const server = http.createServer(async (req, res) => {
       if (req.boundLine) q.line = req.boundLine;
       const r = otherLine ? { tasks: [], archived_count: 0 } : store.list(db, q);
       if (req.boundLine) delete r.archived_count;                       // 全板计数不给绑线执行者
+      // 合同 I5:桥的 wait_for_card 用这个列卡口找「能领的卡」。执行者列未开始的卡时,已放行但领卡判定不让领的卡不列
+      //   (旧桥 9561d10 只看「已放行 + 未开始」,会把领不了的卡交出去再吃 409;服务端过滤后旧桥不改也受益)。
+      //   claimable=1 = 任何角色都可显式要「只列现在能领的」(新桥带它)。判定 = store.claimBlockers,与按号领同一份。
+      const onlyClaimable = url.searchParams.get("claimable") === "1";
+      if (onlyClaimable || (boardRole === "executor" && q.status === "not_started")) {
+        const memo = {}, profile = req.workerSeat?.executionProfile ?? null, np = fpContext();   // git 在事务外、每个请求至多一次(有缓存)
+        r.tasks = r.tasks.filter((t) => {
+          if (!onlyClaimable && !t.released) return true;               // 执行者看未放行的卡照旧(桥自己按 released 筛)
+          return t.status === "not_started" && store.claimBlockers(db, t, { claimant: true, executionProfile: profile, noProgress: np, memo }).length === 0;
+        });
+      }
       // ⭐ The panel's claimable/frozen segmentation must share claim's criteria —
       //   numbers written twice rot once (the frozen segment rotted when the
       //   lifetime cap changed shape).
@@ -4692,6 +4713,13 @@ const server = http.createServer(async (req, res) => {
       if(releaseOn&&(b.released===true||b.released===1))throw store.err(store.ERR.BAD_INPUT,"release_on 只能写在未放行的卡上:不要同时带 released:true");
       if(releaseOn&&b.kind==="goal")throw store.err(store.ERR.BAD_INPUT,"release_on 不写在目标卡上");
       if(releaseOn){const src=store.get(db,releaseOn.card);if(!src)throw store.err(store.ERR.NOT_FOUND,`release_on.card #${releaseOn.card} 不存在`);if(src.archived_at)throw store.err(store.ERR.CONFLICT,`release_on.card #${releaseOn.card} 已归档`);}
+      // 合同 I(第 8 波原则):关系与资源只由操作者写。worker 的派生卡带 batch / needs / 取代相关字段 → 403(不静默丢);
+      //   操作者的先校验,不合规不建卡。取代不在建卡时写,只经 POST /api/tasks/:id/supersede。
+      const REL_KEYS=["batch","needs","supersede","supersedes","superseded_by","batch_key"];
+      if(boardRole!=="operator"&&REL_KEYS.some(k=>Object.hasOwn(b,k)))return json(res,403,{error:"batch / needs / 取代只能由操作者设定",role:boardRole});
+      if(["supersede","supersedes","superseded_by","batch_key"].some(k=>Object.hasOwn(b,k)))
+        throw store.err(store.ERR.BAD_INPUT,"取代关系不在建卡时写:建好后用 POST /api/tasks/:id/supersede;同批用 batch");
+      const relBatch=Object.hasOwn(b,"batch")?store.normBatchKey(b.batch):undefined, relNeeds=Object.hasOwn(b,"needs")?store.normNeeds(b.needs):undefined;
       const allowed=boardRole==="operator"
         ? ["subject","summary","description","acceptance","line","route","parentId","parent_id","blockedBy","verifyCmd","needsBash","kind","execution_profile_id","model","effort"]
         : ["subject","summary","description","acceptance","line","parentId","parent_id","parent_run_id","worker"];
@@ -4744,6 +4772,8 @@ const server = http.createServer(async (req, res) => {
         fields.workerDerived = true;
       }
       if (badRoutable(res, fields)) return;   // creation entrance for route/line domains (ONE criterion)
+      if (relBatch !== undefined) fields.batch = relBatch;
+      if (relNeeds !== undefined) fields.needs = relNeeds;
       const id = store.add(db, fields);
       if (requiredChecks?.length) cred.setRequired(id, requiredChecks, "operator");
       if (touches?.length) occ.setTouches(id, touches, "operator");
@@ -5182,6 +5212,27 @@ const server = http.createServer(async (req, res) => {
       const hide = (c) => (req.boundLine && c.line !== req.boundLine ? { ...c, title: null } : c);
       return json(res, 200, { rows: s.rows.map((r) => ({ path: r.path, cards: r.cards.map(hide) })), overlaps: s.overlaps });
     }
+    // 合同 I1 / I2 / I4:取代、依赖作废「已看过」、互斥资源 —— 只有操作者能写(不在任何非操作者的写白名单里;这里再按角色核一次)。
+    const mrel = p.match(/^\/api\/tasks\/(\d+)\/(supersede|needs|basis\/ack)$/);
+    if (mrel) {
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      if (boardRole !== "operator") return json(res, 403, { error: "取代 / 资源 / 依赖作废确认只能由操作者写", role: boardRole });
+      const id = Number(mrel[1]);
+      if (!store.get(db, id)) return json(res, 404, { error: "不存在" });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象");
+      let r;
+      if (mrel[2] === "supersede") {
+        if (!Object.hasOwn(b, "by")) throw store.err(store.ERR.BAD_INPUT, "要带 by(新卡号;null = 撤销取代)");
+        r = store.supersede(db, { id, by: b.by, actor: "operator" });
+        if (r.changed && b.by != null) emit("task.updated", { id: Number(b.by) });
+      } else if (mrel[2] === "needs") {
+        if (!Object.hasOwn(b, "needs")) throw store.err(store.ERR.BAD_INPUT, "要带 needs(资源名数组;空数组 = 清掉)");
+        r = store.setNeeds(db, { id, needs: b.needs, actor: "operator" });
+      } else r = store.ackBasis(db, { id, actor: "operator" });
+      emit("task.updated", { id });
+      return json(res, 200, { ...r, task: taskOut(store.get(db, id)) });
+    }
     const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs|history))?$/);
     if (mt) {
       const id = Number(mt[1]);
@@ -5232,7 +5283,9 @@ const server = http.createServer(async (req, res) => {
         // site that does NOT pass the catch (claimById returns instead of throwing)
         // — hence it goes through statusFor, so unclassified refusals still raise
         // the alarm.
-        if (!r.ok) return json(res, statusFor({ code: r.code, message: r.why }, "claim"), { error: r.why, id });
+        // 合同 I5:拒绝带最先拦它的那一条 code / detail(原 error 文本不变,另给 why 同文)与全部阻塞 blockers。
+        if (!r.ok) return json(res, statusFor({ code: r.code, message: r.why }, "claim"), { error: r.why, why: r.why, id,
+          ...(r.blocker ? { code: r.blocker.code, detail: r.blocker.detail, blockers: r.blockers } : {}) });
         spec.onClaim(r.task);                    // 合同 H6:记下这一轮领到时的说明版本
         emit("task.claimed", { id, worker: b.worker });
         const claimOverlaps = occ.note(store.get(db, id));     // 合同 I6:只提示,不拦
@@ -5253,6 +5306,10 @@ const server = http.createServer(async (req, res) => {
         if (before) spec.assertSeen(before, seen, badSpecInput);
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: lease });
         Object.assign(r, spec.onHeartbeat(before, b.run_id, seen));   // 合同 H6:spec_version;落后时 spec_changed:{current, yours}
+        // 合同 I1 / I2:执行中被取代 → superseded:{by} + next「停手,交回」(板不强收,租约照常);依赖被重开 → basis_changed。
+        { const sb = store.supersededBy(db, id), bc = store.basisChanged(db, id);
+          if (sb != null) Object.assign(r, { superseded: { by: sb }, next: `这张卡已被 #${sb} 取代:停手,交回(report_result outcome=wait 说明停在哪)` });
+          if (bc.length) Object.assign(r, { basis_changed: bc, ...(sb == null ? { next: `依赖 #${bc.map((x) => x.dep).join(" #")} 被重开过:做的前提可能变了,先确认再继续` } : {}) }); }
         if (boardRole === "executor") {
           coord.touch(db, req.executor.id);
           // 外部执行者这一轮第一次心跳 = 「已启动」(合同 B 订正);推一个 task.* 让流转条与首页跟着亮。
@@ -5388,6 +5445,7 @@ const server = http.createServer(async (req, res) => {
         if (badRoutable(res, b)) return;
         const r = store.reopen(db, { id, expectedVersion:b.expected_version, line: b.line });
         emit("task.reopened", r);
+        for (const did of r.basis_changed || []) emit("task.updated", { id: did });   // 合同 I2:下游挂了 basis_changed
         return json(res, 200, { task: store.get(db, id), ...r });
       }
       if (action === "archive") {

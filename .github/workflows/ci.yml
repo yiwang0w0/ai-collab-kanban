@@ -300,6 +300,9 @@ jobs:
       - name: "occupancytest (file occupancy hints, integrate stage read-only git cache, conditional release once, assemble card once and recomposed, write permissions, declare_paths over stdio)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/occupancytest.mjs
+      - name: "cardrelationstest (one claim judgment for queue/by-id/stuckWhy/home/list, supersede, dep reopened/archived, batch, exclusive needs)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/cardrelationstest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

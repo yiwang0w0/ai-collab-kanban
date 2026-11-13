@@ -140,6 +140,16 @@ test("G1 holder 各 kind 与 one_line 各 code:只读状态字段,判不出 = no
   assert.deepEqual([r.holder, r.one_line], [{ kind: "queue", label: "线up", since: iso(12) }, { kind: "waiting", code: "unclaimed", params: { minutes: 12 }, text: null, at: null }]);
   assert.equal(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "ATTEMPT_LIMIT" }] }).one_line.kind, "none", "别的阻塞不编原因");
   assert.equal(hl({ status: "not_started", released: 1, line: "up" }, { sourceGate: () => true }).one_line.code, "unclaimed", "线在跑就不看源码闸");
+  // 合同 I5(第 8 波):被取代 / 依赖已归档 / 资源被占 / 执行锁被占(原先混在 waiting_dep 里)。码与参数取自 progress_blockers。
+  r = seen(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "SUPERSEDED", related_task_ids: [21], detail: { by: 21 } }, { code: "DEPENDENCIES_UNFINISHED", related_task_ids: [12] }] }));
+  assert.deepEqual([r.holder.kind, r.one_line.kind, r.one_line.code, r.one_line.params], ["queue", "blocked", "superseded", { by: 21 }], "取代先于依赖");
+  r = seen(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "DEP_ARCHIVED", related_task_ids: [5], detail: { ids: [5] } }] }));
+  assert.deepEqual([r.holder.kind, r.holder.label, r.one_line.kind, r.one_line.code, r.one_line.params], ["dep", "等 #5", "blocked", "dep_archived", { ids: [5] }]);
+  r = seen(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "LOCK_HELD", related_task_ids: [7] }] }));
+  assert.deepEqual([r.holder.kind, r.one_line.code, r.one_line.params], ["dep", "lock_held", { ids: [7] }], "执行锁从 waiting_dep 拆出");
+  r = seen(hl({ status: "not_started", released: 1, line: "up", progress_blockers: [{ code: "RESOURCE_BUSY", related_task_ids: [8],
+    detail: { resources: [{ resource: "db:fixture", kind: "card", card_id: 8 }, { resource: "db:fixture", kind: "lock", lock_id: 3 }] } }] }));
+  assert.deepEqual([r.holder.kind, r.holder.label, r.one_line.code, r.one_line.params], ["dep", "等资源 db:fixture", "resource_busy", { resources: ["db:fixture"], ids: [8], locks: [3] }]);
   assert.deepEqual([...codes].sort(), [...ONE_LINE_CODES].sort(), "每个 code 至少一例");
   // 整份应答:排队的在后,组里 running 只数在跑的、queued 数排队的
   const m = backgroundModel({ now: NOW, tasks: [

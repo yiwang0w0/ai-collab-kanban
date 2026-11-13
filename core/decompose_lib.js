@@ -99,6 +99,7 @@ function buildDecomposePrompt({ goal, prev = null, lines, hints = {}, labels = {
     //   但那张卡在面板上就只剩标题 —— 说清这件事,比默默替它从 description 截一段好。
     "- 每张卡写一句 summary:给人看的「要做什么」,一两行白话,不写文件行号、不写实现细节。",
     "- 顺序有依赖就用 after 指出前置(填同一批里的序号,从 1 开始);没有就不填。",
+    "- 几张卡要一起完成才算数,可给它们同一个 batch 名;要独占某个共享资源(如同一个测试库)的卡,在 needs 里写资源名(字母数字与 . _ : / @ -)。没有就不填。",
     "- description 使用执行者五段模板，保留这些标签：goal: / ctx(file:line): / do: / accept(cmd -> expect): / limits:。",
     "- goal 写本卡唯一交付目标；ctx(file:line) 只列必要文件与行号入口，未核实时写待定位，不伪造位置；do 写本卡具体动作。",
     "- accept(cmd -> expect) 与 acceptance 使用同一验收口径：命令 -> 预期退出码、断言或产物；未具备验证条件时明确缺什么。verifyCmd 仍只使用已登记键，不能靠正文新增执行权。",
@@ -145,6 +146,9 @@ const DECOMPOSE_PLAN_SCHEMA = freeze({
           line: { type: ["string", "null"] },
           needs_bash: { type: "boolean" },
           after: { type: "array", items: { type: "integer", minimum: 1 } },
+          // 合同 I3 / I4:可选。同批名与互斥资源名;不合规的由建卡处静默不设,不让整次拆解失败。
+          batch: { type: "string" },
+          needs: { type: "array", items: { type: "string" } },
         },
       },
     },

@@ -47,6 +47,12 @@ else if (message.includes("【坏计划】")) turn = { reply: "改好了。", pl
 else if (message.includes("【先坏后好】")) turn = repair
   ? { reply: "修正好了,请过目。", plan: plan([task("甲", "alpha", []), task("乙", "beta", [1])]) }
   : { reply: "计划出好了。", title: "先坏后好", plan: plan([task("甲", "alpha", []), task("乙", "ghost", [2])]) };
+// 【关系】(cardrelationstest,合同 I3 / I4):计划项带 batch / needs;第 2 张资源名不合规、第 3 张批名是空白 → 建卡时静默不设。
+else if (message.includes("【关系】")) turn = { reply: "计划出好了。", title: "关系", plan: plan([
+  task("甲", "alpha", [], { batch: "b1", needs: ["db:fixture"] }),
+  task("乙", "alpha", [], { batch: "b1", needs: ["bad name!"] }),
+  task("丙", "alpha", [1], { batch: "  ", needs: [] }),
+]) };
 else turn = { reply: `收到:${message.slice("[用户消息]".length).trim().slice(0, 40)}`, plan: null };
 
 // 用量与真实 CLI 同形(2026-11-10 CLI 2.1.322 实测):usage 是这一轮各次调用之和;

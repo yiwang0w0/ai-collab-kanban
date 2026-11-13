@@ -6621,6 +6621,10 @@ function homeStep(t, { autoReview = false, remoteName = null } = {}) {
     // 只差放行:排在别的待办后面,放行前的核对在侧栏里做。
     // 助手(合同 E)挂上的卡一律未放行:写明是谁挂的。
     const by = t.posted_by && typeof t.posted_by.label === "string" && t.posted_by.label.trim() ? t.posted_by.label.trim() : "";
+    // 合同 I2:依赖没做完就被归档 = 永远等不到,要本人处理(故障类)。why = 服务端原因原样。
+    const gone = blockers.find((b) => b.code === "DEP_ARCHIVED");
+    if (gone && !remoteName) return { lane: "mine", state: "依赖已归档", tone: "", next: said(gone, "恢复依赖或改依赖"), rank: 3,
+      ...(typeof gone.message === "string" && gone.message.trim() ? { why: gone.message.trim() } : {}) };
     if (!remoteName && homeAwaitsRelease(t, blockers)) return { lane: "mine", state: by ? by + " 挂上 · 待你放行" : "待放行", tone: "", next: "核对后放行", rank: 5 };
     return { lane: null };
   }
@@ -6677,7 +6681,8 @@ function homeAttnType(row, t) {
   else if (!t) type = "decide";                                                     // 别的电脑的卡:在它那边处理
   else {
     const hands = !!t.ask && t.ask.needs === "hands";
-    if (t.status === "not_started") type = t.human_gate ? (hands ? "hands" : "decide") : "release";
+    if (t.status === "not_started") type = t.human_gate ? (hands ? "hands" : "decide")
+      : (Array.isArray(t.progress_blockers) && t.progress_blockers.some((b) => b && b.code === "DEP_ARCHIVED")) ? "fault" : "release";   // 合同 I2
     else if (t.status === "waiting" && t.waiting_for === "review") type = "accept";
     else if (t.status === "waiting" && (t.waiting_for === "confirm" || t.waiting_for === "decision")) type = hands ? "hands" : t.waiting_for === "confirm" ? "confirm" : "decide";
     else if (t.status === "waiting") type = hands ? "hands" : t.human_gate ? "decide" : "fault";   // 受阻卡 = 故障要你看;有人工闸 = 裁定
