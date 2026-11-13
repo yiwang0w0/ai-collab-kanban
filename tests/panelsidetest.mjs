@@ -109,7 +109,10 @@ function fixture(extra = {}) {
   const side = section("function sideCard(){", "function sideFromHash(){");
   // 第 7 波(H7):侧栏证据区的文案在 cred-copy(纯函数),画面在侧栏这一段里。
   const cred = section("// ── cred-copy(pure;tests/panelcopytest.mjs)──", "// ── /cred-copy ──");
-  vm.runInContext([copy, pure, optional, cred, declaration("ago"), declaration("localTime"), declaration("hbClass"), declaration("tick"), declaration("syncHandoff"), side].join("\n"), context);
+  // 第 8 波:侧栏「关系与占用」一节的文案在 rel-copy(条件放行那句在 bg-copy)。
+  const bg = section("// ── bg-copy(pure;tests/panelcopytest.mjs)──", "// ── /bg-copy ──");
+  const rel = section("// ── rel-copy(pure;tests/panelreltest.mjs)──", "// ── /rel-copy ──");
+  vm.runInContext([copy, pure, optional, cred, bg, rel, declaration("ago"), declaration("localTime"), declaration("hbClass"), declaration("tick"), declaration("syncHandoff"), side].join("\n"), context);
   return { context, task, root, document, setTime: (value) => { clock = value; }, time: () => clock,
     body: document.getElementById("task-side-body"), state: () => document.getElementById("task-side-state") };
 }
@@ -261,7 +264,7 @@ test("目标卡：不画五步条，状态写子任务完成数并列出未完�
   assert.equal(f.document.getElementById("task-side-execution").dataset.tone, "need");
   const more = f.document.getElementById("task-side-more").querySelectorAll("button");
   assert.deepEqual(more.map((b) => [b.textContent, b.dataset.pin ?? b.dataset.rev ?? b.dataset.edit ?? b.dataset.a ?? ""]),
-    [["置顶", "7"], ["起评审卡", "7"], ["编辑", "7"], ["归档", "archive"], ["在「全部任务」中定位", ""]], "有子任务的目标不出重新拆解");
+    [["置顶", "7"], ["起评审卡", "7"], ["编辑", "7"], ["关系与占用…", ""], ["归档", "archive"], ["在「全部任务」中定位", ""]], "有子任务的目标不出重新拆解;第 8 波写入口收在「关系与占用…」");
   assert.equal(more[0].dataset.on, "0");
   // 放行后:状态只写子任务完成数;置顶后按钮换字。没有子任务的目标给重新拆解。
   Object.assign(f.task, { released: true, pinned_at: "2026-10-21T09:00:00.000Z", aggregate_version: 4 }); f.context.renderSide();

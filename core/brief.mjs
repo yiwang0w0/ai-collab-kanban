@@ -28,8 +28,12 @@ function kindOf(row, t) {
   if (row.action === "executor") return "stalled";
   if (row.action === "approval") return row.kind === "request" ? "decision" : "blocked";
   if (!t) return "other";
-  if (t.status === "not_started") return t.human_gate ? "decision"
-    : (Array.isArray(t.progress_blockers) && t.progress_blockers.some((b) => b?.code === "DEP_ARCHIVED")) ? "blocked" : "release";   // 合同 I2:依赖已归档
+  // 合同 I11:未开始的卡有带 attention 的阻塞 → 按它归类(fault → blocked,decide → decision),不逐码写分支。
+  if (t.status === "not_started") {
+    if (t.human_gate) return "decision";
+    const att = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).find((b) => b?.attention === "fault" || b?.attention === "decide")?.attention;
+    return att === "fault" ? "blocked" : att === "decide" ? "decision" : "release";
+  }
   if (t.status === "waiting") return t.waiting_for === "review" ? "review" : ["confirm", "decision"].includes(t.waiting_for) ? "decision" : "blocked";
   return "other";
 }

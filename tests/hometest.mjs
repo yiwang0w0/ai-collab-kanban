@@ -32,8 +32,8 @@ test("助手挂上的未放行卡:「待我处理」写「<名称> 挂上 · 待
 test("decisions and answers wait for me; a delivery waits for me only when no reviewer will take it", () => {
   const tasks = [
     card(4, { waiting_for: "review" }), card(3, { waiting_for: "review", review_hold: "same_family" }),
-    card(2, { waiting_for: "decision" }), card(1, { waiting_for: "confirm" }),
-    card(5, { waiting_for: "dep" }), card(6, { waiting_for: "rearm" }),
+    card(2, { waiting_for: "decision" }), card(1, { waiting_for: "confirm", decision_package: { options: [{ key: "A" }, { key: "B" }] } }),
+    card(6, { waiting_for: "rearm" }),
   ];
   const plain = M.homeLists({ tasks, localName: "台式机 A" });
   assert.deepEqual(ids(plain.mine), [1, 2, 3, 4], "confirm, then decision, then deliveries oldest first");
@@ -54,8 +54,7 @@ test("a card the machine will not move is mine even with the reviewer running", 
     card(4, { waiting_for: "review" }),
     card(5, { waiting_for: "rearm", progress_blockers: [why("CHILDREN_UNFINISHED", "先推进未完成子任务")] }),
     card(6, { waiting_for: "rearm", progress_blockers: [why("NO_NEW_CHILD_RESULT", "核对审阅记录及子任务结果")] }),
-    card(7, { waiting_for: "dep", progress_blockers: [why("DELIVERY_ALREADY_REVIEWED", "按既有审阅意见处理或补充新证据")] }),
-    card(8, { waiting_for: "dep", human_gate: 1, progress_blockers: [why("HUMAN_GATE", "由操作者裁定或显式解除人工闸")] }),
+    card(8, { waiting_for: "rearm", human_gate: 1, progress_blockers: [why("HUMAN_GATE", "由操作者裁定或显式解除人工闸")] }),
     card(9, { status: "not_started", human_gate: 1, progress_blockers: [why("HUMAN_GATE", "由操作者裁定或显式解除人工闸")] }),
     card(10, { status: "not_started", released: 0, progress_blockers: [why("NOT_RELEASED", "核对任务后显式放行")] }),
   ];
@@ -102,7 +101,7 @@ test("侧栏次按钮去哪、受阻原因：心跳中断去执行线，进程�
   const stuck = M.homeStep({ status: "waiting", waiting_for: "rearm",
     progress_blockers: [{ code: "NO_NEW_CHILD_RESULT", message: "未观察到上次审阅之后的新子任务结果", next_action: "核对审阅记录及子任务结果" }] });
   assert.deepEqual([stuck.lane, stuck.state, stuck.why, stuck.next], ["mine", "重审受阻", "未观察到上次审阅之后的新子任务结果", "核对审阅记录及子任务结果"]);
-  assert.equal("why" in M.homeStep({ status: "waiting", waiting_for: "dep", progress_blockers: [{ code: "HUMAN_GATE", next_action: "裁定" }] }), false, "服务端没写原因就不出这一行");
+  assert.equal("why" in M.homeStep({ status: "waiting", waiting_for: "rearm", progress_blockers: [{ code: "HUMAN_GATE", next_action: "裁定" }] }), false, "服务端没写原因就不出这一行");
 });
 
 test("running cards name their executor and a silent one comes first with a warning", () => {
@@ -233,7 +232,7 @@ test("layout pins: home is the landing view, ids fold under 技术信息, hidden
     "visibility is read from the 全部任务 panel itself");
   assert.ok(src.includes("if (!REDUCED.matches && boardShown())") && src.includes("!document.hidden && boardShown()"),
     "FLIP measures and plays only while the columns are visible");
-  assert.ok(src.includes("if (v === \"board\") { if (homeReady) render(); }"),
+  assert.ok(src.includes("if (v === \"board\") { if (homeReady) render(); occLoad(); }"),
     "the columns' shell is never built before meta arrives");
   // One computer: no global-view button in the header, and the detail drops which computer,
   // where the data came from, an unbound project and the cross-computer actions.
@@ -1288,9 +1287,9 @@ test("第 7 波收第 6 波欠账:「要本人做的事」每行的类只在 hom
     card(1, { waiting_for: "review" }),
     card(2, { waiting_for: "decision" }),
     card(3, { waiting_for: "decision", ask: { needs: "hands", what: "插上测试机" } }),
-    card(4, { waiting_for: "confirm" }),
+    card(4, { waiting_for: "confirm", decision_package: { options: [{ key: "A" }, { key: "B" }] } }),
     card(5, { status: "not_started", released: 0, progress_blockers: nr }),
-    card(6, { waiting_for: "dep", progress_blockers: [{ code: "BROKEN_DEPENDENCIES", message: "依赖字段损坏" }] }),
+    card(6, { waiting_for: "blocked", progress_blockers: [{ code: "BROKEN_DEPENDENCIES", message: "依赖字段损坏" }] }),
   ];
   const approvals = [{ id: "lock:7:1", kind: "lock", title: "device:x", created_at: at(6) }, { id: "request:3:1", kind: "request", summary: "重启", created_at: at(5) }];
   const executors = [{ id: "zc", label: "Zcode 甲", state: "stalled", holding: [] }];

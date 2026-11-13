@@ -303,6 +303,9 @@ jobs:
       - name: "cardrelationstest (one claim judgment for queue/by-id/stuckWhy/home/list, supersede, dep reopened/archived, batch, exclusive needs)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/cardrelationstest.mjs
+      - name: "panelreltest (I11 attention rule for home and brief, relation/occupancy copy, gated-confirm copy, write entries only via operator endpoints)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/panelreltest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

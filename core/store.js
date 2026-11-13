@@ -2973,6 +2973,7 @@ function registerClaimCheck(name, fn) {
   CLAIM_CHECKS.set(name, fn);
   return () => CLAIM_CHECKS.delete(name);
 }
+const ATTENTION = new Set(["fault", "decide"]);
 const CLAIM_BY_ID_ORDER = ["EXECUTION_PROFILE_MISMATCH", "TASK_TREE_HELD", "TOPOLOGY_NOT_READY", "DELEGATION_NOT_READY",
   "NOT_CLAIMABLE_KIND", "ARCHIVED", "NOT_STARTED_REQUIRED", "NOT_RELEASED", "SUPERSEDED",
   "BROKEN_DEPENDENCIES", "DEPENDENCIES_UNFINISHED", "DEP_ARCHIVED", "LOCK_HELD", "RESOURCE_BUSY", "ATTEMPT_LIMIT",
@@ -2982,8 +2983,10 @@ function claimBlockers(db, task, ctx = {}) {
     : db.prepare("SELECT * FROM tasks WHERE id=?").get(Number(task?.id ?? task));
   if (!t) return [{ code: "NOT_FOUND", detail: {}, why: `卡 #${task?.id ?? task} 不存在`, status: ERR.NOT_FOUND, message: "任务不存在", next_action: "核对卡号" }];
   const id = Number(t.id), memo = ctx.memo || {}, out = [];
+  // 合同 I11:条目可带 attention("fault"|"decide")= 未开始的卡因它进「要本人做的事」及其类型(面板 / 简报按这个字段走,不逐码写)。
   const push = (code, o) => out.push({ code, detail: o.detail ?? {}, why: o.why, message: o.message, next_action: o.next_action,
-                                       ...(o.related ? { related: o.related } : {}), status: o.status ?? ERR.CONFLICT });
+                                       ...(o.related ? { related: o.related } : {}), ...(ATTENTION.has(o.attention) ? { attention: o.attention } : {}),
+                                       status: o.status ?? ERR.CONFLICT });
   if (t.archived_at) push("ARCHIVED", { why: `#${id} 已归档`, message: "任务已归档", next_action: "恢复后再领" });
   if (t.kind === "goal") push("NOT_CLAIMABLE_KIND", { why: `#${id} 是目标,目标不能被认领`, message: "目标不能被认领", next_action: "领它下面的子任务" });
   if (t.status !== "not_started")
@@ -3005,7 +3008,7 @@ function claimBlockers(db, task, ctx = {}) {
     if (ds.pending.length) push("DEPENDENCIES_UNFINISHED", { detail: { ids: ds.pending }, related: ds.pending, why: `#${id} 依赖未完成: #${ds.pending.join(" #")}`,
                                                              message: "依赖任务尚未完成", next_action: "核对依赖任务与定义" });
     if (ds.archived.length) push("DEP_ARCHIVED", { detail: { ids: ds.archived }, related: ds.archived, why: `#${id} 依赖的 #${ds.archived.join(" #")} 没做完就被归档了 —— 永远等不到`,
-                                                   message: "依赖任务没做完就被归档", next_action: "恢复依赖任务、改依赖或用新卡取代它" });
+                                                   message: "依赖任务没做完就被归档", next_action: "恢复依赖任务、改依赖或用新卡取代它", attention: "fault" });
   }
   const ua = unreleasedAncestor(db, t.parent_id);
   if (ua !== null) push("ANCESTOR_NOT_RELEASED", { related: [ua], why: `#${id} 的祖先 #${ua} 未放行 —— 先放行祖先(release ${ua})或改挂链`,
@@ -3058,7 +3061,7 @@ function claimBlockers(db, task, ctx = {}) {
   }
   for (const [name, fn] of CLAIM_CHECKS) {
     let r; try { r = fn(db, t, ctx); } catch (e) { r = { code: "CLAIM_CHECK_FAILED", detail: { check: name }, why: `领卡检查 ${name} 出错:${String(e?.message || e).slice(0, 120)}` }; }
-    if (r && typeof r.code === "string") push(r.code, { detail: r.detail, why: r.why || r.message || r.code, message: r.message || r.why || r.code, next_action: r.next_action || "查看原因", related: r.related });
+    if (r && typeof r.code === "string") push(r.code, { detail: r.detail, why: r.why || r.message || r.code, message: r.message || r.why || r.code, next_action: r.next_action || "查看原因", related: r.related, attention: r.attention });
   }
   return out;
 }
@@ -3083,7 +3086,7 @@ function stuckWhy(db,task) {
   if(action==="claim"){
     const OLD_SHAPE=new Set(["TASK_TREE_HELD","TOPOLOGY_NOT_READY","DELEGATION_NOT_READY","HUMAN_GATE","NOT_RELEASED","BROKEN_DEPENDENCIES","DEPENDENCIES_UNFINISHED","ANCESTOR_NOT_RELEASED","ATTEMPT_LIMIT","LOCK_HELD","ROOT_WIP_LIMIT","CHILDREN_UNFINISHED"]);
     return claimBlockers(db,t,{}).map(b=>({code:b.code,action,message:b.message,next_action:b.next_action,
-      ...(b.related?{related_task_ids:b.related}:{}),...(OLD_SHAPE.has(b.code)?{}:{detail:b.detail})}));
+      ...(b.related?{related_task_ids:b.related}:{}),...(OLD_SHAPE.has(b.code)?{}:{detail:b.detail}),...(b.attention?{attention:b.attention}:{})}));
   }
   const out=progressHolds(db,t,action);
   const push=(code,message,next_action,extra={})=>out.push({code,action,message,next_action,...extra});

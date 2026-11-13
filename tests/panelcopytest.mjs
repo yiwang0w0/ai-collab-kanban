@@ -1402,7 +1402,7 @@ test("第 7 波文案(H7):验收确认处逐条写明缺的必需检查、过期
   // 面板:确认处不拦人(按钮照旧),上膛的字写明还有几项待看
   assert.ok(source.includes('"再按=仍要通过 · " + credGaps(byId.get(Number(id))).length + " 项待看"'));
   const box = source.slice(source.indexOf("function sideControlsBox("), source.indexOf("\n}", source.indexOf("function sideControlsBox(")));
-  assert.ok(box.includes('const gaps = ctl.kind === "accept" ? credGapsNode(t) : null;') && box.includes('ok.dataset.a = "approve"'), "缺口写在确认处,通过按钮照旧");
+  assert.ok(box.includes('const gaps = ctl.kind === "accept" ? credGapsNode(t) ||') && box.includes('ok.dataset.a = "approve"'), "缺口写在确认处,通过按钮照旧");
 });
 
 test("第 7 波画面(H7):证据图经带凭据的读取画成 data: 地址,不放宽后端头;没有图不占位;必需检查只经「其他」菜单改", () => {

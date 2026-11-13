@@ -1434,3 +1434,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-14 公告板 v3 第 8 波占用与整合(claude/board-v3-w8-occ,合同 I6–I9):文件占用表(touches / declare_paths / 未验收交付的 files,只提示)、目标的整合阶段(只读 git 定时扫缓存)、条件放行 release_on(actor=rule,只触发一次)、候选组装卡(未放行,只出一次、重开后重拼);新写字段只给操作者。
 - 第 7 波欠账:指纹没记上时徽标降为 self_reported 带 fingerprint_missing;测试共用取端口函数 tests/helpers/free-port.mjs(过滤 fetch 拒绝的端口);首页 type 对不上时应答带 attention_type_mismatch。新增 occupancytest;没有调用模型。阻塞:无。
 - 2026-11-14 公告板 v3 第 8 波关系与领卡判定(claude/board-v3-w8-rel,合同 I1–I5):领卡闸收成 store.claimBlockers 一份(排队领 / 按号领 / stuckWhy / 首页一句话 / 列卡口),按号领 409 带 code / detail;取代(只追加、沿链解析)、依赖重开 → basis_changed + ack、依赖归档 → DEP_ARCHIVED、同批 batch、互斥资源 needs(RESOURCE_BUSY);新写接口只给操作者。新增 cardrelationstest(含真 stdio 桥),homebackgroundtest 增例。没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 8 波面板(claude/board-v3-w8-panel,合同 I11 + I1–I9 显示与写入口):阻塞条目带 attention 即进「要本人做的事」(首页与简报只认这个字段;DEP_ARCHIVED 服务端带 fault,登记口的检查带的照样带出);首页一句话新码与条件放行文案;卡面 / 行 / 侧栏的取代、同批、资源与占用方、条件放行、依赖重开「已看过」、改同一处、整合状态、候选组装标签;计划组头「整合 待合 n · 已在 m」;「全部任务」工具条「文件占用」;卡的「关系与占用…」对话框;确认处多同批未完 / 改同一处两类缺口。
+- 第 7 波欠账:审过被闸的卡写「审阅已过 · 自动通过被拦 · 待你验收」(按钮通过 / 打回);1280×800 下「已完成」组头不用滚动;深色模式过一遍;attention_type_mismatch 在组头旁弱提示。
+- 新增 tests/panelreltest.mjs(含变异对照),hometest / panelcopytest / panelsidetest 同步;临时板真鼠标走查截图。没有调用模型。阻塞:无。
