@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const FAKE = join(ROOT, "tests", "helpers", "fake-coordinator-cli.mjs");
@@ -298,10 +299,6 @@ test("性能:500 张卡 / 5000 条事件下的派生字段", (t) => {
 });
 
 // ── 服务层:真看板 + 假协调线 ─────────────────────────────────────────────────────────
-const freePort = async () => {
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
-};
 async function boot(dir) {
   const repo = join(dir, "repo"), cfg = join(dir, "fleet.json"), log = join(dir, "coordinator-calls.jsonl");
   mkdirSync(repo, { recursive: true });

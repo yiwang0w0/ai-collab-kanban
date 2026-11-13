@@ -26,6 +26,7 @@ import {migrateBroker,putRole,issuePrincipal,revokePrincipal} from "../core/mcp/
 import {enrollTask,callTool} from "../core/mcp/tools.mjs";
 
 import {openFleetActions} from "../core/fleet-actions.mjs";
+import {freePort} from './helpers/free-port.mjs';
 const store=createRequire(import.meta.url)("../core/store.js"),TMP=mkdtempSync(join(tmpdir(),"fleet-actions-")),dbs=[],servers=[],controllers=[];let serial=0;
 after(async()=>{for(const a of controllers)await a.close();for(const s of servers){s.closeAllConnections();await new Promise(r=>s.close(r));}for(const db of dbs)try{db.close();}catch{}assert.ok(!relative(tmpdir(),TMP).startsWith(".."));rmSync(TMP,{recursive:true,force:true});});
 function node(projects=["demo"]){
@@ -112,7 +113,7 @@ test("real board HTTP action endpoints enforce operator, origin and coordinator 
  const configPath=join(f.a.dir,"board-config.json"),actionPath=join(f.a.dir,"actions.json");
  writeFileSync(configPath,JSON.stringify({lines:[{id:"fixture",label:"fixture"}],roles:[],routes:["default"],repo:f.a.dir}));
  writeFileSync(actionPath,JSON.stringify(f.a.config));
- const probe=createNetServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
+ const port=await freePort();
  let output="";const root=fileURLToPath(new URL("../",import.meta.url));
  const proc=spawn(process.execPath,[join(root,"core/server.mjs")],{cwd:f.a.dir,windowsHide:true,env:{...harnessEnvironment(),BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:configPath,BOARD_DATA_DIR:f.a.dir,BOARD_DB:f.a.dbPath,BOARD_REPO:f.a.dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_FLEET_ACTIONS_CONFIG:actionPath},stdio:["ignore","pipe","pipe"]});
  proc.stdout.on("data",b=>output+=b);proc.stderr.on("data",b=>output+=b);
@@ -140,7 +141,7 @@ test("real board HTTP action endpoints enforce operator, origin and coordinator 
 });
 test("default board leaves action storage uninitialized and rejects operator writes",{timeout:40000},async()=>{
  const n=node(),configPath=join(n.dir,"board-config.json");writeFileSync(configPath,JSON.stringify({lines:[{id:"fixture",label:"fixture"}],roles:[],routes:["default"],repo:n.dir}));
- const probe=createNetServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
+ const port=await freePort();
  let output="";const proc=spawn(process.execPath,[fileURLToPath(new URL("../core/server.mjs",import.meta.url))],{cwd:n.dir,windowsHide:true,env:{...harnessEnvironment(),BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:configPath,BOARD_DATA_DIR:n.dir,BOARD_DB:n.dbPath,BOARD_REPO:n.dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok",BOARD_FLEET_ACTIONS_CONFIG:""},stdio:["ignore","pipe","pipe"]});
  proc.stdout.on("data",b=>output+=b);proc.stderr.on("data",b=>output+=b);
  const request=(path,options={})=>fetch("http://127.0.0.1:"+port+path,{...options,signal:AbortSignal.timeout(5000)});

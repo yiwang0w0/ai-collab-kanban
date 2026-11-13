@@ -36,7 +36,7 @@ import {readCliVersions} from "./cli-versions.mjs";
 import {openConnect,isLoopback,defaultTokenDir,cardText,cleanText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
 import {briefModel,briefFrom,maxCharsOf} from "./brief.mjs";
 import {openAssistantFeed,parseCursor,modeOf} from "./assistant-feed.mjs";
-import {backgroundModel,stopVerdict,runAutostart,autostartText,quotaModel} from "./home-background.mjs";
+import {backgroundModel,stopVerdict,runAutostart,autostartText,quotaModel,typeAttention} from "./home-background.mjs";
 import {loadAttentionModel} from "./home-model.mjs";
 import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
 import {loadExecutionProfiles,getExecutionProfile,publicExecutionProfiles,executionProfileSnapshot,profileEnvironment} from "./execution-profiles.mjs";
@@ -53,6 +53,9 @@ import {openEvidence} from "./evidence.mjs";
 import {openSpecVersion,checkSeen} from "./spec-version.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
 import {openCredibility} from "./credibility.mjs";
+import {openOccupancy} from "./occupancy.mjs";
+import {openIntegrate} from "./integrate.mjs";
+import {openAutocards,normReleaseOn} from "./autocards.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -337,7 +340,23 @@ const unnamedOf = (t) => {
 // file names, hashes and controlled download endpoints — never source paths.
 // 合同 H1–H4(core/credibility.mjs):任务对象另带 fingerprint / checks / evidence_counts / badge / baseline / required_checks / conclusions。
 //   based_on_stale_spec(合同 H6)若由别的字段段给出,在这里读到(缺失 = false)。
-const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t); return {...o, ...cred.fields(t,{staleSpec:o.based_on_stale_spec===true})}; };
+const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t); return {...o, ...cred.fields(t,{staleSpec:o.based_on_stale_spec===true}), ...wave8Fields(t, o)}; };
+// 合同 I6–I9(第 8 波 8b):touches / overlaps(占用,只提示)、integrate(目标)/ integration(子卡,只读缓存)、
+//   release_on(条件放行)、auto_kind(板自动出的卡)。写了有效 release_on、还没触发的未放行卡在 progress_blockers 里多一条
+//   RELEASE_ON_PENDING:首页「要本人做的事」的判定(homeAwaitsRelease 只认「只差放行」)因此不把它当待放行;条件坏了 / 放行失败就不加,照常给人。
+function wave8Fields(t, o) {
+  const release_on = auto.releaseOnOf(t);
+  const out = { touches: occ.touchesOf(t.id), overlaps: occ.overlapsFor(t), release_on, auto_kind: auto.autoKindOf(t.id) };
+  if (t.kind === "goal") { const cfg = integ.get(t.id); out.integrate = cfg; }
+  else out.integration = integ.childField(t);
+  if (auto.awaitsRule(t)) {
+    const blockers = Array.isArray(o.progress_blockers) ? o.progress_blockers : [];
+    out.progress_blockers = [...blockers, { code: "RELEASE_ON_PENDING", action: "claim",
+      message: `等 #${release_on.card} ${release_on.event === "done" ? "完成" : "交付"}后自动放行`, next_action: "无需操作:条件到了看板自动放行(要提前就撤销条件后手动放行)",
+      related_task_ids: [release_on.card] }];
+  }
+  return out;
+}
 const taskOutBase = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
   ...t,
   history_refs:store.taskHistoryRefs(db,t.id),
@@ -514,6 +533,24 @@ const spec = openSpecVersion({ db, store, appendEvent: store.appendEvent, requir
 spec.migrate();
 const evidence = openEvidence({ db, store, dir: join(store.DATA_DIR, "evidence_files"), cleanText, digestOf: (t) => cred.currentDigest(t.id), emit: (type, data) => emit(type, data) });
 evidence.migrate();
+// 合同 I6–I9(第 8 波 8b):占用表(core/occupancy.mjs)、整合阶段(core/integrate.mjs,只读 git 只在定时扫里跑)、
+//   条件放行与候选组装卡(core/autocards.mjs,事件 → 动作一处登记)。表都在 board.db 里,不往数据目录写新文件。
+const occ = openOccupancy({ db, err: store.err, ERR: store.ERR, filesOf: (id) => cred.currentFiles(id), clean: (s) => cut(redactText(String(s ?? "")), 80),
+  emit: (type, data) => emit(type, data) });
+occ.migrate();
+const integ = openIntegrate({ db, err: store.err, ERR: store.ERR, git: () => GIT?.path || null,
+  repoForLine: (line) => { const l = (CFG.lines || []).find((x) => x.id === line); if (!l) return null;
+    if (typeof l.work_repo === "string" && isAbsolutePath(l.work_repo)) return resolve(l.work_repo);
+    return l.external === true ? null : REPO_ROOT; },
+  headOf: (id) => cred.currentHead(id), isAuto: (id) => auto.isAuto(id) });
+integ.migrate();
+const deliveredSinceStmt = db.prepare("SELECT 1 FROM cred_deliveries WHERE task_id=? AND at>=? LIMIT 1");
+const auto = openAutocards({ db, store, cred, integ, occ,
+  release: (id) => { const t = store.get(db, id); releaseTask(id, { expected_version: t.aggregate_version, released: true }, "rule"); },
+  afterEdit: (id, by) => (by ? spec.observe(id, by) : spec.observe(id)),
+  deliveredSince: (id, at) => !!deliveredSinceStmt.get(Number(id), String(at)),
+  clean: (s, max = 80) => cut(redactText(String(s ?? "")), max), emit: (type, data) => emit(type, data), log: (s) => console.log(s) });
+auto.migrate();
 const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t), evidenceOf: (id) => evidence.listOf(id) });
 mdHandoff.migrate();
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
@@ -1595,6 +1632,13 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
     // 只有对话计划带 needs_confirm(拆解的 schema 里没有这个字段):这张卡建好不放行,线领不到;
     //   操作者看过、确认后放行。不挂人工闸(人工闸是「等人裁定」,这里等的是放行这一下)。
     const hold = t.needs_confirm === true;
+    // 合同 I8:计划项可带 release_on:{after:<计划里第几项> | card:<卡号>, event}。合规 = 这张卡建成未放行、到点由板放行;
+    //   不合规(指向还没建的项、不存在的卡、事件不认识)整项不设,不让整次建卡失败。
+    let relOn = null;
+    if (t.release_on && typeof t.release_on === "object" && !Array.isArray(t.release_on)) {
+      const ro = t.release_on, src = Number.isSafeInteger(ro.after) ? made[ro.after - 1] : ro.card;
+      try { relOn = normReleaseOn({ card: src, event: ro.event }, { err: store.err, ERR: store.ERR }); if (!store.get(db, relOn.card)) relOn = null; } catch { relOn = null; }
+    }
     if (hold)
       description += String.fromCharCode(10, 10) +
         "⚠这张卡涉及需要人确认的动作(生产数据、迁移、删除、推送或花钱),建卡时没有放行。要操作者确认后放行。";
@@ -1608,7 +1652,7 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
       // The release valve moved to worker start/stop (ruling): decomposed children
       // are claimable from birth; "not yet" is expressed by not starting that
       // line's worker.
-      released: hold ? 0 : 1,
+      released: hold || relOn ? 0 : 1,
       // v0.23: a decompose that overrode the review gate says so on every child's `add`
       // event — "ran because the human forced it" must not read like a plain decompose.
       // 对话的按计划建卡写 operator(人按下的)。
@@ -1617,6 +1661,9 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
     if (hold) held.push(made[i]);
     // 合同 H3:计划项可带 required_checks(只会让这张卡更严);名字不合规的整项不设,不让整次建卡失败。
     if (t.required_checks != null) { try { const rq = cred.normRequired(t.required_checks); if (rq?.length) cred.setRequired(made[i], rq, actor || "plan"); } catch {} }
+    // 合同 I6:计划项可带 touches(这张卡会动哪些路径;只提示)。不合规整项不设。
+    if (t.touches != null) { try { const tv = occ.normTouches(t.touches, "touches"); if (tv?.length) occ.setTouches(made[i], tv, actor || "plan"); } catch {} }
+    if (relOn) { try { auto.setReleaseOn(made[i], relOn, actor || "plan"); } catch { /* 源卡已归档等:卡已建成未放行,由人放行 */ } }
   });
   return { made, demoted, held };
 }
@@ -2424,6 +2471,13 @@ function emit(type, data = {}) {
   // 合同 H6:每个 task.* 变化都核一次说明的内容哈希(放行即记 v1;放行后内容变了 +1),不靠每条编辑路记得调用。
   if (wire === "change" && String(type).startsWith("task.") && Number.isSafeInteger(Number(data?.id)) && Number(data.id) > 0)
     try { spec.observe(Number(data.id)); } catch {}
+  // 合同 I6 / I8 / I9:卡一变,占用表的快照作废;自动规则(条件放行、候选组装)在本轮请求之后扫一遍(合并成一次,不在请求路径上等)。
+  if (wire === "change" && String(type).startsWith("task.")) { try { occ.invalidate(); } catch {} kickAutoRules(); }
+}
+let autoKick = null;
+function kickAutoRules() {
+  if (autoKick) return;
+  autoKick = setImmediate(() => { autoKick = null; auto.sweep().catch(() => {}); });
 }
 
 const badSpecInput = (m) => store.err(store.ERR.BAD_INPUT, m);
@@ -2631,7 +2685,7 @@ const WORKER_WRITES = (p) =>
 //   裁定、bless、起停线、改设置都不在这里。
 const EXECUTOR_WRITES = (p) =>
   p === "/api/claim" ||
-  /^\/api\/tasks\/\d+\/(?:claim|heartbeat|report|evidence)$/.test(p) ||
+  /^\/api\/tasks\/\d+\/(?:claim|heartbeat|report|evidence|paths)$/.test(p) ||   // paths = declare_paths(合同 I6,只给持卡者)
   /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
   /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p) ||
   p === "/api/approvals/request";
@@ -2716,7 +2770,7 @@ function closeGateOrThrow(t) {
 //   history / export-md 在这里放过(本线的卡),由各自的处理段按角色回 403「只给操作员」(N9:无权不说成不存在)。
 const BOUND_TASK_READ = /^\/api\/tasks\/(\d+)(?:\/(?:runs|history|export-md|decisions\/\d+|evidence\/\d+))?$/;
 function boundExecutorMayRead(req, p) {
-  if (p === "/api/coord" || p === "/api/tasks" || p === "/api/connect/me") return true;
+  if (p === "/api/coord" || p === "/api/tasks" || p === "/api/connect/me" || p === "/api/occupancy") return true;
   const mt = BOUND_TASK_READ.exec(p);
   if (mt) return store.get(db, Number(mt[1]))?.line === req.boundLine;
   // 自己发起的批准请求可以查结果;别的事项不给。
@@ -3128,7 +3182,8 @@ function resolveTask(id, b, boardRole) {
   return r;
 }
 /** 放行 / 收回:显式执行配置的卡要带本人核对过的配置摘要。面板、board.py 与批准接口共用。 */
-function releaseTask(id, b) {
+// actor:人放行 = human(store 的缺省);条件放行(合同 I8)= rule —— 同一条路,同样的执行配置核对与版本号。
+function releaseTask(id, b, actor = undefined) {
   const task=store.get(db,id),preview=task?taskProfilePreview(task):null;
   let executionProfile=null;
   if(preview&&b.released!==false&&!task.released){
@@ -3142,8 +3197,8 @@ function releaseTask(id, b) {
     if(b.confirm_verification_repair_digest!==repair.digest)throw store.err(store.ERR.CONFLICT,"验证续修轮数已变化，请重新核对后放行");
     verificationRepair=repair.policy;
   }
-  const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile,verificationRepair });
-  emit("task.released", r);
+  const r = store.setReleased(db, { id, expectedVersion:b.expected_version, released: b.released !== false,executionProfile,verificationRepair, ...(actor ? { actor } : {}) });
+  emit("task.released", actor ? { ...r, actor } : r);
   return r;
 }
 
@@ -3306,7 +3361,9 @@ function assistantView(req, { maxChars, since = null, mode = "normal", attention
   const picked = assistantFeed.pick({ attention: m.all.attention, done: m.all.done, cur, mode });
   if (given && key) assistantFeed.ack(key, req.assistant.id, given);
   if (attention) return { items: picked.items, cursor: picked.cursor, ...(mode === "quiet" ? { mode, muted: picked.muted } : {}) };
-  return { ...briefFrom(m, maxChars, { mode, now }), cursor: picked.cursor, ...(given ? { changes: picked.changes } : {}), lines: lineStates(tasks, now) };
+  // 合同 I6:助手只得到文件重叠的条数(没有路径、没有卡号)。
+  let occupancy_overlaps = null; try { occupancy_overlaps = occ.snapshot().overlaps.length; } catch {}
+  return { ...briefFrom(m, maxChars, { mode, now }), cursor: picked.cursor, ...(given ? { changes: picked.changes } : {}), lines: lineStates(tasks, now), occupancy_overlaps };
 }
 
 // ── 首页「后台任务」(合同 F,core/home-background.mjs)。attention 用上面同一份判定(briefModel),不另写。
@@ -3363,13 +3420,15 @@ function backgroundNow() {
   // 合同 G2 的 type / verb:只取 homeLists 写在行上的那一份(面板同一个函数)。briefModel 按「先 mine 各行、后线故障」的顺序出条目,
   //   这里按同一顺序对上;线故障行用同一个 homeAttnType 补。条数对不上就不给 type(不另判)。
   const kinds = [...(lists.mine || []).map((r) => ({ type: r.type, verb: r.verb })), ...faults.map(() => attentionModel.homeAttnType({ action: "line_fault" }, null))];
-  const typed = kinds.length === m.all.attention.length;
-  if (!typed) console.log(`后台任务:要本人做的事 ${m.all.attention.length} 条与首页行 ${kinds.length} 条对不上,本次不给 type`);
-  const attention = m.attention.map((a, i) => (typed ? { ...a, ...kinds[i] } : a));
-  return backgroundModel({ tasks, attention, attentionTotal: m.attention_total, attentionIds, now,
+  const { attention, mismatch } = typeAttention(m.attention, m.all.attention.length, kinds);
+  if (mismatch) console.log(`后台任务:要本人做的事 ${m.all.attention.length} 条与首页行 ${kinds.length} 条对不上,本次不给 type`);
+  const out = backgroundModel({ tasks, attention, attentionTotal: m.attention_total, attentionIds, now,
     whoOf: (t) => bgWhoOf(t, execs), sinceOf: (t) => bgRun(t.run_id)?.started_at ?? null, stopOf: bgStopOf,
     lineOf: bgLineOf(new Map()), lineLabel: (l) => LINE_LABEL?.[l] || l,
-    sourceGate: () => process.env.BOARD_ALLOW_UNPINNED !== "1" && blessStep().state !== "done" });
+    sourceGate: () => process.env.BOARD_ALLOW_UNPINNED !== "1" && blessStep().state !== "done",
+    integrationOf: (g) => integ.summary(g.id) });          // 合同 I7:只读缓存,不跑 git
+  // 第 7 波欠账⑥:条数对不上不再只打日志 —— 应答带 attention_type_mismatch:true(面板 8c 决定怎么显示)。
+  return mismatch ? { ...out, attention_type_mismatch: true } : out;
 }
 /** G3 额度条:只读 GET /api/pools 那份池状态(poolState),各池各一段;不新增采集、不读任何登录目录。 */
 function quotaNow() {
@@ -4626,6 +4685,13 @@ const server = http.createServer(async (req, res) => {
       // 合同 H3:required_checks 只由操作者在建卡时定(worker 的派生卡不收);先校验,不合规不建卡。
       if(b.required_checks!==undefined&&boardRole!=="operator")return json(res,403,{error:"required_checks 只能由操作者设定"});
       const requiredChecks=cred.normRequired(b.required_checks);
+      // 合同 I6–I8:touches / release_on / integrate 只由操作者写(worker 派生卡带 → 403);先校验,不合规不建卡。
+      for(const k of ["touches","release_on","integrate"])if(b[k]!==undefined&&boardRole!=="operator")return json(res,403,{error:`${k} 只能由操作者设定`});
+      const touches=occ.normTouches(b.touches,"touches"),releaseOn=normReleaseOn(b.release_on,{err:store.err,ERR:store.ERR}),integrate=integ.normIntegrate(b.integrate);
+      if(integrate&&b.kind!=="goal")throw store.err(store.ERR.BAD_INPUT,"integrate 只写在目标卡上(kind:\"goal\")");
+      if(releaseOn&&(b.released===true||b.released===1))throw store.err(store.ERR.BAD_INPUT,"release_on 只能写在未放行的卡上:不要同时带 released:true");
+      if(releaseOn&&b.kind==="goal")throw store.err(store.ERR.BAD_INPUT,"release_on 不写在目标卡上");
+      if(releaseOn){const src=store.get(db,releaseOn.card);if(!src)throw store.err(store.ERR.NOT_FOUND,`release_on.card #${releaseOn.card} 不存在`);if(src.archived_at)throw store.err(store.ERR.CONFLICT,`release_on.card #${releaseOn.card} 已归档`);}
       const allowed=boardRole==="operator"
         ? ["subject","summary","description","acceptance","line","route","parentId","parent_id","blockedBy","verifyCmd","needsBash","kind","execution_profile_id","model","effort"]
         : ["subject","summary","description","acceptance","line","parentId","parent_id","parent_run_id","worker"];
@@ -4643,6 +4709,7 @@ const server = http.createServer(async (req, res) => {
       if(b.released===false||b.released===0)fields.released=0;
       if(b.humanGate===true||b.humanGate===1)fields.humanGate=true;
       if(b.maxAttempts<=store.DEFAULT_MAX_ATTEMPTS)fields.maxAttempts=b.maxAttempts;
+      if(releaseOn)fields.released=0;        // 条件放行的卡建成未放行(到点由板放行)
       if(boardRole==="operator"){
         // lockKey 只给这张卡加互斥(同键的卡不同时跑)，照收。worker 不收：它能借别人的键挡住别的卡。
         if(Object.hasOwn(b,"lockKey")&&b.lockKey!==null){
@@ -4679,6 +4746,9 @@ const server = http.createServer(async (req, res) => {
       if (badRoutable(res, fields)) return;   // creation entrance for route/line domains (ONE criterion)
       const id = store.add(db, fields);
       if (requiredChecks?.length) cred.setRequired(id, requiredChecks, "operator");
+      if (touches?.length) occ.setTouches(id, touches, "operator");
+      if (integrate) integ.set(id, integrate, "operator");
+      if (releaseOn) auto.setReleaseOn(id, releaseOn, "operator");
       emit("task.created", { id });
       const made = taskOut(store.get(db, id));
       // 建成的卡比请求更严的地方逐项点名(放宽没有生效、执行配置卡固定未放行等)，不静默。
@@ -4702,7 +4772,10 @@ const server = http.createServer(async (req, res) => {
       //   未知字段一律不进 store.add。route/line/weight 也因此到不了这里,原先的 badRoutable 闸不再需要。
       const fields = Object.fromEntries(["subject", "description", "parentId"]
         .filter((key) => Object.hasOwn(b, key)).map((key) => [key, b[key]]));
+      // 合同 I7:目标可带 integrate:{target, assemble?}(这条路只有操作员够得着);先校验,不合规不建。
+      const integrate = integ.normIntegrate(b.integrate);
       const id = store.add(db, { ...fields, kind: "goal", released: 0 });
+      if (integrate) integ.set(id, integrate, "operator");
       emit("task.created", { id });
       return json(res, 201, { task: taskOut(store.get(db, id)) });
     }
@@ -4982,7 +5055,8 @@ const server = http.createServer(async (req, res) => {
       }
       spec.onClaim(got);                        // 合同 H6:记下这一轮领到时的说明版本
       emit("task.claimed", { id: got.id, worker: b.worker });
-      return json(res, 200, { task: taskOut(got) });
+      const gotOverlaps = occ.note(store.get(db, got.id));   // 合同 I6:只提示,不拦
+      return json(res, 200, { task: taskOut(got), overlaps: gotOverlaps });
     }
 
     // Ruling attachments are sourced only from the structured package, and every
@@ -5058,6 +5132,56 @@ const server = http.createServer(async (req, res) => {
       emit("task.updated", { id });
       return json(res, 200, { task: taskOut(store.get(db, id)) });
     }
+    // 合同 I6–I8 的写接口:touches / release-on / integrate 只给操作者(不进任何别的角色的写白名单,这里再按角色核一次);
+    //   paths = 执行者 declare_paths(只给持这张卡、这一轮的执行者;覆盖式,≤50,这一轮结束即失效)。
+    const m8 = p.match(/^\/api\/tasks\/(\d+)\/(touches|release-on|integrate|paths)$/);
+    if (m8) {
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      const id = Number(m8[1]), what = m8[2];
+      if (what === "paths") {
+        if (boardRole !== "executor") return json(res, 403, { error: "declare_paths 只给持卡的执行者", role: boardRole });
+        const t = store.get(db, id);
+        if (!t || (req.boundLine && t.line !== req.boundLine)) return json(res, 404, { error: "不存在" });
+        const b = await readBody(req);
+        if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象 {paths, run_id?}");
+        const paths = occ.normTouches(b.paths, "paths");
+        if (paths === null) throw store.err(store.ERR.BAD_INPUT, "paths 要路径数组(空数组 = 清掉)");
+        if (t.status !== "in_progress" || t.worker !== req.executor.id || (b.run_id != null && String(b.run_id) !== String(t.run_id)))
+          throw store.err(store.ERR.CONFLICT, `卡 #${id} 不在你手上执行(只能给自己这一轮持有的卡声明路径)`);
+        occ.declare(id, t.run_id, paths, req.executor.id);
+        const overlaps = occ.note(store.get(db, id));
+        emit("occupancy.changed", { id });
+        return json(res, 200, { card_id: id, paths, overlaps });
+      }
+      if (boardRole !== "operator") return json(res, 403, { error: `${what} 只能由操作者设定`, role: boardRole });
+      const t = store.get(db, id);
+      if (!t) return json(res, 404, { error: "不存在" });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象");
+      if (what === "touches") {
+        const v = occ.normTouches(b.touches, "touches");
+        occ.setTouches(id, v ?? [], "operator");
+        occ.note(store.get(db, id));
+      } else if (what === "release-on") {
+        if (!Object.hasOwn(b, "release_on")) throw store.err(store.ERR.BAD_INPUT, "要 {release_on:{card, event} | null}");
+        auto.setReleaseOn(id, normReleaseOn(b.release_on, { err: store.err, ERR: store.ERR }), "operator");
+      } else {
+        if (!Object.hasOwn(b, "integrate")) throw store.err(store.ERR.BAD_INPUT, "要 {integrate:{target, assemble?} | null}");
+        const v = integ.normIntegrate(b.integrate);
+        if (v && t.kind !== "goal") throw store.err(store.ERR.BAD_INPUT, "integrate 只写在目标卡上");
+        integ.set(id, v, "operator");
+        void integrateTick();                    // 新目标:后台马上扫一次(不等应答)
+      }
+      emit("task.updated", { id });
+      return json(res, 200, { task: taskOut(store.get(db, id)) });
+    }
+    if (m === "GET" && p === "/api/occupancy") {
+      // 操作者、执行者可读;助手不给(它只在简报里得到重叠条数)。绑线执行者看到别的线的卡只有卡号与线,没有标题。
+      if (boardRole === "assistant") return json(res, 403, { code: "ASSISTANT_FORBIDDEN", error: "助手只在简报里看到重叠条数", role: boardRole });
+      const s = occ.snapshot();
+      const hide = (c) => (req.boundLine && c.line !== req.boundLine ? { ...c, title: null } : c);
+      return json(res, 200, { rows: s.rows.map((r) => ({ path: r.path, cards: r.cards.map(hide) })), overlaps: s.overlaps });
+    }
     const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs|history))?$/);
     if (mt) {
       const id = Number(mt[1]);
@@ -5111,7 +5235,8 @@ const server = http.createServer(async (req, res) => {
         if (!r.ok) return json(res, statusFor({ code: r.code, message: r.why }, "claim"), { error: r.why, id });
         spec.onClaim(r.task);                    // 合同 H6:记下这一轮领到时的说明版本
         emit("task.claimed", { id, worker: b.worker });
-        return json(res, 200, { task: taskOut(r.task) });
+        const claimOverlaps = occ.note(store.get(db, id));     // 合同 I6:只提示,不拦
+        return json(res, 200, { task: taskOut(r.task), overlaps: claimOverlaps });
       }
       if (action === "heartbeat") {
         // 没给 lease_minutes(或给的不是正数)的心跳只往后续:取默认租约与这张卡现有剩余时间里较长的。store 在没给时
@@ -5210,7 +5335,8 @@ const server = http.createServer(async (req, res) => {
             console.log(`#${id} 线 ${after.line} accept:auto 未能自动完成 —— 留在等待中给人:${String(e.message).split("\n")[0].slice(0, 120)}`);
           }
         }
-        return json(res, 200, { task: store.get(db, id) });
+        // 合同 I6:交付(outcome=done)后这张卡的交付文件进占用表;应答带与别的卡的重叠(只提示)。
+        return json(res, 200, { task: store.get(db, id), ...(b.outcome === "done" ? { overlaps: occ.note(store.get(db, id)) } : {}) });
       }
       if (action === "resolve") {
         const rr = resolveTask(id, b, boardRole);
@@ -5301,6 +5427,11 @@ if (!["127.0.0.1", "::1", "localhost"].includes(HOST)) {
 // Lease reaping never depends on claim traffic: even with every worker dead, the
 // board converges to a correct state.
 const REAP_MS = Number(process.env.BOARD_REAP_MS || 30000);
+// 合同 I7 / I9:整合状态的定时扫(只读 git,不在请求路径上)+ 扫完把自动规则过一遍。BOARD_INTEGRATE_SCAN_MS 只给测试调快。
+const INTEGRATE_SCAN_MS = Math.max(200, Number(process.env.BOARD_INTEGRATE_SCAN_MS) || 30000);
+const integrateTick = () => integ.scan().then(() => auto.sweep()).catch((e) => console.error("整合扫描失败:", String(e?.message || e).slice(0, 120)));
+setInterval(integrateTick, INTEGRATE_SCAN_MS).unref?.();
+setImmediate(integrateTick);
 connect.watch(Number(process.env.BOARD_CONNECT_WATCH_MS || 10000));   // 在线/离线、working/stalled 变化 → executor.changed
 setInterval(() => {
   try {

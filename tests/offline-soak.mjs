@@ -21,6 +21,7 @@ import {runNodeRuntime,nodeRuntimeStatus} from '../core/node-runtime.mjs';
 import {readFleetView} from '../core/fleet-view.mjs';
 import {createSourceGate} from '../core/execution/source-gate.mjs';
 import {pinFile} from '../core/execution/supervisor.mjs';
+import {freePort} from './helpers/free-port.mjs';
 assert.equal(process.platform,'win32');assert.ok(process.argv.length===3||process.argv.length===4,'Usage: node tests/offline-soak.mjs <new-report.json> [offline-ms, default 1800000]');
 const output=resolve(process.argv[2]),offlineMs=Number(process.argv[3]??1800000);assert.ok(Number.isSafeInteger(offlineMs)&&offlineMs>=10000&&offlineMs<=3600000);
 assert.ok(!existsSync(output),'Preserve prior evidence; choose a new output file.');
@@ -28,7 +29,7 @@ const ROOT=fileURLToPath(new URL('../',import.meta.url)),TMP=mkdtempSync(join(tm
 const hash=p=>createHash('sha256').update(readFileSync(p)).digest('hex'),git=(root,args)=>execFileSync('git',['-c','safe.directory='+resolve(root).replaceAll('\\','/'),'-C',root,...args],{windowsHide:true,encoding:'utf8',stdio:['ignore','pipe','pipe']}).trim();
 const report={format:'ai-fleet-single-host-offline-soak/v1',started_at:new Date().toISOString(),code_sha:git(ROOT,['rev-parse','HEAD']),requested_offline_ms:offlineMs,scope:{physical_hosts:1,isolated_nodes:2,tailscale:false,providers_called:false,executor:'synthetic Zcode-shaped program in actual Windows Job',formal_acceptance:false},sources:Object.fromEntries(['tests/offline-soak.mjs','core/node-runtime.mjs','core/execution/scheduler.mjs','core/execution/runner.mjs','core/federation/sync-client.mjs'].map(p=>[p,hash(join(ROOT,p))])),samples:[]};
 const environment={...Object.fromEntries(Object.entries(process.env).filter(([k])=>['systemroot','windir','temp','tmp'].includes(k.toLowerCase()))),BOARD_ZCODE_RELEASED:'1'};
-async function port(){const s=net.createServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const p=s.address().port;await new Promise(r=>s.close(r));return p;}
+async function port(){return freePort();}
 async function until(check,label,ms=30000){const deadline=performance.now()+ms;for(;;){const v=check();if(v)return v;if(performance.now()>deadline)throw Error(label+' timed out');await delay(100);}}
 async function node(alias){const dir=join(TMP,alias);mkdirSync(dir);const dbPath=join(dir,'board.db'),setup=new DatabaseSync(dbPath);setup.exec('PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL');store.migrate(setup);migratePeers(setup);migrateSync(setup);migrateDispatch(setup);store.renameNode(setup,alias);setup.close();const db=openSchedulerControlDatabase(dbPath);dbs.push(db);const n=localIdentity(db);return {dir,dbPath,db,n,config:{format:'ai-fleet-node-runtime/v1',node_id:n.node_id,node_epoch:n.sync_epoch,peer:{host:'127.0.0.1',port:await port()},mcp:{port:await port(),board_url:null},sync:[],scheduler:null}};}
 function connection(source,receiver){const credentialFile=join(receiver.dir,'from-'+source.n.display_name+'.json'),url='http://127.0.0.1:'+source.config.peer.port;issueCredential(source.db,{serverEndpoint:url,peerNodeId:receiver.n.node_id,peerEpoch:receiver.n.sync_epoch,scopes:['peer:handshake','sync:pull','sync:ack'],projects:['soak'],credentialFile});return {project_id:'soak',url,credential_file:credentialFile,server_node_id:source.n.node_id,server_epoch:source.n.sync_epoch,poll_ms:1000};}

@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const BRIDGE = join(ROOT, "cli", "exec-mcp.mjs");
@@ -17,8 +18,7 @@ const BRIDGE = join(ROOT, "cli", "exec-mcp.mjs");
 async function board() {
   const dir = mkdtempSync(join(tmpdir(), "execmcptest-")), config = join(dir, "fleet.json");
   writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", label: "外部", external: true }], roles: [], routes: ["default"], repo: dir }));
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r));
+  const port = await freePort();
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     env: { ...HOST_ENV, BOARD_HOST: "127.0.0.1", BOARD_PORT: String(port), BOARD_CONFIG: config, BOARD_DATA_DIR: dir,
            BOARD_DB: join(dir, "board.db"), BOARD_REPO: dir, BOARD_ALLOW_UNPINNED: "1", BOARD_NO_RESTORE: "1", BOARD_RESTART_MODE: "exit" } });
@@ -79,7 +79,7 @@ test("桥:握手、只看本线、领卡、续租、交付都走执行者令牌"
       assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
       M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const list = await M.request("tools/list");
-      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence"]);
+      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths"]);
       assert.ok(!("line" in list.result.tools[0].inputSchema.properties), "固定了 --line 就不给 line 参数");
       const ls = await M.call("list_cards", {});
       assert.equal(ls.isError, false, JSON.stringify(ls));
@@ -237,7 +237,7 @@ test("G5:ask_operator needs=hands 的 what / where / expect 往返;换行压成�
 
 test("桥按令牌的角色给工具组:执行者八个(无助手工具),助手五个(无领卡/交付)", { timeout: 90000 }, async () => {
   const B = await board();
-  const EXEC = ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence"];
+  const EXEC = ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths"];
   const ASST = ["get_brief", "list_cards", "get_card", "post_card", "wait_for_attention"];
   try {
     const names = async (args) => {

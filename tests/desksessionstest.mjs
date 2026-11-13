@@ -14,13 +14,10 @@ import { fileURLToPath } from "node:url";
 import { createServer, connect } from "node:net";
 import { randomUUID, createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const BODY = "BODY_MARKER_不应出现";          // 正文标记:任何响应里都不许出现
-const freePort = async (host = "127.0.0.1") => {
-  const l = createServer(); await new Promise((r) => l.listen(0, host, r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
-};
 const J = (o) => JSON.stringify(o);
 const ago = (days) => new Date(Date.now() - days * 86400000);
 const touch = (p, d) => utimesSync(p, d, d);

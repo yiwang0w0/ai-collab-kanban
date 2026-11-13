@@ -14,6 +14,7 @@ import {execFileSync,spawn,spawnSync} from 'node:child_process';
 import {setTimeout as delay} from 'node:timers/promises';
 import net from 'node:net';
 import http from 'node:http';
+import {freePort} from './helpers/free-port.mjs';
 const args=process.argv.slice(2),o={};for(let i=0;i<args.length;i+=2){assert.ok(['--code-root','--revision','--output'].includes(args[i])&&args[i+1]);o[args[i].slice(2)]=args[i+1];}
 const ROOT=resolve(o['code-root']),revision=execFileSync('git',['-c','safe.directory='+ROOT,'-C',ROOT,'rev-parse','HEAD'],{encoding:'utf8',windowsHide:true}).trim();assert.equal(revision,o.revision);assert.match(revision,/^[a-f0-9]{40}$/);
 const clean=execFileSync('git',['-c','safe.directory='+ROOT,'-C',ROOT,'status','--porcelain','--untracked-files=all'],{encoding:'utf8',windowsHide:true}).trim();assert.equal(clean,'','Audit source must start clean');
@@ -25,7 +26,6 @@ const {migratePeers,localIdentity,issueCredential}=await mod('core/federation/pe
 let seq=0;function fixture(){const dir=join(TMP,'node-'+seq++);mkdirSync(dir);const dbPath=join(dir,'board.db'),db=new DatabaseSync(dbPath);dbs.push(db);store.migrate(db);migratePeers(db);migrateSync(db);migrateBroker(db);return {dir,dbPath,db,n:localIdentity(db)};}
 function role(role_id,kind){const worker=['implement','review'].includes(kind);return {role_id,kind,projects:['demo'],capabilities:worker?['board-tools']:[],runtime:worker?'claude':null,model:worker?'fixture-model':null,effort:worker?'fixture-effort':null,tools:kind==='observe'||kind==='review'?'read-only':'write',priority:1,enabled:true,limits:{max_task_attempts:2,max_open_tasks:100,requests_per_minute:100}};}
 function grant(f,id,runId=null){const credentialFile=join(f.dir,randomUUID()+'.json'),principal=issuePrincipal(f.db,{roleId:id,projects:['demo'],runId,credentialFile});return {principal,auth:'Bearer '+JSON.parse(readFileSync(credentialFile,'utf8')).token};}
-async function freePort(){const s=net.createServer();await new Promise(r=>s.listen(0,'127.0.0.1',r));const port=s.address().port;await new Promise(r=>s.close(r));return port;}
 try{
  const f=fixture(),port=await freePort(),token='fixture-only-'+randomUUID(),subject='private-fixture-'+randomUUID();store.add(f.db,{subject});writeFileSync(join(f.dir,'board_token'),token);const config=join(f.dir,'fleet.json');writeFileSync(config,JSON.stringify({lines:[{id:'fixture',hint:'fixture',label:'fixture'}],roles:[],routes:['main'],pool:{enabled:false}}));
  const child=spawn(process.execPath,[join(ROOT,'core/server.mjs')],{cwd:ROOT,env:{...env,BOARD_CONFIG:config,BOARD_DATA_DIR:f.dir,BOARD_DB:f.dbPath,BOARD_PORT:String(port),BOARD_HOST:'127.0.0.1',BOARD_DEFAULT_ROUTE:'main',BOARD_NO_RESTORE:'1',BOARD_ALLOW_UNPINNED:'1',BOARD_TEST_SHUTDOWN_MS:'20000',BOARD_PYTHON:process.env.PYTHON??'',PYTHONDONTWRITEBYTECODE:'1'},windowsHide:true,stdio:['ignore','pipe','pipe']});children.push(child);let logs='';child.stdout.on('data',b=>logs+=b);child.stderr.on('data',b=>logs+=b);const exited=new Promise(r=>child.once('exit',r));

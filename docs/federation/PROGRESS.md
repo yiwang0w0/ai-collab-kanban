@@ -1431,3 +1431,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-14 公告板 v3 第 7 波面板(claude/board-v3-w7-panel,合同 H7):已完成行 / 卡片 / 侧栏一个徽标(来历在 ⓘ)与弱化标记(指纹对不上写人话原因、说明 v3 · 对方确认到 v2);侧栏「证据与检查」三栏计数已核与自报分开、实查 / 推断、基线已红、必需检查逐项、证据图缩略图与原图;「其他」里改必需检查;验收确认处逐条写缺口,不拦人。
 - 收第 6 波欠账:「要本人做的事」的类只在 homeLists(homeAttnType)判一次,面板与 /api/home/background 读同一份;告警多于 3 条先放 2 条。可信核心:这次交付的指纹没记上 → 审阅判通过也不自动通过(credibilitytest 增例)。
 - panelcopytest、panelsidetest、hometest、homebackgroundtest 增改;临时板真鼠标走查截图。没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 8 波占用与整合(claude/board-v3-w8-occ,合同 I6–I9):文件占用表(touches / declare_paths / 未验收交付的 files,只提示)、目标的整合阶段(只读 git 定时扫缓存)、条件放行 release_on(actor=rule,只触发一次)、候选组装卡(未放行,只出一次、重开后重拼);新写字段只给操作者。
+- 第 7 波欠账:指纹没记上时徽标降为 self_reported 带 fingerprint_missing;测试共用取端口函数 tests/helpers/free-port.mjs(过滤 fetch 拒绝的端口);首页 type 对不上时应答带 attention_type_mismatch。新增 occupancytest;没有调用模型。阻塞:无。

@@ -12,6 +12,7 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { openLedger, usageHttp, groupsCsv, parseTime, externalRows, fromClaudeResult, append } from "../core/usage.mjs";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const PY = HOST_ENV.PYTHON || "python";
@@ -24,8 +25,7 @@ const parse = (file) => readFileSync(file, "utf8").split(NL).filter(Boolean).map
 async function board() {
   const dir = mkdtempSync(join(tmpdir(), "usagetest-")), config = join(dir, "fleet.json");
   writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", external: true }], roles: [], routes: ["default"], repo: dir }));
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r));
+  const port = await freePort();
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     env: { ...HOST_ENV, BOARD_HOST: "127.0.0.1", BOARD_PORT: String(port), BOARD_CONFIG: config, BOARD_DATA_DIR: dir,
            BOARD_DB: join(dir, "board.db"), BOARD_REPO: dir, BOARD_ALLOW_UNPINNED: "1", BOARD_NO_RESTORE: "1", BOARD_RESTART_MODE: "exit",

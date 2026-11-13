@@ -11,6 +11,7 @@ import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {createServer} from 'node:net';
 import {setTimeout as delay} from 'node:timers/promises';
+import {freePort} from './helpers/free-port.mjs';
 const ROOT=resolve(harnessAuthTestRoot||fileURLToPath(new URL('../',import.meta.url)));
 const DIR=mkdtempSync(join(tmpdir(),'fleet-panel-auth-'));let child,base,operator,worker,review,logs='';
 const headers=token=>({'X-Board-Token':token,'Content-Type':'application/json'});
@@ -24,7 +25,7 @@ async function startBoard(){
  for(let i=0;i<120;i++){if(child.exitCode!==null)throw Error('Fixture stopped');try{if((await fetch(base+'/health')).ok)break;}catch{}await delay(100);}
 }
 before(async()=>{
- const server=createServer();await new Promise(r=>server.listen(0,'127.0.0.1',r));port=server.address().port;await new Promise(r=>server.close(r));base='http://127.0.0.1:'+port;
+ port=await freePort();base='http://127.0.0.1:'+port;
  await startBoard();
  operator=readFileSync(join(DIR,'board_token'),'utf8').trim();worker=readFileSync(join(DIR,'worker_token'),'utf8').trim();review=readFileSync(join(DIR,'review_token'),'utf8').trim();
 });

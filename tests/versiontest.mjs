@@ -10,6 +10,7 @@ import { fileURLToPath } from "node:url";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer } from "node:net";
 import vm from "node:vm";
+import {freePort} from './helpers/free-port.mjs';
 const require=createRequire(import.meta.url),store=require("../core/store.js");
 const ROOT=fileURLToPath(new URL("../",import.meta.url)),TMP=mkdtempSync(join(tmpdir(),"fleet-version-"));
 const handles=[];
@@ -171,8 +172,7 @@ test("line picker shows failed writes and refreshes without retry",async()=>{
  assert.equal(calls,1);assert.equal(refreshed,1);assert.match(notices[0],/version conflict/);
 });
 test("HTTP requires versions, rejects stale controls and returns current version",async()=>{
- const listener=createServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));
- const port=listener.address().port;await new Promise(r=>listener.close(r));
+ const port=await freePort();
  const config=join(TMP,"fleet.config.json");writeFileSync(config,JSON.stringify({lines:[{id:"alpha"}]}));
  const p=spawn(process.execPath,[join(ROOT,"core/server.mjs")],{
   env:{...harnessEnvironment(),BOARD_PORT:String(port),BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,"http.db"),BOARD_CONFIG:config,BOARD_ALLOW_UNPINNED:"1"},

@@ -17,6 +17,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { openCredibility, canonicalFingerprint, normPath, normCommit, parseDelivery, verifyFingerprint, familyOf, gitQueryEnv } from "../core/credibility.mjs";
 import { resolveGit } from "../core/git-program.mjs";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const ERR = { NOT_FOUND: "NOT_FOUND", CONFLICT: "CONFLICT", BAD_INPUT: "BAD_INPUT" };
@@ -194,6 +195,43 @@ test("H3 硬闸:这次交付的指纹没记上(写库失败)→ 不拿上一次�
   assert.equal(c.autoGate(third).ok, true, JSON.stringify(c.autoGate(third)));
 });
 
+test("H3 徽标(第 7 波欠账①):这次交付的指纹没记上 → 不再显示上一次交付推出的档位,降为 self_reported 带 fingerprint_missing", async () => {
+  const db = new DatabaseSync(":memory:");
+  let failNext = false, t = 0;
+  const shim = { exec: (s) => db.exec(s), prepare: (s) => {
+    if (failNext && /INSERT INTO cred_deliveries/.test(s)) { failNext = false; throw new Error("database is locked"); }
+    return db.prepare(s);
+  } };
+  const c = openCredibility({ db: shim, err, ERR, now: () => new Date(Date.UTC(2026, 0, 1, 0, 0, t++)).toISOString(), commandHash: (k) => sha("argv:" + k) });
+  c.migrate();
+  const first = { id: 8, line: "x", status: "waiting", waiting_for: "review", run_id: "run-1", result: "第一版" };
+  await c.recordDelivery(first, c.parseDelivery({}), { runId: "run-1", evidence: "第一版" });
+  c.addVerifiedCheck(8, { name: "unit", ok: true, by: "reviewer" });
+  let f = c.fields(first);
+  assert.equal(f.badge.level, "machine_verified");
+  assert.ok(!f.badge.flags.includes("fingerprint_missing"));
+  // 已完成也照常(同一轮、同一份正文)
+  assert.equal(c.fields({ ...first, status: "done", waiting_for: null }).badge.level, "machine_verified");
+  // 第二次交付的指纹没写进去:卡上已是新一轮、新正文
+  failNext = true;
+  const second = { ...first, run_id: "run-2", result: "第二版" };
+  await assert.rejects(c.recordDelivery(second, c.parseDelivery({}), { runId: "run-2", evidence: "第二版" }), /locked/);
+  f = c.fields(second);
+  assert.equal(f.badge.level, "self_reported");
+  assert.ok(f.badge.flags.includes("fingerprint_missing"), JSON.stringify(f.badge));
+  assert.equal(c.fields({ ...second, status: "done", waiting_for: null }).badge.level, "self_reported", "已完成的同样不沿用");
+  // 不在交付态(新一轮在做、退回等你决定)不判:旧指纹就是最近一次交付的
+  for (const s of [{ status: "in_progress" }, { status: "waiting", waiting_for: "decision" }, { status: "not_started" }])
+    assert.ok(!c.fields({ ...second, ...s }).badge.flags.includes("fingerprint_missing"), JSON.stringify(s));
+  // 联动关闭与目标卡不判;这一轮的指纹补上后恢复
+  assert.ok(!c.fields({ ...second, status: "done", resolved_by: "cascade" }).badge.flags.includes("fingerprint_missing"));
+  await c.recordDelivery(second, c.parseDelivery({}), { runId: "run-2", evidence: "第二版" });
+  c.addVerifiedCheck(8, { name: "unit", ok: true, by: "reviewer" });
+  f = c.fields(second);
+  assert.equal(f.badge.level, "machine_verified");
+  assert.ok(!f.badge.flags.includes("fingerprint_missing"));
+});
+
 test("H3 cross_model_reviewed:两边家族都已知且不同才算;未知不算;digest 不是当前不算", async () => {
   for (const [author, reviewer, want] of [["codex", "claude", "cross_model_reviewed"], ["claude", "claude", "self_reported"],
        ["other", "claude", "self_reported"], [null, "claude", "self_reported"], ["zcode", null, "self_reported"], ["zcode", "codex", "cross_model_reviewed"]]) {
@@ -280,9 +318,7 @@ async function board({ repo, extraEnv = {} } = {}) {
     { id: "hum", label: "人验", external: true, ...(repo ? { work_repo: repo } : {}) },
     { id: "oth", label: "其他", external: true },
   ], roles: [], routes: ["default"], repo: dir }));
-  const BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
-  let port;
-  do { const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r)); port = l.address().port; await new Promise((r) => l.close(r)); } while (BAD_PORTS.has(port));
+  const port = await freePort();
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     env: { ...HOST_ENV, BOARD_HOST: "127.0.0.1", BOARD_PORT: String(port), BOARD_CONFIG: config, BOARD_DATA_DIR: dir,
            BOARD_DB: join(dir, "board.db"), BOARD_REPO: dir, BOARD_ALLOW_UNPINNED: "1", BOARD_NO_RESTORE: "1", BOARD_RESTART_MODE: "exit",

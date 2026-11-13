@@ -26,6 +26,7 @@ import {createSourceGate} from '../core/execution/source-gate.mjs';
 import {pinFile} from '../core/execution/supervisor.mjs';
 import {registerRepository} from '../core/artifacts/repositories.mjs';
 import {migrateWorkspaces,registerWorkspacePool} from '../core/artifacts/workspaces.mjs';
+import {freePort} from './helpers/free-port.mjs';
 const store=createRequire(import.meta.url)('../core/store.js'),ROOT=fileURLToPath(new URL('../',import.meta.url)),TMP=mkdtempSync(join(tmpdir(),'fleet-scheduler-'));
 const dbs=[],schedulers=[],git=(root,args)=>execFileSync('git',['-C',root,...args],{encoding:'utf8',windowsHide:true,stdio:['ignore','pipe','pipe']}).trim();
 const source=join(TMP,'governance');mkdirSync(source);for(const d of ['core','cli'])cpSync(join(ROOT,d),join(source,d),{recursive:true});
@@ -241,7 +242,7 @@ test('actual backup recovery preserves control history but fences its prior node
  const prior=schedulerStatus(db,{instanceId:s.instance_id}).instances[0];assert.equal(prior.identity_current,false);assert.equal(prior.node_epoch,f.config.node_epoch);assert.throws(()=>requestSchedulerStop(db,args),{code:'EPOCH_CHANGED'});assert.equal(db.prepare('SELECT count(*) n FROM scheduler_control_requests').get().n,1);assert.equal(db.prepare('SELECT count(*) n FROM task_runs').get().n,0);
 });
 
-async function runtimeConfig(f){const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));f.config.profiles[0].mcp_url='http://127.0.0.1:'+port;return {format:'ai-fleet-node-runtime/v1',node_id:f.config.node_id,node_epoch:f.config.node_epoch,peer:null,mcp:{port,board_url:null},sync:[],scheduler:f.config};}
+async function runtimeConfig(f){const port=await freePort();f.config.profiles[0].mcp_url='http://127.0.0.1:'+port;return {format:'ai-fleet-node-runtime/v1',node_id:f.config.node_id,node_epoch:f.config.node_epoch,peer:null,mcp:{port,board_url:null},sync:[],scheduler:f.config};}
 
 test('node host drain retains MCP during an offline in-flight synthetic task and closes components afterward',async()=>{
  const f=fixture({wait:3000,limit:2}),other=fixture(),config=await runtimeConfig(f),stop=new AbortController();card(f);card(f);migratePeers(other.db);const file=join(f.base,'offline-peer.json');issueCredential(other.db,{peerNodeId:f.config.node_id,peerEpoch:f.config.node_epoch,scopes:['peer:handshake','sync:pull','sync:ack'],projects:['demo'],credentialFile:file});

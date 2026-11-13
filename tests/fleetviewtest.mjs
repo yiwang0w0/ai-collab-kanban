@@ -13,6 +13,7 @@ import {fileURLToPath} from "node:url";
 import {setTimeout as sleep} from "node:timers/promises";
 import {migrateSync,recordSource,shareTask} from "../core/federation/sync-store.mjs";
 import {readFleetView,readFleetTask} from "../core/fleet-view.mjs";
+import {freePort} from './helpers/free-port.mjs';
 const store=createRequire(import.meta.url)("../core/store.js"),handles=[];
 const NOW=Date.parse("2026-09-30T12:00:00Z"),recent=new Date(NOW-1000).toISOString();
 function node(sync=true,path=":memory:"){const db=new DatabaseSync(path);handles.push(db);store.migrate(db);store.renameNode(db,"alpha");if(sync)migrateSync(db);return db;}
@@ -105,7 +106,7 @@ test("local project and publication backlog are represented without publishing",
 test("real HTTP endpoints require operator token, reject foreign origin and remain read-only",{timeout:40000},async()=>{
  const root=fileURLToPath(new URL("../",import.meta.url)),dir=mkdtempSync(join(tmpdir(),"fleet-view-http-")),dbPath=join(dir,"board.db"),db=node(true,dbPath),id=store.add(db,{subject:"HTTP fixture"}),uid=store.get(db,id).task_uid;
  const config=join(dir,"config.json");writeFileSync(config,JSON.stringify({lines:[{id:"fixture",label:"fixture"}],roles:[],routes:["default"],repo:dir}));db.close();
- const probe=createServer();await new Promise(r=>probe.listen(0,"127.0.0.1",r));const port=probe.address().port;await new Promise(r=>probe.close(r));
+ const port=await freePort();
  let output="",exit=null;const proc=spawn(process.execPath,[join(root,"core/server.mjs")],{cwd:dir,windowsHide:true,env:{...harnessEnvironment(),BOARD_HOST:"127.0.0.1",BOARD_PORT:String(port),BOARD_CONFIG:config,BOARD_DATA_DIR:dir,BOARD_DB:dbPath,BOARD_REPO:dir,BOARD_POOL_TEST_MODE:"1",BOARD_POOL_TEST_PROBE:"ok"},stdio:["ignore","pipe","pipe"]});proc.stdout.on("data",b=>output+=b);proc.stderr.on("data",b=>output+=b);proc.on("error",e=>output+=e.message);proc.on("exit",code=>exit=code);
  const base=`http://127.0.0.1:${port}`,get=(path,headers={})=>fetch(base+path,{headers,signal:AbortSignal.timeout(5000)});
  try{

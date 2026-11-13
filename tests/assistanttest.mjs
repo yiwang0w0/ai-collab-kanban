@@ -16,6 +16,7 @@ import { briefModel, briefText, briefOf, maxCharsOf, BRIEF_DEFAULT } from "../co
 import { loadAttentionModel } from "../core/home-model.mjs";
 import { ASSISTANT_PROMPT, ASSISTANT_OPEN_MAX, cardText } from "../core/connect.mjs";
 import { parseCursor, cursorText, URGENT } from "../core/assistant-feed.mjs";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const BRIDGE = join(ROOT, "cli", "exec-mcp.mjs");
@@ -25,9 +26,7 @@ async function board(extraEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), "assistanttest-")), config = join(dir, "fleet.json");
   writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", label: "外部", external: true }], roles: [], routes: ["default"], repo: dir }));
   // fetch 拒绝浏览器「坏端口」表里的端口(6000、6665–6669、10080 等):随机端口撞上就重取,免得整套偶发红。
-  const BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
-  let port;
-  do { const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r)); port = l.address().port; await new Promise((r) => l.close(r)); } while (BAD_PORTS.has(port));
+  const port = await freePort();
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     env: { ...HOST_ENV, BOARD_HOST: "127.0.0.1", BOARD_PORT: String(port), BOARD_CONFIG: config, BOARD_DATA_DIR: dir,
            BOARD_DB: join(dir, "board.db"), BOARD_REPO: dir, BOARD_ALLOW_UNPINNED: "1", BOARD_NO_RESTORE: "1", BOARD_RESTART_MODE: "exit", ...extraEnv } });

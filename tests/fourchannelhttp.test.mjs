@@ -19,6 +19,7 @@ import {DatabaseSync} from "node:sqlite";
 import {loadExecutionProfiles,getExecutionProfile,executionProfileSnapshot} from "../core/execution-profiles.mjs";
 import {directoryIdentity} from "../core/artifacts/git-workspace.mjs";
 import {fixtureVersion} from "./http-version-fixture.mjs";
+import {freePort} from './helpers/free-port.mjs';
 
 const ROOT=fileURLToPath(new URL("../",import.meta.url)),TMP=mkdtempSync(join(tmpdir(),"kanban-four-http-")),CONTROL=join(TMP,"宿主控制.json");
 let REPO=join(TMP,"工作仓");
@@ -59,7 +60,7 @@ before(async()=>{
  assert.equal(source.split(anchor).length,2,"精确替换唯一宿主入口后才允许运行夹具");assert.equal(source.split(reviewAnchor).length,2,"审阅线入口同样唯一");
  const fixture=join(TMP,"server.mjs");
  writeFileSync(fixture,source.replace(anchor,`[${JSON.stringify(stub)}, "--as", line,`).replace(reviewAnchor,`? [${JSON.stringify(stub)}, "--as", "review", "--interval", "300",`).replaceAll("import.meta.url",JSON.stringify(pathToFileURL(original).href)).replace(/from\s+(['"])\.\/([^'"]+)\1/g,(_,q,path)=>"from "+JSON.stringify(pathToFileURL(join(dirname(original),path)).href)));
- const listener=netServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));const port=listener.address().port;await new Promise(r=>listener.close(r));base=`http://127.0.0.1:${port}`;
+ const port=await freePort();base=`http://127.0.0.1:${port}`;
  const config=join(TMP,"fleet.json");
  writeFileSync(config,JSON.stringify({lines:[...cases,extraLines[0]].map(row=>({id:row.line})),roles:["review"],routes:["default"],repo:REPO,max_parallel:1,host_auto_commit:true,host_git:HOST_GIT,host_commit_timeout_sec:777,
   execution_profiles:profileConfig}));

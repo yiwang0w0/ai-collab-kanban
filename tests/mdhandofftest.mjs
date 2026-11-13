@@ -15,6 +15,7 @@ import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -277,10 +278,6 @@ test("导入(N6):--goal 只收目标卡的正整数卡号", (t) => {
 });
 
 // ── 服务层:真看板上的鉴权与 board.py 三个子命令 ─────────────────────────────────────────
-const freePort = async () => {
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
-};
 
 test("真看板:鉴权;board.py export-md / import-md / report-md", { timeout: 180000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "mdhandofftest-"));

@@ -14,6 +14,7 @@ import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { setTimeout as delay } from "node:timers/promises";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const require = createRequire(import.meta.url);
@@ -290,10 +291,6 @@ test("性能:2000 张卡 / 2 万事件的冷算与热读", (t) => {
 });
 
 // ── 服务层:真看板上的鉴权与 board.py efficiency ───────────────────────────────────────
-const freePort = async () => {
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
-};
 
 test("真看板:GET /api/efficiency 鉴权、形状;board.py efficiency 打印主句与对照表", { timeout: 120000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "efficiencytest-"));

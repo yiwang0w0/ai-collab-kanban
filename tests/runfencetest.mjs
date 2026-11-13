@@ -13,6 +13,7 @@ import vm from "node:vm";
 import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";
+import {freePort} from './helpers/free-port.mjs';
 const require=createRequire(import.meta.url), store=require("../core/store.js");
 const handles=[], TMP=mkdtempSync(join(tmpdir(),"fleet-run-"));
 const ROOT=fileURLToPath(new URL("../",import.meta.url));
@@ -283,8 +284,7 @@ test("worker derived release is decided atomically from durable parent-run prove
 });
 
 test("HTTP protocol rejects old workers and stale child/report/retry/heartbeat writes",async()=>{
-  const listener=createServer();await new Promise(r=>listener.listen(0,"127.0.0.1",r));
-  const port=listener.address().port;await new Promise(r=>listener.close(r));
+  const port=await freePort();
   const config=join(TMP,"fleet.config.json");
   writeFileSync(config,JSON.stringify({lines:[{id:"alpha",role:{kind:"implement",tools:"write"}}]}));
   const proc=spawn(process.execPath,[join(ROOT,"core/server.mjs")],{

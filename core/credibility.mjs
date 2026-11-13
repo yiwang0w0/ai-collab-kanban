@@ -321,8 +321,23 @@ export function openCredibility({ db, err, ERR, git = () => null, repoForLine = 
         }
       baseline = { base_commit: cur.base_commit, red, self: red.filter((r) => r.by === "executor").length, verified: red.filter((r) => r.by !== "executor").length };
     }
-    const badge = cur ? badgeOf({ cur, ver, conclRows, required_checks, baseline, staleSpec, checkRows, D }) : null;
+    let badge = cur ? badgeOf({ cur, ver, conclRows, required_checks, baseline, staleSpec, checkRows, D }) : null;
+    // 卡停在一次交付上(待验收 / 已完成),而板手里最近的指纹不是这一轮、这一份交付正文的(这次的指纹没记上):
+    //   上一次交付推出的档位不能替这次作保 → 降到 self_reported,带 fingerprint_missing(闸那一侧见 autoGate)。
+    if (badge && fingerprintMissing(task, cur))
+      badge = { level: "self_reported", flags: [...badge.flags.filter((f) => f !== "fingerprint_missing"), "fingerprint_missing"], provenance: badge.provenance.slice(0, 1) };
     return { fingerprint, checks, evidence_counts, badge, baseline, required_checks, conclusions };
+  }
+
+  /** 卡在交付态(待验收 / 已完成的非目标卡),最近记下的指纹却不是卡上这一轮、这份交付正文的 = 这次交付的指纹没记上。
+   *  执行中、退回、等你决定等别的状态不判(新一轮还没交付,旧指纹就是最近一次交付的)。一次指纹都没记过的卡不在此列。 */
+  function fingerprintMissing(task, cur) {
+    if (!cur || !task || task.kind === "goal") return false;
+    const delivered = (task.status === "waiting" && task.waiting_for === "review") || (task.status === "done" && task.resolved_by !== "cascade");
+    if (!delivered) return false;
+    const bodyOk = task.result == null || cur.evidence_sha256 === sha256(String(task.result))
+      || (task.result === "null" && cur.evidence_sha256 === sha256(""));
+    return cur.run_id !== (task.run_id ?? null) || !bodyOk;
   }
 
   function badgeOf({ cur, ver, conclRows, required_checks, baseline, staleSpec, checkRows, D }) {
@@ -388,5 +403,7 @@ export function openCredibility({ db, err, ERR, git = () => null, repoForLine = 
   }
 
   return { migrate, parseDelivery: (b) => parseDelivery(b, ctx), normRequired: (v) => normRequired(v, ctx), requiredOf, setRequired,
-           recordDelivery, addVerifiedCheck, addConclusion, fields, autoGate, currentDigest };
+           recordDelivery, addVerifiedCheck, addConclusion, fields, autoGate, currentDigest,
+           // 第 8 波(I6 / I7 / I9)只读用:最近一次交付的提交与文件。
+           currentHead: (id) => current(id)?.head_commit ?? null, currentFiles: (id) => filesOf(current(id)) };
 }

@@ -197,6 +197,9 @@ export function entryOf(e, ctx = {}) {
     // 不是从编辑接口来的修改(由事件或读卡时的核对发现)actor 是 system:不写成「看板改了」。
     case "spec.changed": summary = `${actor_kind === "system" ? "说明有改动" : who + "改了说明"}(现为 v${Number(d.version) || "?"})`; break;
     case "spec.stale_delivery": summary = `${who}的交付基于旧版说明(对方确认到 v${Number(d.base) || "?"},当前 v${Number(d.current) || "?"})`; break;
+    // 合同 I8(core/autocards.mjs):操作者事先写的条件到了,板按同一条放行路放行(或没能放行)。
+    case "release.auto": summary = d.ok === false ? `条件到了(#${Number(d.source) || "?"} ${d.event === "done" ? "完成" : "交付"}),但没能自动放行${d.error ? ":" + safeText(d.error, 50) : ""}`
+      : `按条件自动放行(#${Number(d.source) || "?"} ${d.event === "done" ? "已完成" : "已交付"})`; break;
     default: summary = `记录:${cut(e.kind, 24)}`;
   }
   return { at: e.at, kind: e.kind, actor: who0, actor_kind, step, summary: cut(summary, 120) };

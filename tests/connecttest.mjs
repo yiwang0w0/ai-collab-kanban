@@ -20,6 +20,7 @@ import { isLoopback, normalizeCode, createWrongCodeGate, openConnect, checkNote,
          CODE_TTL_MS, PENDING_MAX, redactText, checkAsk, checkLine } from "../core/connect.mjs";
 import { openAssistantFeed, parseCursor } from "../core/assistant-feed.mjs";
 import { redactText as flowRedactText } from "../core/flow.mjs";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const cp = (...c) => String.fromCodePoint(...c);
@@ -36,10 +37,6 @@ function unitDb() {
   const db = store.open(); coord.migrate(db);
   return { store, coord, db };
 }
-const freePort = async (host = "127.0.0.1") => {
-  const l = createServer(); await new Promise((r) => l.listen(0, host, r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
-};
 async function board(extraEnv = {}, extraConfig = {}) {
   const dir = mkdtempSync(join(tmpdir(), "connecttest-")), config = join(dir, "fleet.json");
   writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", label: "外部", external: true }], roles: [], routes: ["default"], repo: dir, ...extraConfig }));

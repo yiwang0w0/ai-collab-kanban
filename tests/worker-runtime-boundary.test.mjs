@@ -13,6 +13,7 @@ import {fileURLToPath,pathToFileURL} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {setTimeout as delay} from 'node:timers/promises';
 import {fixtureVersion} from './http-version-fixture.mjs';
+import {freePort} from './helpers/free-port.mjs';
 const ROOT=fileURLToPath(new URL('../',import.meta.url)),TMP=mkdtempSync(join(tmpdir(),'fleet-runtime-auth-'));
 const PY=HOST_ENV.PYTHON||'python';
 let server,callback,base,operator,shared,output='';const seats=new Map();
@@ -34,7 +35,7 @@ before(async()=>{
  const original=join(ROOT,'core/server.mjs'),src=readFileSync(original,'utf8'),anchor='[loopScriptOf(line), "--as", line,';
  assert.equal(src.split(anchor).length,2);
  const fixture=join(TMP,'server.mjs');writeFileSync(fixture,src.replace(anchor,`[${JSON.stringify(stub)}, "--as", line,`).replaceAll('import.meta.url',JSON.stringify(pathToFileURL(original).href)).replace(/from\s+(['"])\.\/([^'"]+)\1/g,(_,q,p)=>'from '+JSON.stringify(pathToFileURL(join(dirname(original),p)).href)));
- const probe=netServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));base='http://127.0.0.1:'+port;
+ const port=await freePort();base='http://127.0.0.1:'+port;
  const config=join(TMP,'fleet.json');writeFileSync(config,JSON.stringify({lines:[{id:'alpha'},{id:'beta'}],roles:[],routes:['default']}));
  const clean=HOST_ENV;
  server=spawn(process.execPath,[fixture],{windowsHide:true,stdio:['ignore','pipe','pipe'],env:{...clean,BOARD_CONFIG:config,BOARD_DATA_DIR:TMP,BOARD_DB:join(TMP,'board.db'),BOARD_PORT:String(port),BOARD_PYTHON:PY,BOARD_ALLOW_UNPINNED:'1',BOARD_NO_RESTORE:'1',BOARD_POOL_TEST_MODE:'1',BOARD_POOL_TEST_PROBE:'ok',BOARD_CODEX_RELEASED:'1',BOARD_CODEX_CMD:process.execPath,WORKER_CLAUDE_CLI:process.execPath,BOARD_UNTIL:'2099-01-01T12:00',BOARD_RUNTIME_TEST_CALLBACK:`http://127.0.0.1:${callback.address().port}/`,PYTHONUTF8:'1',PYTHONDONTWRITEBYTECODE:'1'}});

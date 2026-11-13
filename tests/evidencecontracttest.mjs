@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { join, relative, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const TMP = realpathSync.native(mkdtempSync(join(tmpdir(), "kanban-evidence-")));
@@ -369,8 +370,7 @@ assert seen==['codex','claude'],seen
 
 test("临时假板一张桩卡完整领取和回报，模型正文在冻结上限内", async () => {
   const directory = join(TMP, "http"); mkdirSync(directory);
-  const listener = createServer(); await new Promise(resolve => listener.listen(0, "127.0.0.1", resolve));
-  const port = listener.address().port; await new Promise(resolve => listener.close(resolve));
+  const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
   const proc = spawn(process.execPath, [join(ROOT, "core/server.mjs")], {
     cwd: ROOT, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],

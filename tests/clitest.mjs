@@ -12,6 +12,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { nodeTooOld } from "../core/env.mjs";
+import { freePort } from "./helpers/free-port.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, "..");
@@ -297,7 +298,7 @@ console.log(NL + "[⑧ start:bg / open / stop]");
 {
   const data = join(TMP, "bg-data"); mkdirSync(data);
   writeFileSync(join(data, "board_token"), "stub-operator-token");
-  const port = await new Promise((r) => { const s = createServer(); s.listen(0, "127.0.0.1", () => { const p = s.address().port; s.close(() => r(p)); }); });
+  const port = await freePort();
   const stub = join(TMP, "stub-board.mjs");
   writeFileSync(stub, [
     'import http from "node:http"; import { readFileSync, existsSync, appendFileSync } from "node:fs"; import { join } from "node:path";',

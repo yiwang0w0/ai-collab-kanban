@@ -14,8 +14,9 @@ import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
 import { setTimeout as delay } from "node:timers/promises";
 import { backgroundModel, stopVerdict, runAutostart, autostartText, goalOf, DONE_MAX, holderAndLine, isRunning, attentionDecor,
-         stageOf, quotaModel, unlocksOf, ONE_LINE_CODES, NOTE_FRESH_MS } from "../core/home-background.mjs";
+         stageOf, quotaModel, unlocksOf, ONE_LINE_CODES, NOTE_FRESH_MS, typeAttention } from "../core/home-background.mjs";
 import { loadAttentionModel } from "../core/home-model.mjs";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const FAKE = join(ROOT, "tests", "helpers", "fake-coordinator-cli.mjs");
@@ -197,6 +198,18 @@ test("G4 stage:由目标与直属子卡的状态得出;整合从不给出;读不
   assert.deepEqual(stageOf(null), { stage: null, stage_detail: null });
 });
 
+test("第 7 波欠账⑥:首页行的 type 按顺序对到 attention 上;条数对不上就都不给 type,并标 attention_type_mismatch", () => {
+  const all = [{ kind: "review", task_id: 1 }, { kind: "decision", task_id: 2 }, { kind: "line_fault" }];
+  const kinds = [{ type: "accept", verb: "验收" }, { type: "decide", verb: "去裁定" }, { type: "fault", verb: "查看" }];
+  const ok = typeAttention(all.slice(0, 2), all.length, kinds);
+  assert.equal(ok.mismatch, false);
+  assert.deepEqual(ok.attention.map((a) => [a.task_id, a.type, a.verb]), [[1, "accept", "验收"], [2, "decide", "去裁定"]], "截过的条目也按原顺序对上");
+  const bad = typeAttention(all, all.length, kinds.slice(0, 2));
+  assert.equal(bad.mismatch, true);
+  assert.ok(bad.attention.every((a) => a.type === undefined && a.verb === undefined), "对不上不另判、不给 type");
+  assert.deepEqual(typeAttention([], 0, []), { attention: [], mismatch: false });
+});
+
 test("G3 quota:各池各一段;没记用完 = unknown(待核实)不当 ok;used_pct 与 runway 一律未知", () => {
   const q = quotaModel({ now: NOW, pools: [{ id: "claude", label: "Claude", exhausted_at: null, until: null },
     { id: "codex", label: "Codex", exhausted_at: iso(10), until: iso(-290) }, { id: "x" }] });
@@ -208,10 +221,6 @@ test("G3 quota:各池各一段;没记用完 = unknown(待核实)不当 ok;used_p
 });
 
 // ── 真看板 ─────────────────────────────────────────────────────────────────────
-const freePort = async () => {
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
-};
 async function board() {
   const dir = mkdtempSync(join(tmpdir(), "homebgtest-")), repo = join(dir, "repo"), cfg = join(dir, "fleet.json"), log = join(dir, "coordinator-calls.jsonl");
   mkdirSync(repo);

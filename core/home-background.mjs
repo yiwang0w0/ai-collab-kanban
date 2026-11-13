@@ -130,6 +130,13 @@ export function sourceOf(t) {
   const quote = origin === "operator_said" ? oneText(p.quote) : null;
   return { label: clean(p.label, 24), origin, ...(quote ? { quote } : {}) };
 }
+/** server 把首页判定的 type / verb(homeLists 写在行上的那一份)按顺序对到 attention 条目上。条数对不上就都不给 type,
+ *  并在应答里标 attention_type_mismatch:true(面板据此决定怎么显示;第 7 波欠账⑥:原先只打一行日志)。
+ *  shown = 截过的条目;allCount = 截前条数;kinds = [{type, verb}](先 mine 各行、后线故障,与 briefModel 同序)。 */
+export function typeAttention(shown = [], allCount = 0, kinds = []) {
+  const typed = kinds.length === allCount;
+  return { attention: shown.map((a, i) => (typed ? { ...a, ...kinds[i] } : a)), mismatch: !typed };
+}
 /** 一条 attention 加上 G2 的四个字段。work = 本板未归档的非目标卡(找下游用)。 */
 export function attentionDecor(a, t, { work = [], whoOf = () => null } = {}) {
   const type = typeof a?.type === "string" ? a.type : null, ask = t?.ask && typeof t.ask === "object" ? t.ask : null;
@@ -144,14 +151,19 @@ export const STAGES = ["decompose", "execute", "integrate", "accept", "done"];
 /**
  * 由目标卡与它的直属子卡得出所在段:目标完成 = done;没有子卡、或拆好了还没放行 = decompose;
  * 子卡没做完 = execute(没做完的全都在等本人验收 / 裁定时 = accept);子卡全做完而目标还没收尾 = accept。
- * 「整合」看板没有可读的状态字段 → 从不给出(面板不画这一段)。读不到计数 = null。
+ * 「整合」(合同 I7):目标写了 integrate 时,integ = server 从缓存给的汇总 { merged, pending, unknown, target, target_sha, all_done }
+ *   (all_done = 除候选组装卡外的直属子卡全完成);全完成且有待合 = integrate。stage_detail.integrate 照实给;没写 integrate 的目标同现状。
+ * 读不到计数 = null。
  */
-export function stageOf(goal, kids = []) {
+export function stageOf(goal, kids = [], integ = null) {
   if (!goal) return { stage: null, stage_detail: null };
   const total = Number.isInteger(goal.children_total) ? goal.children_total : null, done = Number.isInteger(goal.children_done) ? goal.children_done : null;
-  const detail = total === null || done === null ? null : { done, total };
+  const base = total === null || done === null ? null : { done, total };
+  const detail = base && integ ? { ...base, integrate: { merged: integ.merged | 0, pending: integ.pending | 0, unknown: integ.unknown | 0,
+    target: typeof integ.target === "string" ? integ.target : null, target_sha: typeof integ.target_sha === "string" ? integ.target_sha : null } } : base;
   if (goal.status === "done") return { stage: "done", stage_detail: detail };
   if (!detail) return { stage: null, stage_detail: null };
+  if (integ && integ.all_done === true && (integ.pending | 0) > 0) return { stage: "integrate", stage_detail: detail };
   if (total === 0 || (goal.status === "not_started" && !goal.released)) return { stage: "decompose", stage_detail: detail };
   if (done < total) {
     const open = kids.filter((k) => k && !k.archived_at && k.status !== "done");
@@ -195,7 +207,8 @@ export function goalOf(t, byId) {
  */
 export function backgroundModel({ tasks = [], attention = [], attentionTotal = null, now = 0,
                                   whoOf = () => null, sinceOf = () => null, stopOf = () => ({ stoppable: false }),
-                                  lineOf = () => null, lineLabel = (l) => l, sourceGate = () => false, attentionIds = null } = {}) {
+                                  lineOf = () => null, lineLabel = (l) => l, sourceGate = () => false, attentionIds = null,
+                                  integrationOf = () => null } = {}) {
   const live = tasks.filter((t) => t && !t.archived_at);
   const byId = new Map(live.map((t) => [Number(t.id), t]));
   const work = live.filter((t) => t.kind !== "goal");
@@ -234,7 +247,7 @@ export function backgroundModel({ tasks = [], attention = [], attentionTotal = n
     total: Number.isInteger(g.children_total) ? g.children_total : null, done: Number.isInteger(g.children_done) ? g.children_done : null,
     running: running.filter((r) => r.goal?.id === Number(g.id) && !isQueued(r)).length,
     queued: running.filter((r) => r.goal?.id === Number(g.id) && isQueued(r)).length,
-    ...stageOf(g, work.filter((k) => Number(k.parent_id) === Number(g.id))) }));
+    ...stageOf(g, work.filter((k) => Number(k.parent_id) === Number(g.id)), integrationOf(g) ?? null) }));
   return { attention, attention_total: attentionTotal ?? attention.length,
            running: running.slice(0, RUNNING_MAX), running_total: running.length, queued_total: running.filter(isQueued).length, done, groups,
            generated_at: Number.isFinite(now) ? new Date(now).toISOString() : null };

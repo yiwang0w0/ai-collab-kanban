@@ -12,6 +12,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { createServer } from "node:net";
 import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
+import { freePort } from "./helpers/free-port.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const FAKE = join(ROOT, "tests", "helpers", "fake-coordinator-cli.mjs");
@@ -20,10 +21,6 @@ const B = await import(pathToFileURL(join(ROOT, "core", "board-claude-cli.mjs"))
 const S = await import(pathToFileURL(join(ROOT, "core", "config-setup.mjs")).href);
 const conversations = createRequire(import.meta.url)(join(ROOT, "core", "conversations.js"));
 
-const freePort = async () => {
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r)); return port;
-};
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 /** 临时看板。协调线默认接假 CLI;unpinned=false 时不跳过源码闸(用来测「版本未确认」)。 */

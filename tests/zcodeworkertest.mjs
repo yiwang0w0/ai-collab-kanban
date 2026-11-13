@@ -27,6 +27,7 @@ import {taskExecutionView} from '../core/task-execution-view.mjs';
 import {openLedger} from '../core/usage.mjs';
 import {openZcodeWorker,reconcileZcodeAssignment,validateZcodeWorkerConfig,zcodeWorkerPlan,enqueueZcodeTask,DEFAULT_MAX_LAUNCHES,HARD_MAX_LAUNCHES} from '../core/execution/zcode-worker.mjs';
 import {zcodeStatus,zcodeCard} from '../core/zcode-status.mjs';
+import {freePort} from './helpers/free-port.mjs';
 const require=createRequire(import.meta.url),store=require('../core/store.js'),vendor=require('./helpers/zcode-mcp-vendor.cjs');
 const HOST_ENV=harnessEnvironment(),WINDOWS=process.platform==='win32',skip=WINDOWS?false:'Zcode 执行循环仅支持 Windows';
 const ROOT=fileURLToPath(new URL('../',import.meta.url)),TMP=realpathSync.native(mkdtempSync(join(tmpdir(),'fleet-zcode-worker-')));
@@ -55,7 +56,6 @@ after(async()=>{
  for(const d of dbs)try{d.close();}catch{}
  assert.ok(inside(realpathSync.native(tmpdir()),TMP));rmSync(TMP,{recursive:true,force:true});
 });
-async function freePort(){const probe=net.createServer();await new Promise(r=>probe.listen(0,'127.0.0.1',r));const port=probe.address().port;await new Promise(r=>probe.close(r));return port;}
 const closeServer=server=>new Promise((done,fail)=>{if(!server.listening)return done();server.close(e=>e?fail(e):done());server.closeAllConnections();});
 const listening=port=>new Promise(done=>{const socket=net.connect(port,'127.0.0.1');socket.once('connect',()=>{socket.destroy();done(true);});socket.once('error',()=>done(false));});
 
