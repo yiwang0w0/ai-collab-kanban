@@ -92,6 +92,17 @@ export async function redeemToFile({url,code,tokenFile,line=null,send=boardReque
 }
 
 const ID={type:"integer",minimum:1,description:"卡号(看板上的 #数字)"};
+// 合同 H1/H3:交付可带的指纹与自报检查(全部可选;不带 = 与旧版相同)。checks 一律记成自报,抬不动可信度徽标。
+const HEX_COMMIT={type:"string",pattern:"^(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})$"};
+const CRED_PROPS={
+ base_commit:{...HEX_COMMIT,description:"这次工作基于的提交(完整 40/64 位十六进制)"},
+ head_commit:{...HEX_COMMIT,description:"交付所在的提交(完整 40/64 位十六进制);看板配置了可读的工作仓时会自己核对"},
+ files:{type:"array",maxItems:50,description:"交付的文件:相对工作仓的路径 + 该文件在 head_commit 里内容的 sha256;最多 50 项",
+  items:{type:"object",properties:{path:{type:"string",maxLength:260},sha256:{type:"string",pattern:"^[0-9a-fA-F]{64}$"}},required:["path","sha256"],additionalProperties:false}},
+ checks:{type:"array",maxItems:50,description:"你自己跑过或推断的检查;看板记成自报。how=ran 实际跑了 / inferred 推断;baseline=true 表示在底提交上本来就红",
+  items:{type:"object",properties:{name:{type:"string",minLength:1,maxLength:80},status:{type:"string",enum:["pass","fail","unverified"]},
+   how:{type:"string",enum:["ran","inferred"]},baseline:{type:"boolean"}},required:["name","status"],additionalProperties:false}},
+};
 const LEASE={type:"integer",minimum:1,maximum:240,description:"租约分钟数,1–240;不填用看板默认"};
 function toolList(line){
  const lineNote=line?`只看线 ${line} 上的卡。`:"";
@@ -107,7 +118,7 @@ function toolList(line){
    inputSchema:{type:"object",properties:{id:ID,lease_minutes:LEASE,note:{type:"string",maxLength:MAX_NOTE,description:"现在在做什么,≤120 字;空串 = 清掉"}},required:["id"],additionalProperties:false}},
   {name:"report_result",description:"交付自己领到的卡。outcome=done:做完了,卡进入待验收,由人验收(交付不等于通过);outcome=wait:做不下去、需要人决定,evidence 里写原因。evidence 写交付正文。",
    inputSchema:{type:"object",properties:{id:ID,outcome:{type:"string",enum:["done","wait"]},
-    evidence:{type:"string",minLength:1,maxLength:MAX_EVIDENCE,description:"交付正文或停下的原因"}},required:["id","outcome","evidence"],additionalProperties:false}},
+    evidence:{type:"string",minLength:1,maxLength:MAX_EVIDENCE,description:"交付正文或停下的原因"},...CRED_PROPS},required:["id","outcome","evidence"],additionalProperties:false}},
   {name:"wait_for_card",description:`等一张可以领的卡(已放行、未开始)。${lineNote}有就立即返回 {card:{id,subject,summary,aggregate_version}},到时没有就返回 {none:true},再调一次接着等。值守循环:wait_for_card → get_card → claim_card → 干活 → report_result。`,
    inputSchema:{type:"object",properties:{timeout_sec:{type:"integer",minimum:1,maximum:50,description:"最多等几秒,1–50,默认 30"}},additionalProperties:false}},
   {name:"ask_operator",description:"手上的卡需要人时用:把问题交回给操作员,卡进入「等你决定」(等同 report_result 的 outcome=wait)。needs=decision(默认):要人拍板,问清楚决定什么、有哪几个选项;needs=hands:要人亲手做一件你做不了的事(登录、插设备、在别的机器上点按钮…),what / where / expect 各写一行:做什么、在哪做、做完是什么样。",
@@ -148,6 +159,8 @@ function checkArgs(schema,args){
  for(const k of schema.required??[])if(!Object.hasOwn(args,k))fail("BAD_INPUT",`缺少参数 ${k}`);
  for(const [k,s] of Object.entries(schema.properties)){
   if(!Object.hasOwn(args,k))continue;const v=args[k];
+  // 数组只核类型与条数;每项的形状由看板核(不合规整次交付不收)。
+  if(s.type==="array"&&!(Array.isArray(v)&&v.length<=(s.maxItems??Infinity)))fail("BAD_INPUT",`${k} 要数组,最多 ${s.maxItems} 项`);
   if(s.type==="integer"&&!(Number.isSafeInteger(v)&&v>=(s.minimum??-Infinity)&&v<=(s.maximum??Infinity)))fail("BAD_INPUT",`${k} 要整数${s.maximum?` ${s.minimum}–${s.maximum}`:` ≥${s.minimum}`}`);
   if(s.type==="string"){
    if(typeof v!=="string")fail("BAD_INPUT",`${k} 要字符串`);
@@ -228,7 +241,8 @@ export function createExecBridge({url,tokenFile,line=null,send=boardRequest,poll
    // run_id 优先用本进程领卡时记下的;客户端重连后进程是新的,就取卡上当前的 run_id——持有者是不是自己由看板按令牌核对。
    const t=await card(a.id),run=runs.get(a.id)??t.run_id;
    if(!run)fail("CONFLICT",`卡 #${a.id} 不在执行中,不能交付`);
-   const after=(await board("POST",`/api/tasks/${a.id}/report`,{run_id:run,outcome:a.outcome,evidence:a.evidence,...(a.ask?{ask:a.ask}:{})}))?.task;
+   const cred=Object.fromEntries(Object.keys(CRED_PROPS).filter(k=>a[k]!==undefined).map(k=>[k,a[k]]));
+   const after=(await board("POST",`/api/tasks/${a.id}/report`,{run_id:run,outcome:a.outcome,evidence:a.evidence,...(a.ask?{ask:a.ask}:{}),...cred}))?.task;
    runs.delete(a.id);
    return {id:a.id,status:after?.status??null,waiting_for:after?.waiting_for??null,...(a.ask?{needs:a.ask.needs}:{}),
     note:a.outcome==="done"?"已交付,等人验收;交付不等于通过":a.ask?.needs==="hands"?"已停下,等人亲手去做":"已停下,等人决定"};

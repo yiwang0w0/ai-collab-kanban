@@ -50,6 +50,7 @@ import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMI
 import {createFlow,redactText,cut} from "./flow.mjs";
 import {openMdHandoff} from "./md-handoff.mjs";
 import {createEfficiency,efficiencyHttp} from "./efficiency.mjs";
+import {openCredibility} from "./credibility.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -332,7 +333,10 @@ const unnamedOf = (t) => {
 
 // SQL repo paths resolve only inside the server. The browser-facing object carries
 // file names, hashes and controlled download endpoints — never source paths.
-const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
+// 合同 H1–H4(core/credibility.mjs):任务对象另带 fingerprint / checks / evidence_counts / badge / baseline / required_checks / conclusions。
+//   based_on_stale_spec(合同 H6)若由别的字段段给出,在这里读到(缺失 = false)。
+const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t); return {...o, ...cred.fields(t,{staleSpec:o.based_on_stale_spec===true})}; };
+const taskOutBase = (t) => { if(!t)return t; const profile=taskProfilePreview(t),repair=taskRepairPreview(t);return {
   ...t,
   history_refs:store.taskHistoryRefs(db,t.id),
   ...flow.taskFields(t),   // 合同 B:handed_back / last_actor / last_actor_kind(core/flow.mjs,增量缓存)
@@ -472,6 +476,17 @@ const connect = openConnect({ db, coord, store, emit: (type, data) => emit(type,
                         tokenDir: defaultTokenDir(store.DATA_DIR) }),
 } });
 connect.migrate();
+// 合同 H1–H4「可信」(core/credibility.mjs):指纹 / 检查项 / 结论 / 必需检查,各自的表。板侧只做只读 git 查询。
+const cred = openCredibility({ db, err: store.err, ERR: store.ERR, git: () => GIT?.path || null,
+  // 板可读的工作仓:线配置 work_repo(绝对路径)优先;受管线(非外部)= 看板的工作仓;外部线没配 = 无(指纹只记不核)。
+  repoForLine: (line) => { const l = (CFG.lines || []).find((x) => x.id === line); if (!l) return null;
+    if (typeof l.work_repo === "string" && isAbsolutePath(l.work_repo)) return resolve(l.work_repo);
+    return l.external === true ? null : REPO_ROOT; },
+  // 命令哈希:板自己读登记簿里这个键的 argv(不采信调用方给的命令);读不到 = null。
+  commandHash: (key) => { try { const reg = JSON.parse(readFileSync(process.env.BOARD_VERIFY_REGISTRY || join(CODE_ROOT, "core", "verify_registry.json"), "utf8"));
+    const argv = !String(key).startsWith("_") && Array.isArray(reg?.[key]) ? reg[key] : null;
+    return argv ? createHash("sha256").update(JSON.stringify(argv)).digest("hex") : null; } catch { return null; } } });
+cred.migrate();
 // 助手的提醒游标(合同 G6,core/assistant-feed.mjs):提醒流在库里,按令牌哈希记的「已确认到哪」在数据目录的文件里(受管线禁读表登记了这个文件名)。
 const assistantFeed = openAssistantFeed({ db, file: join(store.DATA_DIR, "assistant_cursors.json") });
 assistantFeed.migrate();
@@ -1589,6 +1604,8 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
       ...(actor ? { actor } : {}),
     });
     if (hold) held.push(made[i]);
+    // 合同 H3:计划项可带 required_checks(只会让这张卡更严);名字不合规的整项不设,不让整次建卡失败。
+    if (t.required_checks != null) { try { const rq = cred.normRequired(t.required_checks); if (rq?.length) cred.setRequired(made[i], rq, actor || "plan"); } catch {} }
   });
   return { made, demoted, held };
 }
@@ -3028,6 +3045,25 @@ function resolveTask(id, b, boardRole) {
   //     closure get the gate itself switched off.
   if (disp === "close" && b.allow_uncommitted !== true) closeGateOrThrow(t);
 
+  // ══ ③b 合同 H2/H3(core/credibility.mjs)═══════════════════════════════
+  //   审阅座席跑过的验证(verify_key + verify_ok)记成 by:"reviewer" 的检查,绑当前 digest;身份取自令牌,不看请求体自称。
+  //   审阅的 approve 就是「自动通过」:可信闸不满足 → 不结案,盖「审过」印、写明缺什么,留在等待中给人(现有转人工路径)。
+  const reviewRuntime = boardRole === "review" ? (RUNTIME_IDS.includes(b.runtime) ? b.runtime : reviewSeatRuntime()) : null;
+  if (boardRole === "review") {
+    if (typeof b.verify_key === "string" && (b.verify_ok === true || b.verify_ok === false))
+      cred.addVerifiedCheck(id, { name: b.verify_key, key: b.verify_key, ok: b.verify_ok, by: "reviewer", env: `reviewer:${reviewRuntime}` });
+    if (disp === "close") {
+      const hard = cred.autoGate(t, { staleSpec: taskOut(t)?.based_on_stale_spec === true });
+      if (!hard.ok) {
+        const held = store.markAutoReviewed(db, { id, expectedVersion: b.expected_version,
+          note: "【自动审阅】审阅判通过,但自动通过的可信闸不满足 —— 转人工验收:" + hard.missing.map((x) => String.fromCharCode(10) + "- " + x).join("") });
+        cred.addConclusion(id, { kind: "review", verdict: b.verdict, by: "reviewer", runtime: reviewRuntime });
+        emit("task.autoreviewed", held);
+        return { held_for_human: true, missing: hard.missing };
+      }
+    }
+  }
+
   const r = store.resolveWithPreparation(db, { id, verdict:b.verdict, expectedVersion:b.expected_version,
     resolvedBy:b.resolved_by || "human", verifyOk:b.verify_ok, selectedOption:b.selected_option,
     disposition:disp }, ()=>{
@@ -3070,6 +3106,9 @@ function resolveTask(id, b, boardRole) {
 
       return {note:resolveNote,sqlArchive:archive,sqlReceipt:receiptBlock};
     });
+  // 合同 H2:审阅结论 / 人工验收都记下它看的 digest(再交付 digest 变了 → stale)。
+  if (boardRole === "review") cred.addConclusion(id, { kind: "review", verdict: b.verdict, by: "reviewer", runtime: reviewRuntime });
+  else if (boardRole === "operator") cred.addConclusion(id, { kind: "acceptance", verdict: b.verdict, by: "operator" });
   emit("task.resolved", r);
   return r;
 }
@@ -4561,6 +4600,9 @@ const server = http.createServer(async (req, res) => {
       // 先保留执行配置的角色闸；白名单外字段统一丢弃，不成为 store 的内部参数。
       // 例外是下面几个闸门字段：收紧的取值照收，否则「先不放行」「加人工闸」会被当成没写。
       if(b.execution_profile_id!==undefined&&boardRole!=="operator")return json(res,403,{error:"任务执行配置只能由操作者选择"});
+      // 合同 H3:required_checks 只由操作者在建卡时定(worker 的派生卡不收);先校验,不合规不建卡。
+      if(b.required_checks!==undefined&&boardRole!=="operator")return json(res,403,{error:"required_checks 只能由操作者设定"});
+      const requiredChecks=cred.normRequired(b.required_checks);
       const allowed=boardRole==="operator"
         ? ["subject","summary","description","acceptance","line","route","parentId","parent_id","blockedBy","verifyCmd","needsBash","kind","execution_profile_id","model","effort"]
         : ["subject","summary","description","acceptance","line","parentId","parent_id","parent_run_id","worker"];
@@ -4613,6 +4655,7 @@ const server = http.createServer(async (req, res) => {
       }
       if (badRoutable(res, fields)) return;   // creation entrance for route/line domains (ONE criterion)
       const id = store.add(db, fields);
+      if (requiredChecks?.length) cred.setRequired(id, requiredChecks, "operator");
       emit("task.created", { id });
       const made = taskOut(store.get(db, id));
       // 建成的卡比请求更严的地方逐项点名(放宽没有生效、执行配置卡固定未放行等)，不静默。
@@ -4975,6 +5018,20 @@ const server = http.createServer(async (req, res) => {
       const record=store.taskHistoryRecord(db,{id,kind:historyPath[2],seq:Number(historyPath[3])});
       return record?json(res,200,{[historyPath[2]==="decisions"?"decision":"evidence"]:record}):json(res,404,{error:"不存在"});
     }
+    // 合同 H3:放行后只有操作者能改 required_checks(写接口白名单里只有操作员够得着这条路径;这里再按角色核一次)。
+    const mrc = p.match(/^\/api\/tasks\/(\d+)\/required-checks$/);
+    if (mrc) {
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      if (boardRole !== "operator") return json(res, 403, { error: "required_checks 只能由操作者修改", role: boardRole });
+      const id = Number(mrc[1]), t = store.get(db, id);
+      if (!t) return json(res, 404, { error: "不存在" });
+      const b = await readBody(req);
+      const rq = cred.normRequired(b?.required_checks);
+      if (rq === null) throw store.err(store.ERR.BAD_INPUT, "required_checks 要名字数组(空数组 = 清掉)");
+      cred.setRequired(id, rq, "operator");
+      emit("task.updated", { id });
+      return json(res, 200, { task: taskOut(store.get(db, id)) });
+    }
     const mt = p.match(/^\/api\/tasks\/(\d+)(?:\/(claim|heartbeat|attempt|process-started|execution-event|report|resolve|update|autoreview|pin|release|archive|reopen|runs|history))?$/);
     if (mt) {
       const id = Number(mt[1]);
@@ -4987,6 +5044,9 @@ const server = http.createServer(async (req, res) => {
         const raw = url.searchParams.get("limit"), limit = raw == null ? 100 : Number(raw);
         if (!Number.isInteger(limit) || limit < 1 || limit > 1000) return json(res, 400, { error: "limit 必须是 1..1000" });
         if (!store.get(db, id)) return json(res, 404, { error: "不存在" });
+        // 合同 H1–H4:操作员读历史时一并给可信字段(助手不给:它的读面是允许清单)。
+        if (boardRole === "operator") { const o = taskOut(store.get(db, id));
+          return json(res, 200, { ...flow.history(id, limit), ...Object.fromEntries(["fingerprint", "checks", "evidence_counts", "badge", "baseline", "required_checks", "conclusions"].map((k) => [k, o[k]])) }); }
         return json(res, 200, flow.history(id, limit));
       }
       if (m === "GET" && action === "runs") {
@@ -5074,10 +5134,25 @@ const server = http.createServer(async (req, res) => {
         // 合同 G5:ask_operator 交回时可带 ask {needs, what, where, expect}(只配 outcome=wait);先校验,不合规就不收这次交回。
         const ask = b.ask === undefined || b.ask === null ? null : connect.checkAsk(b.ask);
         if (ask && b.outcome !== "wait") throw store.err(store.ERR.BAD_INPUT, "ask 只配 outcome=wait(交回给人)");
+        // 合同 H1/H3:base_commit / head_commit / files / checks(全部可选)先校验,不合规就不收这次交付。
+        const credIn = cred.parseDelivery(b);
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });
         connect.clearNote(id);          // 交付即清掉临时进度
         if (ask) connect.setAsk(id, b.run_id, ask); else connect.clearAsk(id);
         if (selfUsage) usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome });
+        // 合同 H1–H4:交付(done)记指纹与自报检查;受管宿主的独立凭据报来的宿主验证(host_verify)记成 by:"board"。
+        //   别的身份带 host_verify 一概不收;执行者的 checks 永远 by:"executor"。
+        let credFailed = false;
+        if (b.outcome === "done") {
+          const hv = req.workerSeat && b.host_verify && typeof b.host_verify === "object" && typeof b.host_verify.key === "string"
+            && typeof b.host_verify.ok === "boolean" ? b.host_verify : null;
+          // 交付已经落盘:记录这一步出错只出声,不把已收下的交付说成失败(徽标退回自报一侧)。
+          try {
+            await cred.recordDelivery(store.get(db, id), credIn, { runId: b.run_id, evidence: b.evidence,
+              authorRuntime: boardRole === "executor" ? (db.prepare("SELECT kind FROM connect_executors WHERE executor_id=?").get(String(req.executor.id))?.kind ?? null) : (req.workerSeat?.runtime ?? store.get(db, id)?.last_runtime ?? null),
+              hostCheck: hv ? { name: hv.key, key: hv.key, ok: hv.ok, env: `host:${process.platform}` } : null });
+          } catch (e) { credFailed = true; console.log(`#${id} 指纹记录失败(交付照收,本次不自动通过):${String(e?.message || e).split(String.fromCharCode(10))[0].slice(0, 160)}`); }
+        }
         emit("task.reported", r);
         // ⭐ v0.21 (user ruling 2026-09-09): on a line configured accept:"auto" a delivery completes
         //   without a human click — the operator decided that ONCE, in the config, for the whole
@@ -5086,7 +5161,11 @@ const server = http.createServer(async (req, res) => {
         const after = store.get(db, id);
         if (b.outcome === "done" && after && after.status === "waiting" && after.waiting_for === "review"
             && LINE_ACCEPT[after.line] === "auto" && Number(after.human_gate) === 0) {
-          try {
+          // 合同 H3 硬闸:必需检查 / 指纹 / 旧版说明不满足 → 不自动通过,留在等待中给人(现有路径)。
+          const hard = credFailed ? { ok: false, missing: ["本次交付的指纹没记下(见上一行)"] }
+            : cred.autoGate(after, { staleSpec: taskOut(after)?.based_on_stale_spec === true });
+          if (!hard.ok) console.log(`#${id} 线 ${after.line} accept:auto 未自动完成(可信闸)—— 留在等待中给人:${hard.missing.join(";").slice(0, 200)}`);
+          else try {
             closeGateOrThrow(after);
             const rr = store.resolve(db, { id, verdict: "approve", resolvedBy: "auto", disposition: "close",
                                            note: `线「${LINE_LABEL[after.line] || after.line}」配置 accept:auto —— 交付即完成(交付物闸照常检查过)` });
@@ -5099,8 +5178,8 @@ const server = http.createServer(async (req, res) => {
         return json(res, 200, { task: store.get(db, id) });
       }
       if (action === "resolve") {
-        resolveTask(id, b, boardRole);
-        return json(res, 200, { task: taskOut(store.get(db, id)) });
+        const rr = resolveTask(id, b, boardRole);
+        return json(res, 200, { task: taskOut(store.get(db, id)), ...(rr?.held_for_human ? { held_for_human: true, missing: rr.missing } : {}) });
       }
       if (action === "attempt") {
         // Self-retry round n: the card stays in_progress (not released); only

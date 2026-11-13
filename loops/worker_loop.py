@@ -448,7 +448,7 @@ def charter_block():
 AGENT_INSTANCE_ID = str(uuid.uuid4())
 
 
-def deliver(tid, worker, outcome, evidence, *, run_id, what="交付", _call=None, _log=None):
+def deliver(tid, worker, outcome, evidence, *, run_id, what="交付", vr=None, _call=None, _log=None):
     """report 的着弹判定 —— 看板的**拒收必须被读**。
     409 = 卡已不在我手上(租约到期被 reaper 回收 / 被 releaseHeldBy 打回 / 改手);404 = 卡没了。
     此前六处调用把返回码整个丢掉:日志照打「→ 等待中/待验收」,handle 照样 return "done",
@@ -457,8 +457,12 @@ def deliver(tid, worker, outcome, evidence, *, run_id, what="交付", _call=None
     返回 True = 着床;False = 被拒收(已显式记录;调用方**不得**再当成 done)。
     _call/_log 可注入,给自测用(照 pool_state.report_exhausted 的形)。"""
     c, lg = (_call or call), (_log or log)
-    s, r = c("POST", f"/api/tasks/{tid}/report",
-             {"worker": worker, "run_id": run_id, "outcome": outcome, "evidence": evidence})
+    body = {"worker": worker, "run_id": run_id, "outcome": outcome, "evidence": evidence}
+    # 合同 H3:本循环实际跑过的登记验证(键 + 通过与否)。看板只在本座席的独立凭据下把它记成 by:"board";
+    #   共享 worker 令牌带来的一概不收。旧 server 忽略这个字段。
+    if vr is not None and vr.get("key") and outcome == "done":
+        body["host_verify"] = {"key": str(vr.get("key")), "ok": bool(vr.get("ok"))}
+    s, r = c("POST", f"/api/tasks/{tid}/report", body)
     if s == 200:
         return True
     lg(f"  ⚠ #{tid} {what}被看板拒收 {s} {(r or {}).get('error', '')} —— 这张卡已不在本 worker 手上,"
@@ -2804,7 +2808,7 @@ def handle_legacy(t, worker):
                 if memo:
                     ev += chr(10) + chr(10) + memo
                 ev += chr(10) + chr(10) + fmt_acct(acct)
-                if not deliver_run(tid, worker, "done", ev):
+                if not deliver_run(tid, worker, "done", ev, vr=vr):
                     # ⭐不能 return "done":主循环会据此清零线级熔断。被拒收是一种失败 ——
                     #   而且若它反复发生(租约太短 / 心跳线程死了),正该由熔断把线停下来。
                     LAST_FAIL_FP = "report-rejected"
@@ -2958,13 +2962,13 @@ def handle(t, worker):
             return f"\n\n⚠派生文件留档失败({error}):{spawn_path_for(tid)} 仍在原处,本卡再次放行前请先移走。"
         return "\n\n" + memo if memo else ""
 
-    def finish(outcome, text, why=None):
+    def finish(outcome, text, why=None, vr=None):
         if outcome != "done":
             text += set_aside(why or "未完成")
         if leftover:
             text += "\n\n" + leftover
         text += lessons.close(outcome == "done")    # 收尾:经验入库;验证通过时给附过的条目各记一次命中
-        delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id)
+        delivered = deliver(tid, worker, outcome, text + "\n\n" + fmt_acct(rows), run_id=run_id, vr=vr)
         return "done" if delivered and outcome == "done" else "wait" if delivered else "rejected"
     try:
         for number in range(1, maximum + 1):
@@ -3049,7 +3053,7 @@ def handle(t, worker):
                     last_result += "\n本卡派生子任务：" + str(made)
                 if memo:
                     last_result += "\n" + memo
-                return finish("done", last_result)
+                return finish("done", last_result, vr=vr)
             LAST_FAIL_FP = reason
             if reason not in ("test_failure", "evidence_contract"):
                 return finish("wait", f"停止续修：{reason}。未另开尝试或提高档位。\n" + last_result, reason)

@@ -1422,3 +1422,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-13 公告板 v3 第 6 波桥与助手侧(claude/board-v3-w6-asst,合同 G5–G6):ask_operator 可选 needs=decision|hands 与 what / where / expect(压一行、脱敏、≤200 字),任务对象与卡详情给 ask,md 导出逐项一行;不带新参数与旧版相同。
 - 助手:wait_for_attention / get_brief 带 since 返回 cursor,看板按令牌哈希记「已确认到哪」(assistant_cursors.json 归受管线禁读),重连续发不丢不重、撤销即删;mode=quiet 只给线故障 / AI 卡住 / 受阻,切回补发;get_brief 加 changes 与 lines;post_card 加自报的 origin(缺省 ai_inferred)与 quote;小屏 text 只写等本人处理的件、每件一行动词开头。
 - assistanttest、execmcptest、connecttest 增例;受影响套件与最终提交上的完整 npm test 结果见本批回报。助手发起批准请求未做(等操作者裁)。阻塞:无。
+- 2026-11-13 公告板 v3 第 7 波「可信」后端核心(claude/board-v3-w7-cred,合同 H1–H4;新模块 core/credibility.mjs):report_result 与受管线交付可带 base_commit / head_commit / files / checks,板算 digest(含交付正文哈希),线有看板可读的工作仓(受管线 = 看板工作仓;外部线写 work_repo)时只读核对(cat-file / rev-parse,清 GIT_*、带超时、提交号严格十六进制),verified 三态。
+- 审阅结论 / 已核检查 / 人工验收各绑 digest,再交付即 stale 并给 changed_files;checks 分已核(board = 受管座席独立凭据的宿主验证,reviewer = 审阅令牌带 verify_key)与自报(executor,写什么 by 都只记自报);徽标、evidence_counts、baseline 每次读时从事实推出;required_checks 只由操作者定(建卡 / 建计划 / POST /api/tasks/:id/required-checks)。
+- 自动通过(accept:auto 交付、审阅判通过)加硬闸:必需检查全有已核 pass 且绑当前 digest、无 fingerprint_mismatch、无 based_on_stale_spec;不满足转人工。新增 credibilitytest;受影响套件与最终提交上的完整 npm test 结果见本批回报。没有调用模型。阻塞:无。

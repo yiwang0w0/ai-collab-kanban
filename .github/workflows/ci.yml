@@ -285,6 +285,9 @@ jobs:
       - name: "assistanttest (assistant role: permission matrix, unreleased post_card with cap, pure brief, wait_for_attention, revoke)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/assistanttest.mjs
+      - name: "credibilitytest (fingerprint digest and read-only git verification, stale conclusions, checks and badge, required_checks gate on auto-accept, baseline red, write permissions)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/credibilitytest.mjs
       - name: "homebackgroundtest (home background tasks: three groups, plan groups, who, stop in two steps, autostart after plan apply with gates, auth)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/homebackgroundtest.mjs

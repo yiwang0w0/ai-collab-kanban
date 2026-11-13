@@ -871,12 +871,19 @@ def apply_verdict(t, d, vr=None):
         # ⭐联动结案的引信是**机器的绿**,不是 approve。这里递过去的只是
         #   「本次审阅实际跑过的 verify 的结果」—— 没跑过就不递
         #   (不推断成 true。推断不是测量)。
-        body = {"verdict": v, "note": note, "resolved_by": "auto", "expected_version": t["aggregate_version"]}
+        # runtime:本审阅的运行时(合同 H3「另一家审过」的判据之一);旧 server 忽略这个字段。
+        body = {"verdict": v, "note": note, "resolved_by": "auto", "expected_version": t["aggregate_version"], "runtime": RUNTIME}
         if vr is not None and vr.get("key"):
             body["verify_ok"] = bool(vr.get("ok"))
+            # verify_key:本轮实际跑的登记键 —— 看板据此记一条 by:"reviewer" 的检查(绑当前指纹;命令哈希由看板自己读登记簿)。
+            body["verify_key"] = str(vr.get("key"))
         s, r = call("POST", f"/api/tasks/{tid}/resolve", body)
         if s >= 400:
             log(f"  #{tid} 落盘失败 {s} {r.get('error','')}"); return "error"
+        if isinstance(r, dict) and r.get("held_for_human"):
+            # 合同 H3 硬闸:判了通过,但必需检查 / 指纹 / 说明版本不满足 —— 看板已转人工验收,本卡不算自动通过。
+            log(f"  #{tid} → 判通过但未自动通过(可信闸):{'；'.join(r.get('missing') or [])[:120]} —— 已转人工验收")
+            return "escalate"
         log(f"  #{tid} → 自动{'通过' if v == 'approve' else '打回'}:{reason[:70]}")
         cas = (r.get("cascade") or {}) if isinstance(r, dict) else {}
         if cas:
@@ -916,7 +923,8 @@ def settle(t, kind, d, err, vr):
                  + chr(10) + fmt_verify(vr0))
         s0, r0 = call("POST", f"/api/tasks/{t['id']}/resolve",
                       {"verdict": "reject", "note": note0, "resolved_by": "auto",
-                       "verify_ok": False, "expected_version": t["aggregate_version"]})
+                       "verify_ok": False, "verify_key": str(vr0.get("key") or ""), "runtime": RUNTIME,
+                       "expected_version": t["aggregate_version"]})
         log(f"  #{t['id']} → 机械打回(验证 {vr0.get('key')} rc={vr0.get('rc')})"
             if s0 < 400 else f"  #{t['id']} 机械打回落盘失败 {s0}")
         return "reject" if s0 < 400 else "error"
