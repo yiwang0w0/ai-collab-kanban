@@ -33,8 +33,9 @@ import {writePrivateText} from "./private-json.mjs";
 import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
-import {openConnect,isLoopback,defaultTokenDir,cardText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
-import {briefOf,briefModel,maxCharsOf} from "./brief.mjs";
+import {openConnect,isLoopback,defaultTokenDir,cardText,cleanText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
+import {briefModel,briefFrom,maxCharsOf} from "./brief.mjs";
+import {openAssistantFeed,parseCursor,modeOf} from "./assistant-feed.mjs";
 import {backgroundModel,stopVerdict,runAutostart,autostartText,quotaModel} from "./home-background.mjs";
 import {loadAttentionModel} from "./home-model.mjs";
 import { faultReason, noteCleanExit, readRunRecord } from "./board-run.mjs";
@@ -347,6 +348,8 @@ const taskOut = (t) => { if(!t)return t; const profile=taskProfilePreview(t),rep
   self_reported_started_at: t.status !== "not_started" && t.run_id && coord.isExecutor(db, t.worker) ? connect.heartbeatStartedAt(t.run_id) : null,
   // 助手(合同 E)挂的卡:{executor_id,label};别的卡 null。首页「待我处理」写「<名称> 挂上 · 待你放行」。
   posted_by: connect.postedBy(t.id),
+  // ask_operator 交回时说的「等什么」(合同 G5):{needs:"decision"|"hands", what, where, expect};卡不在这一轮的「等你决定」= null(按 decision)。
+  ask: connect.askOf(t),
   // Zcode 线的卡:最近一个分派请求的状态、拒收码与白话及其来源、派发次数(core/zcode-status.mjs)。别的卡没有这个键。
   ...zcodeTaskField(db, t, CFG.zcode_worker_config ?? null),
   decision_package: decision.publicDecisionPackage(t, DECISION_CTX),
@@ -469,6 +472,9 @@ const connect = openConnect({ db, coord, store, emit: (type, data) => emit(type,
                         tokenDir: defaultTokenDir(store.DATA_DIR) }),
 } });
 connect.migrate();
+// 助手的提醒游标(合同 G6,core/assistant-feed.mjs):提醒流在库里,按令牌哈希记的「已确认到哪」在数据目录的文件里(受管线禁读表登记了这个文件名)。
+const assistantFeed = openAssistantFeed({ db, file: join(store.DATA_DIR, "assistant_cursors.json") });
+assistantFeed.migrate();
 approvals.migrate(db);
 conversations.migrate(db);
 // 合同 B「流转」:卡历史、任务派生字段、建卡对话的进度(core/flow.mjs)。线名与显示名在读时取(配置可热改)。
@@ -482,7 +488,7 @@ const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVI
                           executorName: (id) => coord.isExecutor(db, id) ? (db.prepare("SELECT name FROM coord_executors WHERE id=?").get(String(id))?.name || null) : null,
                           selfStarts: (taskId) => connect.heartbeatStartsOf(taskId) });
 // md 交接(core/md-handoff.mjs):卡面导出成 md / md 队列文件批量挂卡(一律未放行)。线表在读时取(加线免重启)。
-const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [] });
+const mdHandoff = openMdHandoff({ db, store, lines: () => LINES || [], askOf: (t) => connect.askOf(t) });
 mdHandoff.migrate();
 // 上一个进程留下的「运行中」对话已经没有进程在跑:标成失败并写明原因(面板上看到的是「重新发送即可」)。
 { const cut = conversations.recoverInterrupted(db);
@@ -2600,7 +2606,7 @@ const EXECUTOR_WRITES = (p) =>
 // 助手令牌(合同 E):写只有挂未放行卡这一条。领卡、交付、裁定、放行、改配置都不在这里。
 const ASSISTANT_WRITES = (p) => p === "/api/assistant/cards";
 // 助手令牌的读:简报、卡面与卡的历史摘要、自己的身份。SSE、运行记录、裁定附件、证据、会话、设置、协作、别人的令牌相关接口一律拒绝。
-const ASSISTANT_READS = (p) => p === "/api/brief" || p === "/api/tasks" || p === "/api/connect/me" || /^\/api\/tasks\/\d+(?:\/history)?$/.test(p);
+const ASSISTANT_READS = (p) => p === "/api/brief" || p === "/api/assistant/attention" || p === "/api/tasks" || p === "/api/connect/me" || /^\/api\/tasks\/\d+(?:\/history)?$/.test(p);
 const REVIEW_WRITES = (p) =>
   p === "/api/pools/exhausted" ||
   /^\/api\/tasks\/\d+\/(?:resolve|autoreview)$/.test(p);
@@ -2688,7 +2694,7 @@ function boundExecutorMayRead(req, p) {
 }
 // 助手看到的卡(合同 E):只给卡面、状态与来源这几项(允许清单);交付证据(result)、裁定附件、运行轨迹、live_note 不给。
 const ASSISTANT_CARD = ["id", "kind", "subject", "summary", "description", "acceptance", "status", "waiting_for", "line", "released", "human_gate",
-  "parent_id", "created_at", "updated_at", "archived_at", "handed_back", "children_done", "children_total", "posted_by"];
+  "parent_id", "created_at", "updated_at", "archived_at", "handed_back", "children_done", "children_total", "posted_by", "ask"];
 function assistantCard(t) {
   const out = Object.fromEntries(ASSISTANT_CARD.filter((k) => Object.hasOwn(t, k)).map((k) => [k, t[k]]));
   out.blockers = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).slice(0, 10).map((b) => ({ code: b?.code ?? null, message: b?.message ?? null }));
@@ -3205,11 +3211,48 @@ function attentionInputs() {
   const faults = attentionModel.homeLineFaults(workersNow, LINE_LABEL || {});
   return { tasks, lists, faults };
 }
-function briefNow(maxChars) {
+/** 各线一行现况(合同 G6 lines[]):state、在做几张、一句 note(最新的 live_note)。全部过 redactText(cleanText);
+ *  不含路径、会话标题、令牌相关信息——由本地会话登记的线只写通用名(显示名可能取自会话)。 */
+function lineStates(tasks, now) {
+  const execs = connect.list().filter((e) => e.role !== "assistant" && !e.revoked);
+  return (SUPERVISED || []).map((line) => {
+    const mine = tasks.filter((t) => t.status === "in_progress" && t.kind !== "goal" && (t.line || null) === line);
+    let state;
+    if (LINE_EXTERNAL?.[line]) {
+      const st = execs.filter((e) => e.line === line).map((e) => e.state);
+      state = ["stalled", "working", "idle"].find((x) => st.includes(x)) ?? "offline";
+    } else {
+      let w = null; try { w = workerInfo(line); } catch { w = null; }
+      const stale = mine.some((t) => Number(t.heartbeat_at) > 0 && now - Number(t.heartbeat_at) > COORD_STALE_MS);
+      state = !w?.running ? "stopped" : stale ? "stalled" : mine.length ? "working" : "idle";
+    }
+    const noted = mine.filter((t) => t.live_note).sort((a, b) => String(b.live_note_at || "").localeCompare(String(a.live_note_at || "")))[0];
+    const desk = LINEAGE?.[line];
+    const raw = desk ? (desk.source === "codex" ? "Codex 会话线" : "Claude 会话线") : (LINE_LABEL?.[line] || line);
+    return { line, label: cut(cleanText(raw), 24) || line, state, doing: mine.length,
+             note: noted ? (cut(cleanText(noted.live_note), 60) || null) : null };
+  });
+}
+/** 助手令牌的游标键:令牌的哈希(不存令牌本身)。别的身份不记游标。 */
+const cursorKey = (req) => req.assistant ? sha256("assistant-cursor:" + String(req.headers["x-board-token"] ?? "")) : null;
+/**
+ * 简报与提醒的同一份计算(合同 E / G6)。q:{ maxChars, since(原样字符串或 null), mode, attention:true = wait_for_attention 的口径 }。
+ * since 不给:简报不带 changes;提醒按这个令牌记下的位置续发(没有就从头)。给了:先核是不是看板发过的值(否则 BAD_CURSOR),
+ * 再把它记成「已确认到哪」(只增不减)。
+ */
+function assistantView(req, { maxChars, since = null, mode = "normal", attention = false }) {
   const now = Date.now();
   const { tasks, lists, faults } = attentionInputs();
-  let headline = null; try { headline = efficiency.compute({}).headline ?? null; } catch { headline = null; }
-  return briefOf({ lists, faults, tasks, headline, now }, maxChars);
+  let headline = null;
+  if (!attention) { try { headline = efficiency.compute({}).headline ?? null; } catch { headline = null; } }
+  const m = briefModel({ lists, faults, tasks, headline, now });
+  const key = cursorKey(req);
+  const given = parseCursor(since, assistantFeed.max());
+  const cur = given ?? (key ? assistantFeed.stored(key) : null);
+  const picked = assistantFeed.pick({ attention: m.all.attention, done: m.all.done, cur, mode });
+  if (given && key) assistantFeed.ack(key, req.assistant.id, given);
+  if (attention) return { items: picked.items, cursor: picked.cursor, ...(mode === "quiet" ? { mode, muted: picked.muted } : {}) };
+  return { ...briefFrom(m, maxChars, { mode, now }), cursor: picked.cursor, ...(given ? { changes: picked.changes } : {}), lines: lineStates(tasks, now) };
 }
 
 // ── 首页「后台任务」(合同 F,core/home-background.mjs)。attention 用上面同一份判定(briefModel),不另写。
@@ -4179,7 +4222,8 @@ const server = http.createServer(async (req, res) => {
       if (!b || typeof b !== "object" || Array.isArray(b)) return json(res, 400, { code: "BAD_INPUT", error: "请求正文必须是 1KB 以内的 JSON 对象 {code}" });
       const r = await connect.redeem(b.code);     // 对的码立即成功;错码延迟 200ms,同时在等的错码满 20 个就 429(不按来源)
       if (r.headers) for (const [k, v] of Object.entries(r.headers)) res.setHeader(k, v);
-      if (r.status === 200) console.log(`接入:执行者 ${r.body.executor_id} 已凭码换到令牌(线 ${r.body.line})`);
+      if (r.status === 200) { assistantFeed.dropExecutor(r.body.executor_id);   // 换了新令牌:旧令牌的游标作废
+        console.log(`接入:执行者 ${r.body.executor_id} 已凭码换到令牌(线 ${r.body.line})`); }
       return json(res, r.status, r.body);
     }
     // Authenticate every other request, including SSE and future read endpoints.
@@ -4260,10 +4304,19 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, zcodeStatus(db, { configFile: CFG.zcode_worker_config ?? null }));
     }
     // ── 看板简报(合同 E,core/brief.mjs):面板会话 / 操作员令牌与助手令牌可读,同一份。
-    if (m === "GET" && p === "/api/brief") {
+    //    合同 G6:?since=<看板给的 cursor>&mode=normal|quiet 都可选;不给就与第 4 波相同(另多 cursor 与 lines)。
+    //    GET /api/assistant/attention 是 wait_for_attention 的那一份:{items, cursor};不带 since = 从这个令牌记下的位置续发。
+    if (m === "GET" && (p === "/api/brief" || p === "/api/assistant/attention")) {
       if (boardRole !== "operator" && boardRole !== "assistant") return json(res, 403, { error: "简报只给操作员与助手", role: boardRole });
-      let max; try { max = maxCharsOf(url.searchParams.get("max_chars")); } catch (e) { return json(res, 400, { code: "BAD_INPUT", error: e.message }); }
-      return json(res, 200, briefNow(max));
+      let q;
+      try {
+        q = { maxChars: maxCharsOf(url.searchParams.get("max_chars")), since: url.searchParams.get("since"), mode: modeOf(url.searchParams.get("mode")),
+              attention: p === "/api/assistant/attention" };
+        return json(res, 200, assistantView(req, q));
+      } catch (e) {
+        if (e?.code === "BAD_INPUT" || e?.code === "BAD_CURSOR") return json(res, 400, { code: e.code, error: e.message });
+        throw e;
+      }
     }
     // ── 首页「后台任务」(合同 F):读写都只给操作员(面板会话或 board_token);执行者、助手、执行线、审阅令牌 403。
     if (p === "/api/home/background" || p.startsWith("/api/home/")) {
@@ -4294,7 +4347,11 @@ const server = http.createServer(async (req, res) => {
       if (boardRole !== "assistant") return json(res, 403, { error: "只给助手令牌;操作员用 POST /api/tasks 建卡", role: boardRole });
       const b = await readBody(req);
       if (!b || typeof b !== "object" || Array.isArray(b)) throw store.err(store.ERR.BAD_INPUT, "请求正文必须是 JSON 对象");
-      for (const k of Object.keys(b)) if (!["subject", "description", "acceptance", "line"].includes(k)) throw store.err(store.ERR.BAD_INPUT, `不认识的字段 ${k}`);
+      for (const k of Object.keys(b)) if (!["subject", "description", "acceptance", "line", "origin", "quote"].includes(k)) throw store.err(store.ERR.BAD_INPUT, `不认识的字段 ${k}`);
+      // 合同 G6:来源是对方自报(看板不核实);不给 = ai_inferred(较不可信的一侧)。quote = 本人原话,≤200 字、压成一行、脱敏。
+      const origin = b.origin === undefined || b.origin === null ? "ai_inferred" : b.origin;
+      if (!["operator_said", "ai_inferred"].includes(origin)) throw store.err(store.ERR.BAD_INPUT, "origin 只接受 operator_said / ai_inferred");
+      const quote = connect.checkLine(b.quote, "quote");
       for (const k of ["subject", "description", "acceptance"]) if (typeof b[k] !== "string") throw store.err(store.ERR.BAD_INPUT, `${k} 要字符串`);
       const subject = cardText(b.subject), description = cardText(b.description, { multiline: true }), acceptance = cardText(b.acceptance, { multiline: true });
       if (!subject) throw store.err(store.ERR.BAD_INPUT, "subject 不能为空");
@@ -4311,7 +4368,7 @@ const server = http.createServer(async (req, res) => {
       const id = connect.tx("assistant_post", () => {
         if (connect.openPostsOf(me) >= ASSISTANT_OPEN_MAX) return null;
         const nid = store.add(db, fields);
-        connect.recordPost(nid, me);
+        connect.recordPost(nid, me, { origin, quote });
         return nid;
       });
       if (id == null) return json(res, 409, { code: "TOO_MANY_POSTED", error: `你挂的未放行卡已有 ${ASSISTANT_OPEN_MAX} 张(上限);等操作者放行或处理掉一些再挂` });
@@ -4332,6 +4389,7 @@ const server = http.createServer(async (req, res) => {
       if (m === "POST" && mr) {
         const r = connect.revoke(mr[1]);
         dropRevokedSse();         // 它已建立的 SSE 一并断开(F3)
+        assistantFeed.dropExecutor(mr[1]);   // 助手的提醒游标一并删掉(合同 G6)
         console.log(`接入:操作员撤销执行者 ${mr[1]}${r.released.length ? `,放回卡 ${r.released.join(",")}` : ""}${r.released_locks.length ? `,释放锁 ${r.released_locks.join(",")}` : ""}`);
         if (r.released.length) emit("task.reaped", { count: r.released.length });
         return json(res, 200, r);
@@ -5013,8 +5071,12 @@ const server = http.createServer(async (req, res) => {
       }
       if (action === "report") {
         const selfUsage = b.usage == null ? null : externalRows(b.usage);   // 先校验:格式不对就不收这次交付
+        // 合同 G5:ask_operator 交回时可带 ask {needs, what, where, expect}(只配 outcome=wait);先校验,不合规就不收这次交回。
+        const ask = b.ask === undefined || b.ask === null ? null : connect.checkAsk(b.ask);
+        if (ask && b.outcome !== "wait") throw store.err(store.ERR.BAD_INPUT, "ask 只配 outcome=wait(交回给人)");
         const r = store.report(db, { id, worker: b.worker, runId: b.run_id, outcome: b.outcome, evidence: b.evidence });
         connect.clearNote(id);          // 交付即清掉临时进度
+        if (ask) connect.setAsk(id, b.run_id, ask); else connect.clearAsk(id);
         if (selfUsage) usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome });
         emit("task.reported", r);
         // ⭐ v0.21 (user ruling 2026-09-09): on a line configured accept:"auto" a delivery completes

@@ -15,19 +15,22 @@ import { setTimeout as delay } from "node:timers/promises";
 import { briefModel, briefText, briefOf, maxCharsOf, BRIEF_DEFAULT } from "../core/brief.mjs";
 import { loadAttentionModel } from "../core/home-model.mjs";
 import { ASSISTANT_PROMPT, ASSISTANT_OPEN_MAX, cardText } from "../core/connect.mjs";
+import { parseCursor, cursorText, URGENT } from "../core/assistant-feed.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
 const BRIDGE = join(ROOT, "cli", "exec-mcp.mjs");
 const cp = (...c) => String.fromCodePoint(...c);
 
-async function board() {
+async function board(extraEnv = {}) {
   const dir = mkdtempSync(join(tmpdir(), "assistanttest-")), config = join(dir, "fleet.json");
   writeFileSync(config, JSON.stringify({ lines: [{ id: "alpha" }, { id: "ext", label: "外部", external: true }], roles: [], routes: ["default"], repo: dir }));
-  const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r));
-  const port = l.address().port; await new Promise((r) => l.close(r));
+  // fetch 拒绝浏览器「坏端口」表里的端口(6000、6665–6669、10080 等):随机端口撞上就重取,免得整套偶发红。
+  const BAD_PORTS = new Set([1719, 1720, 1723, 2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6665, 6666, 6667, 6668, 6669, 6679, 6697, 10080]);
+  let port;
+  do { const l = createServer(); await new Promise((r) => l.listen(0, "127.0.0.1", r)); port = l.address().port; await new Promise((r) => l.close(r)); } while (BAD_PORTS.has(port));
   const child = spawn(process.execPath, [join(ROOT, "core/server.mjs")], { cwd: dir, windowsHide: true, stdio: ["ignore", "pipe", "pipe"],
     env: { ...HOST_ENV, BOARD_HOST: "127.0.0.1", BOARD_PORT: String(port), BOARD_CONFIG: config, BOARD_DATA_DIR: dir,
-           BOARD_DB: join(dir, "board.db"), BOARD_REPO: dir, BOARD_ALLOW_UNPINNED: "1", BOARD_NO_RESTORE: "1", BOARD_RESTART_MODE: "exit" } });
+           BOARD_DB: join(dir, "board.db"), BOARD_REPO: dir, BOARD_ALLOW_UNPINNED: "1", BOARD_NO_RESTORE: "1", BOARD_RESTART_MODE: "exit", ...extraEnv } });
   let log = ""; child.stdout.on("data", (d) => { log += d; }); child.stderr.on("data", (d) => { log += d; });
   const closed = new Promise((r) => child.once("close", r));
   const base = `http://127.0.0.1:${port}`;
@@ -170,11 +173,11 @@ test("post_card:一律未放行、记 posted_by、首页「待我处理」写「
     assert.deepEqual(r.body, { id: r.body.id, released: false });
     const t = (await B.api("GET", `/api/tasks/${r.body.id}`, B.operator)).body.task;
     assert.deepEqual([t.released, t.subject, t.description, t.line], [false, "买牛奶 明早", "第一行\n第二行", "alpha"], "双向控制符与零宽去掉,标题断行换空格,正文保留换行");
-    assert.deepEqual(t.posted_by, { executor_id: A.id, label: "随身助手" });
+    assert.deepEqual(t.posted_by, { executor_id: A.id, label: "随身助手", origin: "ai_inferred", quote: null }, "不给 origin = ai_inferred(较不可信的一侧)");
     const brief = (await B.api("GET", "/api/brief", B.operator)).body;
     const item = brief.attention.find((a) => a.task_id === r.body.id);
     assert.deepEqual([item.kind, item.posted_by], ["release", "随身助手"]);
-    assert.match(brief.text, /待放行/);
+    assert.match(brief.text, new RegExp(`^放行 #${r.body.id}「`, "m"), "小屏 text:每件一行、动词开头");
     // 首页「待我处理」同一份切片:状态写「<名称> 挂上 · 待你放行」
     const M = loadAttentionModel();
     const tasks = (await B.api("GET", "/api/tasks", B.operator)).body.tasks.map((x) => ({ ...x, hb: "" }));
@@ -212,9 +215,11 @@ test("真 stdio 桥:助手只拿到五个工具;get_brief / post_card / wait_for
 
       const empty = await M.call("get_brief", {});
       assert.equal(empty.isError, false);
-      assert.equal(empty.structuredContent.text, "没有等你处理的事。没有在做的卡。" + empty.structuredContent.headline + "。");
+      assert.equal(empty.structuredContent.text, "没有等你处理的事。", "text 只写等本人处理的件;效率主句只在 headline");
+      assert.equal(typeof empty.structuredContent.headline, "string");
       const none = await M.call("wait_for_attention", { timeout_sec: 1 });
       assert.deepEqual(none.structuredContent.none, true, "空板到时 none");
+      assert.equal(typeof none.structuredContent.cursor, "string", "到时也给 cursor");
 
       const posted = await M.call("post_card", { subject: "周五前订会议室", description: "三个人", acceptance: "订好" });
       assert.equal(posted.isError, false, JSON.stringify(posted));
@@ -259,9 +264,10 @@ const make = ({ tasks = [], executors = [], workers = [], headline = null, max }
 
 test("简报:空板、有待验收、有卡住的 AI、线故障、未知效率;同输入同输出;长度硬上限;清洗", () => {
   const empty = make({ headline: "本周完成 0 张 · 打回 0 次 · 你操作 0 次" });
-  assert.equal(empty.text, "没有等你处理的事。没有在做的卡。本周完成 0 张 · 打回 0 次 · 你操作 0 次。");
+  assert.equal(empty.text, "没有等你处理的事。", "text 只写等本人处理的件(G6)");
+  assert.equal(empty.headline, "本周完成 0 张 · 打回 0 次 · 你操作 0 次", "效率主句只在 headline");
   assert.deepEqual([empty.attention, empty.doing, empty.done_recent], [[], [], []]);
-  assert.equal(make().text, "没有等你处理的事。没有在做的卡。本周效率暂无数据。", "效率未知写「暂无数据」,不当 0");
+  assert.equal(make().headline, null, "效率未知 = null,不当 0");
 
   const tasks = [
     T(12, { subject: "修登录页", status: "waiting", waiting_for: "review", updated_at: "2026-11-11T09:00:00.000Z" }),
@@ -278,7 +284,9 @@ test("简报:空板、有待验收、有卡住的 AI、线故障、未知效率;
   assert.equal(b.attention[2].posted_by, "手表助手");
   assert.deepEqual(b.doing, [{ task_id: 13, title: "整理周报", who: "桌面 Zcode" }]);
   assert.deepEqual(b.done_recent.map((d) => d.task_id), [9], "刚完成 = 24 小时内");
-  assert.equal(b.text, "等你处理 4 件:「Zcode 卡住了 · 手上有 #20」、#12「修登录页」待验收 等。在做 1 件。刚完成 #9「改配色」。本周完成 3 张 · 打回 1 次 · 你操作 4 次。");
+  assert.equal(b.text, "查看「Zcode 卡住了 · 手上有 #20」\n验收 #12「修登录页」\n放行 #15「订会议室」\n查看「alpha 崩溃」",
+               "每件一行、动词开头;在做 / 刚完成 / 效率主句不进 text");
+  assert.doesNotMatch(b.text, /本周|在做|刚完成/);
   assert.equal(make({ tasks, executors, workers, headline: "本周完成 3 张 · 打回 1 次 · 你操作 4 次" }).text, b.text, "纯函数:同输入同输出");
 
   // 长度硬上限:标题再长、件数再多也不超过 max_chars;放不下先收标题、再少点名、再去掉「刚完成」与效率主句
@@ -286,7 +294,9 @@ test("简报:空板、有待验收、有卡住的 AI、线故障、未知效率;
   for (const max of [80, 120, 280, 600]) {
     const t = make({ tasks: many, headline: "本周完成 3 张 · 打回 1 次 · 你操作 4 次", max }).text;
     assert.ok([...t].length <= max, `max ${max}: ${[...t].length}`);
-    assert.match(t, /^等你处理 30 件/);
+    assert.match(t, /^验收 #1\d\d「/, "第一行动词开头");
+    assert.match(t, /\n查看其余 \d+ 件$/, "放不下的件数写在末行");
+    for (const line of t.split("\n")) assert.match(line, /^(验收|查看)/);
   }
   // 清洗:标题里的路径与令牌样串不进 text 与条目
   const leak = make({ tasks: [T(5, { subject: "看 C:\\Users\\example\\secret.txt 用 " + "exe_" + "0123456789abcdef".repeat(2), status: "waiting", waiting_for: "decision" })] });
@@ -295,7 +305,165 @@ test("简报:空板、有待验收、有卡住的 AI、线故障、未知效率;
 
   assert.equal(maxCharsOf(null), 280); assert.equal(maxCharsOf("120"), 120);
   for (const v of ["79", "601", "1.5", "x"]) assert.throws(() => maxCharsOf(v), /max_chars/);
-  assert.equal(briefText(briefModel({ now: NOW }), 80), "没有等你处理的事。没有在做的卡。本周效率暂无数据。");
+  assert.equal(briefText(briefModel({ now: NOW }), 80), "没有等你处理的事。");
+  // quiet:只留紧急类(线故障、AI 卡住、受阻),另给 muted
+  const q = briefOf({ lists: M.homeLists({ tasks, executors }), faults: M.homeLineFaults(workers, {}), tasks, now: NOW }, 280, { mode: "quiet" });
+  assert.deepEqual(q.attention.map((a) => a.kind), ["stalled", "line_fault"]);
+  assert.deepEqual([q.mode, q.muted, q.attention_total], ["quiet", 2, 2]);
+  assert.equal(q.text, "查看「Zcode 卡住了 · 手上有 #20」\n查看「alpha 崩溃」");
+  // hands:条目 kind 仍是 decision,另带 needs;text 那一行用「去做」
+  const h = make({ tasks: [T(31, { subject: "插加密狗", status: "waiting", waiting_for: "decision", ask: { needs: "hands", what: "插上", where: null, expect: null } })] });
+  assert.deepEqual([h.attention[0].kind, h.attention[0].needs], ["decision", "hands"]);
+  assert.equal(h.text, "去做 #31「插加密狗」");
+  const d = make({ tasks: [T(32, { subject: "选口径", status: "waiting", waiting_for: "decision" })] });
+  assert.ok(!("needs" in d.attention[0]), "没有 ask = 按裁定,条目不带 needs");
+  assert.equal(d.text, "裁定 #32「选口径」");
+});
+
+test("游标(纯函数):格式、上界、静音段;不是看板发的值一律 BAD_CURSOR", () => {
+  assert.equal(parseCursor(null, 5), null); assert.equal(parseCursor("", 5), null);
+  assert.deepEqual(parseCursor("3", 5), { n: 3, u: 3 }); assert.deepEqual(parseCursor("2~5", 5), { n: 2, u: 5 });
+  for (const v of ["6", "1~6", "4~2", "-1", "1.5", "abc", "1~", "0x3", " 3", "9".repeat(16), 3])
+    assert.throws(() => parseCursor(v, 5), (e) => e.code === "BAD_CURSOR", String(v));
+  assert.equal(cursorText({ n: 4, u: 4 }), "4"); assert.equal(cursorText({ n: 2, u: 7 }), "2~7");
+  assert.deepEqual([...URGENT].sort(), ["blocked", "line_fault", "stalled"]);
+});
+
+test("G6 游标:不带 since 重连从记下的位置续发(不丢不重);quiet 只给紧急、切回 normal 补发;since 乱值 400;撤销删游标;lines / changes;origin", { timeout: 180000 }, async () => {
+  const B = await board({ BOARD_COORD_STALE_MIN: "0.03" });     // 心跳 1.8 秒没来 = AI 卡住(紧急类)
+  try {
+    const c = await B.api("POST", "/api/connect/codes", B.operator, { kind: "other", role: "assistant", label: "随身助手" });
+    assert.equal(c.status, 201);
+    const tokenFile = join(B.dir, "cred", "wearable.token");
+    const open = async (args) => {
+      const M = bridge(args);
+      assert.ok((await M.request("initialize", INIT)).result, M.stderr());
+      M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      return M;
+    };
+    const ids = (r) => (r.structuredContent.items || []).map((i) => i.task_id ?? i.kind);
+    const p1 = await B.card("先放行的卡一", "alpha", { released: false });
+    const p2 = await B.card("先放行的卡二", "alpha", { released: false });
+
+    // ── 第一次连接:从头给;拿到的 cursor 交回 = 确认
+    let M = await open(["--url", B.base, "--code", c.body.code, "--token-file", tokenFile]);
+    let first;
+    try {
+      const schema = (await M.request("tools/list")).result.tools;
+      assert.deepEqual(Object.keys(schema.find((t) => t.name === "wait_for_attention").inputSchema.properties), ["timeout_sec", "since", "mode"]);
+      assert.deepEqual(Object.keys(schema.find((t) => t.name === "get_brief").inputSchema.properties), ["max_chars", "since", "mode"]);
+      first = await M.call("wait_for_attention", { timeout_sec: 2 });
+      assert.deepEqual(ids(first).sort(), [p1.id, p2.id].sort(), JSON.stringify(first));
+      const ack = await M.call("wait_for_attention", { timeout_sec: 1 });   // 桥把上次的 cursor 当 since 交回 = 确认
+      assert.equal(ack.structuredContent.none, true);
+    } finally { await M.end(); }
+    const token = readFileSync(tokenFile, "utf8").trim();
+    const cursors = () => { try { return JSON.parse(readFileSync(join(B.dir, "assistant_cursors.json"), "utf8")); } catch { return {}; } };
+    const saved = cursors();
+    assert.equal(Object.keys(saved).length, 1, "按令牌记了一条");
+    assert.ok(!JSON.stringify(saved).includes(token) && !Object.keys(saved)[0].startsWith("exe_"), "只存哈希,不存令牌");
+
+    // ── 断线期间来了一件新的;重连(新进程、不带 since)只给新的那件:不重刷、不丢
+    const p3 = await B.card("断线期间的卡", "alpha", { released: false });
+    M = await open(["--url", B.base, "--token-file", tokenFile]);
+    try {
+      const again = await M.call("wait_for_attention", { timeout_sec: 2 });
+      assert.deepEqual(ids(again), [p3.id], "重连续发:只给断线期间的");
+      const cur = again.structuredContent.cursor;
+      assert.equal((await M.call("wait_for_attention", { timeout_sec: 1 })).structuredContent.none, true, "同一件只提醒一次");
+
+      // ── quiet:非紧急件压下(不丢);紧急件(AI 卡住)照给
+      const p4 = await B.card("开会时来的卡", "alpha", { released: false });
+      const X = await B.connectAs({ kind: "other", line: "ext", label: "桌面客户端" });
+      const held = await B.card("外部线的卡", "ext");
+      assert.equal((await B.api("POST", `/api/tasks/${held.id}/claim`, X.token, { expected_version: held.aggregate_version })).status, 200);
+      await delay(2600);                                            // 不心跳 → 卡住
+      const quiet = await M.call("wait_for_attention", { timeout_sec: 3, mode: "quiet" });
+      const qi = quiet.structuredContent.items || [];
+      assert.deepEqual(qi.map((i) => i.kind), ["stalled"], "quiet 只给紧急件:" + JSON.stringify(quiet.structuredContent));
+      assert.equal(quiet.structuredContent.muted, 1, "压下 1 件(开会时来的卡)");
+      assert.match(quiet.structuredContent.cursor, /^\d+~\d+$/, "静音段写进 cursor");
+      assert.equal((await M.call("wait_for_attention", { timeout_sec: 1, mode: "quiet" })).structuredContent.none, true, "quiet 里同一件紧急件不重给");
+      // 切回 normal:压下的件补发,quiet 里给过的紧急件不重给
+      const back = await M.call("wait_for_attention", { timeout_sec: 2 });
+      assert.deepEqual(ids(back), [p4.id], "切回 normal 只补发压下的:" + JSON.stringify(back.structuredContent));
+      assert.match(back.structuredContent.cursor, /^\d+$/);
+
+      // ── get_brief:lines 各线一行;给了 since 才有 changes
+      const b0 = (await M.call("get_brief", {})).structuredContent;
+      assert.ok(!("changes" in b0), "不给 since 没有 changes");
+      assert.equal(typeof b0.cursor, "string");
+      assert.deepEqual(b0.lines.map((l) => l.line), ["alpha", "ext"]);
+      for (const l of b0.lines) { assert.deepEqual(Object.keys(l), ["line", "label", "state", "doing", "note"]); assert.ok(["working", "idle", "stalled", "stopped", "offline"].includes(l.state)); }
+      assert.deepEqual(b0.lines.map((l) => [l.label, l.state, l.doing]), [["alpha", "stopped", 0], ["外部", "stalled", 1]]);
+      const b1 = (await M.call("get_brief", { since: cur })).structuredContent;
+      assert.ok(Array.isArray(b1.changes) && b1.changes.some((x) => x.task_id === p4.id), JSON.stringify(b1.changes));
+      for (const x of b1.changes) assert.deepEqual(Object.keys(x).filter((k) => !["task_id"].includes(k)), ["at", "kind", "title"]);
+      const bq = (await M.call("get_brief", { mode: "quiet" })).structuredContent;
+      assert.equal(bq.mode, "quiet"); assert.ok(bq.attention.every((a) => URGENT.has(a.kind)));
+      assert.ok(bq.muted >= 4, "quiet 的简报写明压下几件");
+
+      // ── since 乱值:桥里格式不对就拒;格式对但不是看板发的(超出上界)看板 400
+      assert.equal((await M.call("wait_for_attention", { timeout_sec: 1, since: "abc" })).structuredContent.code, "BAD_INPUT");
+      const far = await M.call("wait_for_attention", { timeout_sec: 1, since: "999999" });
+      assert.deepEqual([far.isError, far.structuredContent.code], [true, "BAD_INPUT"], JSON.stringify(far));
+      for (const v of ["999999", "abc", "3~1", "-1"]) {
+        const r = await B.api("GET", `/api/assistant/attention?since=${encodeURIComponent(v)}`, token);
+        assert.deepEqual([r.status, r.body.code], [400, "BAD_CURSOR"], v);
+        assert.equal((await B.api("GET", `/api/brief?since=${encodeURIComponent(v)}`, token)).status, 400, v);
+      }
+      assert.equal((await B.api("GET", "/api/brief?mode=loud", token)).status, 400);
+      // since 借不到角色之外的东西:同一份条目,不多字段
+      const viaSince = (await B.api("GET", "/api/assistant/attention?since=0", token)).body;
+      assert.deepEqual(Object.keys(viaSince).sort(), ["cursor", "items"]);
+      for (const i of viaSince.items) for (const k of Object.keys(i)) assert.ok(["kind", "task_id", "title", "since", "posted_by", "needs"].includes(k), k);
+
+      // ── 权限边界不变:裁定 / 放行 / 领卡仍拒
+      assert.equal((await B.api("POST", `/api/tasks/${p1.id}/release`, token, { released: true, expected_version: p1.aggregate_version })).status, 403);
+      assert.equal((await B.api("POST", `/api/tasks/${p1.id}/claim`, token, { expected_version: p1.aggregate_version })).status, 403);
+      assert.equal((await B.api("POST", `/api/tasks/${p1.id}/resolve`, token, { verdict: "approve", expected_version: p1.aggregate_version })).status, 403);
+      // 别的身份:绑线执行者 404、worker 403;操作员可读、不记游标
+      assert.equal((await B.api("GET", "/api/assistant/attention", X.token)).status, 404);
+      assert.equal((await B.api("GET", "/api/assistant/attention", B.worker)).status, 403);
+      assert.equal((await B.api("GET", "/api/assistant/attention?since=0", B.operator)).status, 200);
+      assert.equal(Object.keys(cursors()).length, 1, "操作员不记游标");
+
+      // ── post_card:origin 自报 + quote 压一行、脱敏、≤200
+      const said = await M.call("post_card", { subject: "买电池", description: "", acceptance: "", origin: "operator_said", quote: "明早提醒我\n买 AA 电池 C:\\Users\\example\\list.txt" });
+      assert.equal(said.isError, false, JSON.stringify(said));
+      const pb = (await B.api("GET", `/api/tasks/${said.structuredContent.id}`, B.operator)).body.task.posted_by;
+      assert.equal(pb.origin, "operator_said");
+      assert.match(pb.quote, /^明早提醒我 买 AA 电池 /); assert.doesNotMatch(pb.quote, /Users|example|list/);
+      assert.equal((await M.call("post_card", { subject: "x", description: "", acceptance: "", origin: "verified" })).structuredContent.code, "BAD_INPUT", "origin 只认两个值(没有「已核实」)");
+      assert.equal((await M.call("post_card", { subject: "x", description: "", acceptance: "", quote: "长".repeat(201) })).structuredContent.code, "BAD_INPUT");
+      assert.equal((await B.api("POST", "/api/assistant/cards", token, { subject: "x", description: "", acceptance: "", quote: "长".repeat(201) })).status, 400);
+    } finally { await M.end(); }
+
+    // ── 撤销:游标被删
+    const aid = (await B.api("GET", "/api/executors", B.operator)).body.executors.find((e) => e.role === "assistant").id;
+    assert.equal((await B.api("POST", `/api/executors/${aid}/revoke`, B.operator, {})).status, 200);
+    assert.deepEqual(cursors(), {}, "撤销令牌时删掉它的游标");
+    assert.ok(!B.log().includes(token), "令牌不进看板日志");
+  } finally { await B.stop(); }
+});
+
+test("G6 lines:各线一行现况脱敏(note 取 live_note,路径与令牌样串遮掉);不含路径与令牌", { timeout: 120000 }, async () => {
+  const B = await board();
+  try {
+    const A = await B.connectAs({ kind: "other", role: "assistant" });
+    const X = await B.connectAs({ kind: "other", line: "ext", label: "桌面客户端" });
+    const t = await B.card("外部线在做", "ext");
+    const cl = await B.api("POST", `/api/tasks/${t.id}/claim`, X.token, { expected_version: t.aggregate_version });
+    assert.equal(cl.status, 200);
+    const leak = "改 C:\\Users\\example\\proj\\a.mjs 用 exe_" + "ab".repeat(24);
+    assert.equal((await B.api("POST", `/api/tasks/${t.id}/heartbeat`, X.token, { run_id: cl.body.task.run_id, note: "在" + leak.slice(0, 100) })).status, 200);
+    const b = (await B.api("GET", "/api/brief", A.token)).body;
+    const ext = b.lines.find((l) => l.line === "ext");
+    assert.deepEqual([ext.label, ext.state, ext.doing], ["外部", "working", 1]);
+    assert.ok(ext.note && !/Users|example|exe_/.test(ext.note), ext.note);
+    assert.doesNotMatch(JSON.stringify(b.lines), /Users|example|exe_|token/);
+    assert.equal(b.lines.find((l) => l.line === "alpha").state, "stopped");
+  } finally { await B.stop(); }
 });
 
 test("卡面清洗(cardText):标题断行换空格、正文留换行;零宽与双向控制符去掉", () => {

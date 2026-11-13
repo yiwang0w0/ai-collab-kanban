@@ -22,6 +22,9 @@ export const PENDING_MAX = 5;                           // 同时待兑换的码
 export const WRONG_DELAY_MS = 200, WRONG_INFLIGHT_MAX = 20;   // 错码应答延迟 200ms;同一时刻最多 20 个在延迟,超出立即 429
 export const NOTE_EMIT_MS = 5000;                       // 同一张卡的 task.live_note 事件至多 5 秒一次
 export const ASSISTANT_OPEN_MAX = 20;                   // 一个助手挂的未放行卡同时在板上最多 20 张(合同 E)
+export const ASK_TEXT_MAX = 200;                        // ask_operator 的 what / where / expect、post_card 的 quote:各 ≤200 字(合同 G5 / G6)
+export const ASK_NEEDS = ["decision", "hands"];         // 等裁定 / 等你亲手做;缺省 decision
+export const ORIGINS = ["operator_said", "ai_inferred"]; // 助手挂卡的来源(对方自报,看板不核实);缺省 ai_inferred
 const SEEN_WRITE_MS = 5000;                             // last_seen 落库节流:轮询的桥每 2 秒一次请求,不必每次写库
 // 助手的一句提示词(合同 E):桥按令牌角色给它 get_brief / list_cards / get_card / post_card / wait_for_attention。
 export const ASSISTANT_PROMPT = "你是操作者的助手:先 get_brief;要记一件事就 post_card(会等操作者放行);空闲时 wait_for_attention。" +
@@ -117,6 +120,23 @@ export function checkNote(v, badInput) {
   return cleanText(v);
 }
 
+/** 一个单行短字段(ask 的 what / where / expect、挂卡的 quote):不给 / null → null;要字符串、按原文 ≤200 字;
+ *  清洗同 live_note(cleanText:换行与段分隔符压成空格、去零宽与双向控制符、遮蔽路径与令牌样串),清完为空 → null。 */
+export function checkLine(v, name, badInput) {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "string") throw badInput(`${name} 要字符串`);
+  if (chars(v.trim()) > ASK_TEXT_MAX) throw badInput(`${name} 最多 ${ASK_TEXT_MAX} 字`);
+  return cleanText(v) || null;
+}
+/** report 正文里的 ask(合同 G5):{ needs?, what?, where?, expect? } → 规整后的四项;不认识的键、needs 越界一律 BAD_INPUT。 */
+export function checkAsk(v, badInput) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) throw badInput("ask 要是对象 {needs, what, where, expect}");
+  for (const k of Object.keys(v)) if (!["needs", "what", "where", "expect"].includes(k)) throw badInput(`ask 里不认识的字段 ${k}`);
+  const needs = v.needs === undefined || v.needs === null ? "decision" : v.needs;
+  if (!ASK_NEEDS.includes(needs)) throw badInput(`ask.needs 只接受 ${ASK_NEEDS.join(" / ")}`);
+  return { needs, what: checkLine(v.what, "ask.what", badInput), where: checkLine(v.where, "ask.where", badInput), expect: checkLine(v.expect, "ask.expect", badInput) };
+}
+
 /** PowerShell 单引号字面量:内容里的 ' 与弯单引号(PowerShell 也当引号)各写两遍;其余字符(& ^ % ! $ ` 空格)都按原样。 */
 export const psQuote = (a) => "'" + String(a).replace(/['\u2018-\u201b]/g, (q) => q + q) + "'";
 
@@ -167,6 +187,14 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
       task_id INTEGER PRIMARY KEY, executor_id TEXT NOT NULL, label TEXT, at INTEGER NOT NULL
     )`);
     db.exec("CREATE INDEX IF NOT EXISTS ix_assistant_posts_executor ON assistant_posts(executor_id)");
+    // 合同 G6:挂卡带来源(对方自报)与本人原话;旧库补列,旧行 origin 为空 = 按 ai_inferred(较不可信的一侧)。
+    for (const col of ["origin", "quote"])
+      if (!db.prepare("SELECT 1 FROM pragma_table_info('assistant_posts') WHERE name=?").get(col)) db.exec(`ALTER TABLE assistant_posts ADD COLUMN ${col} TEXT`);
+    // 合同 G5:ask_operator 的「等裁定 / 等你亲手做」与 what / where / expect。一张卡一行,绑定交回时的 run_id;
+    //   卡离开「等你决定」或换了 run 就不再显示(与 live_note 同一做法)。不进 task_events。
+    db.exec(`CREATE TABLE IF NOT EXISTS task_asks (
+      task_id INTEGER PRIMARY KEY, run_id TEXT, needs TEXT NOT NULL, what TEXT, where_text TEXT, expect TEXT, at INTEGER NOT NULL
+    )`);
     // 「最后一次回报」按执行者查 task_events:给 actor 建索引,列表不必全表扫。
     db.exec("CREATE INDEX IF NOT EXISTS ix_task_events_actor_kind ON task_events(actor, kind, id)");
   }
@@ -348,18 +376,38 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
 
   // ── 助手挂的卡(合同 E):记来源;「同时在板上的未放行卡」= 未放行、未归档、未完成。
   let postedQ = null;
-  /** 卡的来源 {executor_id,label};不是助手挂的 → null。 */
+  /** 卡的来源 {executor_id,label,origin,quote};不是助手挂的 → null。origin 是对方自报(看板不核实),旧行没有 = ai_inferred。 */
   function postedBy(taskId) {
-    postedQ ??= db.prepare("SELECT executor_id, label FROM assistant_posts WHERE task_id=?");
+    postedQ ??= db.prepare("SELECT executor_id, label, origin, quote FROM assistant_posts WHERE task_id=?");
     const r = postedQ.get(Number(taskId));
-    return r ? { executor_id: r.executor_id, label: r.label ?? r.executor_id } : null;
+    return r ? { executor_id: r.executor_id, label: r.label ?? r.executor_id,
+                 origin: ORIGINS.includes(r.origin) ? r.origin : "ai_inferred", quote: r.quote ?? null } : null;
   }
   const openPostsOf = (executorId) => Number(db.prepare(`SELECT COUNT(*) n FROM assistant_posts p JOIN tasks t ON t.id=p.task_id
       WHERE p.executor_id=? AND t.released=0 AND t.archived_at IS NULL AND t.status<>'done'`).get(String(executorId)).n);
   /** 记一张助手挂的卡。调用方在建卡的同一事务里先核 openPostsOf 再建卡再记。 */
-  function recordPost(taskId, executorId) {
-    db.prepare("INSERT OR REPLACE INTO assistant_posts (task_id, executor_id, label, at) VALUES (?,?,?,?)")
-      .run(Number(taskId), String(executorId), nameOf(executorId), clock());
+  function recordPost(taskId, executorId, { origin = "ai_inferred", quote = null } = {}) {
+    db.prepare("INSERT OR REPLACE INTO assistant_posts (task_id, executor_id, label, at, origin, quote) VALUES (?,?,?,?,?,?)")
+      .run(Number(taskId), String(executorId), nameOf(executorId), clock(), ORIGINS.includes(origin) ? origin : "ai_inferred", quote ?? null);
+  }
+
+  // ── ask_operator 的「等什么」(合同 G5)。
+  /** 记一次交回(调用方在 report 成功后调)。 */
+  function setAsk(taskId, runId, a) {
+    db.prepare(`INSERT INTO task_asks (task_id, run_id, needs, what, where_text, expect, at) VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(task_id) DO UPDATE SET run_id=excluded.run_id, needs=excluded.needs, what=excluded.what,
+                where_text=excluded.where_text, expect=excluded.expect, at=excluded.at`)
+      .run(Number(taskId), runId == null ? null : String(runId), a.needs, a.what ?? null, a.where ?? null, a.expect ?? null, clock());
+  }
+  const clearAsk = (taskId) => db.prepare("DELETE FROM task_asks WHERE task_id=?").run(Number(taskId));
+  let askQ = null;
+  /** 任务对象上的 ask:卡停在「等你决定」且仍是那一轮(run_id 相同)时给 {needs,what,where,expect},否则 null(= 按 decision)。 */
+  function askOf(t) {
+    if (!t || t.status !== "waiting" || t.waiting_for !== "decision" || t.id == null) return null;
+    askQ ??= db.prepare("SELECT run_id, needs, what, where_text, expect FROM task_asks WHERE task_id=?");
+    const r = askQ.get(Number(t.id));
+    if (!r || (r.run_id ?? null) !== (t.run_id ?? null)) return null;
+    return { needs: ASK_NEEDS.includes(r.needs) ? r.needs : "decision", what: r.what ?? null, where: r.where_text ?? null, expect: r.expect ?? null };
   }
 
   /** 执行者最后一次带令牌请求的时刻(ms;connect 与 coord 两处记的较晚者),不是执行者 → null。效率的「卡住」用它。 */
@@ -483,6 +531,6 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     return h;
   }
 
-  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, roleOf, nameOf, postedBy, openPostsOf, recordPost, tx, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, heartbeatStartedAt, heartbeatStartsOf, watch,
-           checkNote: (v) => checkNote(v, bad) };
+  return { migrate, seen, issueCode, redeem, list, revoke, lineOf, roleOf, nameOf, postedBy, openPostsOf, recordPost, setAsk, clearAsk, askOf, tx, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, heartbeatStartedAt, heartbeatStartsOf, watch,
+           checkNote: (v) => checkNote(v, bad), checkAsk: (v) => checkAsk(v, bad), checkLine: (v, name) => checkLine(v, name, bad) };
 }

@@ -1419,3 +1419,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-13 公告板 v3 第 6 波首页侧(claude/board-v3-w6,合同 G1–G4):运行中 = 已放行、未完成、不在本人手上(面板与接口同一份),行带 holder / one_line(只读状态字段);
   「要本人做的事」attention 加 type / verb / evidence / detail(动词按钮只带去原处理处);GET /api/home/quota + 右栏额度条(待核实不当 ok);计划组头流水线 stage;已完成一句结果。
 - homebackgroundtest 10/0、hometest、panelcopytest 扩;临时看板脚本扮演执行者截图(无头 Edge 真鼠标)。没有调用模型。阻塞:无。
+- 2026-11-13 公告板 v3 第 6 波桥与助手侧(claude/board-v3-w6-asst,合同 G5–G6):ask_operator 可选 needs=decision|hands 与 what / where / expect(压一行、脱敏、≤200 字),任务对象与卡详情给 ask,md 导出逐项一行;不带新参数与旧版相同。
+- 助手:wait_for_attention / get_brief 带 since 返回 cursor,看板按令牌哈希记「已确认到哪」(assistant_cursors.json 归受管线禁读),重连续发不丢不重、撤销即删;mode=quiet 只给线故障 / AI 卡住 / 受阻,切回补发;get_brief 加 changes 与 lines;post_card 加自报的 origin(缺省 ai_inferred)与 quote;小屏 text 只写等本人处理的件、每件一行动词开头。
+- assistanttest、execmcptest、connecttest 增例;受影响套件与最终提交上的完整 npm test 结果见本批回报。助手发起批准请求未做(等操作者裁)。阻塞:无。

@@ -150,6 +150,8 @@ test("桥:--code 凭码接入、wait_for_card、heartbeat note、ask_operator", 
       assert.equal(ask.isError, false, JSON.stringify(ask));
       t = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
       assert.deepEqual([t.status, t.waiting_for, t.live_note], ["waiting", "decision", null], "ask_operator = 等你决定,临时进度清空");
+      assert.equal(t.ask, null, "不带 needs / what / where / expect = 与旧版相同:任务对象上没有 ask(按裁定)");
+      assert.deepEqual(ask.structuredContent, { id: mine.id, status: "waiting", waiting_for: "decision", note: "已停下,等人决定" }, "旧参数的应答形不变");
       assert.match(t.result, /按哪个口径/);
       const ex = (await B.api("GET", "/api/executors", B.operator)).body.executors.find((e) => e.id === "ext");
       assert.deepEqual([ex.connected_via, ex.online, ex.state, ex.pending_code], ["code", true, "idle", false]);
@@ -166,6 +168,70 @@ test("桥:--code 凭码接入、wait_for_card、heartbeat note、ask_operator", 
     assert.equal((await B.api("POST", "/api/executors/ext/revoke", B.operator, {})).status, 200);
     const R = bridge(["--url", B.base, "--token-file", tokenFile]);
     try { assert.match((await R.request("initialize", INIT)).error?.message ?? "", /^UNAUTHENTICATED/); } finally { await R.end(); }
+  } finally { await B.stop(); }
+});
+
+test("G5:ask_operator needs=hands 的 what / where / expect 往返;换行压成一行、遮蔽路径;超长桥里就拒;md 导出逐项一行;裁定后 ask 不再显示", { timeout: 90000 }, async () => {
+  const B = await board();
+  try {
+    const code = await B.api("POST", "/api/connect/codes", B.operator, { kind: "claude", line: "ext" });
+    assert.equal(code.status, 201, JSON.stringify(code.body));
+    const M = bridge(["--url", B.base, "--line", "ext", "--code", code.body.code, "--token-file", join(B.dir, "cred", "ext.token")]);
+    try {
+      assert.ok((await M.request("initialize", INIT)).result, M.stderr());
+      M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+      const schema = (await M.request("tools/list")).result.tools.find((t) => t.name === "ask_operator").inputSchema;
+      assert.deepEqual(Object.keys(schema.properties), ["id", "question", "needs", "what", "where", "expect"]);
+      assert.deepEqual(schema.required, ["id", "question"], "新参数全部可选");
+      const mine = await B.card("要人插卡的活", "ext");
+      const claim = await M.call("claim_card", { id: mine.id, expected_version: mine.aggregate_version });
+      assert.equal(claim.isError, false, JSON.stringify(claim));
+      assert.equal((await M.call("ask_operator", { id: mine.id, question: "q", needs: "hands", what: "x".repeat(201) })).structuredContent.code, "BAD_INPUT", "超 200 字桥里就拒");
+      assert.equal((await M.call("ask_operator", { id: mine.id, question: "q", needs: "later" })).structuredContent.code, "BAD_INPUT", "needs 只认两个值");
+      const r = await M.call("ask_operator", { id: mine.id, question: "要你在测试机上登录一次", needs: "hands",
+        what: "登录测试账号\n## 伪造的一节", where: "测试机的浏览器 C:\\Users\\example\\notes.txt", expect: "页面右上角\r\n显示用户名" });
+      assert.equal(r.isError, false, JSON.stringify(r));
+      assert.deepEqual([r.structuredContent.needs, r.structuredContent.note], ["hands", "已停下,等人亲手去做"]);
+      const t = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
+      assert.deepEqual([t.status, t.waiting_for], ["waiting", "decision"], "仍是现有的 outcome=wait,不加新状态");
+      assert.equal(t.ask.needs, "hands");
+      assert.equal(t.ask.what, "登录测试账号 ## 伪造的一节", "换行压成一行");
+      assert.equal(t.ask.expect, "页面右上角 显示用户名");
+      assert.doesNotMatch(t.ask.where, /Users|example|notes/, "路径遮蔽");
+      // 列表接口同样给 ask;助手看到的卡面允许清单里也有
+      assert.equal((await B.api("GET", "/api/tasks?status=waiting", B.operator)).body.tasks.find((x) => x.id === mine.id).ask.needs, "hands");
+      // 简报:条目 kind 仍是 decision,另带 needs:hands;小屏 text 那一行以「去做」开头
+      const brief = (await B.api("GET", "/api/brief", B.operator)).body;
+      const it = brief.attention.find((a) => a.task_id === mine.id);
+      assert.deepEqual([it.kind, it.needs], ["decision", "hands"]);
+      assert.match(brief.text, new RegExp(`^去做 #${mine.id}「`, "m"));
+      // md 导出:三项各一行,字段里的换行不能另起一节(N1)
+      const md = await fetch(`${B.base}/api/tasks/${mine.id}/export-md`, { headers: { "X-Board-Token": B.operator }, signal: AbortSignal.timeout(8000) });
+      assert.equal(md.status, 200);
+      const text = await md.text();
+      assert.match(text, /^> 等你:亲手做$/m);
+      assert.match(text, /^> 做什么:登录测试账号 ## 伪造的一节$/m);
+      assert.match(text, /^> 做完是什么样:页面右上角 显示用户名$/m);
+      assert.doesNotMatch(text, /^## 伪造的一节/m, "没有被伪造出第二节");
+      // 直接走 HTTP:ask 只配 outcome=wait;不认识的键 400;needs 缺省 = decision
+      const again = await B.card("第二张", "ext");
+      const tok = readFileSync(join(B.dir, "cred", "ext.token"), "utf8").trim();
+      const c2 = await B.api("POST", `/api/tasks/${again.id}/claim`, tok, { expected_version: again.aggregate_version });
+      assert.equal(c2.status, 200, JSON.stringify(c2.body));
+      const rep = (b) => B.api("POST", `/api/tasks/${again.id}/report`, tok, { run_id: c2.body.task.run_id, ...b });
+      assert.equal((await rep({ outcome: "done", evidence: "e", ask: { needs: "hands" } })).status, 400, "ask 配 done 拒绝");
+      assert.equal((await rep({ outcome: "wait", evidence: "e", ask: { needs: "hands", who: "x" } })).status, 400, "不认识的键拒绝");
+      assert.equal((await B.api("GET", `/api/tasks/${again.id}`, B.operator)).body.task.status, "in_progress", "被拒的交回不落盘");
+      assert.equal((await rep({ outcome: "wait", evidence: "e", ask: { what: "看一眼" } })).status, 200);
+      assert.deepEqual((await B.api("GET", `/api/tasks/${again.id}`, B.operator)).body.task.ask, { needs: "decision", what: "看一眼", where: null, expect: null });
+      // 操作员把卡打回重开 → 再被领取:上一轮的 ask 不再显示(绑 run)
+      const v = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task.aggregate_version;
+      const back = await B.api("POST", `/api/tasks/${mine.id}/resolve`, B.operator, { verdict: "reject", note: "做完了,接着干", expected_version: v });
+      assert.equal(back.status, 200, JSON.stringify(back.body));
+      const now = (await B.api("GET", `/api/tasks/${mine.id}`, B.operator)).body.task;
+      assert.notEqual(`${now.status}/${now.waiting_for}`, "waiting/decision");
+      assert.equal(now.ask, null, "离开「等你决定」就没有 ask");
+    } finally { await M.end(); }
   } finally { await B.stop(); }
 });
 

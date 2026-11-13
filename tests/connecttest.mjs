@@ -17,7 +17,8 @@ import { createRequire } from "node:module";
 import { setTimeout as delay } from "node:timers/promises";
 import { DatabaseSync } from "node:sqlite";
 import { isLoopback, normalizeCode, createWrongCodeGate, openConnect, checkNote, cleanText, psQuote, defaultTokenDir,
-         CODE_TTL_MS, PENDING_MAX, redactText } from "../core/connect.mjs";
+         CODE_TTL_MS, PENDING_MAX, redactText, checkAsk, checkLine } from "../core/connect.mjs";
+import { openAssistantFeed, parseCursor } from "../core/assistant-feed.mjs";
 import { redactText as flowRedactText } from "../core/flow.mjs";
 
 const ROOT = fileURLToPath(new URL("../", import.meta.url));
@@ -448,6 +449,60 @@ test("P3:kind=other 的命令行片段贴进 PowerShell,路径里有 & ' % ! ^ �
     const argv = JSON.parse(ps.stdout.trim().split(/\r?\n/).pop());
     assert.deepEqual(argv, ["--url", "http://127.0.0.1:1", "--line", "ext", "--code", r.body.code, "--token-file", join(odd, "tok&en").replace(/\\/g, "/") + "/ext.token"]);
   } finally { db.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("G5 / G6 字段清洗:ask 三项与 quote 单行、≤200 字、脱敏;needs 缺省 decision;不认识的键拒", () => {
+  const bad = (m) => Object.assign(Error(m), { code: "BAD_INPUT" });
+  assert.deepEqual(checkAsk({}, bad), { needs: "decision", what: null, where: null, expect: null }, "缺省 = decision(现状不变)");
+  assert.deepEqual(checkAsk({ needs: "hands", what: "插上\n加密狗", where: " 机房\u2028二号柜 ", expect: "\u202e灯亮" }, bad),
+                   { needs: "hands", what: "插上 加密狗", where: "机房 二号柜", expect: "灯亮" });
+  assert.equal(checkAsk({ what: "   " }, bad).what, null, "清完为空 = null");
+  for (const v of [null, [], "x", { needs: "later" }, { needs: "hands", who: "me" }, { what: 3 }, { what: "长".repeat(201) }])
+    assert.throws(() => checkAsk(v, bad), (e) => e.code === "BAD_INPUT", JSON.stringify(v));
+  assert.equal(checkLine(undefined, "quote", bad), null);
+  assert.doesNotMatch(checkLine("看 C:\\Users\\example\\a.txt", "quote", bad), /Users|example/);
+  assert.equal(checkLine("长".repeat(200), "quote", bad).length, 200);
+});
+
+test("G6 提醒流与游标(临时库 + 假时钟):同一件只记一次、按游标挑件、quiet 段、只增不减的确认、撤销删除、旧库补列", () => {
+  const { store, coord, db } = unitDb();
+  try {
+    let now = Date.parse("2026-11-13T00:00:00Z");
+    const file = join(UNIT, "assistant_cursors.json");
+    const F = openAssistantFeed({ db, file, clock: () => now });
+    F.migrate(); F.migrate();
+    const A = (kind, id, since = "s") => ({ kind, task_id: id, title: "卡 " + id, since });
+    let att = [A("release", 1), A("review", 2)];
+    let p = F.pick({ attention: att, cur: null });
+    assert.deepEqual([p.items.map((i) => i.task_id), p.cursor], [[1, 2], "2"]);
+    assert.deepEqual(F.pick({ attention: att, cur: parseCursor("2", F.max()) }).items, [], "游标之后没有新件");
+    assert.equal(F.max(), 2, "同一件不重复记");
+    att = [...att, A("stalled", 3), A("decision", 4)];
+    const q = F.pick({ attention: att, cur: parseCursor("2", F.max()), mode: "quiet" });
+    assert.deepEqual([q.items.map((i) => i.kind), q.muted, q.cursor], [["stalled"], 1, "2~4"]);
+    const back = F.pick({ attention: att, cur: parseCursor(q.cursor, F.max()) });
+    assert.deepEqual([back.items.map((i) => i.task_id), back.cursor], [[4], "4"], "切回 normal 只补发压下的");
+    // 状态变了(打回后再交付 = 进入时刻不同)是新的一件
+    assert.deepEqual(F.pick({ attention: [A("review", 2, "s2")], cur: parseCursor("4", F.max()) }).items.map((i) => i.task_id), [2]);
+    // changes:游标之后提醒流里的行(含已经不在的件)
+    const ch = F.pick({ attention: [], done: [{ task_id: 9, title: "做完了", at: "2026-11-13T00:00:00.000Z" }], cur: parseCursor("1", F.max()) }).changes;
+    assert.deepEqual(ch.map((c) => [c.kind, c.task_id]), [["review", 2], ["stalled", 3], ["decision", 4], ["review", 2], ["done", 9]]);
+    // 确认:只增不减;按哈希分开;撤销 = 删这个执行者的全部
+    F.ack("h1", "asst-a", { n: 3, u: 3 }); F.ack("h1", "asst-a", { n: 1, u: 1 });
+    assert.deepEqual(F.stored("h1"), { n: 3, u: 3 }, "见过的最大 since");
+    F.ack("h2", "asst-b", { n: 2, u: 4 });
+    assert.deepEqual(F.stored("h2"), { n: 2, u: 4 });
+    assert.equal(F.dropExecutor("asst-a"), 1);
+    assert.equal(F.stored("h1"), null); assert.deepEqual(Object.keys(JSON.parse(readFileSync(file, "utf8"))), ["h2"]);
+    writeFileSync(file, "{坏的");
+    assert.equal(F.stored("h2"), null, "坏文件当空:从头给,不丢");
+    // 旧库的 assistant_posts 没有 origin / quote 列:migrate 补列,旧行按 ai_inferred
+    db.exec("CREATE TABLE assistant_posts (task_id INTEGER PRIMARY KEY, executor_id TEXT NOT NULL, label TEXT, at INTEGER NOT NULL)");
+    db.prepare("INSERT INTO assistant_posts VALUES (77, 'asst-old', '旧助手', 1)").run();
+    const C = openConnect({ db, coord, store, clock: () => now, hooks: {} });
+    C.migrate();
+    assert.deepEqual(C.postedBy(77), { executor_id: "asst-old", label: "旧助手", origin: "ai_inferred", quote: null });
+  } finally { db.close(); }
 });
 
 test("过期、建线推迟与回收、待兑换上限、错码闸门(临时库 + 假时钟)", async () => {

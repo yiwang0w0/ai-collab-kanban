@@ -143,7 +143,7 @@ export function sectionHash({ subject, description, acceptance, line, deps, goal
     [...deps].sort((a, b) => a - b), goal ?? null])).digest("hex");
 }
 
-export function openMdHandoff({ db, store, lines = () => [] }) {
+export function openMdHandoff({ db, store, lines = () => [], askOf = () => null }) {
   function migrate() {
     db.exec(`CREATE TABLE IF NOT EXISTS md_imports (
       hash TEXT PRIMARY KEY, task_id INTEGER NOT NULL, at TEXT NOT NULL)`);
@@ -224,7 +224,15 @@ export function openMdHandoff({ db, store, lines = () => [] }) {
     const meta = [`卡号 #${t.id}`, `状态 ${store.STATUS_LABEL[t.status] || t.status}` +
       (t.status === "waiting" && t.waiting_for ? `/${store.WF_LABEL[t.waiting_for] || t.waiting_for}` : ""),
       t.released ? "已放行" : "未放行", ...(t.archived_at ? ["已归档"] : [])];
-    out.push(`> ${meta.join(" · ")}`, "");
+    out.push(`> ${meta.join(" · ")}`);
+    // 合同 G5:执行者交回时说的「等什么」——结构字段,逐项并成一行(N1:字段里的换行不能在导出里另起一节)。
+    const ask = askOf(t);
+    if (ask) {
+      out.push(`> 等你:${ask.needs === "hands" ? "亲手做" : "裁定"}`);
+      for (const [k, word] of [["what", "做什么"], ["where", "在哪"], ["expect", "做完是什么样"]])
+        if (ask[k]) out.push(`> ${word}:${oneLine(ask[k])}`);
+    }
+    out.push("");
     out.push("### 说明", "", escapeBody(body(t.description || t.summary || "") || "(未写)"), "");
     out.push("### 验收", "", escapeBody(body(t.acceptance || "") || "(未写)"), "");
     if (t.line) out.push("### 线", "", oneLine(t.line), "");

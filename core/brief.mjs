@@ -2,12 +2,16 @@
 // 「等你处理」不另写判定:取首页「待我处理」那一栏(panel.html 的 home-model 区 homeLists,server 用 core/home-model.mjs 切出来跑)
 // 加执行线故障(同一区的 homeLineFaults);这里只把那两份结果折成条目与一段短文。
 // 本文件全是纯函数:固定输入 → 固定输出,不读时钟(now 由调用方给)、不碰库。text 与条目里的标题都过 redactText,长度硬上限。
+// 第 6 波(合同 G6):text 只写等本人处理的件,每件一行、动词开头;效率主句只在 headline。mode=quiet 只留紧急类(URGENT)。
 import { redactText, cut } from "./flow.mjs";
+import { URGENT } from "./assistant-feed.mjs";
 
 export const BRIEF_DEFAULT = 280, BRIEF_MIN = 80, BRIEF_MAX = 600;
 export const RECENT_MS = 24 * 3600000;          // 「刚完成」= 24 小时内完成的
 const LIST_MAX = 20, RECENT_MAX = 5, TITLE_MAX = 60;
 export const KIND_WORD = { review: "待验收", decision: "等你决定", release: "待放行", stalled: "AI 卡住", line_fault: "线故障", blocked: "受阻", other: "待处理" };
+/** text 每行开头的动词。hands = ask_operator needs:"hands"(等你亲手做;条目上 kind 仍是 decision,另带 needs)。 */
+export const KIND_VERB = { review: "验收", decision: "裁定", hands: "去做", release: "放行", stalled: "查看", line_fault: "查看", blocked: "处理", other: "处理" };
 
 /** max_chars 参数:缺省 280;要 80–600 的整数,其余抛 BAD_INPUT。 */
 export function maxCharsOf(raw) {
@@ -38,8 +42,11 @@ export function briefModel({ lists = {}, faults = [], tasks = [], headline = nul
   const attention = [];
   for (const row of Array.isArray(lists.mine) ? lists.mine : []) {
     const t = row.localId != null ? byId.get(Number(row.localId)) : null;
-    attention.push({ kind: kindOf(row, t), ...(t ? { task_id: Number(t.id) } : {}), title: clean(row.title), since: row.updated || null,
-                     ...(t?.posted_by?.label ? { posted_by: clean(t.posted_by.label, 24) } : {}) });
+    const kind = kindOf(row, t);
+    attention.push({ kind, ...(t ? { task_id: Number(t.id) } : {}), title: clean(row.title), since: row.updated || null,
+                     ...(t?.posted_by?.label ? { posted_by: clean(t.posted_by.label, 24) } : {}),
+                     // 合同 G5:执行者 ask_operator 说要本人亲手做(任务对象上的 ask.needs);没有 = 按裁定。
+                     ...(kind === "decision" && t?.ask?.needs === "hands" ? { needs: "hands" } : {}) });
   }
   for (const f of Array.isArray(faults) ? faults : []) attention.push({ kind: "line_fault", title: clean(f.what), since: null });
   const doing = tasks.filter((t) => t.status === "in_progress" && !t.archived_at && t.kind !== "goal")
@@ -48,37 +55,55 @@ export function briefModel({ lists = {}, faults = [], tasks = [], headline = nul
   const done_recent = tasks.filter((t) => t.status === "done" && t.kind !== "goal" && now - Date.parse(t.updated_at) <= RECENT_MS && Date.parse(t.updated_at) <= now)
     .sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || b.id - a.id).slice(0, RECENT_MAX)
     .map((t) => ({ task_id: Number(t.id), title: clean(t.subject), at: t.updated_at }));
-  return { headline: typeof headline === "string" && headline.trim() ? clean(headline, 160) : null,
+  const recent = tasks.filter((t) => t.status === "done" && t.kind !== "goal" && now - Date.parse(t.updated_at) <= RECENT_MS && Date.parse(t.updated_at) <= now)
+    .sort((a, b) => String(a.updated_at).localeCompare(String(b.updated_at)) || a.id - b.id)
+    .map((t) => ({ task_id: Number(t.id), title: clean(t.subject), at: t.updated_at }));
+  const out = { headline: typeof headline === "string" && headline.trim() ? clean(headline, 160) : null,
            attention: attention.slice(0, LIST_MAX), attention_total: attention.length, doing: doing.slice(0, LIST_MAX), doing_total: doing.length, done_recent };
+  // 提醒流(core/assistant-feed.mjs)要全量:不进应答体,不可枚举。
+  Object.defineProperty(out, "all", { value: { attention, done: recent }, enumerable: false });
+  return out;
 }
 
-// 卡住与线故障的标题自己就说了是什么事(「X 卡住了 · 手上有 #n」「线 A 崩溃」),不再缀类别词,标题多给几个字。
-const SELF_SAID = new Set(["stalled", "line_fault"]);
-const named = (a, w) => SELF_SAID.has(a.kind) ? "「" + cut(a.title, w + 6) + "」"
-  : (a.task_id ? "#" + a.task_id : "") + "「" + cut(a.title, w) + "」" + (KIND_WORD[a.kind] || "");
-/** 一段给小屏幕看的中文:等你处理几件(最要紧的一两件点名)、在做几件、刚完成什么、本周效率主句。 */
+// 卡住与线故障的标题自己就说了是什么事(「X 卡住了 · 手上有 #n」「线 A 崩溃」),不再带卡号。
+const lineOf = (a, w) => (KIND_VERB[a.needs === "hands" ? "hands" : a.kind] || "处理") +
+  (a.task_id && a.kind !== "stalled" && a.kind !== "line_fault" ? " #" + a.task_id : "") + "「" + cut(a.title, w) + "」";
+const oneLine = (s) => redactText(s).replace(/\s+/g, " ").trim();
+/**
+ * 给小屏幕看的一段中文(合同 G6):只写等本人处理的件,每件一行、动词开头(验收 / 裁定 / 去做 / 放行 / 查看 / 处理);
+ * 在做几件、刚完成什么、效率主句不进 text(效率主句在 headline,其余在条目里)。放不下就逐级收:标题缩短 → 少写几件,
+ * 末行写「查看其余 N 件」。
+ */
 export function briefText(m, maxChars = BRIEF_DEFAULT) {
   const max = Math.min(BRIEF_MAX, Math.max(BRIEF_MIN, Number(maxChars) || BRIEF_DEFAULT));
-  const n = m.attention_total ?? m.attention.length, d = m.doing_total ?? m.doing.length, r = m.done_recent;
-  const build = ({ names = 2, w = 16, recent = true, eff = true }) => {
-    const seg = [];
-    seg.push(n ? `等你处理 ${n} 件:` + m.attention.slice(0, names).map((a) => named(a, w)).join("、") + (n > names ? " 等" : "") : "没有等你处理的事");
-    seg.push(d ? `在做 ${d} 件` : "没有在做的卡");
-    if (recent && r.length) seg.push(`刚完成 #${r[0].task_id}「${cut(r[0].title, w)}」` + (r.length > 1 ? ` 等 ${r.length} 张` : ""));
-    if (eff) seg.push(m.headline || "本周效率暂无数据");
-    return redactText(seg.join("。") + "。").replace(/\s+/g, " ").trim();
-  };
-  // 放不下就逐级收:标题缩短 → 只点名一件 → 去掉「刚完成」→ 去掉效率主句 → 硬截。
-  for (const o of [{}, { w: 10 }, { names: 1, w: 10 }, { names: 1, w: 10, recent: false }, { names: 1, w: 8, recent: false, eff: false }]) {
-    const t = build(o);
-    if ([...t].length <= max) return t;
+  const items = Array.isArray(m.attention) ? m.attention : [], n = m.attention_total ?? items.length;
+  if (!n) return "没有等你处理的事。";
+  const fits = (t) => [...t].length <= max;
+  for (let k = items.length; k >= 1; k--) {
+    for (const w of [24, 16, 10, 6]) {
+      const lines = items.slice(0, k).map((a) => oneLine(lineOf(a, w)));
+      if (n > k) lines.push(`查看其余 ${n - k} 件`);
+      const t = lines.join("\n");
+      if (fits(t)) return t;
+    }
   }
-  return cut(build({ names: 1, w: 8, recent: false, eff: false }), max);
+  return cut(`查看等你处理的 ${n} 件`, max);
 }
 
 /** GET /api/brief 的应答体。 */
-export function briefOf(input, maxChars = BRIEF_DEFAULT) {
-  const m = briefModel(input);
-  return { text: briefText(m, maxChars), headline: m.headline, attention: m.attention, attention_total: m.attention_total,
-           doing: m.doing, doing_total: m.doing_total, done_recent: m.done_recent, generated_at: Number.isFinite(input.now) ? new Date(input.now).toISOString() : null };
+export function briefOf(input, maxChars = BRIEF_DEFAULT, { mode = "normal" } = {}) {
+  return briefFrom(briefModel(input), maxChars, { mode, now: input.now });
+}
+/** 同 briefOf,但用调用方已算好的 briefModel 结果(server 同一份结果还要给提醒流用)。
+ *  mode=quiet:attention 与 text 只留紧急类(线故障、AI 卡住、受阻),另给 muted = 压下没写的件数。 */
+export function briefFrom(m, maxChars = BRIEF_DEFAULT, { mode = "normal", now = null } = {}) {
+  let attention = m.attention, total = m.attention_total, muted = null;
+  if (mode === "quiet") {
+    const all = m.all?.attention ?? m.attention, urgent = all.filter((a) => URGENT.has(a.kind));
+    attention = urgent.slice(0, LIST_MAX); total = urgent.length; muted = all.length - urgent.length;
+  }
+  const v = { ...m, attention, attention_total: total };
+  return { text: briefText(v, maxChars), headline: m.headline, attention, attention_total: total,
+           doing: m.doing, doing_total: m.doing_total, done_recent: m.done_recent,
+           ...(muted === null ? {} : { mode: "quiet", muted }), generated_at: Number.isFinite(now) ? new Date(now).toISOString() : null };
 }
