@@ -65,8 +65,9 @@ export function openIntegrate({ db, err, ERR, git = () => null, repoForLine = ()
   const goals = () => db.prepare("SELECT c.task_id AS id, c.target, c.assemble FROM integrate_cfg c JOIN tasks t ON t.id=c.task_id WHERE t.archived_at IS NULL").all();
   const kidsOf = (goalId) => db.prepare("SELECT * FROM tasks WHERE parent_id=? AND archived_at IS NULL ORDER BY id").all(Number(goalId)).filter((k) => !isAuto(k.id));
 
-  // 缓存:目标 sha 按(仓, target);判定按(仓, target sha, head)。每次扫描整体换新(旧键自然丢掉,不无限长)。
-  let targets = new Map(), states = new Map(), scannedAt = null, running = null, runs = 0;
+  // 缓存:目标 sha 按(仓, target);判定按(仓, target sha, head)。每次扫描整体换新(这一轮没用到的旧键丢掉,不无限长);
+  //   目标 sha 每轮都重读(rev-parse,一个目标一次),判定在键没变时沿用上一轮(见 scan)。
+  let targets = new Map(), states = new Map(), scannedAt = null, running = null, runs = 0, reused = 0;
   const tkey = (repo, target) => repo + "\u0000" + target, skey = (repo, sha, head) => repo + "\u0000" + sha + "\u0000" + head;
 
   /** 一张已完成子卡的整合状态(只读缓存)。 */
@@ -125,6 +126,10 @@ export function openIntegrate({ db, err, ERR, git = () => null, repoForLine = ()
             if (!sha) continue;
             const sk = skey(repo, sha, head);
             if (ns.has(sk)) continue;
+            // 合同 J1.5:跨轮缓存。merged / pending 只取决于两个提交本身(不可变),目标 sha 与 head 都没动就沿用上一轮的结论、不再起 git;
+            //   unknown(超时 / 提交不在仓里)不沿用,下一轮再核。目标分支动了 = 新 sha = 新键,照常核。
+            const prev = states.get(sk);
+            if (prev === "merged" || prev === "pending") { ns.set(sk, prev); reused++; continue; }
             runs++;
             const r = await query(g, repo, ["merge-base", "--is-ancestor", head, sha]);
             // 0 = 是祖先(已合);1 = 不是(待合);别的(提交不在仓里、超时)= 核不了。
@@ -140,5 +145,5 @@ export function openIntegrate({ db, err, ERR, git = () => null, repoForLine = ()
   /** 一次「从现在起」的扫描:正有一轮在跑时,它开始时看到的子卡可能还没完成(结果里没有它们)—— 等它跑完再从头扫一轮。
    *  候选组装卡拼说明前用它(全套负载下实测:拼进了还没扫到的「未核」,之后说明不再重拼)。 */
   const scanFresh = () => (running ? running.then(() => scan(), () => scan()) : scan());
-  return { migrate, normIntegrate: (v) => normIntegrate(v, ctx), set, get, goals, kidsOf, summary, childField, scan, scanFresh, gitRuns: () => runs };
+  return { migrate, normIntegrate: (v) => normIntegrate(v, ctx), set, get, goals, kidsOf, summary, childField, scan, scanFresh, gitRuns: () => runs, reusedRuns: () => reused };
 }

@@ -344,9 +344,14 @@ export function openPackages({ db, store, isExecutor = () => false, git = () => 
   }
 
   /** 要出核对卡的包:ran ok(当前出包之后)、pins.required 非空、这一轮还没有核对卡。autocards 的 RULES 调用。 */
-  function pinCandidates() {
+  //   only = {packages:[包号], cards:[卡号]}:只看这些包与这些卡名下的包(事件路径,合同 J1.2);不给 = 全部(定时兜底)。
+  function pinCandidates(only = null) {
     const out = [];
-    const ids = db.prepare("SELECT DISTINCT package_id FROM package_events WHERE kind='ran'").all().map((r) => r.package_id);
+    const ids = only
+      ? db.prepare(`SELECT DISTINCT package_id FROM package_events WHERE kind='ran'
+          AND (package_id IN (SELECT value FROM json_each(?)) OR card_id IN (SELECT value FROM json_each(?)))`)
+          .all(JSON.stringify((only.packages || []).map(Number)), JSON.stringify((only.cards || []).map(Number))).map((r) => r.package_id)
+      : db.prepare("SELECT DISTINCT package_id FROM package_events WHERE kind='ran'").all().map((r) => r.package_id);
     for (const id of ids) {
       const v = view(id);
       if (!v || !v.ran || v.ran.result !== "ok" || !v.pins.required.length || v.pin_card != null || v.drift || !v.frozen) continue;

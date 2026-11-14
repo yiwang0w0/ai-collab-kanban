@@ -85,9 +85,13 @@ export function openBase({ db, store, git = () => null, repoForLine = () => null
     running = (async () => { do { again = false; await scanOnce(); } while (again); })().finally(() => { running = null; });
     return running;
   }
+  // 合同 J1.5:跨轮缓存。commit 在不在仓里每轮都核(提交可能被清掉 → missing,要当拍看到);onto 每轮重读一次(同一仓同一 onto 多张卡共用);
+  //   「commit 是不是 onto 的祖先 / 差几笔」只取决于两个完整 sha(不可变),两者都没动就沿用上一轮、不再起 git。unknown 不沿用。
+  let rel = new Map(), reused = 0;
+  const rkey = (repo, full, onto) => [repo, full, onto].join("\u0000");
   async function scanOnce() {
     {
-      const g = git(), next = new Map();
+      const g = git(), next = new Map(), nrel = new Map(), ontoOf = new Map();
       if (g) {
         const rows = db.prepare("SELECT b.task_id, b.commit_, b.onto, t.line FROM task_base b JOIN tasks t ON t.id=b.task_id WHERE t.archived_at IS NULL AND t.status<>'done'").all();
         for (const r of rows) {
@@ -100,22 +104,34 @@ export function openBase({ db, store, git = () => null, repoForLine = () => null
           const full = a.ok ? a.out.trim().toLowerCase() : "";
           if (!a.ok || !FULL_RE.test(full)) { next.set(k, { state: a.broken || a.ok ? "unknown" : "missing", behind: null }); continue; }
           if (!r.onto) { next.set(k, { state: "ok", behind: null }); continue; }
-          runs++;
-          const o = await query(g, repo, ["rev-parse", "--verify", "--quiet", `${r.onto}^{commit}`]);
-          const ontoSha = o.ok ? o.out.trim().toLowerCase() : "";
+          const ok_ = repo + "\u0000" + r.onto;
+          if (!ontoOf.has(ok_)) {
+            runs++;
+            const o = await query(g, repo, ["rev-parse", "--verify", "--quiet", `${r.onto}^{commit}`]);
+            ontoOf.set(ok_, o.ok ? o.out.trim().toLowerCase() : "");
+          }
+          const ontoSha = ontoOf.get(ok_);
           if (!FULL_RE.test(ontoSha)) { next.set(k, { state: "unknown", behind: null }); continue; }
+          const rk = rkey(repo, full, ontoSha), hit = rel.get(rk);
+          if (hit) { nrel.set(rk, hit); next.set(k, hit); reused++; continue; }
           runs++;
           const m = await query(g, repo, ["merge-base", "--is-ancestor", full, ontoSha]);
-          if (!m.ok) { next.set(k, { state: m.code === 1 && !m.broken ? "diverged" : "unknown", behind: null }); continue; }
+          if (!m.ok) {
+            const v = { state: m.code === 1 && !m.broken ? "diverged" : "unknown", behind: null };
+            if (v.state === "diverged") nrel.set(rk, v);
+            next.set(k, v); continue;
+          }
           runs++;
           const c = await query(g, repo, ["rev-list", "--count", `${full}..${ontoSha}`]);
           const n = c.ok ? Number(c.out.trim()) : NaN;
-          next.set(k, { state: "ok", behind: Number.isSafeInteger(n) ? Math.min(n, BEHIND_MAX) : null });
+          const v = { state: "ok", behind: Number.isSafeInteger(n) ? Math.min(n, BEHIND_MAX) : null };
+          if (v.behind !== null) nrel.set(rk, v);   // 差几笔没数出来(超时等)不沿用
+          next.set(k, v);
         }
       }
-      cache = next; scannedAt = now();
+      cache = next; rel = nrel; scannedAt = now();
     }
   }
 
-  return { migrate, normBase: (v) => normBase(v, ctx), set, get, fieldOf, claimCheck, heartbeatExtra, differs, scan, gitRuns: () => runs };
+  return { migrate, normBase: (v) => normBase(v, ctx), set, get, fieldOf, claimCheck, heartbeatExtra, differs, scan, gitRuns: () => runs, reusedRuns: () => reused };
 }

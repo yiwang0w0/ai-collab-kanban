@@ -1449,3 +1449,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-14 公告板 v3 第 8 波第二轮面板(claude/board-v3-w8-panel2,合同 I10f):引用 / 复审卡 / spec_review / 底提交 / 卡死 / 包六格流水线与「我跑完了」/ 环境差在卡面、首页行、侧栏显示;重钉、清零继续、对话框引用 / 底提交 / 目标环境、设置「连续几次算卡死」只走操作者接口。
 - 后端小项:未放行的自动出卡不计入目标结案(store.registerGoalSkip);复审判「不符」经 cred.registerGate 进自动通过闸;流转条目带 has_options;审阅座席写的包核对项卡历史人话;组头「执行 n/m」不数自动出的卡。
 - 新增 tests/panelround2test.mjs(含三组变异对照),hometest 同步;临时板真鼠标走查截图。没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 9 波收扫描(claude/board-v3-w9-scan,合同 J1;行为不变、无新接口):task.live_note 不再结算 / 核说明 / 触发自动规则;自动规则按事件的 on 过滤、按这一拍动过的卡扫(事件卡号 + task_events 水位,没卡号的 task.* 仍整板),30 秒定时扫整板兜底;卡死计数增量(stuck_state 记 last_event_id 与计数,reason_code 后写即作废重算);引用过期同一被引用卡一轮只算一次哈希;整合 / 底提交只读核对跨轮缓存(目标 sha 每轮重读,结论按两个完整 sha 沿用,unknown 不沿用)。
+- 新增 tests/scancosttest.mjs(增量 × 全量对拍、按卡 / 水位 / 连锁、定时兜底关掉时六类自动动作当拍出现,含变异对照)与本地基准 tools/scanbench.mjs(不进 CI):单个 task.* 事件后的规则耗时 1000 张卡约 130–180 ms → 1 ms 内。阻塞:无。

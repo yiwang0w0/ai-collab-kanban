@@ -17,6 +17,7 @@ import { composePin } from "./packages.mjs";
 export const EVENTS = ["done", "delivered"];
 const sha = (x) => createHash("sha256").update(x).digest("hex");
 const short = (h) => (typeof h === "string" && h ? h.slice(0, 12) : null);
+const idsJson = (scope) => JSON.stringify([...scope.ids].map(Number));
 
 /** release_on 参数:{card, event}。null = 撤销;undefined = 不设。卡号与事件形状在这里核,卡存不存在由调用方核。 */
 export function normReleaseOn(v, { err, ERR }) {
@@ -152,8 +153,12 @@ export function openAutocards({ db, store, cred, integ, occ, release, pkgs = nul
     return !!r && !r.broken && !r.fired && !r.failed;
   }
 
-  async function sweepReleaseOn() {
-    const rules = db.prepare(`SELECT r.* FROM release_rules r WHERE r.id = (SELECT MAX(id) FROM release_rules x WHERE x.task_id = r.task_id) AND r.kind='set'`).all();
+  // scope = null:整板(定时兜底);否则 {ids:Set} = 这一拍动过的卡(合同 J1.2:只看这些卡作源卡或作目标的规则)。
+  async function sweepReleaseOn(scope = null) {
+    const rules = scope
+      ? db.prepare(`SELECT r.* FROM release_rules r WHERE r.id = (SELECT MAX(id) FROM release_rules x WHERE x.task_id = r.task_id) AND r.kind='set'
+          AND (r.source IN (SELECT value FROM json_each(?)) OR r.task_id IN (SELECT value FROM json_each(?)))`).all(idsJson(scope), idsJson(scope))
+      : db.prepare(`SELECT r.* FROM release_rules r WHERE r.id = (SELECT MAX(id) FROM release_rules x WHERE x.task_id = r.task_id) AND r.kind='set'`).all();
     for (const r of rules) {
       if (trigger("release_on", r.id)) continue;
       const t = store.get(db, Number(r.task_id));
@@ -190,9 +195,13 @@ export function openAutocards({ db, store, cred, integ, occ, release, pkgs = nul
              // 合同 I3(8a):同批的卡标批名与 n/m(批里已完成 / 全部)。
              batch: (() => { const b = typeof store.relationFields === "function" ? store.relationFields(db, k).batch : null; return b ? { key: clean(b.key, 64), done: b.done, total: b.total } : null; })() };
   }
-  async function sweepAssemble() {
+  async function sweepAssemble(scope = null) {
+    // 按卡:动过的卡本身是目标,或是目标的直属子卡(子卡完成 / 重开 / 被取代都在子卡上记事件)。
+    let only = null;
+    if (scope) { only = new Set(scope.ids); for (const id of scope.ids) { const p = store.get(db, id)?.parent_id; if (p != null) only.add(Number(p)); } }
     for (const g of integ.goals()) {
       if (!g.assemble) continue;
+      if (only && !only.has(Number(g.id))) continue;
       const goal = store.get(db, Number(g.id));
       if (!goal || goal.archived_at) continue;
       const kids = integ.kidsOf(goal.id).filter((k) => !superseded(k.id));   // 被取代的子卡不算、不列
@@ -233,9 +242,10 @@ export function openAutocards({ db, store, cred, integ, occ, release, pkgs = nul
   }
 
   // ── pin(合同 I10d)───────────────────────────────────────────────────────────────
-  async function sweepPin() {
+  async function sweepPin(scope = null) {
     if (!pkgs) return;
-    for (const c of pkgs.pinCandidates()) {
+    // 按包:这一拍变过的包(package.changed)与动过的卡名下的包;整板 = 定时兜底。
+    for (const c of (scope ? pkgs.pinCandidates({ packages: [...scope.pkgs], cards: [...scope.ids] }) : pkgs.pinCandidates())) {
       const src = store.get(db, Number(c.pkg.card_id));
       if (!src || src.archived_at || superseded(src.id)) continue;   // 被取代的卡(合同 I1)不出核对卡
       if (!claimTrigger("pin", c.key)) continue;                       // 同一个包同一冻结轮只出一次
@@ -257,21 +267,56 @@ export function openAutocards({ db, store, cred, integ, occ, release, pkgs = nul
     }
   }
 
-  // 事件 → 动作的唯一登记处。每条规则自己按「触发记录」防重;sweep 由 server 在 task.* 事件后与定时器上调用(不在请求路径上等它)。
+  // 事件 → 动作的唯一登记处。每条规则自己按「触发记录」防重;server 在事件后(kick + flush,合并同一拍)与定时器上(sweep,整板兜底)调用,
+  //   不在请求路径上等它。合同 J1.2:事件路径上只跑 on 对得上的规则,且按卡(run(scope),scope.ids = 这一拍动过的卡);
+  //   定时扫与「不知道动了哪张卡」的事件仍整板跑(run(null))。
   const RULES = [
     { name: "release_on", on: ["task.*"], run: sweepReleaseOn },
     { name: "assemble", on: ["task.*", "integrate.scan"], run: sweepAssemble },
-    { name: "pin", on: ["package.changed"], run: sweepPin },
+    { name: "pin", on: ["package.changed", "task.*"], run: sweepPin },
     ...rules.filter((r) => r && typeof r.name === "string" && typeof r.run === "function").map((r) => ({ name: r.name, on: r.on || ["task.*"], run: r.run })),
   ];
-  let running = null, again = false;
-  function sweep() {
-    if (running) { again = true; return running; }
-    running = (async () => {
-      do { again = false; for (const r of RULES) { try { await r.run(); } catch (e) { log(`自动规则 ${r.name} 出错:${String(e?.message || e).split("\n")[0].slice(0, 160)}`); } } } while (again);
-    })().finally(() => { running = null; });
+  const onMatches = (on, types) => { for (const p of on) for (const t of types) if (p === t || (p.endsWith(".*") && t.startsWith(p.slice(0, -1)))) return true; return false; };
+  // 「这一拍动过的卡」除事件自带的卡号外,再并上自上一轮以来 task_events 里新出现的卡(一次操作改多张卡、或观察里补记的
+  //   spec.changed 等不单独发事件的变化,都会在卡历史里留一条)。水位只在本进程内存里;重启后第一轮整板扫。
+  let wm = null;
+  const topEvent = () => Number(db.prepare("SELECT MAX(id) AS m FROM task_events").get()?.m ?? 0);
+  const eventTasksSince = (a, b) => db.prepare("SELECT DISTINCT task_id FROM task_events WHERE id>? AND id<=?").all(a, b).map((r) => Number(r.task_id));
+  let pend = null;
+  /** 记下一个事件(合并到下一次 flush)。type 缺省 = 整板扫;task.* 事件既无 id 也无 ids = 不知道动了哪张卡 → 整板扫(同旧行为)。 */
+  function kick(type, data = {}) {
+    pend ??= { full: false, types: new Set(), ids: new Set(), pkgs: new Set() };
+    if (type == null) { pend.full = true; return; }
+    const ty = String(type); pend.types.add(ty);
+    const id = Number(data?.id), pid = Number(data?.package_id);
+    if (Number.isSafeInteger(id) && id > 0) pend.ids.add(id);
+    else if (Array.isArray(data?.ids) && data.ids.length && data.ids.every((x) => Number.isSafeInteger(Number(x)) && Number(x) > 0)) for (const x of data.ids) pend.ids.add(Number(x));
+    else if (ty.startsWith("task.")) pend.full = true;
+    if (Number.isSafeInteger(pid) && pid > 0) pend.pkgs.add(pid);
+  }
+  async function round(s) {
+    const top = topEvent();
+    const full = s.full || wm == null;
+    if (!full) for (const id of eventTasksSince(wm, top)) s.ids.add(id);
+    wm = top;
+    const scope = full ? null : { ids: s.ids, pkgs: s.pkgs, types: s.types };
+    for (const r of RULES) {
+      if (scope && !onMatches(r.on, scope.types)) continue;
+      try { await r.run(scope); } catch (e) { log(`自动规则 ${r.name} 出错:${String(e?.message || e).split(String.fromCharCode(10))[0].slice(0, 160)}`); }
+    }
+  }
+  let running = null;
+  function drain() {
+    if (running) return running;
+    // running 在循环看到「没有攒下的」的同一拍清掉:之后再来的 kick 一定开新的一轮,不会落在「快结束」的空档里没人处理。
+    //   先让出一拍(await null)再进循环:保证 running 已赋值,循环在同一拍里结束时清掉的是它本身(否则空跑时会先清后赋值,永远卡住)。
+    running = (async () => { await null; try { while (pend) { const s = pend; pend = null; await round(s); } } finally { running = null; } })();
     return running;
   }
+  /** 整板扫(定时兜底 / 设置变了):正在跑时排到这一轮之后。返回跑完的 promise。 */
+  function sweep() { kick(null); return drain(); }
+  /** 处理 kick 攒下的事件(server 在 setImmediate 里调,同一拍的多次合并成一次)。 */
+  const flush = () => drain();
 
-  return { migrate, setReleaseOn, releaseOnOf, awaitsRule, isAuto, autoKindOf, sweep, RULES: RULES.map((r) => ({ name: r.name, on: r.on })) };
+  return { migrate, setReleaseOn, releaseOnOf, awaitsRule, isAuto, autoKindOf, sweep, kick, flush, RULES: RULES.map((r) => ({ name: r.name, on: r.on })) };
 }

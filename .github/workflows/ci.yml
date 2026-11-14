@@ -323,6 +323,9 @@ jobs:
       - name: "receiptstest (J3 receipts: card pulls with throttle, notice sent/acked append-only, operator-only receipts, operator_note via real bridge, usage and where_hint, report_pool unsupported, new bridge vs old board)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/receiptstest.mjs
+      - name: "scancosttest (event scan cost: live_note does not run rules, rules filtered by event and scoped per card with full sweep fallback, incremental stuck equals full recompute, cross-round git scan cache keeps scanFresh fresh)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/scancosttest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

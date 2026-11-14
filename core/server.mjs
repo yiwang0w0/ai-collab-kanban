@@ -610,8 +610,9 @@ const auto = openAutocards({ db, store, cred, integ, occ, pkgs,
   afterEdit: (id, by) => (by ? spec.observe(id, by) : spec.observe(id)),
   deliveredSince: (id, at) => !!deliveredSinceStmt.get(Number(id), String(at)),
   clean: (s, max = 80) => cut(redactText(String(s ?? "")), max), emit: (type, data) => emit(type, data), log: (s) => console.log(s),
-  rules: [{ name: "ref_stale", on: ["task.*"], run: () => refs.sweepStale() }, { name: "spec_review", on: ["task.*"], run: () => refs.sweepReviews() },
-          { name: "stuck", on: ["task.*"], run: () => stuck.sweep() }] });
+  // run(scope):scope = null 整板(定时兜底);{ids} = 这一拍动过的卡(合同 J1.2)。
+  rules: [{ name: "ref_stale", on: ["task.*"], run: (scope) => refs.sweepStale(scope) }, { name: "spec_review", on: ["task.*"], run: (scope) => refs.sweepReviews(scope) },
+          { name: "stuck", on: ["task.*"], run: (scope) => stuck.sweep(scope) }] });
 // 第 8 波第二轮(8f):看板自动出、还没放行的卡(候选组装 / 核对卡 / 复审卡)不拖住目标结案;放行后照常计(store.completeGoals 与 complete_goal 阻塞)。
 store.registerGoalSkip("unreleased_auto", (r) => !Number(r.released) && r.status === "not_started" && (auto.isAuto(r.id) || refs.isReviewCard(r.id)));
 auto.migrate();
@@ -2552,22 +2553,28 @@ function dropRevokedSse() {
 }
 function emit(type, data = {}) {
   const wire = String(type).endsWith(".log") ? "log" : "change";
-  if (wire === "change") settleUsage();          // 卡变成 done 的每条路都经过这里
+  // 合同 J1.1:task.live_note(心跳里的临时进度)只推给面板。它不改任何自动规则、用量结算、说明哈希依赖的状态,
+  //   所以不结算、不核说明、不触发自动规则(原先每个带 note 的心跳都整板扫一遍)。
+  const liveNote = type === "task.live_note";
+  if (wire === "change" && !liveNote) settleUsage();          // 卡变成 done 的每条路都经过这里
   const payload = `event: ${wire}\ndata: ${JSON.stringify({ type, ...data })}\n\n`;
   for (const res of clients) { try { res.write(payload); } catch {} }
   if (wire === "change") flow.notify(type, data);   // 子卡变化 → 建卡对话的进度(2 秒合并后推 conversation.changed)
   // 合同 H6:每个 task.* 变化都核一次说明的内容哈希(放行即记 v1;放行后内容变了 +1),不靠每条编辑路记得调用。
-  if (wire === "change" && String(type).startsWith("task.") && Number.isSafeInteger(Number(data?.id)) && Number(data.id) > 0)
+  if (wire === "change" && !liveNote && String(type).startsWith("task.") && Number.isSafeInteger(Number(data?.id)) && Number(data.id) > 0)
     try { spec.observe(Number(data.id)); } catch {}
   // 合同 I6 / I8 / I9:卡一变,占用表的快照作废;自动规则(条件放行、候选组装)在本轮请求之后扫一遍(合并成一次,不在请求路径上等)。
-  if (wire === "change" && String(type).startsWith("task.")) { try { occ.invalidate(); } catch {} kickAutoRules(); }
-  // 合同 I10d:包一变(尤其 ran),核对卡的规则扫一遍(登记在 autocards 的 RULES)。
-  if (type === "package.changed") kickAutoRules();
+  //   合同 J1.2:只跑 on 对得上的规则,且按这一拍动过的卡(事件的 id / ids);30 秒定时扫仍整板兜底。
+  if (wire === "change" && String(type).startsWith("task.")) { try { occ.invalidate(); } catch {} if (!liveNote) kickAutoRules(type, data); }
+  // 合同 I10d:包一变(尤其 ran),核对卡的规则扫一遍(登记在 autocards 的 RULES;按 package_id 只看这个包)。
+  if (type === "package.changed") kickAutoRules(type, data);
 }
 let autoKick = null;
-function kickAutoRules() {
+/** 不带参数 = 整板扫(设置变了等);带事件 = 只扫这一拍动过的卡。同一拍里的多次合并成一次。 */
+function kickAutoRules(type, data) {
+  auto.kick(type, data);
   if (autoKick) return;
-  autoKick = setImmediate(() => { autoKick = null; auto.sweep().catch(() => {}); });
+  autoKick = setImmediate(() => { autoKick = null; auto.flush().catch(() => {}); });
 }
 
 const badSpecInput = (m) => store.err(store.ERR.BAD_INPUT, m);

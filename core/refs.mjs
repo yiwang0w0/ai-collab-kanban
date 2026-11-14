@@ -242,10 +242,19 @@ export function openRefs({ db, store, spec, cred, clean = (s) => String(s ?? "")
 
   // ── 自动规则(登记在 autocards.mjs 的 RULES)─────────────────────────────────────────
   /** 引用过期 → 事件 ref.stale(〔引用方, 被引用卡, 版本(哈希)〕一次)+ 引用方卡历史一条。 */
-  async function sweepStale() {
-    const rows = db.prepare("SELECT r.* FROM task_refs r JOIN tasks t ON t.id=r.task_id WHERE t.archived_at IS NULL").all();
+  //   scope = null:全部引用行(定时兜底);{ids:Set} = 只看被引用卡或引用方在这一拍动过的行(合同 J1.2)。
+  //   同一张被引用卡一轮只算一次哈希(合同 J1.4)。已完成的引用方照旧算:跳过会少记它卡历史里的 ref.stale(对外可见),所以不跳。
+  async function sweepStale(scope = null) {
+    const ids = scope ? JSON.stringify([...scope.ids].map(Number)) : null;
+    const rows = scope
+      ? db.prepare(`SELECT r.* FROM task_refs r JOIN tasks t ON t.id=r.task_id WHERE t.archived_at IS NULL
+          AND (r.card IN (SELECT value FROM json_each(?)) OR r.task_id IN (SELECT value FROM json_each(?)))`).all(ids, ids)
+      : db.prepare("SELECT r.* FROM task_refs r JOIN tasks t ON t.id=r.task_id WHERE t.archived_at IS NULL").all();
+    const seen = new Map();
     for (const r of rows) {
-      const cur = current(r.card);
+      const k = Number(r.card);
+      if (!seen.has(k)) seen.set(k, current(k));
+      const cur = seen.get(k);
       if (!cur || cur.hash === r.pinned_hash) continue;
       const ins = db.prepare("INSERT OR IGNORE INTO ref_stale_seen(task_id, card, version, hash, at) VALUES(?,?,?,?,?)").run(Number(r.task_id), Number(r.card), cur.version, cur.hash, now());
       if (!ins.changes) continue;
@@ -260,9 +269,12 @@ export function openRefs({ db, store, spec, cred, clean = (s) => String(s ?? "")
     return { fp: f.fingerprint, verified: last((b) => b === "board" || b === "reviewer"), self: last((b) => b === "executor") };
   }
   /** 引用方交付 → 复审卡;复审卡验收通过 → 给引用方记结论。 */
-  async function sweepReviews() {
+  //   scope 同 sweepStale:按卡时只看引用方 / 被引用卡在这一拍动过的行,与这一拍动过的复审卡。
+  async function sweepReviews(scope = null) {
+    const ids = scope ? JSON.stringify([...scope.ids].map(Number)) : null;
     const rows = db.prepare(`SELECT r.task_id, r.card FROM task_refs r JOIN tasks t ON t.id=r.task_id
-      WHERE r.review=1 AND t.archived_at IS NULL AND (t.status='done' OR (t.status='waiting' AND t.waiting_for='review'))`).all();
+      WHERE r.review=1 AND t.archived_at IS NULL AND (t.status='done' OR (t.status='waiting' AND t.waiting_for='review'))` +
+      (scope ? " AND (r.task_id IN (SELECT value FROM json_each(?)) OR r.card IN (SELECT value FROM json_each(?)))" : "")).all(...(scope ? [ids, ids] : []));
     for (const r of rows) {
       const x = store.get(db, Number(r.task_id)), s = store.get(db, Number(r.card));
       if (!x || !s || s.archived_at) continue;
@@ -309,7 +321,8 @@ export function openRefs({ db, store, spec, cred, clean = (s) => String(s ?? "")
     }
     // 复审卡验收通过(done)→ 给 X 记结论(每张复审卡一次)。
     const done = db.prepare(`SELECT c.* FROM spec_review_cards c JOIN tasks t ON t.id=c.card
-      WHERE t.status='done' AND NOT EXISTS (SELECT 1 FROM spec_review_results r WHERE r.by_card=c.card)`).all();
+      WHERE t.status='done' AND NOT EXISTS (SELECT 1 FROM spec_review_results r WHERE r.by_card=c.card)` +
+      (scope ? " AND c.card IN (SELECT value FROM json_each(?))" : "")).all(...(scope ? [ids] : []));
     for (const c of done) {
       const f = cred.fields(store.get(db, Number(c.card)));
       const hit = (f.checks || []).filter((k) => !k.stale && k.name === CONFORMANCE_CHECK).pop();
