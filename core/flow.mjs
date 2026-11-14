@@ -221,7 +221,11 @@ export function entryOf(e, ctx = {}) {
     case "task.stuck": summary = `卡死了:连着${({ reaped: "被回收", handed_back: "被退回", failed: "交回没做完", same_reason: "以同一原因停下" })[d.kind] || "出问题"} ${Number(d.count) || "?"} 次`; break;
     case "stuck.cleared": summary = `${who}把卡死计数清零${d.note ? ":" + safeText(d.note, 50) : ""}`; break;
     // 合同 I10d(core/packages.mjs):包的每一步;I10e(core/env-gap.mjs):目标环境、执行者自报的环境差。
-    case "package.changed": summary = `${actor_kind === "system" ? "看板" : who}${PKG_STEP[d.step] || "更新了包"}「${safeText(d.name, 30)}」(${PKG_STATE[d.state] || "?"}${d.drift ? " · 对不上" : ""})`; break;
+    // 8f:审阅座席经 /api/packages/:id/pin 写的核对项(verified = 已核)不写成「自动审阅报了…」,写明是审阅座席核过的;核对卡持卡者报的写「自报」。
+    case "package.changed": summary = d.step === "pin" && (d.verified === true || actor_kind === "auto")
+        ? `审阅座席核过包「${safeText(d.name, 30)}」的「${safeText(d.pin, 30)}」:${d.ok === false ? "没通过" : "通过"}(已核 · ${PKG_STATE[d.state] || "?"})`
+        : d.step === "pin" ? `${who}报了包「${safeText(d.name, 30)}」的「${safeText(d.pin, 30)}」:${d.ok === false ? "没通过" : "通过"}(自报 · ${PKG_STATE[d.state] || "?"})`
+        : `${actor_kind === "system" ? "看板" : who}${PKG_STEP[d.step] || "更新了包"}「${safeText(d.name, 30)}」(${PKG_STATE[d.state] || "?"}${d.drift ? " · 对不上" : ""})`; break;
     case "target_env.set": summary = d.target_env ? `${who}设目标环境:${safeText(d.target_env, 40)}` : `${who}撤销了目标环境`; break;
     case "env_diff.reported": summary = `${who}报了与目标环境的差 ${Number(d.count) || 0} 项(自报)`; break;
     default: summary = `记录:${cut(e.kind, 24)}`;
@@ -256,9 +260,11 @@ export function stepOf(t, started) {
 
 // heartbeatStarted(t) → 外部执行者这一轮是否已心跳过;liveNote(t) → { live_note, live_note_at }(connect 的表)。都由 server 注入,缺省不改行为。
 // executorName(id) → 执行者登记时的显示名;selfStarts(taskId) → [{ run_id, at }] 每一轮第一次执行者心跳(connect 的表)。
+// hasOptions(t) → 这张卡有没有方案包(与任务对象 decision_package 同一判法;8f:流转条区分「选方案」与「审过被拦待验收」);
+// isAuto(id) → 是不是看板自动出的卡(8f:目标组头「执行 n/m」不数它们)。都由 server 注入,缺省不改行为。
 export function createFlow({ db, isExecutor = () => false, lines = () => [], labels = () => ({}), emit = () => {}, coalesceMs = FLOW_COALESCE_MS,
                              heartbeatStarted = () => false, liveNote = () => ({ live_note: null, live_note_at: null }),
-                             executorName = () => null, selfStarts = () => [] } = {}) {
+                             executorName = () => null, selfStarts = () => [], hasOptions = null, isAuto = () => false } = {}) {
   db.exec(`CREATE TABLE IF NOT EXISTS conversation_progress (
     conversation_id INTEGER PRIMARY KEY, after_message_id INTEGER, text TEXT NOT NULL, sig TEXT NOT NULL,
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`);
@@ -356,8 +362,12 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
         runtime = t.last_runtime || (lc && parse(lc.detail).runtime) || null;
       }
       const wk = worker == null ? null : actorLabel(worker, actorKindOf(worker, "claim", cx), cx.labels, cx.executorName);
+      // has_options(8f):只在等你确认时给 —— false = 没有方案包(审阅看过、自动通过被拦,转人工验收),不是选方案。
+      let opts = null;
+      if (t.status === "waiting" && t.waiting_for === "confirm" && typeof hasOptions === "function") { try { opts = !!hasOptions(t); } catch { opts = null; } }
       return { id: Number(t.id), n: nOf.get(Number(t.id)) ?? null, subject: cut(t.subject, 80), line: t.line ?? null,
                status: t.status, waiting_for: t.status === "waiting" ? (t.waiting_for ?? null) : null, released: !!t.released,
+               ...(opts === null ? {} : { has_options: opts }),
                step: stepOf(t, started), started_via: observed ? "process" : selfReported ? "self_report" : null, worker: wk, runtime: runtime ? String(runtime) : null,
                handed_back: fields.get(Number(t.id))?.handed_back ?? 0, ...note, updated_at: t.updated_at };
     });
@@ -372,7 +382,7 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
     const rank = (i) => i.step === 4 && ["review", "confirm", "decision"].includes(i.waiting_for) ? 0 : i.step === 4 ? 1
       : i.step >= 2 ? 2 : i.step === 0 ? 3 : 4;
     const open = p.items.filter((i) => i.step < 5).sort((a, b) => rank(a) - rank(b) || a.id - b.id);
-    const say = (i) => i.step === 4 ? `#${i.id} ${WAIT_TEXT[i.waiting_for] || "等待中"}`
+    const say = (i) => i.step === 4 ? `#${i.id} ${i.waiting_for === "confirm" && i.has_options === false ? "审过被拦,待验收" : WAIT_TEXT[i.waiting_for] || "等待中"}`
       // 外部执行者的「在做」依据是它领卡后的心跳 → 写「在做(自报)」,与流转条/首页/侧栏的「对方自报」同一口径(合同 B 裁定)
       : i.step >= 2 ? `#${i.id} ${i.worker || "执行方"} ${i.step === 3 ? (i.started_via === "self_report" ? "在做(自报)" : "在做") : "已领取"}`
       : i.step === 0 ? `#${i.id} 未放行` : i.handed_back ? `#${i.id} 已打回,等重领` : `#${i.id} 等领取`;
@@ -466,12 +476,13 @@ export function createFlow({ db, isExecutor = () => false, lines = () => [], lab
   }
   function stop() { for (const t of timers.values()) { try { clearTimeout(t); } catch {} } timers.clear(); }
 
-  /** 目标卡的 d/n:与 progress 同一口径(直接子卡,未归档 + 完成后才归档的)。首页右栏组头用。 */
-  const kidCountStmt = db.prepare("SELECT COUNT(*) AS n, COALESCE(SUM(status='done'),0) AS d FROM tasks WHERE parent_id=? AND (archived_at IS NULL OR status='done')");
+  /** 目标卡的 d/n:直接子卡,未归档 + 完成后才归档的。首页右栏组头与流水线「执行 n/m」用。
+   *  8f:看板自动出的卡(候选组装 / 核对卡 / 复审卡)不数 —— 候选组装归「整合」段;对话流转条(progressOf)照旧列出它们。 */
+  const kidCountStmt = db.prepare("SELECT id, status FROM tasks WHERE parent_id=? AND (archived_at IS NULL OR status='done')");
   function goalCounts(t) {
     if (t?.kind !== "goal") return {};
-    const r = kidCountStmt.get(Number(t.id));
-    return { children_done: Number(r.d), children_total: Number(r.n) };
+    const rows = kidCountStmt.all(Number(t.id)).filter((r) => { try { return !isAuto(Number(r.id)); } catch { return true; } });
+    return { children_done: rows.filter((r) => r.status === "done").length, children_total: rows.length };
   }
 
   return { history, taskFields, goalCounts, progressOf, progressText, sync, syncAll, decorateDetail, notify, stop, refresh };

@@ -1498,6 +1498,49 @@
   .occ-path{margin:0;display:flex;align-items:center;gap:var(--sp-2);font-size:var(--fs-sm);overflow-wrap:anywhere}
   .occ-path code{font-family:var(--mono)}
   .occ-tag{color:var(--warn);font-size:var(--fs-xs)}
+  /* 第 8 波第二轮(I10f):重钉 / 清零继续 / 卡死最近几步 / 环境差小表 /「包」一节 / 对话框的引用行。强调色只给「我跑完了」这一个要本人做的按钮。 */
+  .side-rel .rel-list li > button{min-height:28px;padding:2px var(--sp-2);font-size:var(--fs-sm)}
+  .r2-steps{flex-basis:100%;font-size:var(--fs-xs);color:var(--dim)}
+  .r2-steps summary{cursor:pointer;color:var(--dim)}
+  .r2-steps ol{margin:var(--sp-1) 0 0;padding-left:1.2em;display:grid;gap:2px}
+  .r2-steps li span + span{margin-left:var(--sp-2)}
+  .r2-clear{flex-basis:100%;display:flex;flex-wrap:wrap;gap:var(--sp-1) var(--sp-2);align-items:center}
+  .r2-clear input{flex:1 1 12em;min-width:0}
+  .r2-env{flex-basis:100%;border-collapse:collapse;font-size:var(--fs-xs);margin-top:2px;max-width:100%}
+  .r2-env caption{text-align:left;color:var(--dim);padding-bottom:2px}
+  .r2-env th,.r2-env td{padding:1px var(--sp-3) 1px 0;text-align:left;font-weight:400;overflow-wrap:anywhere}
+  .r2-env thead th{color:var(--dim)}
+  .r2-env td{font-family:var(--mono)}
+  .side-pkg{display:flex;flex-direction:column;gap:var(--sp-2)}
+  .side-pkg h3{margin:0}
+  .pkg{border:1px solid var(--line);border-radius:var(--r-sm);padding:var(--sp-2);display:grid;gap:var(--sp-1);min-width:0}
+  .pkg[data-drift]{border-left:3px solid var(--warn)}
+  .pkg-h{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-2)}
+  .pkg-h b{overflow-wrap:anywhere}
+  .pkg-id{color:var(--dim);font-size:var(--fs-xs);font-family:var(--mono);flex:1 1 auto}
+  .pkg-steps{list-style:none;margin:0;padding:0;display:flex;flex-wrap:wrap;gap:2px var(--sp-2);font-size:var(--fs-xs);color:var(--dim)}
+  .pkg-step{display:inline-flex;align-items:center;gap:3px}
+  .pkg-step i{width:7px;height:7px;border-radius:50%;border:1px solid var(--dim2)}
+  .pkg-step[data-state="done"] i{background:var(--ok);border-color:var(--ok)}
+  .pkg-step[data-state="done"]{color:var(--fg)}
+  .pkg-step[data-state="skip"] i{border-style:dashed}
+  .pkg-step[data-state="skip"]{color:var(--dim2)}
+  .pkg-step[data-state="drift"] i,.pkg-step[data-state="fail"] i{background:var(--warn);border-color:var(--warn)}
+  .pkg-step[data-state="drift"],.pkg-step[data-state="fail"]{color:var(--warn)}
+  .pkg-drift{margin:0;color:var(--warn);font-size:var(--fs-sm);overflow-wrap:anywhere}
+  .pkg-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px var(--sp-2);margin:0;font-size:var(--fs-sm)}
+  .pkg-kv dt{color:var(--dim)}
+  .pkg-kv dd{margin:0;overflow-wrap:anywhere}
+  .pkg-files{font-size:var(--fs-xs)}
+  .pkg-files summary{cursor:pointer;color:var(--dim)}
+  .pkg-files table{border-collapse:collapse;margin-top:2px;max-width:100%}
+  .pkg-files th,.pkg-files td{padding:1px var(--sp-3) 1px 0;text-align:left;font-weight:400;overflow-wrap:anywhere}
+  .pkg-files td{font-family:var(--mono)}
+  .r2-refs{flex:1 1 100%;display:grid;gap:var(--sp-1)}
+  .r2-ref-row{display:flex;flex-wrap:wrap;align-items:center;gap:var(--sp-1) var(--sp-2)}
+  .rel-dialog fieldset.rel-field{border:0;border-bottom:1px solid var(--line);margin:0;display:flex;flex-wrap:wrap;gap:var(--sp-3);align-items:center}
+  .rel-dialog fieldset.rel-field legend{float:left;width:100%;font-weight:600;padding:0;margin-bottom:var(--sp-1)}
+  .stuck-form{display:flex;flex-wrap:wrap;align-items:flex-end;gap:var(--sp-2)}
   .occ-cards{display:flex;flex-direction:column;align-items:flex-start;gap:2px;margin-top:var(--sp-1)}
   .occ-cards button{font-size:var(--fs-sm);text-align:left;min-height:28px;height:auto;padding:2px var(--sp-1)}
   .cred-gaps{margin:0 0 var(--sp-2);padding-left:var(--sp-2);border-left:2px solid var(--warn);font-size:var(--fs-sm)}
@@ -1945,6 +1988,14 @@
   <section class="set-sec set-target" id="set-coord" aria-labelledby="set-coord-h">
     <div class="set-h"><h3 id="set-coord-h"><svg class="ic" aria-hidden="true"><use href="#i-board"/></svg>协作</h3></div>
     <div class="coord" id="approvals"><p class="set-empty">正在读取待批准事项…</p></div>
+    <!-- 第 8 波第二轮(I10c):卡死判定的阈值(stuck_after,走 /api/home/prefs)。静态表单,不随 refresh 重画。 -->
+    <div class="coord" id="stuck-box" hidden>
+      <div><h4>卡死判定 <span class="bg-i" tabindex="0" title="同一张卡从上次清零算起连续被回收、被退回、交回没做完或以同一原因停下这么多次，就标「卡死」：领不走，进「要本人做的事」。看过后在卡的侧栏按「清零继续」">ⓘ</span></h4></div>
+      <div class="stuck-form"><label class="fld"><span>连续几次算卡死</span><select id="stuck-after" aria-label="连续几次算卡死">
+        <option value="0">不判卡死</option><option value="2">2 次</option><option value="3">3 次</option><option value="4">4 次</option><option value="5">5 次</option>
+        <option value="6">6 次</option><option value="7">7 次</option><option value="8">8 次</option><option value="9">9 次</option><option value="10">10 次</option></select></label>
+        <button type="button" id="stuck-save">保存</button><span class="note" id="stuck-note" aria-live="polite"></span></div>
+    </div>
     <div class="coord" id="coord"><p class="set-empty">正在读取协作状态…</p></div>
     <!-- 批准令牌:静态表单,不随 refresh 重画,否则刚生成、只显示一次的令牌会被抹掉。 -->
     <div class="coord" id="apt-box">
@@ -2292,12 +2343,18 @@ function flowDots(item) {
   return FLOW_STEP_NAMES.map((name, i) => ({ name, state: i < step ? "done" : i === step && need ? "now" : "todo" }));
 }
 /** 当前状态短语:「Zcode 在做」「待你验收」「等领取」……need = 在等你。 */
-function flowPhrase(item, lineName = (l) => l) {
+function flowPhrase(item, lineName = (l) => l, card = null) {
   if (!item || typeof item !== "object") return { text: "状态待核实", need: false };
   const rt = Object.hasOwn(FLOW_RUNTIME, String(item.runtime)) ? FLOW_RUNTIME[item.runtime] : "";
   const who = rt || (item.worker ? String(item.worker) : item.line ? lineName(item.line) : "");
   if (item.status === "done") return { text: "已完成", need: false };
   if (item.status === "waiting") {
+    // 8f:等你确认但没有方案包(has_options:false)= 审阅看过、自动通过被拦,转人工验收 —— 与首页同一句。
+    //   card = 看板卡表里这张卡(有就看结论:当前指纹上审阅判通过 =「审阅已过」;读不到 =「审阅看过」)。
+    if (item.waiting_for === "confirm" && item.has_options === false) {
+      const ok = (Array.isArray(card && card.conclusions) ? card.conclusions : []).some((c) => c && c.kind === "review" && c.verdict === "approve" && !c.stale);
+      return { text: ok ? "审阅已过 · 自动通过被拦 · 待你验收" : "审阅看过 · 待你验收", need: true };
+    }
     const ask = { review: "待你验收", confirm: "待你选择方案", decision: "待你决定" };
     return Object.hasOwn(ask, item.waiting_for) ? { text: ask[item.waiting_for], need: true } : { text: "等待中", need: false };
   }
@@ -2465,6 +2522,7 @@ function bgOneLineText(o){
   if (o.code === "superseded") { const by = Number(p.by); return Number.isSafeInteger(by) && by > 0 ? "已被 #" + by + " 取代，不会再被领" : BG_LINE.superseded; }
   if (o.code === "dep_archived") { const ids = bgIds(p.ids); return ids.length ? "依赖 " + bgIdText(ids) + " 没做完就被归档了" : BG_LINE.dep_archived; }
   if (o.code === "lock_held") { const ids = bgIds(p.ids); return ids.length ? "执行锁被 " + bgIdText(ids) + " 占着" : BG_LINE.lock_held; }
+  if (o.code === "waiting_dep") { const ids = bgIds(p.ids); return ids.length ? "等 " + bgIdText(ids) + " 做完后才会被领" : BG_LINE.waiting_dep; }   // 8f:按 ids 拼卡号
   // 资源名已在「卡在谁手上」那一格(holder:等资源 X),一句话只写被谁占着。
   if (o.code === "resource_busy") {
     const ids = bgIds(p.ids), locks = bgIds(p.locks);
@@ -2567,8 +2625,11 @@ function credBadge(t, fmt = (s) => s){
   const b = t && t.badge;
   if (!b || !Object.hasOwn(CRED_LEVEL, b.level)) return null;
   const prov = (Array.isArray(b.provenance) ? b.provenance : []).map((p) => credProvLine(p, fmt));
+  // 第 8 波第二轮(I10e):not_target_env 进徽标 ⓘ —— 机器验证过,但不是在卡写的目标环境里验的。
+  const env = (b.flags || []).includes("not_target_env") && t.target_env
+    ? ["", "验证不是在目标环境「" + String(t.target_env) + "」里跑的" + (t.env_gap && Array.isArray(t.env_gap.verified_in) && t.env_gap.verified_in.length ? "（跑在 " + t.env_gap.verified_in.join("、") + "）" : "")] : [];
   return { level: b.level, text: CRED_LEVEL[b.level], tone: b.level === "machine_verified" ? "ok" : "quiet",
-           tip: ["来历：", ...prov].join(String.fromCharCode(10)) };
+           tip: ["来历：", ...prov, ...env].join(String.fromCharCode(10)) };
 }
 /** 指纹对不上的原因(服务端原文)→ 人话。认不出的照原样。 */
 function credMismatchText(s){
@@ -2621,6 +2682,18 @@ function credFlags(t){
       out.push({ key: f, text: "基于旧版说明", tip: "交付时对方确认到的说明版本落后于当前版本；不会自动通过" });
     } else if (f === "fingerprint_missing") {
       out.push({ key: f, text: "这次交付没记上指纹", tip: "看板最近记下的指纹不属于这一轮的这份交付；徽标按自报算，不会自动通过" });
+    } else if (f === "based_on_stale_ref") {
+      // 第 8 波第二轮(I10a / I10f):引用、复审、底提交的四个标记。强调色不给它们。
+      const st = (Array.isArray(t.refs) ? t.refs : []).filter((r) => r && r.stale).map((r) => "#" + r.card);
+      out.push({ key: f, text: "照的是过期的引用", tip: (st.length ? "引用的 " + st.join("、") + " 说明在交付前改过" : "交付时有引用的说明已改") + "；不会自动通过" });
+    } else if (f === "spec_reviewed") {
+      const sr = t.spec_review && typeof t.spec_review === "object" ? t.spec_review : null;
+      out.push({ key: f, text: "对照规格复审 · 一致", tip: (sr ? "复审卡 #" + sr.by_card + " 对照 #" + (sr.spec?.card ?? "?") + " 说明 v" + (sr.spec?.version ?? "?") + " 判一致" : "复审卡判一致") + "；不改徽标档位" });
+    } else if (f === "spec_deviation") {
+      const sr = t.spec_review && typeof t.spec_review === "object" ? t.spec_review : null;
+      out.push({ key: f, text: "复审判与规格不符", tip: (sr ? "复审卡 #" + sr.by_card + " 对照 #" + (sr.spec?.card ?? "?") + " 说明 v" + (sr.spec?.version ?? "?") + " 判不符" : "复审卡判不符") + "；不会自动通过，待验收时进「要本人做的事」" });
+    } else if (f === "base_differs") {
+      out.push({ key: f, text: "交付的底与卡上的不同", tip: "交付指纹里的底提交和卡上写的底提交不是同一个；只提示，不拦" });
     }
   }
   return out;
@@ -2697,6 +2770,14 @@ function credGaps(t){
   for (const o of Array.isArray(t.overlaps) ? t.overlaps : []) for (const w of Array.isArray(o && o.with) ? o.with : [])
     if (w && Number.isSafeInteger(Number(w.id))) { const k = Number(w.id); if (!ov.has(k)) ov.set(k, []); ov.get(k).push(String(o.path)); }
   for (const [id, paths] of ov) out.push("与 #" + id + " 改同一处：" + credFiles(paths));
+  // 第 8 波第二轮(I10a / I10d):照的是过期引用、复审判不符、包的缺口(服务端 package_gaps 原文)。只写明,不拦人。
+  if (t.based_on_stale_ref === true || (t.badge && (t.badge.flags || []).includes("based_on_stale_ref"))) {
+    const st = (Array.isArray(t.refs) ? t.refs : []).filter((r) => r && r.stale).map((r) => "#" + r.card + "（钉 v" + (r.pinned?.version ?? "?") + " · 现 v" + (r.current?.version ?? "?") + "）");
+    out.push("交付时引用的说明已改，照的是旧版" + (st.length ? "：" + st.join("、") : ""));
+  }
+  const sr = t.spec_review && typeof t.spec_review === "object" ? t.spec_review : null;
+  if (sr && sr.verdict === "deviates" && !sr.stale) out.push("复审卡 #" + sr.by_card + " 判这次交付与 #" + (sr.spec?.card ?? "?") + " 说明 v" + (sr.spec?.version ?? "?") + " 不符");
+  for (const g of Array.isArray(t.package_gaps) ? t.package_gaps : []) if (typeof g === "string" && g.trim()) out.push(g.trim());
   return out;
 }
 /** 证据图一张的说明行:「png · 120 KB · 执行者备注」。 */
@@ -2767,6 +2848,7 @@ function relMarks(t){
   const ig = t.integration && typeof t.integration === "object" ? t.integration : null;
   if (ig && Object.hasOwn(REL_INTEG, ig.state))
     put("integration", REL_INTEG[ig.state], "整合目标 " + String(ig.target || "未写") + "：看板只读核对这张卡的交付提交是否已在目标分支上，不合并", ig.state === "pending" ? "" : "quiet");
+  out.push(...r2Marks(t));   // 第 8 波第二轮(I10f):复审卡 / 核对卡、引用、复审结论、底、卡死、包、环境
   return out;
 }
 /** 占用视图(合同 I6):GET /api/occupancy → [{ path, overlap, cards:[{ id, text }] }],重叠的排前面,其余按路径。 */
@@ -2789,6 +2871,192 @@ function relCardNo(text){
   const v = String(text ?? "").trim().replace(/^#/, "");
   if (!v) return null;
   return /^\d+$/.test(v) && Number(v) > 0 ? Number(v) : NaN;
+}
+// 第 8 波第二轮(合同 I10f;8f):引用、复审卡、底提交、卡死、「包」、环境差的文案。只读任务对象上 8d / 8e 给的字段;读不到不画。
+//   常量都写在函数里面(有的测试只切单个函数来跑)。关系标记由 relMarks 末尾并进(卡面 / 首页行 / 侧栏「关系与占用」同一份)。
+/** 提交号短写 7 位;读不到 = 空串。 */
+function r2Short(h, n = 7){ return typeof h === "string" && /^[0-9a-f]{4,64}$/i.test(h) ? h.slice(0, n).toLowerCase() : ""; }
+/** 引用一条 → 标记:「引用 #S · 钉 v2」;过期「引用 #S · 钉 v2 · 现 v3 · 已过期」。review:true 写「交付后出复审卡」;same_line 的说明进 tip。 */
+function r2RefMark(r){
+  if (!r || !Number.isSafeInteger(Number(r.card))) return null;
+  const NL = String.fromCharCode(10), card = Number(r.card), pv = Number(r.pinned && r.pinned.version), cv = Number(r.current && r.current.version);
+  const head = "引用 #" + card + (Number.isInteger(pv) && pv > 0 ? " · 钉 v" + pv : "");
+  const stale = r.stale === true, review = r.review === true && !r.review_skipped;
+  const text = head + (stale ? (Number.isInteger(cv) && cv > 0 ? " · 现 v" + cv : "") + " · 已过期" : "") + (review ? " · 交付后出复审卡" : "");
+  const tip = [(r.title ? "#" + card + "「" + String(r.title) + "」" : "#" + card) + (stale ? "：说明改过了，钉的那版已不是现在的" : "：钉住的是写引用时那一版说明"),
+    stale ? "未开始的卡领不走；执行中的对方会被告知「规格已改，先读新版」。看过新版后按「重钉」" : "被引用卡的说明一改，这里就标过期",
+    review ? "交付后看板出一张对照规格的复审卡（未放行），由被引用卡那条线核" : "",
+    r.review_skipped === "same_line" ? "勾了交付后复审，但两张卡在同一条线上：不出复审卡（同一条线核自己没有意义）" : ""].filter(Boolean).join(NL);
+  return { key: "ref", card, text, tip, tone: stale ? "warn" : "", stale };
+}
+/** 复审卡的 review_of →「复审 #X 交付 1a2b3c4d · 对照 #S 说明 v2」。 */
+function r2ReviewOfText(ro){
+  if (!ro || !Number.isSafeInteger(Number(ro.card))) return null;
+  const d = typeof ro.digest === "string" && ro.digest ? ro.digest.slice(0, 8) : "", s = ro.spec || {};
+  return "复审 #" + Number(ro.card) + (d ? " 交付 " + d : " 的交付") + (Number.isSafeInteger(Number(s.card)) ? " · 对照 #" + Number(s.card) + " 说明 v" + (Number(s.version) || "?") : "");
+}
+/** 被复审的卡的 spec_review → { text, tone, tip, verdict, stale };没有 = null。 */
+function r2SpecReview(sr){
+  if (!sr || typeof sr !== "object") return null;
+  const W = { conform: "一致", deviates: "不符", unknown: "未判" }, NL = String.fromCharCode(10);
+  const v = Object.hasOwn(W, sr.verdict) ? sr.verdict : "unknown", stale = sr.stale === true, s = sr.spec || {};
+  const by = Number.isSafeInteger(Number(sr.by_card)) ? "#" + Number(sr.by_card) : "复审卡";
+  return { verdict: v, stale, text: "对照规格 · " + W[v] + (stale ? " · 已过期" : ""), tone: v === "deviates" && !stale ? "warn" : stale ? "quiet" : "",
+    tip: [by + " 对照 #" + (Number(s.card) || "?") + " 说明 v" + (Number(s.version) || "?") + " 核了这张卡的交付（" + (typeof sr.digest === "string" ? sr.digest.slice(0, 8) : "?") + "）",
+          v === "unknown" ? "复审卡没有报 spec_conformance 这项检查，算未判" : "",
+          stale ? "这张卡之后又交付过，或规格改过版本：这个结论不再算数" : v === "deviates" ? "未验收时进「要本人做的事」；不会自动通过" : ""].filter(Boolean).join(NL) };
+}
+/** 底提交:「底 abc1234 · 在」「· 不在了」「· 分叉了」「· 未核」,落后再写「· 落后 n」。 */
+function r2BaseText(b){
+  if (!b || typeof b !== "object" || !r2Short(b.commit)) return null;
+  const S = { ok: "在", missing: "不在了", diverged: "分叉了", unknown: "未核" }, NL = String.fromCharCode(10);
+  const st = Object.hasOwn(S, b.state) ? b.state : "unknown", behind = Number(b.behind), hb = b.behind != null && Number.isInteger(behind) && behind > 0;
+  const text = "底 " + r2Short(b.commit) + " · " + S[st] + (hb ? " · 落后 " + (behind >= 999 ? "999+" : behind) : "");
+  const why = { ok: "底提交在工作仓里" + (b.onto ? "，是 " + b.onto + " 的祖先" : ""), missing: "工作仓里找不到这个提交：未开始的卡领不走",
+                diverged: "底提交不是 " + (b.onto || "目标分支") + " 的祖先（分叉了）：未开始的卡领不走",
+                unknown: "看板还没核到（线没有可读的工作仓、超时，或刚写入还没扫到）；不拦" }[st];
+  return { text, tone: st === "missing" || st === "diverged" ? "warn" : st === "unknown" ? "quiet" : "",
+    tip: [why, hb ? (b.onto || "目标分支") + " 比底提交多 " + behind + " 笔（只提示）" : "", "看板只读核对，约 30 秒一次"].filter(Boolean).join(NL) };
+}
+/** 卡死的一句话:「卡死 · 连续 3 次被回收」。kind 四种各一句。 */
+function r2StuckText(s){
+  if (!s || typeof s !== "object") return null;
+  const K = { reaped: "被回收（租约过期）", handed_back: "被退回", failed: "交回没做完", same_reason: "以同一原因停下" };
+  const n = Number(s.count);
+  return "卡死 · 连续 " + (Number.isInteger(n) && n > 0 ? n : "?") + " 次" + (K[s.kind] || "出问题");
+}
+/** 卡死展开区的最近几步:[{ at, text }]。 */
+function r2StuckSteps(s){
+  const K = { reaped: "租约过期被回收", handed_back: "被退回", failed: "交回没做完", same_reason: "以同一原因停下" };
+  return (Array.isArray(s && s.last) ? s.last : []).filter((x) => x && typeof x === "object").slice(-5)
+    .map((x) => ({ at: String(x.at || ""), text: (K[x.kind] || "出问题") + (x.reason_code ? " · 原因码 " + x.reason_code : "") }));
+}
+/** 卡面 / 首页行的包标记(只一个,弱):「包 2 · 待你跑 1」「· 对不上 1」。没有包 = null。 */
+function r2PkgMark(t){
+  const ps = Array.isArray(t && t.packages) ? t.packages.filter((p) => p && typeof p === "object") : [];
+  if (!ps.length) return null;
+  const run = ps.filter((p) => p.state === "issued" && !p.drift).length, bad = ps.filter((p) => p.drift).length;
+  const S = { draft: "草稿", frozen: "已预审", committed: "已提交", issued: "已出包", ran: "本人已跑", pinned: "已钉住" };
+  return { text: "包 " + ps.length + (run ? " · 待你跑 " + run : "") + (bad ? " · 对不上 " + bad : ""), tone: bad ? "warn" : "",
+    tip: ps.map((p) => "「" + String(p.name || "") + "」" + (S[p.state] || "状态待核实") + (p.drift ? " · 对不上" : "") +
+      (p.pinned && p.pinned.total ? " · 钉住 " + (Number(p.pinned.n) || 0) + "/" + p.pinned.total : "")).join(String.fromCharCode(10)) };
+}
+/** 一个包的六格流水线:草稿 · 预审 · 已提交 · 出包 · 本人已跑 · 钉住 n/N(已核 a / 自报 b)。
+ *  每格 state = done / todo / skip(已提交可空着;没有要钉的项)/ drift(停在这一格之前)/ fail(跑了但失败)。 */
+function r2PkgCells(p){
+  if (!p || typeof p !== "object") return [];
+  const ORDER = ["draft", "frozen", "committed", "issued", "ran", "pinned"];
+  const pin = p.pinned && typeof p.pinned === "object" ? p.pinned : { n: 0, total: 0, verified: 0, self: 0 };
+  const pinLabel = Number(pin.total) ? "钉住 " + (Number(pin.n) || 0) + "/" + pin.total + "（已核 " + (Number(pin.verified) || 0) + " / 自报 " + (Number(pin.self) || 0) + "）" : "钉住 · 不用";
+  const LABEL = { draft: "草稿", frozen: "预审", committed: "已提交", issued: "出包", ran: "本人已跑", pinned: pinLabel };
+  const at = Math.max(0, ORDER.indexOf(p.state)), dd = p.drift && p.drift_detail && typeof p.drift_detail === "object" ? p.drift_detail : null;
+  const stop = dd ? ORDER.indexOf(dd.before) : -1;
+  return ORDER.map((k, i) => {
+    let state = i <= at ? "done" : "todo";
+    if (k === "committed" && !p.commit && i <= at) state = "skip";
+    if (k === "ran" && i <= at && p.ran && p.ran.result === "failed") state = "fail";
+    if (k === "pinned" && !Number(pin.total)) state = "skip";
+    if (stop >= 0 && i === stop) state = "drift";
+    return { key: k, label: state === "drift" ? LABEL[k] + " · 对不上" : state === "fail" ? LABEL[k] + " · 失败" : LABEL[k], state };
+  });
+}
+/** drift 的一句话:「停在「出包」之前 · 出包这一步对不上:……」。没有 drift = null。 */
+function r2PkgDrift(p){
+  const d = p && p.drift && p.drift_detail && typeof p.drift_detail === "object" ? p.drift_detail : null;
+  if (!d) return null;
+  const C = { draft: "草稿", frozen: "预审", committed: "已提交", issued: "出包", ran: "本人已跑", pinned: "钉住" };
+  const STEP = { declare: "冻结后重报文件", commit: "报来的提交", issue: "出包" };
+  const files = [...(Array.isArray(p.issued && p.issued.diff) ? p.issued.diff : []), ...(Array.isArray(p.issued && p.issued.missing) ? p.issued.missing.map((x) => x + "（缺）") : []),
+                 ...(Array.isArray(p.commit && p.commit.mismatch) ? p.commit.mismatch : [])];
+  return "停在「" + (C[d.before] || "?") + "」之前 · " + (STEP[d.step] || "有一步") + "对不上：" + String(d.why || "") +
+    (files.length ? "（" + files.slice(0, 3).join("、") + (files.length > 3 ? " 等 " + files.length + " 处" : "") + "）" : "");
+}
+/** 「我跑完了」按钮出不出:出包一致、没有 drift、还没跑。 */
+function r2CanRan(p){ return !!p && !!p.issued && p.issued.match === true && !p.drift && !p.ran; }
+/** 包的「跑」那一行:「本人跑过 · 成功 · 备注」;没跑 = null。 */
+function r2PkgRanText(p){
+  const r = p && p.ran;
+  if (!r) return null;
+  return "本人跑过 · " + (r.result === "ok" ? "成功" : r.result === "failed" ? "失败" : "结果待核实") + (typeof r.note === "string" && r.note.trim() ? " · " + r.note.trim() : "");
+}
+/** 环境差:目标环境标记 + 验证跑在哪。没写 target_env = null。 */
+function r2EnvMark(t){
+  const te = t && typeof t.target_env === "string" && t.target_env.trim() ? t.target_env.trim() : null;
+  if (!te) return null;
+  const g = t.env_gap && typeof t.env_gap === "object" ? t.env_gap : null, vin = Array.isArray(g && g.verified_in) ? g.verified_in.filter((x) => typeof x === "string" && x) : [];
+  const NL = String.fromCharCode(10), n = Array.isArray(t.env_diff && t.env_diff.items) ? t.env_diff.items.length : 0;
+  if (g && g.same === true) return { text: "目标环境 " + te + " · 在这里验过", tone: "", tip: "已核通过的检查里有在「" + te + "」跑的" + (n ? NL + "与目标环境的差 " + n + " 项 · 对方报的" : "") };
+  const text = "目标环境 " + te + (g && g.same === false ? " · 验证跑在 " + (vin.length ? vin.slice(0, 2).join("、") : "别处") + "，不是目标环境" : "") + (n ? " · 差 " + n + " 项" : "");
+  return { text, tone: g && g.same === false ? "warn" : "",
+    tip: [g && g.same === false ? "已核通过的检查都不是在「" + te + "」跑的" : "还没有带环境标签的已核检查（未核）", n ? "与目标环境的差 " + n + " 项 · 对方报的（侧栏可看）" : "", "执行者自报的环境不算进来"].filter(Boolean).join(NL) };
+}
+/** 环境差小表:[{ key, here, target }](对方报的)。 */
+function r2EnvRows(t){
+  return (Array.isArray(t && t.env_diff && t.env_diff.items) ? t.env_diff.items : []).filter((x) => x && typeof x.key === "string")
+    .map((x) => ({ key: x.key, here: String(x.here ?? ""), target: String(x.target ?? "") }));
+}
+/** 第二轮的关系标记(relMarks 末尾并进):复审卡 / 核对卡标签、引用、复审结论(过期或未判时;有效结论走徽标标记)、底、卡死、包、环境。 */
+function r2Marks(t){
+  if (!t || typeof t !== "object") return [];
+  const out = [], put = (m) => { if (m) out.push({ key: m.key, text: m.text, tip: m.tip || "", tone: m.tone || "", ...(m.card ? { card: m.card } : {}) }); };
+  if (t.auto_kind === "spec_review") put({ key: "spec_review_card", text: "对照规格复审 · 板出的", tip: [r2ReviewOfText(t.review_of) || "", "看板自动出的卡，默认不放行。回报里名为 spec_conformance 的检查（pass / fail）在验收通过后记成被复审卡的结论"].filter(Boolean).join(String.fromCharCode(10)) });
+  if (t.auto_kind === "pin") put({ key: "pin_card", text: "核对卡 · 板出的", tip: "包跑过（成功）后看板自动出的卡，默认不放行。持卡者逐项只读核对，经 report_pin 报结果（自报）；审阅座席写的算已核" });
+  for (const r of Array.isArray(t.refs) ? t.refs : []) put(r2RefMark(r));
+  const sr = r2SpecReview(t.spec_review);
+  if (sr && (sr.stale || sr.verdict === "unknown")) put({ key: "spec_review", ...sr });
+  const b = r2BaseText(t.base);
+  if (b) put({ key: "base", ...b });
+  const st = r2StuckText(t.stuck);
+  if (st) put({ key: "stuck", text: st, tone: "warn", tip: "从上次清零算起连续出同一种状况；领不走（排队领跳过、按号领被拒）。看过原因后按「清零继续」" });
+  const pk = r2PkgMark(t);
+  if (pk) put({ key: "pkg", ...pk });
+  const env = r2EnvMark(t);
+  if (env) put({ key: "env", ...env });
+  return out;
+}
+/** 「要本人做的事」动词按钮的字(显示层按码取;类型仍来自 attention):引用过期 →「重钉」,卡死 →「清零继续」。其余照原样。 */
+function r2AttnVerb(t, verb){
+  const V = { REF_STALE: "重钉", STUCK: "清零继续" };
+  if (!t || t.status !== "not_started" || t.human_gate) return verb;
+  const b = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).find((x) => x && typeof x.code === "string" && (x.attention === "fault" || x.attention === "decide"));
+  return b && Object.hasOwn(V, b.code) ? V[b.code] : verb;
+}
+/** 复审判不符(SPEC_DEVIATION)的一句证据:「复审卡 #9 判这次交付与 #3 说明 v2 不符」。没有 = null。 */
+function r2DeviationLine(t){
+  const b = (Array.isArray(t && t.progress_blockers) ? t.progress_blockers : []).find((x) => x && x.code === "SPEC_DEVIATION");
+  if (!b) return null;
+  const d = b.detail && typeof b.detail === "object" ? b.detail : {}, s = d.spec || {};
+  return Number.isSafeInteger(Number(d.by_card)) ? "复审卡 #" + Number(d.by_card) + " 判这次交付与 #" + (Number(s.card) || "?") + " 说明 v" + (Number(s.version) || "?") + " 不符"
+    : (typeof b.message === "string" && b.message.trim() ? b.message.trim() : "复审判这次交付与规格不符");
+}
+/** 首页「要本人做的事」的包条目(接口 attention 里带 package 的那几条)→ 行。行的类型 / 动词照接口给的(homeAttnType 那一份)。 */
+function r2PkgAttnRows(attention){
+  return (Array.isArray(attention) ? attention : []).filter((a) => a && a.package && Number.isSafeInteger(Number(a.package.id)) && a.task_id != null).map((a) => ({
+    key: "pkg:" + Number(a.package.id), uid: null, localId: Number(a.task_id), title: String(a.title || "包"), computer: "", updated: String(a.since || ""),
+    state: a.type === "fault" ? "出包后对不上 · 先别跑" : "出包了 · 待你亲手跑", tone: "", next: a.type === "fault" ? "先别跑，看哪一步对不上" : "跑完后按「我跑完了」",
+    type: typeof a.type === "string" ? a.type : "decide", verb: typeof a.verb === "string" && a.verb ? a.verb : a.type === "fault" ? "查看" : "去做", pkg: a }));
+}
+/** 包条目的展开区:做什么 / 实物在哪(label 原样)/ 期待看到什么(对方写的)/ 做完解锁。 */
+function r2PkgDetailRows(d){
+  if (!d || typeof d !== "object") return [];
+  const rows = [], put = (k, v) => { if (typeof v === "string" && v.trim()) rows.push([k, v.trim()]); };
+  put("做什么", d.what); put("实物在哪", d.where); put(d.expect_by === "executor" ? "期待看到什么（对方写的）" : "期待看到什么", d.expect);
+  const un = Array.isArray(d.unlocks) ? d.unlocks : [], total = Number(d.unlocks_total) || un.length;
+  if (un.length) put("做完解锁", un.map((u) => "#" + u.id + " " + String(u.title || "")).join("、") + (total > un.length ? " 等 " + total + " 张" : ""));
+  return rows;
+}
+/** 对话框里的引用一项:[{ card:"12" 或 "#12", review:bool }] → refs 参数;卡号不对 = { error }。 */
+function r2RefsBody(rows){
+  const out = [], seen = new Set();
+  for (const r of Array.isArray(rows) ? rows : []) {
+    const v = String(r && r.card != null ? r.card : "").trim().replace(/^#/, "");
+    if (!v) continue;
+    if (!/^\d+$/.test(v) || Number(v) < 1) return { error: "卡号要是正整数：" + v };
+    if (seen.has(Number(v))) continue;
+    seen.add(Number(v)); out.push(r.review ? { card: Number(v), review: true } : Number(v));
+  }
+  if (out.length > 8) return { error: "引用最多 8 张" };
+  return { refs: out };
 }
 // ── /rel-copy ──
 // ── wave2-copy(pure;tests/panelcopytest.mjs)──
@@ -6582,6 +6850,7 @@ es.addEventListener("change", (e) => {
     // 任务事件带卡号:给流转条那一行和首页那张卡一个约 4 秒的「刚更新」标记;刷新照旧整页走。
     if (typeof d.type === "string" && d.type.startsWith("task.") && d.id != null) flashMark(d.id);
     if (d.type === "executor.changed") aiLoad();
+    if (d.type === "package.changed" && d.id != null) pkgCache.delete(Number(d.id));   // 第 8 波第二轮:包的全量下次画侧栏时重读
     if (d.type === "occupancy.changed" || d.type === "occupancy.overlap") occLoadSoon();   // 第 8 波:文件占用视图跟着变            // 接入的 AI 有变:重读列表(首页「卡住」也跟着变)
     if (d.type === "desktop-sessions.changed" && homeView === "settings") deskLoad();
     // live_note(执行者的临时进度):只读这一张卡、只改流转条那一行与卡面那一句,不整页重读(F4)。
@@ -7586,7 +7855,7 @@ function setView(v){
   // The columns' shell (headers, goal box) is built once, from meta — never before the first
   // refresh() answered, or a board opened straight into 全部任务 keeps raw status keys.
   if (v === "board") { if (homeReady) render(); occLoad(); }   // 第 8 波:工具条「文件占用」的重叠数
-  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); zcodeLoad(); aiLoad(); deskLoad(); coordSeatLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
+  else if (v === "settings") { loadHomeExtras(true); cliVersionsLoad(); zcodeLoad(); aiLoad(); deskLoad(); coordSeatLoad(); stuckPrefLoad(); requestAnimationFrame(tocSync); }   // 设置页的内容随每次 refresh 重画;这里只补一次多机读取和一次 CLI 版本读取
   else {
     homeSig.clear(); renderHomeViews(); loadHomeExtras(true);
     if (v === "home" && homeReady) chatLoad(true);
@@ -8021,6 +8290,8 @@ function sideExecution(t, need = false, protocol = false){
     rec.append(homeEl("summary", "逐项记录"), dl);
     section.append(rec);
   }
+  // 第 8 波第二轮:看板自动出的卡没有线时(目标 / 原卡没写线),放行前写明会发生什么(放行本身不要求线:受管线会领没写线的卡,接入的外部执行者不领)。
+  if (checking && !t.line && t.auto_kind) section.append(homeEl("p", "这张卡是看板自动出的，没有指定线：放行后任何一条受管执行线都可能领它，接入的外部执行者不会领。要交给某条线，先在「编辑」里指定线再放行。", "side-state r2-noline"));
   if (checking && protocol) section.append(homeEl("p", "这张卡由委派放行，按钮在上面。", "side-state"));
   else if (checking) {
     section.append(homeEl("p", "先核对以上目录、通道、权限与预算。", "side-state"), releaseButton("放行此任务"));
@@ -8209,7 +8480,9 @@ function renderSide(){
                                    t.based_on_stale_spec, t.fingerprint?.mismatch, (t.evidence || []).map((e) => [e.sha256, e.note]), credMenu === t.id, credEdit === t.id,
                                    credMsg?.id === t.id ? credMsg.text : null],
                                   // 第 8 波:关系与占用一节读的字段与菜单开合
-                                  [relMarks(t), t.batch, relMenu === t.id, relMsg?.id === t.id ? relMsg.text : null, t.integrate ?? null]]
+                                  [relMarks(t), t.batch, relMenu === t.id, relMsg?.id === t.id ? relMsg.text : null, t.integrate ?? null],
+                                  // 第 8 波第二轮:卡死最近几步、环境差、包(摘要 + 读到的全量 + 确认框)
+                                  [t.stuck, t.env_diff, t.package_gaps, t.packages, pkgCache.get(t.id)?.sig ?? null, pkgMsg?.id === t.id ? pkgMsg.text : null, r2Clear === t.id]]
                                : ["remote", sideRef.uid, row && [row.subject, row.owner_name, row.status, row.waiting_for, row.aggregate_version, row.brief, row.result_summary],
                                   !!homeFleet, detail && [!!detail.value, !!detail.error], !!fleetApi, item?.title]);
   if (sig === sideSig) { updateSideLive(); updateSideContext(t); return; }
@@ -8232,6 +8505,8 @@ function renderSide(){
     if (cred) out.push(cred);
     const rel = sideRel(t);
     if (rel) out.push(rel);
+    const pkg = sidePkg(t);   // 第 8 波第二轮:「包」一节(卡有包才出)
+    if (pkg) out.push(pkg);
     out.push(sideExecution(t, sideReleaseNeed(t), sideProtocolRelease(t)));
     // 用量:有读数才有这一节。它不在 sideSig 里,读数到了由 sideUsagePlace 局部放进来。
     const usage = sideUsageSection(t);
@@ -8557,7 +8832,8 @@ function sideRel(t){
   }
   head.append(wrap); sec.append(head);
   if (relMsg?.id === t.id) sec.append(homeEl("p", relMsg.text, "cred-msg"));
-  const ids = (key) => key === "superseded" ? [Number(t.superseded_by)] : key === "supersedes" ? relIds(t.supersedes)
+  const ids = (key, m) => m && m.card ? [Number(m.card)] : key === "spec_review_card" && t.review_of ? [Number(t.review_of.card), Number(t.review_of.spec?.card)]
+    : key === "spec_review" && t.spec_review ? [Number(t.spec_review.by_card)] : key === "superseded" ? [Number(t.superseded_by)] : key === "supersedes" ? relIds(t.supersedes)
     : key === "basis" ? [...new Set((t.basis_changed || []).map((x) => Number(x.dep)))] : key === "overlap" ? [...new Set((t.overlaps || []).flatMap((o) => (o.with || []).map((w) => Number(w.id))))]
     : key === "release_on" && t.release_on ? [Number(t.release_on.card)] : key === "busy" ? relBusy(t).map((x) => /^#\d+$/.test(x.who) ? Number(x.who.slice(1)) : 0) : [];
   const ul = homeEl("ul", undefined, "rel-list");
@@ -8565,8 +8841,9 @@ function sideRel(t){
     const li = homeEl("li"); li.dataset.rel = m.key; if (m.tone) li.dataset.tone = m.tone;
     const txt = homeEl("span", m.text, "rel-text"); if (m.tip) txt.title = m.tip;
     li.append(txt);
-    for (const id of [...new Set(ids(m.key))].filter((n) => Number.isSafeInteger(n) && n > 0 && n !== t.id).slice(0, 4)) li.append(relCardButton(id));
+    for (const id of [...new Set(ids(m.key, m))].filter((n) => Number.isSafeInteger(n) && n > 0 && n !== t.id).slice(0, 4)) li.append(relCardButton(id));
     if (m.key === "basis") { const ack = homeEl("button", "已看过"); ack.type = "button"; ack.dataset.act = "basis-ack"; ack.addEventListener("click", () => relAck(t, ack)); li.append(ack); }
+    r2SideExtras(t, m, li);   // 第 8 波第二轮:重钉 / 清零继续 / 卡死最近几步 / 环境差小表
     // 同批:成员逐张(未完成的在前)
     if (m.key === "batch" && Array.isArray(t.batch?.members)) {
       const sub = homeEl("div", undefined, "side-links");
@@ -8668,6 +8945,45 @@ function relDialogFill(){
       field("release_on", "条件放行", "那张卡完成（或交付）时看板替你放行这一张，只触发一次；那张被取代或归档就不触发，回到你手里", homeEl("span", "等 #", "rel-now"), no, ev, go);
     }
   }
+  // 第 8 波第二轮(I10a / I10b / I10e):引用(≤8,每条可勾交付后复审,覆盖式)、底提交(commit + 可选 onto)、目标环境(≤40 字)。
+  if (work) {
+    const cur = Array.isArray(t.refs) ? t.refs : [], n = Math.min(8, Math.max(cur.length + 1, 2));
+    const list = homeEl("div", undefined, "r2-refs"), rows = [];
+    for (let i = 0; i < n; i++) {
+      const r = cur[i] || null, row = homeEl("div", undefined, "r2-ref-row");
+      const no = input(r ? String(r.card) : "", "卡号", "引用的卡号 " + (i + 1), "rel-no");
+      const lab = homeEl("label", undefined, "rel-check"), cb = homeEl("input"); cb.type = "checkbox"; cb.checked = !!r?.review; cb.setAttribute("aria-label", "交付后对照复审 " + (i + 1));
+      lab.append(cb, " 交付后对照复审");
+      row.append(no, lab);
+      if (r) row.append(homeEl("span", "钉 v" + (r.pinned?.version ?? "?") + (r.stale ? " · 现 v" + (r.current?.version ?? "?") + " · 已过期" : ""), "rel-now"));
+      rows.push({ no, cb }); list.append(row);
+    }
+    const go = button("保存引用");
+    go.addEventListener("click", () => {
+      const v = r2RefsBody(rows.map((x) => ({ card: x.no.value, review: x.cb.checked })));
+      if (v.error) { relDlgErr.set("refs", { ok: false, text: v.error }); relDialogFill(); return; }
+      relSave("refs", () => relPost(base + "/refs", { refs: v.refs }), go);
+    });
+    field("refs", "引用", "钉住被引用卡现在的说明版本；它的说明一改这里就标过期，未开始的卡领不走。整组覆盖保存：原来就引用的保留原钉，新加的钉到当前；清空 = 不引用。勾了「交付后对照复审」且两卡不在同一条线时，交付后看板出一张复审卡（未放行）。最多 8 张", list, go);
+  }
+  if (work) {
+    const b0 = t.base && typeof t.base === "object" ? t.base : null;
+    const c = input("", "提交号（7–40 位十六进制）", "底提交", "rel-ref"), onto = input("", "refs/heads/…（可选）", "底提交要在哪个分支上", "rel-ref");
+    const go = button("保存底提交");
+    go.addEventListener("click", () => relSave("base", () => relPost(base + "/base", { base: { commit: c.value.trim(), ...(onto.value.trim() ? { onto: onto.value.trim() } : {}) } }), go));
+    const extra = [];
+    if (b0) { const off = button("撤销底提交"); off.addEventListener("click", () => relSave("base", () => relPost(base + "/base", { base: null }), off)); extra.push(homeEl("span", (r2BaseText(b0)?.text || "已写底提交") + (b0.onto ? " · 在 " + b0.onto + " 上" : ""), "rel-now"), off); }
+    field("base", "底提交", "这张卡要在哪个提交上做。看板只读核对（约 30 秒一次）：工作仓里没有、或不是给的分支的祖先 → 未开始的卡领不走；落后几笔只提示", ...extra, c, onto, go);
+  }
+  if (work) {
+    const te = typeof t.target_env === "string" && t.target_env ? t.target_env : "";
+    const v = input(te, "例：测试机 / 生产库只读副本", "目标环境", ""); v.maxLength = 40;
+    const go = button("保存目标环境");
+    go.addEventListener("click", () => relSave("target_env", () => relPost(base + "/target-env", { target_env: v.value.trim() || null }), go));
+    const extra = [];
+    if (te) { const off = button("撤销目标环境"); off.addEventListener("click", () => relSave("target_env", () => relPost(base + "/target-env", { target_env: null }), off)); extra.push(off); }
+    field("target_env", "目标环境", "这张卡的结果最终要在哪个环境里成立（一行，最多 40 字）。已核通过的检查都不是在这里跑的 → 徽标 ⓘ 里写明；执行者自报的环境不算", v, go, ...extra);
+  }
   // 目标卡:整合目标分支 + 全部完成后出候选组装卡。
   if (t.kind === "goal") {
     const cur = t.integrate && typeof t.integrate === "object" ? t.integrate : null;
@@ -8730,6 +9046,169 @@ function occFill(){
   dlg.replaceChildren(head, body);
 }
 document.getElementById("occ-open")?.addEventListener("click", occOpen);
+// ── 第 8 波第二轮(合同 I10f)的画面:侧栏「关系与占用」里的重钉 / 清零继续 / 卡死最近几步 / 环境差小表,「包」一节与「我跑完了」确认框。
+//    文案在 rel-copy 的 r2* 纯函数。写入口只走操作者接口(面板会话就是操作者;接口按角色再核一次),失败照服务端原文写出。
+let r2Clear = null;          // 正在填「清零继续」备注的卡号
+/** 关系一节里每一行的附加控件:引用过期 →「重钉」;卡死 → 最近几步(展开)+「清零继续」(可填一句备注);环境 → 差异小表(对方报的)。 */
+function r2SideExtras(t, m, li){
+  if (m.key === "ref" && m.card) {
+    const r = (t.refs || []).find((x) => Number(x.card) === Number(m.card));
+    if (r && r.stale) {
+      const b = homeEl("button", "重钉"); b.type = "button"; b.dataset.act = "repin";
+      b.title = "钉到 #" + r.card + " 现在的说明版本；已放行的卡说明版本加一，执行中的对方会被告知先读新版";
+      b.addEventListener("click", () => r2Act(t, b, "/refs/repin", { card: Number(r.card) }, "已重钉 #" + r.card + " 到现在的版本"));
+      li.append(b);
+    }
+  }
+  if (m.key === "stuck" && t.stuck) {
+    const steps = r2StuckSteps(t.stuck);
+    if (steps.length) {
+      const d = homeEl("details", undefined, "r2-steps"); d.id = "task-side-stuck-steps";
+      d.append(homeEl("summary", "最近 " + steps.length + " 步"));
+      const ol = homeEl("ol");
+      for (const s of steps) { const x = homeEl("li"); x.append(homeEl("span", s.at ? localTime(s.at) : "时间未记录", "hist-at"), homeEl("span", s.text)); ol.append(x); }
+      d.append(ol); li.append(d);
+    }
+    if (r2Clear === t.id) {
+      const box = homeEl("div", undefined, "r2-clear"), note = homeEl("input"); note.maxLength = 200; note.placeholder = "可选：一句备注（记进卡历史）"; note.setAttribute("aria-label", "清零继续的备注");
+      const go = homeEl("button", "确认清零", "pri"), no = homeEl("button", "取消"); go.type = no.type = "button";
+      go.addEventListener("click", () => r2Act(t, go, "/stuck/clear", note.value.trim() ? { note: note.value.trim() } : {}, "已清零：这张卡可以再被领了", () => { r2Clear = null; }));
+      no.addEventListener("click", () => { r2Clear = null; sideSig = ""; renderSide(); });
+      box.append(note, go, no); li.append(box);
+    } else {
+      const b = homeEl("button", "清零继续"); b.type = "button"; b.dataset.act = "stuck-clear";
+      b.title = "把卡死计数清零，这张卡回到能领的状态（审计只追加）";
+      b.addEventListener("click", () => { r2Clear = t.id; sideSig = ""; renderSide(); requestAnimationFrame(() => document.querySelector(".r2-clear input")?.focus()); });
+      li.append(b);
+    }
+  }
+  if (m.key === "env") {
+    const rows = r2EnvRows(t);
+    if (rows.length) {
+      const tb = homeEl("table", undefined, "r2-env"), cap = homeEl("caption", "与目标环境的差 · 对方报的"), hr = homeEl("tr");
+      hr.append(homeEl("th", "项"), homeEl("th", "这里"), homeEl("th", "目标"));
+      const thead = homeEl("thead"); thead.append(hr); const body = homeEl("tbody");
+      for (const r of rows) { const tr = homeEl("tr"); tr.append(homeEl("th", r.key), homeEl("td", r.here), homeEl("td", r.target)); body.append(tr); }
+      tb.append(cap, thead, body); li.append(tb);
+    }
+  }
+}
+/** 侧栏里的操作者写请求:成了 / 没成都在关系一节顶上写一句(原因照服务端原文)。 */
+async function r2Act(t, btn, sub, body, okText, after = () => {}){
+  btn.disabled = true;
+  try { await relPost("/api/tasks/" + t.id + sub, body); relMsg = { id: t.id, text: okText }; after(); }
+  catch (e) { relMsg = { id: t.id, text: "没成：" + copyError(e) }; }
+  sideSig = ""; await refresh();
+}
+// ── 「包」一节:GET /api/tasks/:id/packages(全量,操作者可读)。摘要(t.packages)变了或收到 package.changed 才重读。
+const pkgCache = new Map();   // 卡号 → { mark, sig, list|null, err|null, loading }
+let pkgMsg = null;
+function pkgLoad(t){
+  const mark = JSON.stringify(t.packages || []), c = pkgCache.get(t.id);
+  if (c && (c.loading || c.mark === mark)) return;
+  pkgCache.set(t.id, { mark, sig: c?.sig ?? null, list: c?.list ?? null, err: null, loading: true });
+  fetch("/api/tasks/" + t.id + "/packages", { headers: WH, cache: "no-store" }).then(async (r) => {
+    const v = await r.json().catch(() => ({}));
+    if (!r.ok) throw Error(v.error || "读不到（HTTP " + r.status + "）");
+    return Array.isArray(v.packages) ? v.packages : [];
+  }).then((list) => pkgCache.set(t.id, { mark, sig: JSON.stringify(list), list, err: null, loading: false }),
+          (e) => pkgCache.set(t.id, { mark, sig: "err:" + copyError(e), list: null, err: copyError(e), loading: false }))
+    .finally(() => { if (sideCard()?.id === t.id) { sideSig = ""; renderSide(); } });
+}
+function sidePkg(t){
+  if (!t || !(Number(t.packages_count) > 0 || (t.packages || []).length)) return null;
+  pkgLoad(t);
+  const c = pkgCache.get(t.id), sec = homeEl("section", undefined, "side-sec side-pkg"); sec.id = "task-side-pkg";
+  const h = homeEl("h3", "包"), tip = homeEl("span", " ⓘ", "bg-i"); tip.tabIndex = 0;
+  tip.title = "执行者经桥报的「包」：草稿 → 预审（冻结哈希表）→ 已提交（可空着）→ 出包 → 本人已跑 → 钉住。哈希都是执行者那一侧算的（自报）；看板只读核提交。对不上时写明停在哪一格之前";
+  h.append(tip); sec.append(h);
+  if (pkgMsg?.id === t.id) sec.append(homeEl("p", pkgMsg.text, "cred-msg"));
+  if (!c?.list) { sec.append(homeEl("p", c?.err ? "读不到：" + c.err : "正在读取…", "side-state")); return sec; }
+  for (const p of c.list) sec.append(pkgBox(t, p));
+  return sec;
+}
+function pkgBox(t, p){
+  const box = homeEl("div", undefined, "pkg"); box.dataset.pkg = String(p.id); if (p.drift) box.dataset.drift = "";
+  const head = homeEl("div", undefined, "pkg-h");
+  head.append(homeEl("b", String(p.name || "包")), homeEl("span", "#" + p.id + (p.frozen?.digest ? " · 冻结 " + String(p.frozen.digest).slice(0, 8) : ""), "pkg-id"));
+  if (r2CanRan(p)) {
+    const b = homeEl("button", "我跑完了", "pri"); b.type = "button"; b.dataset.act = "pkg-ran";
+    b.title = "你亲手跑过这个包之后按：记下结果（成功 / 失败）与一句备注";
+    b.addEventListener("click", () => pkgRanOpen(t, p));
+    head.append(b);
+  }
+  box.append(head);
+  const ol = homeEl("ol", undefined, "pkg-steps"); ol.setAttribute("aria-label", "包的六格流水线");
+  for (const c of r2PkgCells(p)) { const li = homeEl("li", undefined, "pkg-step"); li.dataset.state = c.state; li.append(homeEl("i"), homeEl("span", c.label)); ol.append(li); }
+  box.append(ol);
+  const drift = r2PkgDrift(p);
+  if (drift) box.append(homeEl("p", drift, "pkg-drift"));
+  const dl = homeEl("dl", undefined, "pkg-kv"), kv = (k, v, cls) => { if (!v) return; dl.append(homeEl("dt", k), homeEl("dd", v, cls)); };
+  kv("实物在哪", p.issued?.label ? String(p.issued.label) : "");
+  kv("期待看到什么", p.expect ? String(p.expect) + (p.expect_by === "executor" ? "（对方写的）" : "") : "");
+  kv("跑", r2PkgRanText(p));
+  if (p.commit) kv("提交", r2Short(p.commit.sha, 12) + " · " + (p.commit.verified === true ? "看板核过" : p.commit.verified === false ? "与冻结表不同" : "未核"));
+  if (p.pin_card) kv("核对卡", "#" + p.pin_card);
+  if (dl.children.length) box.append(dl);
+  if (Array.isArray(p.files) && p.files.length) {
+    const d = homeEl("details", undefined, "pkg-files"); d.id = "task-side-pkg-files-" + p.id;
+    d.append(homeEl("summary", "文件 " + p.files.length + " 个 · 哈希"));
+    const tb = homeEl("table"), hr = homeEl("tr"); hr.append(homeEl("th", "相对路径"), homeEl("th", "字节"), homeEl("th", "sha256"));
+    const thead = homeEl("thead"); thead.append(hr); const body = homeEl("tbody");
+    for (const f of p.files) { const tr = homeEl("tr"); tr.append(homeEl("td", String(f.path)), homeEl("td", String(f.bytes ?? "")), homeEl("td", String(f.sha256 || "").slice(0, 16) + "…")); body.append(tr); }
+    tb.append(thead, body); d.append(tb); box.append(d);
+  }
+  return box;
+}
+/** 「我跑完了」确认框:结果(成功 / 失败)、一句备注、要钉的包可勾「同时放行核对卡」→ POST /api/packages/:id/ran。 */
+function pkgRanOpen(t, p){
+  let dlg = document.getElementById("pkg-ran-dialog");
+  if (!dlg) { dlg = document.createElement("dialog"); dlg.id = "pkg-ran-dialog"; dlg.className = "rel-dialog";
+    dlg.addEventListener("click", (ev) => { if (ev.target === dlg) dlg.close(); }); document.body.append(dlg); }
+  const head = homeEl("div", undefined, "cv-top"), close = homeEl("button", "取消"); close.type = "button"; close.addEventListener("click", () => dlg.close());
+  head.append(homeEl("h2", "我跑完了 · 包「" + String(p.name || "") + "」", "rel-title"), close);
+  const body = homeEl("div", undefined, "rel-body");
+  const res = homeEl("fieldset", undefined, "rel-field"); res.append(homeEl("legend", "结果"));
+  for (const [v, label] of [["ok", "成功"], ["failed", "失败"]]) { const l = homeEl("label", undefined, "rel-check"), r = homeEl("input"); r.type = "radio"; r.name = "pkg-ran-result"; r.value = v; if (v === "ok") r.checked = true; l.append(r, " " + label); res.append(l); }
+  const noteBox = homeEl("section", undefined, "rel-field"), note = homeEl("textarea"); note.rows = 2; note.maxLength = 200; note.placeholder = "可选：一句备注（例：在哪跑的、看到了什么）"; note.setAttribute("aria-label", "备注");
+  noteBox.append(homeEl("h3", "备注"), note);
+  body.append(homeEl("p", "实物在哪：" + String(p.issued?.label || "未写") + (p.expect ? " · 期待：" + String(p.expect) + "（对方写的）" : ""), "rel-now"), res, noteBox);
+  let pin = null;
+  if (p.pins && Array.isArray(p.pins.required) && p.pins.required.length) {
+    const l = homeEl("label", undefined, "rel-check"); pin = homeEl("input"); pin.type = "checkbox";
+    l.append(pin, " 同时放行核对卡（成功时看板会出一张核对卡核 " + p.pins.required.length + " 项；不勾 = 出卡后等你放行）");
+    const sec = homeEl("section", undefined, "rel-field"); sec.append(l); body.append(sec);
+  }
+  const err = homeEl("p", "", "rel-err"); err.hidden = true; err.setAttribute("role", "alert");
+  const acts = homeEl("div", undefined, "side-acts"), go = homeEl("button", "记下跑完了", "pri"); go.type = "button";
+  go.addEventListener("click", async () => {
+    const result = dlg.querySelector('input[name="pkg-ran-result"]:checked')?.value || "ok";
+    go.disabled = true; err.hidden = true;
+    try {
+      await relPost("/api/packages/" + p.id + "/ran", { result, ...(note.value.trim() ? { note: note.value.trim() } : {}), ...(pin && pin.checked && result === "ok" ? { release_pin: true } : {}) });
+      pkgMsg = { id: t.id, text: "已记下：包「" + String(p.name || "") + "」" + (result === "ok" ? "跑完了（成功）" : "跑了，结果失败") };
+      pkgCache.delete(t.id); dlg.close(); sideSig = ""; await refresh();
+    } catch (e) { err.textContent = copyError(e); err.hidden = false; go.disabled = false; }
+  });
+  acts.append(go); body.append(err, acts);
+  dlg.replaceChildren(head, body);
+  if (!dlg.open) dlg.showModal();
+  go.focus();
+}
+// ── 设置 → 协作:「连续几次算卡死」(stuck_after;0 = 关,2–10)走 /api/home/prefs。静态表单,不随 refresh 重画。
+async function stuckPrefLoad(){
+  const sel = document.getElementById("stuck-after"), box = document.getElementById("stuck-box");
+  if (!sel || !box) return;
+  try { const v = await chatApi("GET", "/api/home/prefs"); box.hidden = false; if (Number.isInteger(v?.stuck_after) && document.activeElement !== sel) sel.value = String(v.stuck_after); }
+  catch (e) { if (e?.status === 404) box.hidden = true; }
+}
+document.getElementById("stuck-save")?.addEventListener("click", async () => {
+  const sel = document.getElementById("stuck-after"), note = document.getElementById("stuck-note"), btn = document.getElementById("stuck-save");
+  btn.disabled = true;
+  try { const v = await chatApi("PUT", "/api/home/prefs", { stuck_after: Number(sel.value) }); note.textContent = v.stuck_after === 0 ? "已保存：不判卡死" : "已保存：连续 " + v.stuck_after + " 次算卡死"; }
+  catch (e) { note.textContent = "没存上：" + copyError(e); }
+  btn.disabled = false;
+});
 // 证据图:GET /api/tasks/:id/evidence/:sha256(只有操作员能取)。面板的 CSP 只放行 'self' 与 data: 图片,
 //   所以经带凭据的 fetch 读成 data: 地址再画;后端的 nosniff / 沙箱头不动。同一张图只读一次。
 const credImg = new Map();   // sha256 → { url|null, err|null, loading }
@@ -9242,23 +9721,28 @@ function bgRunRow(item){
  *  动词按钮与标题都带到这件事原来处理的地方(侧栏的裁定 / 放行核对区、设置里的待你批准),那里的接口与确认框照旧;本行不发任何写请求。 */
 function bgAttnRow(item){
   // 类与按钮字只有一份:homeLists 写在行上的(homeAttnType,接口 /api/home/background 也读这一份);接口只补一句证据与展开区。
-  const a = item.localId != null ? (bgData?.attention || []).find((x) => x.task_id === Number(item.localId)) : null;
-  const type = item.type || "decide", verb = item.verb || "查看";
-  // 一句证据(接口给的);没有时用首页那一行的原因(合同 I11:阻塞条目的 message 原样)。
-  const ev = (a && a.evidence) || item.why || (a ? null : item.state || null), rows = a ? bgDetailRows(a.detail) : [];
+  // 包条目(第 8 波第二轮)自带接口那一条;卡的行只找不带包的那一条(同一张卡可以两样都有)。
+  const a = item.pkg || (item.localId != null ? (bgData?.attention || []).find((x) => x.task_id === Number(item.localId) && x.package_id == null && !x.package) : null);
+  const t0 = item.localId != null ? byId.get(Number(item.localId)) || null : null;
+  const type = item.type || "decide", verb = item.pkg ? item.verb : r2AttnVerb(t0, item.verb || "查看");   // 按钮字:引用过期「重钉」、卡死「清零继续」(类型照旧)
+  // 一句证据(接口给的);没有时用首页那一行的原因(合同 I11:阻塞条目的 message 原样)。复审判不符的写明哪张复审卡判的。
+  const ev = item.pkg ? item.state : r2DeviationLine(t0) || (a && a.evidence) || item.why || (a ? null : item.state || null);
+  const rows = item.pkg ? r2PkgDetailRows(a.detail) : a ? bgDetailRows(a.detail) : [];
   const row = homeEl("div", undefined, "hrow bg-attn"); row.dataset.type = type;
   if (item.localId != null) row.dataset.taskId = String(item.localId);
   const main = homeEl("div", undefined, "hrow-main");
   const go = homeEl("button", verb || "查看", "pri bg-verb"); go.type = "button"; go.dataset.type = type;
   go.setAttribute("aria-label", (verb || "查看") + "「" + item.title + "」");
-  go.addEventListener("click", () => openHomeItem(item));
+  // 包条目:打开那张卡的侧栏后滚到「包」一节。
+  const toPkg = () => { if (item.pkg) requestAnimationFrame(() => document.getElementById("task-side-pkg")?.scrollIntoView({ block: "start" })); };
+  go.addEventListener("click", () => { openHomeItem(item); toPkg(); });
   const card = homeEl("button", undefined, "hcard"); card.type = "button";
   card.append(homeEl("span", item.title, "hc-title" + (item.fullTitle ? " hc-full" : "")));
   // 关系标记跟在一句证据后面,同一行(窄了截断,全文在悬停),不另占一行:右栏三个组头要在 1440×900 / 1280×800 下都看得到。
-  const rel = item.localId != null ? relMarksNode(byId.get(Number(item.localId))) : null;
+  const rel = item.localId != null && !item.pkg ? relMarksNode(byId.get(Number(item.localId))) : null;
   if (ev || rel) { const line = homeEl("span", undefined, "hc-ev" + (rel ? " hc-evrel" : "")); if (ev) line.append(homeEl("span", ev, "hc-evt")); if (rel) line.append(rel); card.append(line); }
   card.setAttribute("aria-label", [item.title, ev].filter(Boolean).join("，"));
-  card.addEventListener("click", () => openHomeItem(item));
+  card.addEventListener("click", () => { openHomeItem(item); toPkg(); });
   main.append(go, card);
   const key = item.key, open = bgAttnOpen.has(key);
   if (rows.length) {
@@ -9446,7 +9930,8 @@ function renderHomeViews(){
       return rows;
     });
     effHomeLine();
-    homeLane("mine", lists.mine, ["没有需要你处理的事", "交付和提问到了会出现在这里。"]);
+    const mineItems = [...lists.mine, ...r2PkgAttnRows(bgData?.attention)];   // 第 8 波第二轮:接口给的包条目(亲手跑 / 先别跑)接在后面
+    homeLane("mine", mineItems, ["没有需要你处理的事", "交付和提问到了会出现在这里。"]);
     // 第 7 波欠账⑥ → 8c:接口标了 attention_type_mismatch(首页与接口的条数对不上)→ 组头旁一个弱提示,说明在 ⓘ。
     document.getElementById("home-mine-mm").hidden = !(bgData && bgData.attention_type_mismatch === true);
     const runItems = bgRunItems(lists.running), runN = bgData ? bgRunCounts(bgData.running, runItems.length - bgData.running.length) : { running: runItems.length, queued: 0 };
@@ -9458,9 +9943,9 @@ function renderHomeViews(){
     bgDoneLane();
     // 手机顶部一行:三组的件数。有待处理的才用强调色。
     const sum = document.getElementById("home-work-toggle");
-    document.getElementById("home-work-sum").textContent = homeReady ? "要本人做的事 " + lists.mine.length + " · 运行中 " + runN.running + (runN.queued ? " · 排队 " + runN.queued : "") +
+    document.getElementById("home-work-sum").textContent = homeReady ? "要本人做的事 " + mineItems.length + " · 运行中 " + runN.running + (runN.queued ? " · 排队 " + runN.queued : "") +
       (bgData?.done?.length ? " · 已完成 " + bgData.done.length : "") : "正在读取…";
-    if (homeReady && lists.mine.length) sum.dataset.need = ""; else delete sum.dataset.need;
+    if (homeReady && mineItems.length) sum.dataset.need = ""; else delete sum.dataset.need;
     renderChat();
     // 页脚一行:首页之外还有什么,一键过去。只数本机看板已有的数据。
     const queued = tasks.filter((t) => t.kind !== "goal" && t.status === "not_started");
@@ -10038,7 +10523,7 @@ function chatFlowStrip(p){
   head.append(homeEl("span", sum.text, "flow-n"), flowBar(sum.done, sum.total));
   const list = homeEl("ul", undefined, "flow-rows");
   for (const item of p.items) {
-    const id = item?.id, phrase = flowPhrase(item, lineLabel), li = homeEl("li");
+    const id = item?.id, phrase = flowPhrase(item, lineLabel, byId.get(Number(id)) || null), li = homeEl("li");
     const row = homeEl("button", undefined, "flow-row"); row.type = "button";
     row.dataset.flowId = String(id); row.dataset.fk = "flow:" + id;
     if (phrase.need) row.dataset.need = "";

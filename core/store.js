@@ -2842,6 +2842,9 @@ function pinnedAncestor(db, parentId) {
  */
 function completeGoals(db) {
   const NLJ = String.fromCharCode(10);
+  // 第 8 波第二轮(8f):看板自动出、还没放行的卡(复审卡 / 核对卡 / 候选组装卡)不计入目标结案;放行后照常计。
+  //   判定由 server 经 registerGoalSkip 登记(store 不认识自动出卡的表);跳过的卡在完成与重开两边都不算。
+  const counted = (r) => !!r && !goalSkips(r);
   const changed = [];
   // ⭐ Archive-is-not-completion fix: `AND archived_at IS NULL` was REMOVED from the
   //   descendant enumeration. Archived children used to vanish from the completion
@@ -2870,7 +2873,7 @@ function completeGoals(db) {
     return out;
   };
   const rowOf = db.prepare(
-    "SELECT id, subject, status, resolved_by, updated_at, archived_at FROM tasks WHERE id=?");
+    "SELECT id, subject, status, resolved_by, updated_at, archived_at, released FROM tasks WHERE id=?");
   /** ⭐ Caliber-drift catch: card ids the completion definition NAMES that are not in
    *  the subtree. Measured: one goal's completion definition named a card whose
    *  parent was a different goal ⇒ the subtree check never saw it.
@@ -2893,12 +2896,12 @@ function completeGoals(db) {
   for (const g of db.prepare(
       "SELECT id FROM tasks WHERE kind='goal' AND status<>'done' AND archived_at IS NULL").all()) {
     if(progressHolds(db,g,"complete_goal").length)continue;
-    const ids = subtree(g.id);
+    const rows = subtree(g.id).map((i) => rowOf.get(i)).filter(counted);
+    const ids = rows.map((r) => Number(r.id));
     // Zero children = NO GROUNDS for completion (not "all complete"). `every` is
     // vacuously true on an empty array; without this line a childless goal silently
     // goes done. ⛔ Do not delete.
     if (!ids.length) continue;
-    const rows = ids.map((i) => rowOf.get(i));
     if (!rows.every((r) => r.status === "done")) continue;
     const nArch = rows.filter((r) => r.archived_at).length;
     const digest = rows.sort((a, b) => a.id - b.id).map((r) =>
@@ -2924,7 +2927,7 @@ function completeGoals(db) {
     // ⭐ This subtree also includes archived cards ⇒ "archive the unfinished child to
     //   keep the goal closed" stops working.
     if(progressHolds(db,g,"complete_goal").length)continue;
-    const open = subtree(g.id).map((i) => rowOf.get(i)).filter((r) => r.status !== "done");
+    const open = subtree(g.id).map((i) => rowOf.get(i)).filter(counted).filter((r) => r.status !== "done");
     if (!open.length) continue;
     // Goal reopen is also a "back into the flow" road ⇒ drop verdict (same invariant
     // as reopen).
@@ -2967,6 +2970,17 @@ function progressHolds(db,t,action) {
  * ⚠ 只读、不跑 git、不碰远端;在 claim 的 BEGIN IMMEDIATE 里调用也安全。
  */
 const CLAIM_CHECKS = new Map();
+/** 第 8 波第二轮(8f):目标结案时不计的子孙卡。fn(row{id,status,released}) → true = 不计。completeGoals 与 complete_goal 的阻塞两处用。 */
+const GOAL_SKIPS = new Map();
+function registerGoalSkip(name, fn) {
+  if (typeof name !== "string" || !name || typeof fn !== "function") throw err(ERR.BAD_INPUT, "registerGoalSkip(name, fn)");
+  GOAL_SKIPS.set(name, fn);
+  return () => GOAL_SKIPS.delete(name);
+}
+function goalSkips(row) {
+  for (const fn of GOAL_SKIPS.values()) { try { if (fn(row)) return true; } catch { /* 判不出 = 照常计(不放过结案) */ } }
+  return false;
+}
 /** 第二轮的登记口(引用过期、底提交丢失、卡死):fn(db, rawTask, ctx) → null | {code, detail?, why?, message?, next_action?}。 */
 function registerClaimCheck(name, fn) {
   if (typeof name !== "string" || !name || typeof fn !== "function") throw err(ERR.BAD_INPUT, "registerClaimCheck(name, fn)");
@@ -3101,7 +3115,7 @@ function stuckWhy(db,task) {
   }
   if(action==="review"&&t.review_fp&&t.review_fp===reviewFingerprint(t))push("DELIVERY_ALREADY_REVIEWED","此交付已审阅，当前没有新的交付内容","按既有审阅意见处理或补充新证据");
   if(action==="complete_goal"){
-    const descendants=db.prepare("WITH RECURSIVE children(id) AS (SELECT id FROM tasks WHERE parent_id=? UNION SELECT t.id FROM tasks t JOIN children c ON t.parent_id=c.id) SELECT t.id,t.status FROM tasks t JOIN children c ON t.id=c.id WHERE t.id<>? ORDER BY t.id").all(id,id);
+    const descendants=db.prepare("WITH RECURSIVE children(id) AS (SELECT id FROM tasks WHERE parent_id=? UNION SELECT t.id FROM tasks t JOIN children c ON t.parent_id=c.id) SELECT t.id,t.status,t.released FROM tasks t JOIN children c ON t.id=c.id WHERE t.id<>? ORDER BY t.id").all(id,id).filter(r=>!goalSkips(r));
     const open=descendants.filter(x=>x.status!=="done");
     if(!descendants.length)push("GOAL_WITHOUT_CHILDREN","目标没有子任务，不能据空集合宣布完成","补齐目标任务分解");
     else if(open.length)push("DESCENDANTS_UNFINISHED","目标下仍有未完成任务，包含已归档任务","核对并完成或明确调整任务归属",{related_task_ids:open.map(x=>Number(x.id))});
@@ -3807,7 +3821,7 @@ module.exports = {
   LIFETIME_DISPATCH_CAP, DEFAULT_MAX_ATTEMPTS, backfillAttemptsBase,
   WIP_PER_ROOT, rootOf, unreleasedAncestor, depsSatisfied, normalizeDeps, dependentsOf,
   // 合同 I1–I5(第 8 波 8a):领卡唯一判定与卡之间的关系。
-  claimBlockers, registerClaimCheck, publicBlockers, depTargets, supersede, supersededBy, supersedesOf, resolveSuperseded,
+  claimBlockers, registerClaimCheck, registerGoalSkip, publicBlockers, depTargets, supersede, supersededBy, supersedesOf, resolveSuperseded,
   markBasisChanged, basisChanged, ackBasis, setBatch, setNeeds, normBatchKey, normNeeds, relationFields, resourceHolders,
   REL_NAME_RE, BATCH_MAX, NEEDS_MAX, SUPERSEDE_CHAIN_MAX,
   // Verdict-caliber migration (one shot when the column is added; tests fire it

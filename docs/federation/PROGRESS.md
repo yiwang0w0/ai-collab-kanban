@@ -1446,3 +1446,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 新增 tests/receiptstest.mjs(含变异对照,登记 npm test 与 ci.yml),execmcptest 工具表同步;多执行者协作、接入说明同步。没有调用模型。阻塞:无。
 - 2026-11-14 公告板 v3 第 9 波账本与额度条(claude/board-v3-w9-ledger,合同 J2):账本加 source / pool 两列(旧行读时推,认不出 = ?,by=source|pool),写入方各补列,删死代码 codex_runtime.append_usage;池读数 POST /api/pools/reading(操作者 / 执行者可写,只追加表 pool_readings,自报)与 GET /api/pools/readings。
 - /api/home/quota 每池 state(down 只认限流;low / ok 只来自新鲜读数)/ readings / ledger(只覆盖板内调用)/ runway,旧字段不变;prefs quota_low_at;助手简报每池一行。新增 quotaledgertest(登记 npm test 与 ci.yml),说明页 docs/用量与额度.md。没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 8 波第二轮面板(claude/board-v3-w8-panel2,合同 I10f):引用 / 复审卡 / spec_review / 底提交 / 卡死 / 包六格流水线与「我跑完了」/ 环境差在卡面、首页行、侧栏显示;重钉、清零继续、对话框引用 / 底提交 / 目标环境、设置「连续几次算卡死」只走操作者接口。
+- 后端小项:未放行的自动出卡不计入目标结案(store.registerGoalSkip);复审判「不符」经 cred.registerGate 进自动通过闸;流转条目带 has_options;审阅座席写的包核对项卡历史人话;组头「执行 n/m」不数自动出的卡。
+- 新增 tests/panelround2test.mjs(含三组变异对照),hometest 同步;临时板真鼠标走查截图。没有调用模型。阻塞:无。

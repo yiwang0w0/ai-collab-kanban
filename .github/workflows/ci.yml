@@ -311,6 +311,9 @@ jobs:
       - name: "panelreltest (I11 attention rule for home and brief, relation/occupancy copy, gated-confirm copy, write entries only via operator endpoints)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/panelreltest.mjs
+      - name: "panelround2test (I10f panel copy: refs / spec review / base / stuck / packages / env gap; unreleased auto cards skip goal close; spec deviation gate; flow has_options)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/panelround2test.mjs
       - name: "refsbasestucktest (refs pinned to a spec version, stale by hash, spec review cards, base commit precondition read-only scan, stuck detection and clear)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/refsbasestucktest.mjs

@@ -552,7 +552,10 @@ const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVI
                           liveNote: (t) => connect.liveNote(t),
                           // 卡历史:执行者用登记时的显示名;外部执行者每一轮第一次心跳补一条「自报开始」。
                           executorName: (id) => coord.isExecutor(db, id) ? (db.prepare("SELECT name FROM coord_executors WHERE id=?").get(String(id))?.name || null) : null,
-                          selfStarts: (taskId) => connect.heartbeatStartsOf(taskId) });
+                          selfStarts: (taskId) => connect.heartbeatStartsOf(taskId),
+                          // 8f:流转条的「有没有方案包」与任务对象 decision_package 同一判法;目标组头不数看板自动出的卡(auto / refs 在下面才建,取时再读)。
+                          hasOptions: (t) => !!decision.normalizeDecisionPackage(t.decision_json, t.verdict_note)?.options?.length,   // 原始行:方案包在 decision_json 列
+                          isAuto: (id) => auto.isAuto(id) || refs.isReviewCard(id) });
 // md 交接(core/md-handoff.mjs):卡面导出成 md / md 队列文件批量挂卡(一律未放行)。线表在读时取(加线免重启)。
 // 合同 H6「说明的版本确认」(core/spec-version.mjs)与 H5「证据文件」(core/evidence.mjs)。
 //   证据图在数据目录的 evidence_files/(受管线禁读表登记了这个目录名);digest(当时的指纹)由可信核心给,没接上时为 null。
@@ -597,6 +600,8 @@ const pkgs = openPackages({ db, store, isExecutor: (w) => coord.isExecutor(db, w
   clean: (s) => cleanText(s), emit: (type, data) => emit(type, data), log: (s) => console.log(s) });
 pkgs.migrate();
 cred.registerGate("包", (t) => pkgs.gateMissing(t.id));
+// 第 8 波第二轮(8f):复审卡判「与规格不符」且结论没过期 → 不自动通过,缺口写明是哪张复审卡判的(本人显式裁定不受限)。
+cred.registerGate("复审", (t) => refs.deviationMissing(t));
 const envGap = openEnvGap({ db, store });
 envGap.migrate();
 const auto = openAutocards({ db, store, cred, integ, occ, pkgs,
@@ -607,6 +612,8 @@ const auto = openAutocards({ db, store, cred, integ, occ, pkgs,
   clean: (s, max = 80) => cut(redactText(String(s ?? "")), max), emit: (type, data) => emit(type, data), log: (s) => console.log(s),
   rules: [{ name: "ref_stale", on: ["task.*"], run: () => refs.sweepStale() }, { name: "spec_review", on: ["task.*"], run: () => refs.sweepReviews() },
           { name: "stuck", on: ["task.*"], run: () => stuck.sweep() }] });
+// 第 8 波第二轮(8f):看板自动出、还没放行的卡(候选组装 / 核对卡 / 复审卡)不拖住目标结案;放行后照常计(store.completeGoals 与 complete_goal 阻塞)。
+store.registerGoalSkip("unreleased_auto", (r) => !Number(r.released) && r.status === "not_started" && (auto.isAuto(r.id) || refs.isReviewCard(r.id)));
 auto.migrate();
 // 合同 I5 × I8:「等条件放行」进同一份领卡判定(登记口),progress_blockers 里只出这一条(原先由 wave8Fields 另行追加)。
 store.registerClaimCheck("release_on", (_db, t) => {

@@ -226,6 +226,14 @@ export function openRefs({ db, store, spec, cred, clean = (s) => String(s ?? "")
               detail: { by_card: Number(r.by_card), spec: { card: Number(r.s), version: Number(r.s_version) } },
               message: `复审卡 #${r.by_card} 判定这次交付与 #${r.s} 说明 v${r.s_version} 不符`, next_action: "看复审结论后通过或打回" }];
   }
+  /** 第 8 波第二轮(8f):有效(没过期)的「与规格不符」结论 → 自动通过闸的缺口,一条一张复审卡;经可信核心的 registerGate 登记。
+   *  本人显式裁定不受限(闸只管自动通过),确认处照列。 */
+  function deviationMissing(t) {
+    if (!t) return [];
+    const perS = new Map(); for (const r of resultsOf(t.id)) perS.set(Number(r.s), r);
+    return [...perS.values()].filter((r) => r.verdict === "deviates" && freshOf(r, t.id))
+      .map((r) => `复审卡 #${r.by_card} 判这次交付与 #${r.s} 说明 v${r.s_version} 不符(spec_deviation)`);
+  }
   /** 复审卡任务对象的 review_of。 */
   function reviewOf(t) {
     const r = t ? reviewRowOf(t.id) : null;
@@ -325,5 +333,5 @@ export function openRefs({ db, store, spec, cred, clean = (s) => String(s ?? "")
   }
 
   return { migrate, normRefs: (v) => normRefs(v, { err, ERR }), set, repin, pinsOf, refsOf, staleOf, claimCheck, heartbeatExtra, onDelivery,
-           basedOnStaleRef, gateMissing, readableBy, refView, isReviewCard, reviewOf, reviewFields, reviewBlockers, fields, sweepStale, sweepReviews };
+           basedOnStaleRef, gateMissing, deviationMissing, readableBy, refView, isReviewCard, reviewOf, reviewFields, reviewBlockers, fields, sweepStale, sweepReviews };
 }
