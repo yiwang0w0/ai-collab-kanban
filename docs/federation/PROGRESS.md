@@ -1444,3 +1444,5 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 2026-11-14 公告板 v3 第 9 波回执与桥(claude/board-v3-w9-receipts,合同 J3;新模块 core/receipts.mjs):card_reads 拉取回执(5 秒节流,引用只读视图单列)、心跳 ack 与 notice_sent / 只追加 notice_acks,任务对象 receipts 只给操作者。
 - 核实:打回时写的话经桥到不了执行者 → get_card 补 operator_note(过 redact)。桥:report_result.usage、ask_operator.where_hint(自报,助手不见 host_label)、新工具 report_pool;旧看板不认的项明示不支持。
 - 新增 tests/receiptstest.mjs(含变异对照,登记 npm test 与 ci.yml),execmcptest 工具表同步;多执行者协作、接入说明同步。没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 9 波账本与额度条(claude/board-v3-w9-ledger,合同 J2):账本加 source / pool 两列(旧行读时推,认不出 = ?,by=source|pool),写入方各补列,删死代码 codex_runtime.append_usage;池读数 POST /api/pools/reading(操作者 / 执行者可写,只追加表 pool_readings,自报)与 GET /api/pools/readings。
+- /api/home/quota 每池 state(down 只认限流;low / ok 只来自新鲜读数)/ readings / ledger(只覆盖板内调用)/ runway,旧字段不变;prefs quota_low_at;助手简报每池一行。新增 quotaledgertest(登记 npm test 与 ci.yml),说明页 docs/用量与额度.md。没有调用模型。阻塞:无。

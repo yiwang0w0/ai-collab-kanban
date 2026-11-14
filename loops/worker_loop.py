@@ -1811,6 +1811,8 @@ def acct_attempt(t, worker, attempt, model, effort, *, round_number=1, phase="in
            "model": model, "effort": effort,
            "sid": (LAST_ACCT["sid"] or "")[:8], "session_id": LAST_ACCT["sid"], "cli_version": None, **u,
            "round": round_number, "phase": phase, "reason": reason,
+           # 合同 J2.1:谁发起(受管线)与哪一池(起线时看板给的 WORKER_RUNTIME = 配置里的 runtime id;读时不认的 id 再按 model 归池)。
+           "source": "managed", "pool": RUNTIME,
            "duration_ms": None,
            "prompt_chars": LAST_ACCT.get("prompt_chars"), "prompt_bytes": LAST_ACCT.get("prompt_bytes"),
            "evidence_chars": (t.get("_evidence_measurement") or {}).get("chars"),

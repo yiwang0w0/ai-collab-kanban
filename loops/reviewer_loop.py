@@ -639,6 +639,8 @@ def acct_review(t, usage, *, sid=None, duration_ms=None, cost_usd=None, note=Non
            "model": MODEL, "effort": EFFORT,
            "sid": str(sid or "")[:8], "session_id": sid or None, **u,
            "phase": "review", "reviewed_line": t.get("line"),
+           # 合同 J2.1:谁发起(审阅座席)与哪一池(审阅座席的 WORKER_RUNTIME;读时不认的 id 再按 model 归池)。
+           "source": "reviewer", "pool": RUNTIME,
            "duration_ms": duration_ms if isinstance(duration_ms, int) and duration_ms >= 0 else None,
            "cost_usd": cost_usd, "cost_source": "reported" if cost_usd is not None else "unknown",
            "cli_version": None, "note": note}

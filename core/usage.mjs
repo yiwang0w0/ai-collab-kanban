@@ -12,7 +12,11 @@ import { dirname } from "node:path";
 
 export const PHASES = ["implement", "fix", "review", "decompose", "compact", "coord"];
 export const COST_SOURCES = ["reported", "estimated", "external-reported", "unknown"];
-export const GROUP_KEYS = ["card", "line", "model", "phase"];
+export const GROUP_KEYS = ["card", "line", "model", "phase", "source", "pool"];
+// 合同 J2.1:谁发起的这次调用。值域定死;写进来的值认不出 = "?"(不丢行)。seat = 外部协调席(目前没有写入方,留位)。
+export const SOURCES = ["managed", "reviewer", "coordinator", "decompose", "compact", "external", "seat"];
+/** 没配置 runtime 的 model 归这一池(只有账本,没有限流记录)。 */
+export const OTHER_POOL = "other";
 const TOKENS = ["calls", "in", "cc", "cr", "out"];
 const METRICS = [...TOKENS, "duration_ms", "cost_usd"];
 const CSV_COLUMNS = ["rows", "attempts", ...METRICS, "cost_source"];
@@ -53,9 +57,46 @@ export function lineOf(worker) {
   return base === "reviewer" ? "review" : base || "?";
 }
 
+/** 池的对照:pools = {ids:[runtime id], models:{model → runtime id}}(由配置的 runtimes[].models 得出)。
+ *  没给对照(纯函数调用、旧调用方)时只认写进行里的池名。 */
+export function poolMap(runtimes = []) {
+  const ids = [], models = {};
+  for (const r of Array.isArray(runtimes) ? runtimes : []) {
+    const id = str(r?.id);
+    if (!id) continue;
+    ids.push(id);
+    for (const m of Array.isArray(r.models) ? r.models : []) { const mid = str(m?.id); if (mid && !Object.hasOwn(models, mid)) models[mid] = id; }
+  }
+  return { ids, models };
+}
+/** model → 池:查座席的 models 表;归不了 = other。 */
+export function poolOfModel(model, pools) {
+  const m = str(model);
+  return m && pools && Object.hasOwn(pools.models || {}, m) ? pools.models[m] : OTHER_POOL;
+}
+/** 来源:写了且在值域里 = 原值;写了但认不出 = "?";没写(旧行)= 按 reported_by / phase / worker 推。 */
+export function sourceOf(j, phase) {
+  if (j.source !== undefined && j.source !== null) return SOURCES.includes(j.source) ? j.source : "?";
+  if (str(j.reported_by) === "external") return "external";
+  const worker = str(j.worker);
+  if (phase === "review" || worker === "reviewer") return "reviewer";
+  if (phase === "decompose") return "decompose";
+  if (phase === "compact") return "compact";
+  if (phase === "coord") return "coordinator";
+  if ((phase === "implement" || phase === "fix") && worker) return "managed";
+  return "?";
+}
+/** 池:写了且是配置里的 runtime id(或 other)= 原值;否则按 model 归池。没给对照 = 写了什么就是什么,没写 = other。 */
+function poolOfRow(j, model, pools) {
+  const given = str(j.pool);
+  if (!pools) return given || OTHER_POOL;
+  if (given && (given === OTHER_POOL || pools.ids.includes(given))) return given;
+  return poolOfModel(model, pools);
+}
+
 /** 一行账本 JSON → 统一形状的用量行。带 event 键的不是用量行,返回 null。
- *  旧行没有新字段:阶段由已有信息推出,其余新字段读成 null。 */
-export function normalizeRow(j) {
+ *  旧行没有新字段:阶段由已有信息推出,其余新字段读成 null;source / pool 按 J2.1 推。 */
+export function normalizeRow(j, pools = null) {
   if (!j || typeof j !== "object" || Array.isArray(j) || j.event != null) return null;
   const worker = str(j.worker), given = str(j.phase), cost = num(j.cost_usd);
   const cardNumber = j.card == null ? null : Number(j.card);
@@ -65,11 +106,13 @@ export function normalizeRow(j) {
     : given === null ? (worker === "reviewer" ? "review" : "implement")
     : "?";
   const ts = str(j.ts), at = ts === null ? NaN : Date.parse(ts);
+  const model = str(j.model) || "?";
   return {
     ts, at: Number.isFinite(at) ? at : null,
     card: Number.isSafeInteger(cardNumber) ? cardNumber : null,
     attempt: int(j.attempt), run_id: str(j.run_id), round: int(j.round),
-    worker, line: str(j.line) || lineOf(worker), model: str(j.model) || "?", effort: str(j.effort), phase,
+    worker, line: str(j.line) || lineOf(worker), model, effort: str(j.effort), phase,
+    source: sourceOf(j, phase), pool: poolOfRow(j, model, pools), reported_by: str(j.reported_by),
     calls: num(j.calls), in: num(j.in), cc: num(j.cc), cr: num(j.cr), out: num(j.out),
     duration_ms: nonneg(j.duration_ms),
     cost_usd: cost,
@@ -156,7 +199,7 @@ export function settlementCsv(s) {
   return lines.join(NL) + NL;
 }
 
-function cleanRow(row) {
+function cleanRow(row, pools = null) {
   const cost = nonneg(row.cost_usd), session = str(row.session_id);
   const out = {
     ts: str(row.ts) || localIso(),
@@ -172,6 +215,10 @@ function cleanRow(row) {
   if (str(row.run_id)) out.run_id = str(row.run_id);
   if (row.ok === true || row.ok === false) out.ok = row.ok;
   if (str(row.reported_by)) out.reported_by = str(row.reported_by);
+  // 合同 J2.1:source 只写值域里的值(写入方各自给);pool 没给时按 model 归池(给了对照才归)。
+  if (SOURCES.includes(row.source)) out.source = row.source;
+  const pool = str(row.pool) ? str(row.pool).slice(0, 40) : pools ? poolOfModel(out.model, pools) : null;
+  if (pool) out.pool = pool;
   if (str(row.note)) out.note = str(row.note).slice(0, 400);
   return out;
 }
@@ -211,7 +258,7 @@ export function externalRows(payload) {
 let defaultLedger = null;
 
 /** 打开一本账。makeDefault=true 时,模块级的 append(row) 写进这一本。 */
-export function openLedger(file, { makeDefault = false } = {}) {
+export function openLedger(file, { makeDefault = false, pools = null } = {}) {
   let offset, rows, legacy, legacyKeys, settled, settledKeys, mark, stats;
   let dirty = false;
   const reset = () => {
@@ -250,7 +297,7 @@ export function openLedger(file, { makeDefault = false } = {}) {
     if (!j || typeof j !== "object" || Array.isArray(j)) { stats.broken++; return; }
     if (j.event === "settlement") return registerSettlement(j);
     if (j.event != null) { stats.events++; return; }
-    const r = normalizeRow(j);
+    const r = normalizeRow(j, pools);
     rows.push(r);
     if (r.card !== null) foldLegacy(j, r);
   }
@@ -291,7 +338,7 @@ export function openLedger(file, { makeDefault = false } = {}) {
   /** 追加一行用量。记账不该打断主流程:写不进去返回 {ok:false},不抛。 */
   function append(row) {
     try {
-      const clean = cleanRow(row && typeof row === "object" ? row : {});
+      const clean = cleanRow(row && typeof row === "object" ? row : {}, pools);
       writeLine(clean);
       return { ok: true, row: clean };
     } catch (e) {
@@ -306,7 +353,7 @@ export function openLedger(file, { makeDefault = false } = {}) {
     const written = [];
     for (const p of list) {
       const r = append({ ...p, card: Number(task?.id), attempt: int(task?.attempts), worker, line: task?.line,
-        run_id: runId, ok: outcome === "done", reported_by: "external",
+        run_id: runId, ok: outcome === "done", reported_by: "external", source: "external",
         cost_source: p.cost_usd === null ? "unknown" : "external-reported" });
       if (r.ok) written.push(r.row);
     }
@@ -315,7 +362,7 @@ export function openLedger(file, { makeDefault = false } = {}) {
 
   function cards() { refresh(); return Object.fromEntries(legacy); }
 
-  /** 按 card | line | model | phase 分组;from / to 是毫秒(含两端)。带时间范围时,
+  /** 按 card | line | model | phase | source | pool 分组;from / to 是毫秒(含两端)。带时间范围时,
    *  时刻读不出来的行不计入。
    *  by=card 时每组另有 attempts_failed(范围内有行的失败尝试数,判据同 settlementOf;卡号未知为 null)
    *  与 settled(这张卡有没有结算事件,不看范围),total 另有 attempts_failed,顶层另有 settled(已结算卡在范围内的合计)。 */
@@ -432,7 +479,35 @@ export function openLedger(file, { makeDefault = false } = {}) {
    *  让下一次把全部已完成的卡重新对一遍。 */
   const watermark = () => (dirty ? "" : mark);
 
-  const ledger = { file, refresh, append, appendExternal, cards, group, card, settle, watermark,
+  /** 合同 J2.3:各池「看板记到的」近 5 小时 / 7 天合计(只覆盖板内记了账的调用)。
+   *  tokens = 窗内各行已知词元(in + cc + cr + out)之和,窗内一行都没有已知词元 = null;usd 同理(没有任何已知费用 = null);
+   *  calls = 窗内的账本行数(一行 = 一轮模型调用);rate_per_h = 5 小时窗的 tokens ÷ 5(tokens 为 null 时 null)。
+   *  返回 Map(pool → {windows:[{label, tokens, usd, calls}], rate_per_h})。只列窗内有行的池。 */
+  function poolWindows(now = Date.now()) {
+    refresh();
+    const WINDOWS = [["5h", 5 * 3600e3], ["7d", 7 * 86400e3]], out = new Map();
+    for (const r of rows) {
+      if (r.at === null || r.at > now) continue;
+      for (const [label, span] of WINDOWS) {
+        if (now - r.at > span) continue;
+        if (!out.has(r.pool)) out.set(r.pool, Object.fromEntries(WINDOWS.map(([l]) => [l, { label: l, tokens: null, usd: null, calls: 0 }])));
+        const w = out.get(r.pool)[label];
+        w.calls++;
+        const known = ["in", "cc", "cr", "out"].filter((k) => r[k] !== null);
+        if (known.length) w.tokens = (w.tokens || 0) + known.reduce((n, k) => n + r[k], 0);
+        if (r.cost_usd !== null) w.usd = Math.round(((w.usd || 0) + r.cost_usd) * 1e6) / 1e6;
+      }
+    }
+    const result = new Map();
+    for (const [pool, ws] of out) {
+      const windows = WINDOWS.map(([l]) => ws[l]);
+      result.set(pool, { windows, rate_per_h: windows[0].tokens === null ? null : Math.round(windows[0].tokens / 5) });
+    }
+    return result;
+  }
+
+  const ledger = { file, refresh, append, appendExternal, cards, group, card, settle, watermark, poolWindows,
+    poolOf: (model) => (pools ? poolOfModel(model, pools) : OTHER_POOL),
     stats: () => ({ ...stats, rows: rows.length, offset }) };
   if (makeDefault) defaultLedger = ledger;
   return ledger;

@@ -2,16 +2,14 @@
 # -*- coding: utf-8 -*-
 """Codex CLI 共用契约(第二个运行时座席的参考实现)。
 
-worker(以及将来的 reviewer/reorg)都从这里组装 argv、判断 JSONL 终态并记 usage。
+worker(以及将来的 reviewer/reorg)都从这里组装 argv、判断 JSONL 终态、取 usage;记账由调用方写(worker_loop 的 acct_attempt)。
 提示词始终走 stdin;本模块绝不接收或读取仓库里的凭据文件。
 """
-import datetime
 import io
 import json
 import os
 import re
 import subprocess
-import threading
 import uuid
 
 
@@ -22,7 +20,6 @@ CODEX_BYPASS = (
     "--ignore-rules",
     "--yolo",
 )
-_USAGE_LOCK = threading.Lock()
 
 
 def gate(path):
@@ -205,30 +202,3 @@ def judge(rc, stdout, last_path):
                "out": u.get("output_tokens"), "note": None}
               if usage is not None else None)
     return {"ok": ok, "tail": tail, "thread": thread, "usage": mapped, "last": last}
-
-
-def append_usage(data_dir, who, model, effort, verdict, *, card=None, attempt=None, note=None, log=print):
-    """把 Codex JSONL usage 写入共享 usage_ledger;拿不到用量也显式写一行说明。"""
-    usage = dict(verdict.get("usage") or
-                 {"calls": None, "in": None, "cc": None, "cr": None, "out": None,
-                  "note": note or "未见 turn.completed usage"})
-    if note:
-        usage["note"] = note
-    row = {
-        "ts": datetime.datetime.now().isoformat(timespec="seconds"),
-        "card": card,
-        "attempt": attempt,
-        "worker": who,
-        "model": model,
-        "effort": effort,
-        "sid": str(verdict.get("thread") or "")[:8],
-        **usage,
-    }
-    try:
-        os.makedirs(data_dir, exist_ok=True)
-        with _USAGE_LOCK:
-            io.open(os.path.join(data_dir, "usage_ledger.jsonl"), "a", encoding="utf-8").write(
-                json.dumps(row, ensure_ascii=False) + "\n")
-    except Exception as e:
-        log(f"  Codex 用量记账失败({e})—— 不阻塞本轮")
-    return row

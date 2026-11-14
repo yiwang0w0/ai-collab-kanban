@@ -4,6 +4,7 @@
 // 只读状态字段,不解析回报正文;判不出的一律给 null / none,不编。
 // 「要本人做的事」不另写判定:server 把助手简报那一份(core/brief.mjs 的 briefModel,底下是首页 homeLists + 线故障)传进来原样放进 attention。
 import { redactText, cut } from "./flow.mjs";
+import { effectiveReadings, stateOf, runwayOf, readingOut, ledgerOut, QUOTA_LOW_DEFAULT } from "./pool-readings.mjs";
 
 export const DONE_WINDOW_MS = 24 * 3600000;   // 「已完成」= 近 24 小时内完成的
 export const DONE_MAX = 20, RUNNING_MAX = 100;
@@ -193,17 +194,32 @@ export function stageOf(goal, kids = [], integ = null) {
   return { stage: "accept", stage_detail: detail };
 }
 
-// ── G3:额度条(只读;只复用 GET /api/pools 那份池状态,不新增采集)───────────────────────────────────────
+// ── G3 / J2.3:额度条(只读)───────────────────────────────────────────────────────────────────────────
 /**
- * pools = [{ id, label, exhausted_at, until }](server 的 poolState:看板只在调用被限流时记「用完」)。
- * 看板读不到用量百分比与重置时刻:used_pct 一律 null;没记用完 = unknown(「待核实」),不当作 ok。runway 推不出 = unknown。
+ * pools = [{ id, label, exhausted_at, until, readings?, ledger? }]:
+ *   exhausted_at / until = server 的 poolState(看板只在调用被限流时记「用完」;until 是看板自定的复查时刻,不是供应商的重置时刻);
+ *   readings = 这一池近 7 天的池读数行(合同 J2.2,自报;core/pool-readings.mjs);ledger = 账本按池按窗的合计(usage.mjs poolWindows 的一项)。
+ * down 只来自限流记录;low / ok 只来自新鲜读数(任一窗 used_pct ≥ lowAt = low);没有新鲜读数 = unknown(「待核实」),不当作 ok。
+ * 旧字段保持兼容(G3 面板在读):windows[] = down 时一格「看板暂停到」,ok / low 时 = 各窗新鲜读数,unknown 时一格空的「用量」;
+ * runway 的 basis / minutes。新字段(J2.3)readings / ledger 只在调用方给了 readings 或 ledger 时出现(纯函数旧调用方的输出不变)。
+ * labelOf(row) = 读数的 by_label(操作者「你」/ 执行者的登记名;由 server 给,已脱敏)。
  */
-export function quotaModel({ pools = [], now = 0 } = {}) {
+export function quotaModel({ pools = [], now = 0, lowAt = QUOTA_LOW_DEFAULT, labelOf = () => null } = {}) {
   return { pools: pools.map((p) => {
     const down = !!p.exhausted_at, until = Date.parse(p.until || "");
-    return { id: String(p.id), label: clean(p.label || p.id, 24),
-             windows: [{ label: down ? "看板暂停到" : "用量", used_pct: null, resets_at: down && Number.isFinite(until) ? new Date(until).toISOString() : null }],
-             state: down ? "down" : "unknown", runway: { minutes: null, basis: "unknown" } };
+    const base = { id: String(p.id), label: clean(p.label || p.id, 24) };
+    const extended = Object.hasOwn(p, "readings") || Object.hasOwn(p, "ledger");
+    if (!extended)
+      return { ...base, windows: [{ label: down ? "看板暂停到" : "用量", used_pct: null, resets_at: down && Number.isFinite(until) ? new Date(until).toISOString() : null }],
+               state: down ? "down" : "unknown", runway: { minutes: null, basis: "unknown" } };
+    const rows = Array.isArray(p.readings) ? p.readings : [];
+    const eff = effectiveReadings(rows, now), state = stateOf({ down, effective: eff, lowAt });
+    const fresh = eff.filter((e) => !e.stale);
+    const windows = state === "down" ? [{ label: "看板暂停到", used_pct: null, resets_at: Number.isFinite(until) ? new Date(until).toISOString() : null }]
+      : state === "unknown" ? [{ label: "用量", used_pct: null, resets_at: null }]
+      : fresh.map((e) => ({ label: e.window, used_pct: e.row.used_pct, resets_at: e.row.resets_at ?? null }));
+    const runway = state === "down" ? { basis: "unknown", minutes: null } : runwayOf(rows, now);
+    return { ...base, windows, state, runway, readings: eff.map((e) => readingOut(e, labelOf)), ledger: ledgerOut(p.ledger) };
   }), generated_at: Number.isFinite(now) ? new Date(now).toISOString() : null };
 }
 

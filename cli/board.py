@@ -47,7 +47,7 @@
   $P approval-token revoke <id> | approval-token ls
 
 用量结算(docs/用量结算.md):
-  $P usage ls [--by card|line|model|phase] [--from 2026-11-01] [--to 2026-11-10]   # 分组汇总;未知显示为「未知」,不当 0
+  $P usage ls [--by card|line|model|phase|source|pool] [--from 2026-11-01] [--to 2026-11-10]   # 分组汇总;未知显示为「未知」,不当 0
   $P usage card <id>                         # 一张卡的结算:阶段 × 模型、失败尝试单列、已写下的结算事件
   $P usage csv [--by …] [--from …] [--to …] [--card <id>] [--out 文件]             # 导出 CSV;不给 --out 打到标准输出
 效率(docs/效率口径.md):
@@ -481,7 +481,7 @@ def usage_cmd():
         else:
             sys.stdout.write(text)
     else:
-        sys.exit("usage ls [--by card|line|model|phase] [--from …] [--to …] | usage card <id> | usage csv [--card <id>] [--out 文件]")
+        sys.exit("usage ls [--by card|line|model|phase|source|pool] [--from …] [--to …] | usage card <id> | usage csv [--card <id>] [--out 文件]")
 
 def efficiency_cmd():
     """GET /api/efficiency:一段主句 + 本期 / 上期对照表 + 分解表。未知显示「未知」,不当 0。"""

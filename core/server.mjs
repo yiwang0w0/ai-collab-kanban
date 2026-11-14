@@ -34,7 +34,7 @@ import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
 import {openConnect,isLoopback,defaultTokenDir,cardText,cleanText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
-import {briefModel,briefFrom,maxCharsOf} from "./brief.mjs";
+import {briefModel,briefFrom,maxCharsOf,briefPools} from "./brief.mjs";
 import {openAssistantFeed,parseCursor,modeOf} from "./assistant-feed.mjs";
 import {backgroundModel,stopVerdict,runAutostart,autostartText,quotaModel,typeAttention} from "./home-background.mjs";
 import {loadAttentionModel} from "./home-model.mjs";
@@ -44,7 +44,7 @@ import {boardCliEnvironment,decomposeCliArgs,compactCliArgs,decomposePlanOf,cliR
 import {coordinatorSystemPrompt,buildTurnContent,buildRepairContent,coordinatorCliArgs,coordinatorCliEnvironment,argsFingerprint,
   coordinatorTurnOf,mergeTools,coordinatorCommand,runCoordinatorCli} from "./coordinator-cli.mjs";
 import {directoryIdentity} from "./artifacts/git-workspace.mjs";
-import {openLedger,usageHttp,externalRows,fromClaudeResult} from "./usage.mjs";
+import {openLedger,usageHttp,externalRows,fromClaudeResult,poolMap} from "./usage.mjs";
 import {createDesktopSessions,SOURCES as DESK_SOURCES,LIMIT_DEFAULT as DESK_LIMIT_DEFAULT,LIMIT_MAX as DESK_LIMIT_MAX,
         MSG_LIMIT_DEFAULT as DESK_MSG_LIMIT_DEFAULT,MSG_LIMIT_MAX as DESK_MSG_LIMIT_MAX,loadDeskLineage,saveDeskLineage,cleanLineLabel,cleanLabelChars,loadDeskForks,addDeskForks} from "./desktop-sessions.mjs";
 import {createFlow,redactText,cut} from "./flow.mjs";
@@ -62,6 +62,7 @@ import {openStuck,checkReason,checkStuckAfter,STUCK_DEFAULT} from "./stuck.mjs";
 import {openPackages} from "./packages.mjs";
 import {openEnvGap} from "./env-gap.mjs";
 import {openReceipts,checkAck,noticesIn} from "./receipts.mjs";
+import {openPoolReadings,checkReading,checkQuotaLowAt,QUOTA_LOW_DEFAULT,READING_FRESH_MS} from "./pool-readings.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -537,6 +538,9 @@ cred.migrate();
 // 助手的提醒游标(合同 G6,core/assistant-feed.mjs):提醒流在库里,按令牌哈希记的「已确认到哪」在数据目录的文件里(受管线禁读表登记了这个文件名)。
 const assistantFeed = openAssistantFeed({ db, file: join(store.DATA_DIR, "assistant_cursors.json") });
 assistantFeed.migrate();
+// 合同 J2.2 池读数(core/pool-readings.mjs):只追加表 pool_readings 在 board.db;读数是自报,只影响显示。
+const poolReadings = openPoolReadings({ db });
+poolReadings.migrate();
 approvals.migrate(db);
 conversations.migrate(db);
 // 合同 B「流转」:卡历史、任务派生字段、建卡对话的进度(core/flow.mjs)。线名与显示名在读时取(配置可热改)。
@@ -1211,7 +1215,8 @@ const SETTINGS_FILE = join(store.DATA_DIR, "worker_settings.json");
 // ── 用量账本:归并、分组与结算都在 core/usage.mjs ───────────────────────────
 // usage_ledger.jsonl 只追加;模块记住末个完整行的字节位置,只归并新行。
 const USAGE_FILE = join(store.DATA_DIR, "usage_ledger.jsonl");
-const usageLedger = openLedger(USAGE_FILE, { makeDefault: true });
+// 合同 J2.1:每行带 source(谁发起)与 pool(哪一池 = 配置里的 runtime id,按 model 查座席的 models 表归池,归不了 = other)。
+const usageLedger = openLedger(USAGE_FILE, { makeDefault: true, pools: poolMap(CFG.runtimes) });
 const refreshUsage = () => usageLedger.refresh();
 // 结算钩子:给「已完成但还没结算」的卡各写一条结算事件(同一次完成只写一条)。
 function settleUsage() {
@@ -1780,7 +1785,7 @@ async function decomposeGoal(goalId, model, forced = false) {
   //   结果消息读不出来时各项是 null(未知),耗时退到墙钟。进程没起跑不记。
   if (r.ran) {
     const seen = fromClaudeResult(cliResult(r.stdout).result);
-    usageLedger.append({ phase: "decompose", card: Number(goalId), worker: "decompose", model: cliModel, effort: "high",
+    usageLedger.append({ phase: "decompose", source: "decompose", card: Number(goalId), worker: "decompose", model: cliModel, effort: "high",
                          ...seen, duration_ms: seen.duration_ms ?? Date.now() - cliStarted });
   }
   // The failures below are OUR internal failures (child would not start /
@@ -1856,7 +1861,7 @@ async function compactLine(line, note) {
   // 用量结算:压缩的两步各记一行(phase=compact,记在这条线上,不挂卡)。这两步不带 --output-format json,
   //   词元与费用读不到,记 null(未知),耗时取墙钟。进程没起跑不记。
   const account = (run, started, model, effort = null) => {
-    if (run.ran) usageLedger.append({ phase: "compact", worker: line, line, model, effort, session_id: sid,
+    if (run.ran) usageLedger.append({ phase: "compact", source: "compact", worker: line, line, model, effort, session_id: sid,
                                       duration_ms: Date.now() - started });
   };
   // 两步都只要模型产出文字:不给任何工具(--tools ""),拒绝规则与拆解同一组(board-claude-cli.mjs)。
@@ -2773,7 +2778,8 @@ const EXECUTOR_WRITES = (p) =>
   /^\/api\/tasks\/\d+\/(?:packages|env-diff)$/.test(p) || /^\/api\/packages\/\d+\/(?:freeze|commit|issue|pin)$/.test(p) ||
   /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
   /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p) ||
-  p === "/api/approvals/request";
+  p === "/api/approvals/request" ||
+  p === "/api/pools/reading";                     // 合同 J2.2:执行者自报池读数(绑线执行者也可;worker / 审阅 / 助手令牌不在各自白名单里 → 403)
 // 助手令牌(合同 E):写只有挂未放行卡这一条。领卡、交付、裁定、放行、改配置都不在这里。
 const ASSISTANT_WRITES = (p) => p === "/api/assistant/cards";
 // 助手令牌的读:简报、卡面与卡的历史摘要、自己的身份。SSE、运行记录、裁定附件、证据、会话、设置、协作、别人的令牌相关接口一律拒绝。
@@ -3462,7 +3468,9 @@ function assistantView(req, { maxChars, since = null, mode = "normal", attention
   if (attention) return { items: picked.items, cursor: picked.cursor, ...(mode === "quiet" ? { mode, muted: picked.muted } : {}) };
   // 合同 I6:助手只得到文件重叠的条数(没有路径、没有卡号)。
   let occupancy_overlaps = null; try { occupancy_overlaps = occ.snapshot().overlaps.length; } catch {}
-  return { ...briefFrom(m, maxChars, { mode, now }), cursor: picked.cursor, ...(given ? { changes: picked.changes } : {}), lines: lineStates(tasks, now), occupancy_overlaps };
+  // 合同 J2.4:每池一行 state + 最新新鲜读数的百分比(core/brief.mjs briefPools;不带 by_label、模型、会话、note)。
+  let pools = []; try { pools = briefPools(quotaNow()); } catch {}
+  return { ...briefFrom(m, maxChars, { mode, now }), cursor: picked.cursor, ...(given ? { changes: picked.changes } : {}), lines: lineStates(tasks, now), occupancy_overlaps, pools };
 }
 
 // ── 首页「后台任务」(合同 F,core/home-background.mjs)。attention 用上面同一份判定(briefModel),不另写。
@@ -3535,10 +3543,17 @@ function backgroundNow() {
   // 第 7 波欠账⑥:条数对不上不再只打日志 —— 应答带 attention_type_mismatch:true(面板 8c 决定怎么显示)。
   return mismatch ? { ...out, attention_type_mismatch: true } : out;
 }
-/** G3 额度条:只读 GET /api/pools 那份池状态(poolState),各池各一段;不新增采集、不读任何登录目录。 */
+/** G3 / J2.3 额度条:池状态(poolState,限流时记的「用完」)+ 池读数(自报)+ 账本按池按窗(只覆盖板内调用)。
+ *  各池各一段,不合成一个数;不新增采集、不读任何登录目录。没配置 runtime 的 model 归 other 池:近 7 天账本有它的行或有它的读数才列出。 */
+const readingLabel = (r) => r.by_role === "operator" ? "你" : cut(redactText(connect.nameOf(r.by_id) || "执行者"), 32);
 function quotaNow() {
-  const label = (id) => CFG.runtimes.find((r) => r.id === id)?.label || id;
-  return quotaModel({ pools: POOL_IDS.map((id) => ({ id, label: label(id), ...(poolState[id] || {}) })), now: Date.now() });
+  const now = Date.now(), since = new Date(now - 7 * 86400e3).toISOString();
+  const label = (id) => id === "other" ? "其他" : CFG.runtimes.find((r) => r.id === id)?.label || id;
+  let ledger = new Map(); try { ledger = usageLedger.poolWindows(now); } catch (e) { console.warn("额度条:账本汇总失败", e.message); }
+  const ids = [...POOL_IDS];
+  if (ledger.has("other") || poolReadings.poolsSince(since).includes("other")) ids.push("other");
+  return quotaModel({ now, lowAt: homePrefs().quota_low_at, labelOf: readingLabel,
+    pools: ids.map((id) => ({ id, label: label(id), ...(poolState[id] || {}), readings: poolReadings.forPool(id, since), ledger: ledger.get(id) || null })) });
 }
 /** 「停止」= 两步,都用现有的那一份:① 停该槽 —— 与 POST /api/workers/:line/stop 同一个 workerStop(树杀进程、清运行意图、
  *  按槽名放回在途卡);② 收回这张卡 —— ① 之后这张卡若仍被同一槽位领着,再按领取方 releaseHeldBy 一次(与停线、退出回收同一函数)。
@@ -3580,7 +3595,8 @@ function homePrefs() {
   if (homePrefsCache) return { ...homePrefsCache };
   let v = null;
   try { v = JSON.parse(readFileSync(HOME_PREFS_FILE, "utf8")); } catch { v = null; }
-  homePrefsCache = { autostart: v?.autostart === true, stuck_after: checkStuckAfter(v?.stuck_after) ? v.stuck_after : STUCK_DEFAULT };
+  homePrefsCache = { autostart: v?.autostart === true, stuck_after: checkStuckAfter(v?.stuck_after) ? v.stuck_after : STUCK_DEFAULT,
+                     quota_low_at: checkQuotaLowAt(v?.quota_low_at) ? v.quota_low_at : QUOTA_LOW_DEFAULT };   // 合同 J2.3:低位线,默认 90,50–99
   return { ...homePrefsCache };
 }
 function saveHomePrefs(next) {
@@ -4063,7 +4079,7 @@ function startCoordinatorTurn(convId, userMessage, cli) {
 function accountCoordinatorTurn(convId, usage, wallMs, note = null, cliCost = null) {
   try {
     const s = conversations.session(db, convId), u = conversations.roundUsage(db, convId, usage, cliCost) || {};
-    usageLedger.append({ phase: "coord", worker: "coordinator", card: s.goal_id, model: s.model, effort: s.effort,
+    usageLedger.append({ phase: "coord", source: "coordinator", worker: "coordinator", card: s.goal_id, model: s.model, effort: s.effort,
       session_id: s.session_id, calls: u.num_turns, in: u.in, cc: u.cc, cr: u.cr, out: u.out,
       duration_ms: u.duration_ms ?? wallMs, cost_usd: u.cost_usd, cost_source: u.cost_usd == null ? "unknown" : "reported", note });
   } catch (e) { console.warn(`对话 #${convId} 的用量记账失败(${String(e?.message || e).slice(0, 200)})—— 不影响这一轮`); }
@@ -4561,11 +4577,12 @@ const server = http.createServer(async (req, res) => {
         if (m === "GET") return json(res, 200, homePrefs());
         if (m === "PUT") {
           const b = await readBody(req);
-          // 可只带其中一项:autostart(true|false)/ stuck_after(合同 I10c:0 = 关,或 2–10)。
+          // 可只带其中一项:autostart(true|false)/ stuck_after(合同 I10c:0 = 关,或 2–10)/ quota_low_at(合同 J2.3:50–99 的整数)。
           const keys = b && typeof b === "object" && !Array.isArray(b) ? Object.keys(b) : null;
-          if (!keys || !keys.length || keys.some((k) => k !== "autostart" && k !== "stuck_after")
-              || (Object.hasOwn(b, "autostart") && typeof b.autostart !== "boolean") || (Object.hasOwn(b, "stuck_after") && !checkStuckAfter(b.stuck_after)))
-            return json(res, 400, { code: "BAD_INPUT", error: "正文要是 {autostart?: true|false, stuck_after?: 0 | 2–10}(至少一项)" });
+          if (!keys || !keys.length || keys.some((k) => k !== "autostart" && k !== "stuck_after" && k !== "quota_low_at")
+              || (Object.hasOwn(b, "autostart") && typeof b.autostart !== "boolean") || (Object.hasOwn(b, "stuck_after") && !checkStuckAfter(b.stuck_after))
+              || (Object.hasOwn(b, "quota_low_at") && !checkQuotaLowAt(b.quota_low_at)))
+            return json(res, 400, { code: "BAD_INPUT", error: "正文要是 {autostart?: true|false, stuck_after?: 0 | 2–10, quota_low_at?: 50–99}(至少一项)" });
           const was = homePrefs().stuck_after;
           const saved = saveHomePrefs({ ...homePrefs(), ...b });
           if (saved.stuck_after !== was) { console.log(`卡死阈值 stuck_after:${was} → ${saved.stuck_after}${saved.stuck_after === 0 ? "(关)" : ""}`); kickAutoRules(); }
@@ -4990,6 +5007,30 @@ const server = http.createServer(async (req, res) => {
     if (m === "GET" && p === "/api/pools")
       return json(res, 200, { pools: poolState, global_stop: bothPoolsDown(),
                               marker: bothPoolsDown() ? "pool_global_stop.json" : null });
+    // 合同 J2.2 池读数(自报,只影响显示):操作者与执行者(含绑线执行者)可写;worker 派生令牌、审阅、助手令牌在 guardWrite 已 403。
+    //   校验见 core/pool-readings.mjs checkReading;同一写入方同一〔池, 窗〕10 秒内只收一条(429),免得刷屏。
+    //   SSE 沿用 pool.changed(带完整 pools / global_stop,reason:"reading"):哨兵按「哪些池 down」指纹去重,读数不会叫醒协调席。
+    if (m === "POST" && p === "/api/pools/reading") {
+      if (boardRole !== "operator" && boardRole !== "executor") return json(res, 403, { error: "池读数只收操作员与执行者令牌", role: boardRole });
+      const raw = await readBody(req);
+      if (boardRole === "executor" && raw && typeof raw === "object") delete raw.worker;   // readBody 按令牌补的身份字段,不是读数的一部分
+      const r = checkReading(raw, { poolIds: POOL_IDS, now: Date.now(), clean: (s) => cut(redactText(s), 80), err: store.err, ERR: store.ERR });
+      const by = boardRole === "operator" ? { role: "operator", id: null } : { role: "executor", id: req.executor.id };
+      const last = poolReadings.forPool(r.pool, new Date(Date.now() - 10_000).toISOString())
+        .filter((x) => x.window === r.window && x.by_role === by.role && (x.by_id ?? null) === by.id);
+      if (last.length) return json(res, 429, { code: "RATE_LIMITED", error: "同一〔池, 窗〕10 秒内只收一条读数", retry_after_sec: 10 });
+      const row = poolReadings.add(r, by);
+      emit("pool.changed", { reason: "reading", pools: poolState, global_stop: bothPoolsDown(), reading: { pool: r.pool, window: r.window } });
+      const q = quotaNow().pools.find((x) => x.id === r.pool) || null;
+      return json(res, 201, { ok: true, reading: { id: row.id, pool: row.pool, window: row.window, used_pct: row.used_pct, resets_at: row.resets_at, at: row.at, by: row.by_role },
+                              pool: q ? { id: q.id, state: q.state } : null, fresh_minutes: READING_FRESH_MS / 60000 });
+    }
+    if (m === "GET" && p === "/api/pools/readings") {
+      if (boardRole !== "operator") return json(res, 403, { error: "池读数清单只给操作员", role: boardRole });
+      const limit = Math.max(1, Math.min(200, Number(url.searchParams.get("limit")) || 50));
+      return json(res, 200, { readings: poolReadings.recent(limit).map((x) => ({ id: x.id, pool: x.pool, window: x.window, used_pct: x.used_pct, resets_at: x.resets_at,
+        note: x.note, by: x.by_role, by_label: readingLabel(x), at: x.at })) });
+    }
     if (m === "POST" && p === "/api/pools/exhausted") {
       const b = await readBody(req);
       if(req.workerSeat?.executionProfile)return json(res,403,{error:"独立执行配置不会触发共享池切换或额外付费探测"});

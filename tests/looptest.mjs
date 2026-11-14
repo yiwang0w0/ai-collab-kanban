@@ -451,6 +451,10 @@ try {
     ok("⭐ledger rows carry model AND effort (all rows)",
        rowsA.length === 3 && rowsA.every((r) => typeof r.model === "string" && typeof r.effort === "string"),
        JSON.stringify(rowsA.map((r) => [r.model, r.effort])));
+    // 合同 J2.1:受管线的行带 source="managed" 与 pool(= 起线时给的 WORKER_RUNTIME)。
+    ok("ledger rows carry source=managed and the seat's pool (contract J2.1)",
+       rowsA.length === 3 && rowsA.every((r) => r.source === "managed" && typeof r.pool === "string" && r.pool.length > 0),
+       JSON.stringify(rowsA.map((r) => [r.source, r.pool])));
     ok("⭐the escalation path is reconstructible from the ledger alone (medium → high → max)",
        rowsA.map((r) => r.effort).join(",") === "medium,high,max"
          && rowsA.every((r) => r.model === "claude-opus-5"),

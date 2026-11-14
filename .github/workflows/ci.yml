@@ -267,6 +267,11 @@ jobs:
         run: bash hrun.sh node --test tests/usagetest.mjs
         env:
           PYTHON: python
+      - name: "quotaledgertest (ledger source / pool columns, pool readings permissions and freshness, quota states and runway, assistant pool lines)"
+        if: ${{ !cancelled() && matrix.shard == '3' }}
+        run: bash hrun.sh node --test tests/quotaledgertest.mjs
+        env:
+          PYTHON: python
       - name: "coordtest (executors, locks, journal, handoffs)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/coordtest.mjs

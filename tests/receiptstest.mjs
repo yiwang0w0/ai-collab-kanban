@@ -266,7 +266,7 @@ test("J3.4 report_result.usage:只收数字与模型名,入账 external-reported
   } finally { await B.stop(); }
 });
 
-test("J3.6 report_pool:这一版看板没有池读数接口 → 明示「看板版本不支持」,不静默吞", { timeout: 90000 }, async () => {
+test("J3.6 report_pool:真看板有池读数接口(9b)→ 桥转给 POST /api/pools/reading 并回读数;不支持一支只在旧看板(J3.7 假看板)上测", { timeout: 90000 }, async () => {
   const B = await board();
   try {
     const X = await B.connectAs({ kind: "claude", line: "ext", label: "桌面甲" });
@@ -275,8 +275,9 @@ test("J3.6 report_pool:这一版看板没有池读数接口 → 明示「看板�
       assert.equal((await M.call("report_pool", { pool: "claude", window: "7d", used_pct: 101 })).code, "BAD_INPUT");
       assert.equal((await M.call("report_pool", { pool: "claude", window: "7d", used_pct: 30, resets_at: "明天" })).code, "BAD_INPUT");
       const r = await M.call("report_pool", { pool: "claude", window: "7d", used_pct: 38.5 });
-      if (r.code) { assert.equal(r.code, "UNSUPPORTED_BY_BOARD", JSON.stringify(r)); assert.match(r.message, /看板版本不支持/); }
-      else assert.ok(r.reading, "看板支持时回读数:" + JSON.stringify(r));   // 9b 的接口已在时走这一支(联合用例另核)
+      // 9b 已推:真看板只接受「支持」这一支(回了读数),不再接受不支持;联合用例见 tests/quotaledgertest.mjs。
+      assert.ok(!r.code, "看板应当支持池读数:" + JSON.stringify(r));
+      assert.deepEqual([r.reading?.pool, r.reading?.window, r.reading?.used_pct, r.reading?.by], ["claude", "7d", 38.5, "executor"], JSON.stringify(r));
     } finally { await M.end(); }
   } finally { await B.stop(); }
 });

@@ -1,13 +1,15 @@
 # 方案:账本按线汇总(usage-by-line)
 
 > 2026-09-29 · 状态:草案(commit 即冻结;目标卡引用本文件的路径与提交)。
+> **已被取代**:实际落地的是 `GET /api/usage?by=card|line|model|phase|source|pool`(`core/usage.mjs` 的 `group()`,没有 `by_line` / `by_model` 键);
+> 账本行另带 `source`(谁发起)与 `pool`(哪一池),口径见 `docs/用量与额度.md`。下文第 1 节的「现状」按今天的代码订正过,其余保留原样作记录。
 > 这是身份分配方案(`docs/方案-身份分配.md`)P3 测量的**前置设施**:P3 要按阶段记 token,而阶段 = 线
 > (方案评审线 / 实现线 / 审阅座席),账本今天只按卡汇总。改动小、可机器验收,适合作为流水线的第一个真实目标。
 
 ## 1. 现状
 
 - worker 每次尝试往 `<data>/usage_ledger.jsonl` 追加一行:`ts · card · attempt · worker · model · effort · sid · calls · in · cc · cr · out · note`
-  (`loops/worker_loop.py` 的 `acct_attempt`);codex 座席与审阅座席经 `codex_runtime.append_usage` 写同一文件,`worker` 字段分别是槽名(`engine` / `engine@2`)和 `reviewer`。
+  (`loops/worker_loop.py` 的 `acct_attempt`;Codex 座席也走这一处,词元取 turn.completed);审阅座席经 `loops/reviewer_loop.py` 的 `acct_review` 写同一文件,`worker` 字段分别是槽名(`engine` / `engine@2`)和 `reviewer`。拆解 / 压缩 / 协调线由 `core/server.mjs` 写,外部执行者自报的经 `appendExternal` 写。
 - `GET /api/usage`(`core/server.mjs`)把账本按**卡**折成 `{cards: {<id>: {...累计}}}`,面板卡面的 tok 徽章读它。
 - 没有任何地方按**线**或按**座席**汇总;`pool-quota` skill 只能报「哪张卡烧得多」。
 

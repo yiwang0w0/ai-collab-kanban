@@ -120,3 +120,19 @@ export function briefFrom(m, maxChars = BRIEF_DEFAULT, { mode = "normal", now = 
            doing: m.doing, doing_total: m.doing_total, done_recent: m.done_recent,
            ...(muted === null ? {} : { mode: "quiet", muted }), generated_at: Number.isFinite(now) ? new Date(now).toISOString() : null };
 }
+
+// 合同 J2.4:额度一池一行 —— 只给 state 与最新一条新鲜读数的百分比(哪个窗)。不带 by_label、模型、会话、note、账本明细。
+const POOL_STATE_WORD = { down: "已用完", low: "偏低", ok: "正常", unknown: "待核实" };
+/** quota = /api/home/quota 的应答(quotaModel 的结果)→ [{pool, label, state, window, used_pct, line}]。读不到 = []。 */
+export function briefPools(quota) {
+  const pools = Array.isArray(quota?.pools) ? quota.pools : [];
+  return pools.map((p) => {
+    const fresh = (Array.isArray(p.readings) ? p.readings : []).filter((r) => r && r.stale === false && Number.isFinite(r.used_pct))
+      .sort((a, b) => String(b.at).localeCompare(String(a.at)))[0] || null;
+    const state = Object.hasOwn(POOL_STATE_WORD, p.state) ? p.state : "unknown";
+    const label = clean(p.label || p.id, 24);
+    const pct = fresh ? Math.round(fresh.used_pct) : null, window = fresh ? clean(fresh.window, 16) : null;
+    return { pool: clean(p.id, 24), label, state, window, used_pct: pct,
+             line: oneLine(`${label}:${POOL_STATE_WORD[state]}${pct === null ? "" : ` · ${window} ${pct}%`}`) };
+  });
+}
