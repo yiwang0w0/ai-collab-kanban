@@ -61,6 +61,7 @@ import {openBase} from "./basecommit.mjs";
 import {openStuck,checkReason,checkStuckAfter,STUCK_DEFAULT} from "./stuck.mjs";
 import {openPackages} from "./packages.mjs";
 import {openEnvGap} from "./env-gap.mjs";
+import {openReceipts,checkAck,noticesIn} from "./receipts.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -348,7 +349,8 @@ const unnamedOf = (t) => {
 // 合同 I10d / I10e(第 8 波 8e):packages 摘要 / packages_count / package_gaps(core/packages.mjs);target_env / env_diff(core/env-gap.mjs);
 //   env_gap 与徽标 flag not_target_env 由可信核心按 target_env 推。
 const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t), te=envGap.targetOf(t.id); const c=cred.fields(t,{staleSpec:o.based_on_stale_spec===true,targetEnv:te});
-  return {...o, ...c, ...wave8Fields(t, o), ...wave8bFields(t, o, c), ...pkgs.cardFields(t.id), target_env:te, env_diff:envGap.diffOf(t.id)}; };
+  return {...o, ...c, ...wave8Fields(t, o), ...wave8bFields(t, o, c), ...pkgs.cardFields(t.id), target_env:te, env_diff:envGap.diffOf(t.id),
+    operator_note:receipts.operatorNote(t)}; };   // 合同 J3.3:人交回 / 打回 / 裁定时写的话(过 redact);桥的 get_card 带出
 // 合同 I6–I9(第 8 波 8b):touches / overlaps(占用,只提示)、integrate(目标)/ integration(子卡,只读缓存)、
 //   release_on(条件放行)、auto_kind(板自动出的卡)。写了有效 release_on、还没触发的未放行卡在 progress_blockers 里多一条
 //   RELEASE_ON_PENDING:首页「要本人做的事」的判定(homeAwaitsRelease 只认「只差放行」)因此不把它当待放行;条件坏了 / 放行失败就不加,照常给人。
@@ -518,6 +520,9 @@ const connect = openConnect({ db, coord, store, emit: (type, data) => emit(type,
                         tokenDir: defaultTokenDir(store.DATA_DIR) }),
 } });
 connect.migrate();
+// 合同 J3 回执(core/receipts.mjs):拉取过 / 提示给过 / 确认过;operator_note。表都在 board.db。
+const receipts = openReceipts({ db, nameOf: (id) => connect.nameOf(id) });
+receipts.migrate();
 // 合同 H1–H4「可信」(core/credibility.mjs):指纹 / 检查项 / 结论 / 必需检查,各自的表。板侧只做只读 git 查询。
 const cred = openCredibility({ db, err: store.err, ERR: store.ERR, git: () => GIT?.path || null,
   // 板可读的工作仓:线配置 work_repo(绝对路径)优先;受管线(非外部)= 看板的工作仓;外部线没配 = 无(指纹只记不核)。
@@ -2869,10 +2874,14 @@ const ASSISTANT_CARD = ["id", "kind", "subject", "summary", "description", "acce
 function assistantCard(t) {
   const out = Object.fromEntries(ASSISTANT_CARD.filter((k) => Object.hasOwn(t, k)).map((k) => [k, t[k]]));
   out.blockers = (Array.isArray(t.progress_blockers) ? t.progress_blockers : []).slice(0, 10).map((b) => ({ code: b?.code ?? null, message: b?.message ?? null }));
+  // 合同 J3.5:where_hint 的 host_label(对方自报的位置说明)不给助手,只留 app。
+  if (out.ask?.where_hint) out.ask = { ...out.ask, where_hint: { app: out.ask.where_hint.app ?? null, self_reported: true } };
   return out;
 }
-/** 给绑线执行者的卡:别人的 live_note 不给(只给持卡者本人与操作员)。助手只给允许清单里的几项。其它读者原样。 */
+/** 给绑线执行者的卡:别人的 live_note 不给(只给持卡者本人与操作员)。助手只给允许清单里的几项。其它读者原样。
+ *  合同 J3.1:receipts 只给操作者(面板会话 / 操作员令牌);执行者、助手、worker、审阅令牌的视图都没有这一项。 */
 function forReader(req, t) {
+  if (t && req.boardRole === "operator") return { ...t, receipts: receipts.of(t) };
   if (t && req.boardRole === "assistant") return assistantCard(t);
   if (!t || !req.boundLine || t.worker === req.executor.id) return t;
   return { ...t, live_note: null, live_note_at: null };
@@ -5454,8 +5463,16 @@ const server = http.createServer(async (req, res) => {
       if (m === "GET" && !action) {
         const t = store.get(db, id);
         // 合同 I10a:绑线执行者读别线的被引用卡 = 只给 subject / description / acceptance / spec_version(不给交付、证据、历史)。
-        if (t && boardRole === "executor" && req.boundLine && t.line !== req.boundLine) return json(res, 200, { task: refs.refView(t) });
-        return t ? json(res, 200, { task: forReader(req, taskOut(t)) }) : json(res, 404, { error: "不存在" });
+        //   合同 J3.1:执行者令牌每拉取一次卡面记一笔(5 秒节流);经引用的只读视图记在被读的那张卡上,来路标 ref(不进 receipts.read)。
+        //   ?peek=1 = 桥自己核卡(续租 / 交付前),没把卡面交给模型 → 不记(对方自报,看板核不了;旧桥不带 = 照记)。
+        const pull = boardRole === "executor" && url.searchParams.get("peek") !== "1";
+        if (t && boardRole === "executor" && req.boundLine && t.line !== req.boundLine) {
+          const rv = refs.refView(t); if (pull) receipts.noteRead(id, req.executor.id, rv?.spec_version, "ref");
+          return json(res, 200, { task: rv }); }
+        if (!t) return json(res, 404, { error: "不存在" });
+        const out = taskOut(t);
+        if (pull) receipts.noteRead(id, req.executor.id, out.spec_version, "card");
+        return json(res, 200, { task: forReader(req, out) });
       }
       if (m !== "POST") return json(res, 405, { error: "方法不允许" });
       const b = await readBody(req);
@@ -5501,6 +5518,7 @@ const server = http.createServer(async (req, res) => {
           if (boardRole === "executor") lease = Math.min(lease, coord.EXECUTOR_MAX_LEASE_MIN);
         }
         const note = b.note === undefined ? undefined : connect.checkNote(b.note);   // 先校验:不合规就不续租
+        const acks = checkAck(b.ack, badSpecInput);   // 合同 J3.2:可选 ack:[code];未知码 400,整次心跳不收
         const seen = checkSeen(b.seen_spec_version, badSpecInput), before = store.get(db, id);
         if (before) spec.assertSeen(before, seen, badSpecInput);
         const r = store.heartbeat(db, { id, worker: b.worker, runId: b.run_id, leaseMin: lease });
@@ -5514,6 +5532,9 @@ const server = http.createServer(async (req, res) => {
           const now0 = store.get(db, id), rx = refs.heartbeatExtra(now0), bx = baseChk.heartbeatExtra(now0);
           if (rx.refs_stale) Object.assign(r, { refs_stale: rx.refs_stale, ...(sb == null && !bc.length && !bx.base_gone ? { next: rx.next } : {}) });
           if (bx.base_gone) Object.assign(r, { base_gone: bx.base_gone, ...(sb == null ? { next: bx.next } : {}) }); }
+        // 合同 J3.2:应答里给了哪几条提示 → 记 sent(同一 run 同一 code 只记第一次);带了 ack → 只追加记确认,应答回 acked(新桥据此知道看板认 ack)。
+        receipts.noteSent(id, b.run_id, noticesIn(r));
+        if (acks) r.acked = receipts.recordAcks(id, b.run_id, acks);
         if (boardRole === "executor") {
           coord.touch(db, req.executor.id);
           // 外部执行者这一轮第一次心跳 = 「已启动」(合同 B 订正);推一个 task.* 让流转条与首页跟着亮。
@@ -5548,8 +5569,12 @@ const server = http.createServer(async (req, res) => {
       if (action === "report") {
         const selfUsage = b.usage == null ? null : externalRows(b.usage);   // 先校验:格式不对就不收这次交付
         // 合同 G5:ask_operator 交回时可带 ask {needs, what, where, expect}(只配 outcome=wait);先校验,不合规就不收这次交回。
-        const ask = b.ask === undefined || b.ask === null ? null : connect.checkAsk(b.ask);
+        let ask = b.ask === undefined || b.ask === null ? null : connect.checkAsk(b.ask);
         if (ask && b.outcome !== "wait") throw store.err(store.ERR.BAD_INPUT, "ask 只配 outcome=wait(交回给人)");
+        // 合同 J3.5:where_hint {app?, host_label?} = 对方自报「在哪等你」(只指路,不带任何批准);只配 outcome=wait,没带 ask 时按 decision 记。
+        const whereHint = connect.checkWhereHint(b.where_hint);
+        if (whereHint && b.outcome !== "wait") throw store.err(store.ERR.BAD_INPUT, "where_hint 只配 outcome=wait(交回给人)");
+        if (whereHint) ask = { ...(ask ?? { needs: "decision", what: null, where: null, expect: null }), where_hint: whereHint };
         // 合同 H1/H3:base_commit / head_commit / files / checks(全部可选)先校验,不合规就不收这次交付。
         const credIn = cred.parseDelivery(b);
         const reasonCode = checkReason(b.reason_code, badSpecInput);   // 合同 I10c:可选 reason_code,先校验
@@ -5563,7 +5588,7 @@ const server = http.createServer(async (req, res) => {
         if (before) refs.onDelivery(before, b.run_id, b.outcome);   // 合同 I10a:交付时有引用过期 → based_on_stale_ref
         connect.clearNote(id);          // 交付即清掉临时进度
         if (ask) connect.setAsk(id, b.run_id, ask); else connect.clearAsk(id);
-        if (selfUsage) usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome });
+        const usageRows = selfUsage ? usageLedger.appendExternal(selfUsage, { task: store.get(db, id), worker: b.worker, runId: b.run_id, outcome: b.outcome }).length : null;
         // 合同 H1–H4:交付(done)记指纹与自报检查;受管宿主的独立凭据报来的宿主验证(host_verify)记成 by:"board"。
         //   别的身份带 host_verify 一概不收;执行者的 checks 永远 by:"executor"。
         let credFailed = false;
@@ -5600,7 +5625,9 @@ const server = http.createServer(async (req, res) => {
           }
         }
         // 合同 I6:交付(outcome=done)后这张卡的交付文件进占用表;应答带与别的卡的重叠(只提示)。
-        return json(res, 200, { task: store.get(db, id), ...(b.outcome === "done" ? { overlaps: occ.note(store.get(db, id)) } : {}) });
+        //   合同 J3.4 / J3.5:usage_rows = 这次记进账本几行;where_hint = 记下的位置说明(新桥据此知道看板认这两项,旧看板没有 = 桥明示不支持)。
+        return json(res, 200, { task: store.get(db, id), ...(b.outcome === "done" ? { overlaps: occ.note(store.get(db, id)) } : {}),
+          ...(usageRows !== null ? { usage_rows: usageRows } : {}), ...(whereHint ? { where_hint: whereHint } : {}) });
       }
       if (action === "resolve") {
         const rr = resolveTask(id, b, boardRole);

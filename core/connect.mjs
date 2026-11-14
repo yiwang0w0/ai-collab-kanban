@@ -136,6 +136,25 @@ export function checkAsk(v, badInput) {
   if (!ASK_NEEDS.includes(needs)) throw badInput(`ask.needs 只接受 ${ASK_NEEDS.join(" / ")}`);
   return { needs, what: checkLine(v.what, "ask.what", badInput), where: checkLine(v.where, "ask.where", badInput), expect: checkLine(v.expect, "ask.expect", badInput) };
 }
+// 合同 J3.5:ask_operator 的 where_hint = 对方自报「在哪等你」(哪个应用、一行位置说明)。只给人指路:不带任何批准语义,看板不核实、不跳转。
+export const WHERE_APPS = ["claude-desktop", "claude-code", "codex", "zcode", "other"];
+export const HOST_LABEL_MAX = 40;
+/** report 正文里的 where_hint:不给 / null → null;{app?, host_label?},不认识的键、app 越界、host_label 超 40 字(按原文)或不是字符串一律 BAD_INPUT;
+ *  host_label 清洗同 live_note(压成一行、去不可见字符、遮蔽路径与令牌样串),清完为空 → null;两项都空 → null。 */
+export function checkWhereHint(v, badInput) {
+  if (v === undefined || v === null) return null;
+  if (typeof v !== "object" || Array.isArray(v)) throw badInput("where_hint 要是对象 {app?, host_label?}");
+  for (const k of Object.keys(v)) if (!["app", "host_label"].includes(k)) throw badInput(`where_hint 里不认识的字段 ${k}`);
+  if (v.app !== undefined && v.app !== null && !WHERE_APPS.includes(v.app)) throw badInput(`where_hint.app 只接受 ${WHERE_APPS.join(" / ")}`);
+  let host = null;
+  if (v.host_label !== undefined && v.host_label !== null) {
+    if (typeof v.host_label !== "string") throw badInput("where_hint.host_label 要字符串");
+    if (chars(v.host_label.trim()) > HOST_LABEL_MAX) throw badInput(`where_hint.host_label 最多 ${HOST_LABEL_MAX} 字`);
+    host = cleanText(v.host_label) || null;
+  }
+  const app = v.app ?? null;
+  return app || host ? { app, host_label: host } : null;
+}
 
 /** PowerShell 单引号字面量:内容里的 ' 与弯单引号(PowerShell 也当引号)各写两遍;其余字符(& ^ % ! $ ` 空格)都按原样。 */
 export const psQuote = (a) => "'" + String(a).replace(/['\u2018-\u201b]/g, (q) => q + q) + "'";
@@ -195,6 +214,9 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
     db.exec(`CREATE TABLE IF NOT EXISTS task_asks (
       task_id INTEGER PRIMARY KEY, run_id TEXT, needs TEXT NOT NULL, what TEXT, where_text TEXT, expect TEXT, at INTEGER NOT NULL
     )`);
+    // 合同 J3.5:where_hint(自报的位置说明);旧库补列,旧行为空 = 没给。
+    for (const col of ["hint_app", "hint_host"])
+      if (!db.prepare("SELECT 1 FROM pragma_table_info('task_asks') WHERE name=?").get(col)) db.exec(`ALTER TABLE task_asks ADD COLUMN ${col} TEXT`);
     // 「最后一次回报」按执行者查 task_events:给 actor 建索引,列表不必全表扫。
     db.exec("CREATE INDEX IF NOT EXISTS ix_task_events_actor_kind ON task_events(actor, kind, id)");
   }
@@ -394,20 +416,23 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
   // ── ask_operator 的「等什么」(合同 G5)。
   /** 记一次交回(调用方在 report 成功后调)。 */
   function setAsk(taskId, runId, a) {
-    db.prepare(`INSERT INTO task_asks (task_id, run_id, needs, what, where_text, expect, at) VALUES (?,?,?,?,?,?,?)
+    db.prepare(`INSERT INTO task_asks (task_id, run_id, needs, what, where_text, expect, at, hint_app, hint_host) VALUES (?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(task_id) DO UPDATE SET run_id=excluded.run_id, needs=excluded.needs, what=excluded.what,
-                where_text=excluded.where_text, expect=excluded.expect, at=excluded.at`)
-      .run(Number(taskId), runId == null ? null : String(runId), a.needs, a.what ?? null, a.where ?? null, a.expect ?? null, clock());
+                where_text=excluded.where_text, expect=excluded.expect, at=excluded.at, hint_app=excluded.hint_app, hint_host=excluded.hint_host`)
+      .run(Number(taskId), runId == null ? null : String(runId), a.needs, a.what ?? null, a.where ?? null, a.expect ?? null, clock(),
+           a.where_hint?.app ?? null, a.where_hint?.host_label ?? null);
   }
   const clearAsk = (taskId) => db.prepare("DELETE FROM task_asks WHERE task_id=?").run(Number(taskId));
   let askQ = null;
   /** 任务对象上的 ask:卡停在「等你决定」且仍是那一轮(run_id 相同)时给 {needs,what,where,expect},否则 null(= 按 decision)。 */
   function askOf(t) {
     if (!t || t.status !== "waiting" || t.waiting_for !== "decision" || t.id == null) return null;
-    askQ ??= db.prepare("SELECT run_id, needs, what, where_text, expect FROM task_asks WHERE task_id=?");
+    askQ ??= db.prepare("SELECT run_id, needs, what, where_text, expect, hint_app, hint_host FROM task_asks WHERE task_id=?");
     const r = askQ.get(Number(t.id));
     if (!r || (r.run_id ?? null) !== (t.run_id ?? null)) return null;
-    return { needs: ASK_NEEDS.includes(r.needs) ? r.needs : "decision", what: r.what ?? null, where: r.where_text ?? null, expect: r.expect ?? null };
+    // 合同 J3.5:有 where_hint 才带这一项(self_reported:对方自报,看板不核实;不含任何「已批准」语义)。
+    const hint = r.hint_app || r.hint_host ? { where_hint: { app: WHERE_APPS.includes(r.hint_app) ? r.hint_app : null, host_label: r.hint_host ?? null, self_reported: true } } : {};
+    return { needs: ASK_NEEDS.includes(r.needs) ? r.needs : "decision", what: r.what ?? null, where: r.where_text ?? null, expect: r.expect ?? null, ...hint };
   }
 
   /** 执行者最后一次带令牌请求的时刻(ms;connect 与 coord 两处记的较晚者),不是执行者 → null。效率的「卡住」用它。 */
@@ -532,5 +557,6 @@ export function openConnect({ db, coord, store, emit = () => {}, hooks = {}, sta
   }
 
   return { migrate, seen, issueCode, redeem, list, revoke, lineOf, roleOf, nameOf, postedBy, openPostsOf, recordPost, setAsk, clearAsk, askOf, tx, isCodeExecutor, lastSeenMs, setNote, noteChanged, clearNote, liveNote, markHeartbeat, heartbeatSeen, heartbeatStartedAt, heartbeatStartsOf, watch,
-           checkNote: (v) => checkNote(v, bad), checkAsk: (v) => checkAsk(v, bad), checkLine: (v, name) => checkLine(v, name, bad) };
+           checkNote: (v) => checkNote(v, bad), checkAsk: (v) => checkAsk(v, bad), checkLine: (v, name) => checkLine(v, name, bad),
+           checkWhereHint: (v) => checkWhereHint(v, bad) };
 }

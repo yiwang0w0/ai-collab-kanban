@@ -312,6 +312,9 @@ jobs:
       - name: "packagestest (package state machine, three drift sources, party-only writes, operator-only ran, pin card once, auto-pass gate with mutation control, env gap)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/packagestest.mjs
+      - name: "receiptstest (J3 receipts: card pulls with throttle, notice sent/acked append-only, operator-only receipts, operator_note via real bridge, usage and where_hint, report_pool unsupported, new bridge vs old board)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/receiptstest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

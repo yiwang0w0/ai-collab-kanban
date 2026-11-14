@@ -79,7 +79,7 @@ test("桥:握手、只看本线、领卡、续租、交付都走执行者令牌"
       assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
       M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const list = await M.request("tools/list");
-      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff"]);
+      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff", "report_pool"]);
       assert.ok(!("line" in list.result.tools[0].inputSchema.properties), "固定了 --line 就不给 line 参数");
       const ls = await M.call("list_cards", {});
       assert.equal(ls.isError, false, JSON.stringify(ls));
@@ -181,7 +181,7 @@ test("G5:ask_operator needs=hands 的 what / where / expect 往返;换行压成�
       assert.ok((await M.request("initialize", INIT)).result, M.stderr());
       M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const schema = (await M.request("tools/list")).result.tools.find((t) => t.name === "ask_operator").inputSchema;
-      assert.deepEqual(Object.keys(schema.properties), ["id", "question", "needs", "what", "where", "expect", "reason_code"]);   // reason_code = 合同 I10c(只增不改)
+      assert.deepEqual(Object.keys(schema.properties), ["id", "question", "needs", "what", "where", "expect", "reason_code", "where_hint"]);   // reason_code = 合同 I10c、where_hint = 合同 J3.5(只增不改)
       assert.deepEqual(schema.required, ["id", "question"], "新参数全部可选");
       const mine = await B.card("要人插卡的活", "ext");
       const claim = await M.call("claim_card", { id: mine.id, expected_version: mine.aggregate_version });
@@ -237,7 +237,7 @@ test("G5:ask_operator needs=hands 的 what / where / expect 往返;换行压成�
 
 test("桥按令牌的角色给工具组:执行者八个(无助手工具),助手五个(无领卡/交付)", { timeout: 90000 }, async () => {
   const B = await board();
-  const EXEC = ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff"];
+  const EXEC = ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff", "report_pool"];
   const ASST = ["get_brief", "list_cards", "get_card", "post_card", "wait_for_attention"];
   try {
     const names = async (args) => {

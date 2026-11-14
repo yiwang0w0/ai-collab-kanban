@@ -1441,3 +1441,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 新领卡闸经 registerClaimCheck 并带 attention;新写接口只给操作者。新增 refsbasestucktest(含真 stdio 桥、计划项),execmcptest / homebackgroundtest 同步。没有调用模型。阻塞:无。
 - 2026-11-14 公告板 v3 第 8 波「包」与环境差(claude/board-v3-w8-pkg,合同 I10d–e):core/packages.mjs 六格状态机(draft → frozen → committed → issued → ran → pinned,从只追加的 package_events 推)、drift 三种来路、当事执行者才收、ran 只给操作者、核对卡 auto_kind:"pin"(RULES 登记,防重,release_pin)、带包的卡自动通过闸 + package_gaps、「要本人做的事」亲手跑 / fault 条目、md 导出只写名 / 状态 / 冻结短号。
 - 环境差(core/env-gap.mjs):target_env(操作者三处入口)、executor checks 带 env(自报)、env_gap、徽标 flag not_target_env、桥 report_env_diff → env_diff。桥新工具六个(哈希在桥这一侧算)。新增 packagestest(登记 npm test 与 ci.yml),execmcptest 工具表同步;没有调用模型。阻塞:无。
+- 2026-11-14 公告板 v3 第 9 波回执与桥(claude/board-v3-w9-receipts,合同 J3;新模块 core/receipts.mjs):card_reads 拉取回执(5 秒节流,引用只读视图单列)、心跳 ack 与 notice_sent / 只追加 notice_acks,任务对象 receipts 只给操作者。
+- 核实:打回时写的话经桥到不了执行者 → get_card 补 operator_note(过 redact)。桥:report_result.usage、ask_operator.where_hint(自报,助手不见 host_label)、新工具 report_pool;旧看板不认的项明示不支持。
+- 新增 tests/receiptstest.mjs(含变异对照,登记 npm test 与 ci.yml),execmcptest 工具表同步;多执行者协作、接入说明同步。没有调用模型。阻塞:无。
