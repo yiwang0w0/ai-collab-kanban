@@ -432,11 +432,11 @@ test("I10c 卡死:stuck_after 设置(只有操作者)、reason_code、到阈值 
   const B = await board();
   try {
     const X = await B.connectAs({ kind: "other", line: "ext" }), A = await B.connectAs({ kind: "other", role: "assistant", label: "助手" });
-    assert.deepEqual((await B.api("GET", "/api/home/prefs", B.operator)).body, { autostart: false, stuck_after: 3, quota_low_at: 90 });
+    assert.deepEqual((await B.api("GET", "/api/home/prefs", B.operator)).body, { autostart: false, stuck_after: 3, quota_low_at: 90, bulk_lines: [] });
     for (const bad of [{ stuck_after: 1 }, { stuck_after: 11 }, { stuck_after: "2" }, { stuck_after: 2, x: 1 }, {}])
       assert.equal((await B.api("PUT", "/api/home/prefs", B.operator, bad)).status, 400, JSON.stringify(bad));
     for (const t of [X.token, A.token, B.worker, B.review]) assert.equal((await B.api("PUT", "/api/home/prefs", t, { stuck_after: 2 })).status, 403);
-    assert.deepEqual((await B.api("PUT", "/api/home/prefs", B.operator, { stuck_after: 2 })).body, { autostart: false, stuck_after: 2, quota_low_at: 90 });
+    assert.deepEqual((await B.api("PUT", "/api/home/prefs", B.operator, { stuck_after: 2 })).body, { autostart: false, stuck_after: 2, quota_low_at: 90, bulk_lines: [] });
     const k = await B.card("老卡住", "ext"), next = await B.card("下一张", "ext");
     const loop = async (reason) => {
       const c = await B.claim(k.id, X.token); assert.equal(c.status, 200, JSON.stringify(c.body));

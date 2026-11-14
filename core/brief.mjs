@@ -136,3 +136,13 @@ export function briefPools(quota) {
              line: oneLine(`${label}:${POOL_STATE_WORD[state]}${pct === null ? "" : ` · ${window} ${pct}%`}`) };
   });
 }
+
+// 合同 J6 / J7:批准额度 / 豁免 / 可批量验收只给计数(不给内容、不给哈希、不给规则名)。bulk 为 undefined = quiet 模式,不出这一项。
+//   读不到的项 = null(line 里写「?」),不冒充 0。
+export function briefApprovals({ grants = null, waivers = null, bulk } = {}) {
+  const n = (v) => Number.isSafeInteger(v) && v >= 0 ? v : null;
+  const out = { grants_active: n(grants), waivers: n(waivers), ...(bulk === undefined ? {} : { bulk_ready: n(bulk) }) };
+  const w = (v) => v === null ? "?" : String(v);
+  out.line = oneLine(`进行中的批准额度 ${w(out.grants_active)} 条 · 豁免 ${w(out.waivers)} 条` + (bulk === undefined ? "" : ` · 可批量验收 ${w(out.bulk_ready)} 件`));
+  return out;
+}

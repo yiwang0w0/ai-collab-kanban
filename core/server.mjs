@@ -34,7 +34,7 @@ import {taskExecutionView} from "./task-execution-view.mjs";
 import {executorReadiness,runtimeVerifications} from "./executor-readiness.mjs";
 import {readCliVersions} from "./cli-versions.mjs";
 import {openConnect,isLoopback,defaultTokenDir,cardText,cleanText,ASSISTANT_OPEN_MAX} from "./connect.mjs";
-import {briefModel,briefFrom,maxCharsOf,briefPools} from "./brief.mjs";
+import {briefModel,briefFrom,maxCharsOf,briefPools,briefApprovals} from "./brief.mjs";
 import {openAssistantFeed,parseCursor,modeOf} from "./assistant-feed.mjs";
 import {backgroundModel,stopVerdict,runAutostart,autostartText,quotaModel,typeAttention} from "./home-background.mjs";
 import {loadAttentionModel} from "./home-model.mjs";
@@ -63,6 +63,7 @@ import {openPackages} from "./packages.mjs";
 import {openEnvGap} from "./env-gap.mjs";
 import {openReceipts,checkAck,noticesIn} from "./receipts.mjs";
 import {openPoolReadings,checkReading,checkQuotaLowAt,QUOTA_LOW_DEFAULT,READING_FRESH_MS} from "./pool-readings.mjs";
+import {openApprovalQuota,normQuota,finalGrant,normUse,normSensitive,bulkCheck,bulkDigest,bulkListDigest} from "./approval-quota.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const require_ = createRequire(import.meta.url);
@@ -351,7 +352,9 @@ const unnamedOf = (t) => {
 //   env_gap 与徽标 flag not_target_env 由可信核心按 target_env 推。
 const taskOut = (t) => { if(!t)return t; const o=taskOutBase(t), te=envGap.targetOf(t.id); const c=cred.fields(t,{staleSpec:o.based_on_stale_spec===true,targetEnv:te});
   return {...o, ...c, ...wave8Fields(t, o), ...wave8bFields(t, o, c), ...pkgs.cardFields(t.id), target_env:te, env_diff:envGap.diffOf(t.id),
-    operator_note:receipts.operatorNote(t)}; };   // 合同 J3.3:人交回 / 打回 / 裁定时写的话(过 redact);桥的 get_card 带出
+    operator_note:receipts.operatorNote(t),   // 合同 J3.3:人交回 / 打回 / 裁定时写的话(过 redact);桥的 get_card 带出
+    // 合同 J6 / J7:敏感标签(写下的 ∪ 有未撤销豁免 → waiver)与盖住这张卡的未撤销豁免 [{id, rule, at, expires_at}]。助手的允许清单里没有这两项。
+    sensitive:aq.sensitiveOf(t), waivers:aq.cardWaivers(t)}; };
 // 合同 I6–I9(第 8 波 8b):touches / overlaps(占用,只提示)、integrate(目标)/ integration(子卡,只读缓存)、
 //   release_on(条件放行)、auto_kind(板自动出的卡)。写了有效 release_on、还没触发的未放行卡在 progress_blockers 里多一条
 //   RELEASE_ON_PENDING:首页「要本人做的事」的判定(homeAwaitsRelease 只认「只差放行」)因此不把它当待放行;条件坏了 / 放行失败就不加,照常给人。
@@ -542,6 +545,10 @@ assistantFeed.migrate();
 const poolReadings = openPoolReadings({ db });
 poolReadings.migrate();
 approvals.migrate(db);
+// 合同 J6 / J7(第 9 波 9e,core/approval-quota.mjs):批准额度、豁免、敏感标签、批量验收记录。只追加表都在 board.db。
+//   板只记数:额度用不用、停不停在执行者那一侧;豁免不让任何闸变绿(下面登记的「豁免」闸 = 带未撤销豁免的卡不自动通过)。
+const aq = openApprovalQuota({ db, err: store.err, ERR: store.ERR, clean: (s) => cleanText(s) });
+aq.migrate();
 conversations.migrate(db);
 // 合同 B「流转」:卡历史、任务派生字段、建卡对话的进度(core/flow.mjs)。线名与显示名在读时取(配置可热改)。
 const flow = createFlow({ db, isExecutor: coord.isExecutor, lines: () => SUPERVISED || [], labels: () => LINE_LABEL || {},
@@ -602,6 +609,8 @@ pkgs.migrate();
 cred.registerGate("包", (t) => pkgs.gateMissing(t.id));
 // 第 8 波第二轮(8f):复审卡判「与规格不符」且结论没过期 → 不自动通过,缺口写明是哪张复审卡判的(本人显式裁定不受限)。
 cred.registerGate("复审", (t) => refs.deviationMissing(t));
+// 合同 J6:带未撤销豁免的卡不自动通过,缺口写「已豁免:规则 X(谁、何时)」(本人显式通过照常)。
+cred.registerGate("豁免", (t) => aq.waiverGaps(t));
 const envGap = openEnvGap({ db, store });
 envGap.migrate();
 const auto = openAutocards({ db, store, cred, integ, occ, pkgs,
@@ -1752,6 +1761,10 @@ function createPlanChildren(goalId, list, { actor = null } = {}) {
     if (t.refs != null) { try { const rv = refs.normRefs(Array.isArray(t.refs) ? t.refs.map((x) => (x && typeof x === "object" && Number.isSafeInteger(x.after) ? { card: made[x.after - 1], ...(x.review !== undefined ? { review: x.review } : {}) } : x)) : t.refs);
       if (rv?.length) refs.set(made[i], rv, actor || "plan"); } catch {} }
     if (t.base != null) { try { const bv = baseChk.normBase(t.base); if (bv) { baseChk.set(made[i], bv, actor || "plan"); planBaseSet = true; } } catch {} }
+    // 合同 J7:计划项可带 sensitive(计划经操作者确认才建;不合规整项不设);needs_confirm:true 而没写(或写坏了)→ 落 ["other"]。
+    { let sv = null; if (t.sensitive != null) { try { sv = normSensitive(t.sensitive, badSpecInput); } catch { sv = null; } }
+      if (hold && !sv?.length) sv = ["other"];
+      if (sv?.length) aq.setSensitive(made[i], sv, actor || "plan"); }
   });
   if (planBaseSet) void integrateTick();
   return { made, demoted, held };
@@ -2793,6 +2806,7 @@ const EXECUTOR_WRITES = (p) =>
   /^\/api\/coord\/(?:heartbeat|status|stop|journal|locks|locks\/release)$/.test(p) ||
   /^\/api\/coord\/handoffs\/\d+\/ack$/.test(p) ||
   p === "/api/approvals/request" ||
+  /^\/api\/approvals\/[^/]{1,300}\/use$/.test(p) ||   // 合同 J6:报一次批准额度的用量(handler 再核「这个请求的当事执行者」,不是 → 403)
   p === "/api/pools/reading";                     // 合同 J2.2:执行者自报池读数(绑线执行者也可;worker / 审阅 / 助手令牌不在各自白名单里 → 403)
 // 助手令牌(合同 E):写只有挂未放行卡这一条。领卡、交付、裁定、放行、改配置都不在这里。
 const ASSISTANT_WRITES = (p) => p === "/api/assistant/cards";
@@ -2903,8 +2917,16 @@ function assistantCard(t) {
 function forReader(req, t) {
   if (t && req.boardRole === "operator") return { ...t, receipts: receipts.of(t) };
   if (t && req.boardRole === "assistant") return assistantCard(t);
-  if (!t || !req.boundLine || t.worker === req.executor.id) return t;
-  return { ...t, live_note: null, live_note_at: null };
+  const e = forWriter(req, t);
+  if (!e || !req.boundLine || e.worker === req.executor.id) return e;
+  return { ...e, live_note: null, live_note_at: null };
+}
+/** 9c 后续①:执行者角色看到的卡里,人写的原话 last_note / verdict_note 过 redactText(与 operator_note 同一遮蔽)。
+ *  读口(forReader)与执行者够得着的写口应答(领卡、续租、交付)都走这里;操作者、受管线 worker 与审阅令牌的视图决定不改。 */
+function forWriter(req, t) {
+  if (!t || req.boardRole !== "executor") return t;
+  const red = (v) => typeof v === "string" ? redactText(v) : v;
+  return Object.hasOwn(t, "last_note") || Object.hasOwn(t, "verdict_note") ? { ...t, last_note: red(t.last_note), verdict_note: red(t.verdict_note) } : t;
 }
 function guardAuthentication(req, res) {
   const origin = req.headers.origin;
@@ -3415,10 +3437,13 @@ function lockApprovalEntry(l) {
 }
 function requestApprovalEntry(r) {
   if (!r) return null;
+  // 合同 J6:请求带了额度提议 → 事项多一项 quota:{uses, usd, ttl_minutes}(批准时 grant 只能改小);没带 = 一次性,事项形状同旧版。
+  const quota = aq.proposedOf(r.id);
   // summary 只有 160 字,而 action 最长 300 字:决定是对整段 action 生效的,所以事项另带完整的 action。
   return { item: { id: r.approval_id, kind: "request", title: `${r.executor} 请求批准`, summary: approvals.oneLine(r.action),
                    action: approvals.oneLine(r.action, approvals.ACTION_MAX), risk: r.risk, executor: r.executor, detail_ref: { type: "request", id: r.id, api: `/api/approvals/${r.approval_id}` },
-                   created_at: r.created_at, expected_version: 1, actions: [...APPROVE_REJECT], labels: { approve: "批准", reject: "拒绝" } },
+                   created_at: r.created_at, expected_version: 1, actions: [...APPROVE_REJECT], labels: { approve: "批准", reject: "拒绝" },
+                   ...(quota ? { quota } : {}) },
            route: { requestId: r.id } };
 }
 // ── 看板简报(合同 E):「等你处理」= 首页「待我处理」(panel.html home-model 区的 homeLists)+ 执行线故障(homeLineFaults),
@@ -3484,7 +3509,12 @@ function assistantView(req, { maxChars, since = null, mode = "normal", attention
   let occupancy_overlaps = null; try { occupancy_overlaps = occ.snapshot().overlaps.length; } catch {}
   // 合同 J2.4:每池一行 state + 最新新鲜读数的百分比(core/brief.mjs briefPools;不带 by_label、模型、会话、note)。
   let pools = []; try { pools = briefPools(quotaNow()); } catch {}
-  return { ...briefFrom(m, maxChars, { mode, now }), cursor: picked.cursor, ...(given ? { changes: picked.changes } : {}), lines: lineStates(tasks, now), occupancy_overlaps, pools };
+  // 合同 J6 / J7:只给计数(进行中的批准额度、豁免、可批量验收),不给内容;quiet 时不出「可批量验收」。读不到的那一项 = null。
+  const count = (fn) => { try { return fn(); } catch { return null; } };
+  const approvalCounts = briefApprovals({ grants: count(() => aq.countActiveGrants(now)), waivers: count(() => aq.countActiveWaivers(now)),
+    bulk: mode === "quiet" ? undefined : count(() => homePrefs().bulk_lines.length ? bulkList().items.length : 0) });
+  return { ...briefFrom(m, maxChars, { mode, now }), cursor: picked.cursor, ...(given ? { changes: picked.changes } : {}), lines: lineStates(tasks, now), occupancy_overlaps, pools,
+           approvals: approvalCounts };
 }
 
 // ── 首页「后台任务」(合同 F,core/home-background.mjs)。attention 用上面同一份判定(briefModel),不另写。
@@ -3610,14 +3640,89 @@ function homePrefs() {
   let v = null;
   try { v = JSON.parse(readFileSync(HOME_PREFS_FILE, "utf8")); } catch { v = null; }
   homePrefsCache = { autostart: v?.autostart === true, stuck_after: checkStuckAfter(v?.stuck_after) ? v.stuck_after : STUCK_DEFAULT,
-                     quota_low_at: checkQuotaLowAt(v?.quota_low_at) ? v.quota_low_at : QUOTA_LOW_DEFAULT };   // 合同 J2.3:低位线,默认 90,50–99
+                     quota_low_at: checkQuotaLowAt(v?.quota_low_at) ? v.quota_low_at : QUOTA_LOW_DEFAULT,   // 合同 J2.3:低位线,默认 90,50–99
+                     // 合同 J7:开了批量验收的线;默认空 = 全关。文件里写坏了 = 当作没开(许可型:读不懂落拒绝侧)。
+                     bulk_lines: checkBulkLines(v?.bulk_lines, { known: false }) ? [...v.bulk_lines] : [] };
   return { ...homePrefsCache };
+}
+/** bulk_lines:线名数组(≤50,不重复);known = true 时每条都要是看板上现有的线(PUT 时核;读文件时不核,线删了也不报错)。 */
+function checkBulkLines(v, { known = true } = {}) {
+  return Array.isArray(v) && v.length <= 50 && new Set(v).size === v.length
+    && v.every((l) => typeof l === "string" && /^[a-z0-9][a-z0-9_-]{0,31}$/.test(l) && (!known || (LINES || []).includes(l)));
 }
 function saveHomePrefs(next) {
   const tmp = HOME_PREFS_FILE + ".tmp";
   writeFileSync(tmp, JSON.stringify(next), "utf8"); renameSync(tmp, HOME_PREFS_FILE);
   homePrefsCache = null;
   return homePrefs();
+}
+// ── 合同 J7 批量验收(只给操作者;面板上唯一写口 = 一次确认框列清单,9f)。资格是许可型门:任何一项读不到 / 判不出 = 不进
+//    (core/approval-quota.mjs bulkCheck)。只看待本人验收的卡;裁定、放行、亲手做、故障一律不进。
+function bulkEligibility(t) {
+  let gateOk = null;
+  const v = bulkCheck(t, {
+    lines: () => homePrefs().bulk_lines,
+    entry: () => taskApprovalEntry(t),
+    decided: (id) => approvals.decisionOf(db, id),
+    out: () => taskOut(t),
+    gate: (o) => { const g = autoGateAll(t, { staleSpec: o.based_on_stale_spec === true }); gateOk = g?.ok === true; return g; },
+    reviewLines: REVIEW_LINES || [],
+    deliverer: () => bgClaimStmt.get(Number(t.id))?.actor ?? null,
+  });
+  if (v.ok && v.item) v.item.digest = bulkDigest(t, v.o, v.item, gateOk);
+  return v;
+}
+/** GET /api/home/bulk:{ items:[{approval_id, expected_version, task_id, title, line, digest, why}], excluded:[{task_id, title, line, why}], list_digest, lines }。 */
+function bulkList() {
+  const items = [], excluded = [];
+  for (const t of store.list(db, { archived: "false" }).tasks) {
+    if (t.status !== "waiting" || t.waiting_for !== "review") continue;   // 只看待验收的;别的类型天生不进,不逐张列
+    let v;
+    try { v = bulkEligibility(t); } catch (e) { v = { ok: false, excluded: [`判不出:${String(e?.message || e).slice(0, 80)}`] }; }
+    const base = { task_id: t.id, title: approvals.oneLine(`#${t.id} ${t.subject}`), line: t.line ?? null };
+    if (v.ok && v.item?.digest) items.push({ approval_id: v.item.approval_id, expected_version: v.item.expected_version, ...base, digest: v.item.digest, why: v.why });
+    else excluded.push({ ...base, why: v.excluded?.length ? v.excluded : ["判不出"] });
+  }
+  return { items, excluded, list_digest: bulkListDigest(items), lines: homePrefs().bulk_lines };
+}
+/** POST /api/home/bulk { items:[{approval_id, expected_version, digest}], list_digest }:
+ *  list_digest 要等于交回的 items 算出来的(= GET 给的那整张清单),对不上 → 整次拒绝(409,什么都不做)。
+ *  然后逐项重核资格与指纹:变了的那一项退出(结果里列「审后变了」),其余照常走 decideApproval(via:"bulk" + 批号)。只追加表 bulk_runs 记一行。 */
+async function bulkRun(b, req) {
+  if (!b || typeof b !== "object" || Array.isArray(b) || Object.keys(b).some((k) => !["items", "list_digest"].includes(k))
+      || !Array.isArray(b.items) || !b.items.length || b.items.length > 200 || typeof b.list_digest !== "string")
+    return [400, { code: "BAD_INPUT", error: "正文要是 {items:[{approval_id, expected_version, digest}](1–200 项), list_digest}" }];
+  const seen = new Set();
+  for (const i of b.items) {
+    if (!i || typeof i !== "object" || Array.isArray(i) || Object.keys(i).some((k) => !["approval_id", "expected_version", "digest"].includes(k))
+        || typeof i.approval_id !== "string" || !/^delivery:\d{1,15}:\d{1,16}$/.test(i.approval_id) || typeof i.digest !== "string" || !/^[0-9a-f]{64}$/.test(i.digest)
+        || !["number", "string"].includes(typeof i.expected_version) || seen.has(i.approval_id))
+      return [400, { code: "BAD_INPUT", error: "items 每项要 {approval_id:\"delivery:卡号:版本\", expected_version, digest(64 位十六进制)},不重复" }];
+    seen.add(i.approval_id);
+  }
+  if (bulkListDigest(b.items) !== b.list_digest)
+    return [409, { code: "LIST_CHANGED", error: "list_digest 与交回的清单对不上:整次不处理。重新 GET /api/home/bulk 再确认" }];
+  const id = aq.newBulkId(), via = isPanelCredential(req.headers["x-board-token"]) ? "panel" : "local";
+  const done = [], changed = [], failed = [];
+  for (const i of b.items) {
+    const taskId = Number(i.approval_id.split(":")[1]), t = store.get(db, taskId);
+    let v = null;
+    try { v = t ? bulkEligibility(t) : null; } catch { v = null; }
+    if (!v?.ok || v.item?.approval_id !== i.approval_id || String(v.item.expected_version) !== String(i.expected_version) || v.item.digest !== i.digest) {
+      changed.push({ approval_id: i.approval_id, task_id: taskId, why: v?.ok === false ? v.excluded : ["审后变了"] });
+      continue;
+    }
+    try {
+      const out = decideApproval(i.approval_id, { decision: "approve", source: { client: "bulk", device: via }, expected_version: i.expected_version },
+        { actor: "operator", via: "bulk", bulk: id });
+      done.push({ approval_id: i.approval_id, task_id: taskId, status: out.result?.status ?? null });
+    } catch (e) { failed.push({ approval_id: i.approval_id, task_id: taskId, error: String(e?.message || e).split(String.fromCharCode(10))[0].slice(0, 300) }); }
+  }
+  const result = { done, changed, failed };
+  aq.recordBulk(id, `operator:${via}`, b.items, result);
+  console.log(`批量验收 ${id}:通过 ${done.length},审后变了 ${changed.length},失败 ${failed.length}`);
+  emit("bulk.done", { id, done: done.length, changed: changed.length, failed: failed.length });
+  return [200, { bulk_id: id, ...result }];
 }
 /** 自动开工的闸:按顺序,源码闸(与协调线、执行线同一道 blessStep)→ 座席解禁 / 命令路径 / 执行配置(deskStartBlocked 同一判据)
  *  → 额度池(effectiveAgents,与起线同一个)。过了这三道才调 workerStart,它自己的拒绝(看板窗已过、槽已满、脚本缺失…)照原样作原因。 */
@@ -3712,6 +3817,11 @@ function decideApproval(rawId, body, who) {
   if (!current.actions.includes(d.decision))
     throw approvalConflict(current.blocked || `这一项现在不能${DECISION_VERB[d.decision]}`, { current });
   const r = entry.route, now = Date.now(), approve = d.decision === "approve";
+  // 合同 J6:决定正文可带 grant:{uses?, usd?, ttl_minutes?},只对执行者请求、只在批准时、只能把请求里的额度改小。
+  //   请求没带额度(一次性)= grant 不能凭空给;先校验,不合规就不决定(400,不留决定记录)。
+  if (body.grant !== undefined && body.grant !== null && (ref.kind !== "request" || !approve))
+    throw store.err(store.ERR.BAD_INPUT, ref.kind !== "request" ? "grant 只用在执行者请求(request:…)的批准上" : "拒绝时不带 grant");
+  const grant = ref.kind === "request" && approve ? finalGrant(body.grant, aq.proposedOf(r.requestId), (m) => store.err(store.ERR.BAD_INPUT, m)) : null;
   // 远程入口的再次放行:这张卡跑过,上次运行中断、结果未知,放行被收回(事项带 rerun)。再放行可能重复计费或重复副作用,
   // 远程客户端要在正文里明确带 confirm_rerun:true 才放行(客户端应当先把 held_note 给人看)。拒绝不需要;本机面板与命令行不变。
   if (who.via === "remote" && approve && ref.kind === "release" && current.rerun && body.confirm_rerun !== true)
@@ -3752,7 +3862,11 @@ function decideApproval(rawId, body, who) {
     result = { resource: rr.lock.resource, released_at: rr.lock.released_at };
   } else if (ref.kind === "request") {
     result = { action: current.action };   // 决定记录里留下被批准 / 拒绝的原文,事后能对账
+    // 合同 J6:最终额度写进决定记录(与只追加表 approval_grants 同一事务);到期时刻按决定时刻算。
+    if (grant) result.quota = { ...grant, expires_at: aq.expiresFor(grant, now) };
   }
+  // 合同 J7:批量验收经这里决定时带批号(via 记 bulk)。
+  if (who.bulk) result.bulk_id = who.bulk;
   const src = d.source.client + (d.source.device ? "/" + d.source.device : "");
   const text = approvals.oneLine(`${DECISION_VERB[d.decision]} ${rawId}。操作者 ${who.actor},来源 ${src},经 ${who.via}` +
                                  (who.ip ? ` ${who.ip}` : "") + `。${current.summary}`, 300);
@@ -3762,6 +3876,7 @@ function decideApproval(rawId, body, who) {
     const j = coord.appendJournal(db, "operator", { kind: "approval.decided", body: text }, now);
     rec = approvals.recordDecision(db, { approval_id: rawId, decision: d.decision, note: d.note, actor: who.actor, via: who.via,
                                          source: d.source, ip: who.ip ?? null, journal_id: j.id, result }, now);
+    if (grant) aq.recordGrant(r.requestId, grant, { by: who.actor, via: who.via }, now);
     db.exec("COMMIT");
   } catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
   console.log(`批准接口:${text}`);
@@ -3781,6 +3896,40 @@ function sendDecision(res, id, body, who) {
   json(res, out.after ? 202 : 200, { decision: out.decision, result: out.result });
   out.after?.();
 }
+/** 额度现况带上请求本身(谁请求的、要做什么)。只给操作者的列表用。 */
+function grantWithRequest(g) {
+  const r = g ? approvals.getRequest(db, g.request_id) : null;
+  return g ? { ...g, executor: r?.executor ?? null, executor_label: r ? cut(redactText(connect.nameOf(r.executor) || r.executor), 32) : null,
+               action: r ? approvals.oneLine(r.action, approvals.ACTION_MAX) : null, risk: r?.risk ?? null } : g;
+}
+/** 合同 J6:POST /api/approvals/:id/use { run_id, usd? }(只有这个请求的当事执行者;写白名单放行后这里再核)与
+ *  POST /api/approvals/:id/revoke { note? }(只有操作者)。板只计数:用完 / 到期 / 撤销后 use → 409,不据此放行或拦任何动作。 */
+async function grantRoute(req, res, rawId, op) {
+  const ref = approvals.parseId(rawId);
+  const r = ref.kind === "request" && /^\d+$/.test(ref.object) ? approvals.getRequest(db, Number(ref.object)) : null;
+  if (!r || r.approval_id !== rawId) return json(res, 404, { code: "GRANT_NOT_FOUND", error: `${rawId} 不是执行者的批准请求` });
+  const b = await readBody(req);
+  const out = (e) => json(res, e.code === store.ERR.CONFLICT ? 409 : statusFor(e, "approvals.grant"),
+    { error: String(e?.message || e), ...(e?.grantCode ? { code: e.grantCode } : {}), ...(e?.grant !== undefined ? { grant: e.grant } : {}) });
+  if (op === "use") {
+    if (req.boardRole !== "executor" || req.executor?.id !== r.executor)
+      return json(res, 403, { code: "NOT_PARTY", error: `${rawId} 的用量只收发起这个请求的执行者报的`, role: req.boardRole });
+    let g;
+    // 写口的公共段已按令牌补上 worker(= 这个执行者),这里不当成正文字段。
+    const { worker: _self, ...body } = b && typeof b === "object" && !Array.isArray(b) ? b : {};
+    try { g = aq.use(r.id, req.executor.id, normUse(b && typeof b === "object" && !Array.isArray(b) ? body : b, (msg) => store.err(store.ERR.BAD_INPUT, msg))); } catch (e) { return out(e); }
+    coord.touch(db, req.executor.id);
+    emit("approval.grant", { id: rawId, op: "use", state: g.state });
+    return json(res, 200, { grant: g, note: "看板只计数:用不用、停不停由你自己决定;看板不据此放行或拦任何动作" });
+  }
+  if (!asOperator(req, res)) return;
+  if (b != null && (typeof b !== "object" || Array.isArray(b) || Object.keys(b).some((k) => k !== "note"))) throw store.err(store.ERR.BAD_INPUT, "正文要是 {note?}");
+  let g;
+  try { g = aq.revoke(r.id, { by: "operator", via: isPanelCredential(req.headers["x-board-token"]) ? "panel" : "local", note: b?.note ?? "" }); } catch (e) { return out(e); }
+  coord.appendJournal(db, "operator", { kind: "approval.grant", body: approvals.oneLine(`撤销 ${rawId} 的额度`, 300) });
+  emit("approval.grant", { id: rawId, op: "revoke", state: g.state });
+  return json(res, 200, { grant: g });
+}
 const decodeApprovalId = (raw) => {
   try { return decodeURIComponent(raw); } catch { throw store.err(store.ERR.BAD_INPUT, "事项 id 的 URL 编码无效"); }
 };
@@ -3790,15 +3939,32 @@ async function approvalsRoute(req, res, url, p, m, boardRole) {
   if (m === "POST" && p === "/api/approvals/request") {
     const ex = asExecutor(req, res); if (!ex) return;
     const b = await readBody(req);
-    const r = approvals.addRequest(db, ex.id, { action: b.action, risk: b.risk });
+    // 合同 J6:可带 quota:{uses?(1–100), usd?, ttl_minutes?(1–10080)}(执行者提议;不带 = 一次性,同旧版)。先校验,不合规不建请求。
+    const quota = normQuota(b?.quota, (msg) => store.err(store.ERR.BAD_INPUT, msg));
+    let r;
+    db.exec("BEGIN IMMEDIATE");
+    try { r = approvals.addRequest(db, ex.id, { action: b.action, risk: b.risk }); aq.propose(r.id, quota, ex.id); db.exec("COMMIT"); }
+    catch (e) { try { db.exec("ROLLBACK"); } catch {} throw e; }
     coord.appendJournal(db, ex.id, { kind: "approval.requested", body: approvals.oneLine(`请求批准 ${r.approval_id}(${r.risk}):${r.action}`, 300) });
     emit("approval.requested", { id: r.approval_id, executor: ex.id });
-    return json(res, 201, { request: r });
+    return json(res, 201, { request: quota ? { ...r, quota } : r });
   }
   if (m === "GET" && p === "/api/approvals/decisions")
     return json(res, 200, { decisions: approvals.listDecisions(db, { limit: url.searchParams.get("limit") }) });
+  // 合同 J6:批下过额度的请求(只给操作者;执行者按 approval_id 查自己的)。
+  if (m === "GET" && p === "/api/approvals/grants") {
+    if (!asOperator(req, res)) return;
+    return json(res, 200, { grants: aq.listGrants(Date.now(), { limit: url.searchParams.get("limit") }).map(grantWithRequest) });
+  }
+  const mu = p.match(/^\/api\/approvals\/([^/]+)\/(use|revoke)$/);
+  if (mu && m === "POST") return await grantRoute(req, res, decodeApprovalId(mu[1]), mu[2]);
   const md = p.match(/^\/api\/approvals\/([^/]+)$/);
-  if (md && m === "GET") return json(res, 200, approvalOne(decodeApprovalId(md[1])));
+  if (md && m === "GET") {
+    const id = decodeApprovalId(md[1]), one = approvalOne(id), ref = approvals.parseId(id);
+    // 合同 J6:执行者请求带额度时,一并回额度现况 grant:{proposed, granted, state, used, remaining:{uses, usd, expires_at}}。
+    const g = ref.kind === "request" && /^\d+$/.test(ref.object) ? aq.grantView(Number(ref.object)) : null;
+    return json(res, 200, g ? { ...one, grant: g } : one);
+  }
   const mdd = p.match(/^\/api\/approvals\/([^/]+)\/decide$/);
   if (mdd && m === "POST") {
     if (!asOperator(req, res)) return;
@@ -3806,6 +3972,45 @@ async function approvalsRoute(req, res, url, p, m, boardRole) {
     return sendDecision(res, id, b, { actor: "operator", via: isPanelCredential(req.headers["x-board-token"]) ? "panel" : "local" });
   }
   return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的批准接口" });
+}
+
+// ── 合同 J6 豁免(/api/waivers):只追加表 waivers,读写都只给操作者。value 只存哈希;note 过脱敏 ≤200。
+//    豁免不让任何闸变绿:带未撤销豁免的卡不自动通过(「豁免」闸)、不进批量、敏感标签自动含 waiver。
+async function waiversRoute(req, res, url, p, m) {
+  if (!asOperator(req, res)) return;
+  const via = isPanelCredential(req.headers["x-board-token"]) ? "panel" : "local";
+  // 豁免改变了这些卡的自动通过闸与 sensitive:发带卡号的 task.updated(自动规则按卡扫;不带卡号的 task.* 会退回整板扫)。
+  const touched = (w) => {
+    const ids = w.scope.card != null ? [w.scope.card]
+      : store.list(db, { archived: "false" }).tasks.filter((t) => t.line === w.scope.line).map((t) => Number(t.id));
+    if (ids.length === 1) emit("task.updated", { id: ids[0] }); else if (ids.length) emit("task.updated", { ids });
+  };
+  if (m === "GET" && p === "/api/waivers") {
+    const card = url.searchParams.get("card"), line = url.searchParams.get("line");
+    const t = card && /^\d+$/.test(card) ? store.get(db, Number(card)) : null;
+    return json(res, 200, { waivers: aq.listWaivers({ card: t ? t.id : null, line: t ? (t.line ?? null) : line || null, active: url.searchParams.get("active") === "1",
+                                                      limit: url.searchParams.get("limit") }) });
+  }
+  if (m === "POST" && p === "/api/waivers") {
+    const b = await readBody(req);
+    const w = aq.normWaiver(b, { cardOk: (id) => { const t = store.get(db, id); return !!t && !t.archived_at; }, lineOk: (l) => (LINES || []).includes(l) });
+    const out = aq.addWaiver(w, { by: "operator", via });
+    coord.appendJournal(db, "operator", { kind: "waiver", body: approvals.oneLine(`豁免 #${out.id}:规则 ${out.rule}(${out.scope.card != null ? "卡 #" + out.scope.card : "线 " + out.scope.line})`, 300) });
+    emit("waiver.changed", { id: out.id, op: "add", ...out.scope });
+    touched(out);
+    return json(res, 201, { waiver: out });
+  }
+  const mr = p.match(/^\/api\/waivers\/(\d+)\/revoke$/);
+  if (mr && m === "POST") {
+    const b = await readBody(req);
+    if (b != null && (typeof b !== "object" || Array.isArray(b) || Object.keys(b).some((k) => k !== "note"))) throw store.err(store.ERR.BAD_INPUT, "正文要是 {note?}");
+    const out = aq.revokeWaiver(Number(mr[1]), { by: "operator", via, note: b?.note ?? "" });
+    coord.appendJournal(db, "operator", { kind: "waiver", body: approvals.oneLine(`撤销豁免 #${out.id}:规则 ${out.rule}`, 300) });
+    emit("waiver.changed", { id: out.id, op: "revoke", ...out.scope });
+    touched(out);
+    return json(res, 200, { waiver: out });
+  }
+  return json(res, m === "GET" || m === "POST" ? 404 : 405, { error: "未知的豁免接口" });
 }
 
 // ── 批准令牌(操作员生成与吊销,只给远程入口用)。本机接口不认它,远程入口只认它。
@@ -4585,20 +4790,26 @@ const server = http.createServer(async (req, res) => {
       if (boardRole !== "operator") return json(res, 403, { error: "首页后台任务只属于操作员", role: boardRole });
       if (m === "GET" && p === "/api/home/background") return json(res, 200, backgroundNow());
       if (m === "GET" && p === "/api/home/quota") return json(res, 200, quotaNow());   // G3:只读
+      // 合同 J7 批量验收:GET = 资格逐条核过的清单(进的 / 不进的及原因 + list_digest);POST = 服务端逐项重核,变了的退出,其余走 decideApproval。
+      if (m === "GET" && p === "/api/home/bulk") return json(res, 200, bulkList());
+      if (m === "POST" && p === "/api/home/bulk") return json(res, ...(await bulkRun(await readBody(req), req)));
       const ms = p.match(/^\/api\/home\/background\/(\d+)\/stop$/);
       if (m === "POST" && ms) return json(res, ...(await backgroundStop(Number(ms[1]))));
       if (p === "/api/home/prefs") {
         if (m === "GET") return json(res, 200, homePrefs());
         if (m === "PUT") {
           const b = await readBody(req);
-          // 可只带其中一项:autostart(true|false)/ stuck_after(合同 I10c:0 = 关,或 2–10)/ quota_low_at(合同 J2.3:50–99 的整数)。
+          // 可只带其中一项:autostart(true|false)/ stuck_after(合同 I10c:0 = 关,或 2–10)/ quota_low_at(合同 J2.3:50–99 的整数)
+          //   / bulk_lines(合同 J7:开批量验收的线,看板上现有的线名数组;[] = 全关)。
           const keys = b && typeof b === "object" && !Array.isArray(b) ? Object.keys(b) : null;
-          if (!keys || !keys.length || keys.some((k) => k !== "autostart" && k !== "stuck_after" && k !== "quota_low_at")
+          if (!keys || !keys.length || keys.some((k) => !["autostart", "stuck_after", "quota_low_at", "bulk_lines"].includes(k))
               || (Object.hasOwn(b, "autostart") && typeof b.autostart !== "boolean") || (Object.hasOwn(b, "stuck_after") && !checkStuckAfter(b.stuck_after))
-              || (Object.hasOwn(b, "quota_low_at") && !checkQuotaLowAt(b.quota_low_at)))
-            return json(res, 400, { code: "BAD_INPUT", error: "正文要是 {autostart?: true|false, stuck_after?: 0 | 2–10, quota_low_at?: 50–99}(至少一项)" });
+              || (Object.hasOwn(b, "quota_low_at") && !checkQuotaLowAt(b.quota_low_at)) || (Object.hasOwn(b, "bulk_lines") && !checkBulkLines(b.bulk_lines)))
+            return json(res, 400, { code: "BAD_INPUT", error: "正文要是 {autostart?: true|false, stuck_after?: 0 | 2–10, quota_low_at?: 50–99, bulk_lines?: [看板上的线名]}(至少一项)" });
           const was = homePrefs().stuck_after;
+          const wasBulk = homePrefs().bulk_lines.join(",");
           const saved = saveHomePrefs({ ...homePrefs(), ...b });
+          if (saved.bulk_lines.join(",") !== wasBulk) console.log(`批量验收开的线 bulk_lines:${wasBulk || "(无)"} → ${saved.bulk_lines.join(",") || "(无)"}`);
           if (saved.stuck_after !== was) { console.log(`卡死阈值 stuck_after:${was} → ${saved.stuck_after}${saved.stuck_after === 0 ? "(关)" : ""}`); kickAutoRules(); }
           return json(res, 200, saved);
         }
@@ -4845,7 +5056,9 @@ const server = http.createServer(async (req, res) => {
       if(b.required_checks!==undefined&&boardRole!=="operator")return json(res,403,{error:"required_checks 只能由操作者设定"});
       const requiredChecks=cred.normRequired(b.required_checks);
       // 合同 I6–I8:touches / release_on / integrate 只由操作者写(worker 派生卡带 → 403);先校验,不合规不建卡。
-      for(const k of ["touches","release_on","integrate","refs","base","target_env"])if(b[k]!==undefined&&boardRole!=="operator")return json(res,403,{error:`${k} 只能由操作者设定`});
+      for(const k of ["touches","release_on","integrate","refs","base","target_env","sensitive"])if(b[k]!==undefined&&boardRole!=="operator")return json(res,403,{error:`${k} 只能由操作者设定`});
+      // 合同 J7:建卡可带 sensitive(只操作者);先校验,未知标签 400、不建卡。
+      const sensitiveIn=b.sensitive===undefined||b.sensitive===null?null:normSensitive(b.sensitive,badSpecInput);
       // 合同 I10a / I10b:refs / base 只由操作者写;先校验(被引用卡存在、未归档),不合规不建卡。
       const refsIn=refs.normRefs(b.refs),baseIn=baseChk.normBase(b.base);
       for(const r of refsIn||[]){const s=store.get(db,r.card);if(!s)throw store.err(store.ERR.NOT_FOUND,`refs 里的卡 #${r.card} 不存在`);if(s.archived_at)throw store.err(store.ERR.CONFLICT,`refs 里的卡 #${r.card} 已归档`);}
@@ -4924,6 +5137,7 @@ const server = http.createServer(async (req, res) => {
       if (refsIn?.length) refs.set(id, refsIn, "operator");
       if (baseIn) { baseChk.set(id, baseIn, "operator"); void integrateTick(); }   // 写入后后台马上补扫一次(不等应答)
       if (targetEnv) envGap.setTarget(id, targetEnv, "operator");
+      if (sensitiveIn?.length) aq.setSensitive(id, sensitiveIn, "operator");
       emit("task.created", { id });
       const made = taskOut(store.get(db, id));
       // 建成的卡比请求更严的地方逐项点名(放宽没有生效、执行配置卡固定未放行等)，不静默。
@@ -5214,6 +5428,7 @@ const server = http.createServer(async (req, res) => {
       return await conversationsRoute(req, res, url, p, m, boardRole);
     if (p === "/api/approvals" || p.startsWith("/api/approvals/")) return await approvalsRoute(req, res, url, p, m, boardRole);
     if (p === "/api/approval-tokens" || p.startsWith("/api/approval-tokens/")) return await approvalTokensRoute(req, res, url, p, m);
+    if (p === "/api/waivers" || p.startsWith("/api/waivers/")) return await waiversRoute(req, res, url, p, m);
 
     // Pick-a-card claim (no id) — this is what the worker loop hits.
     // Empty queue = 204, not an error: the worker should sleep, not retry.
@@ -5255,7 +5470,7 @@ const server = http.createServer(async (req, res) => {
       spec.onClaim(got);                        // 合同 H6:记下这一轮领到时的说明版本
       emit("task.claimed", { id: got.id, worker: b.worker });
       const gotOverlaps = occ.note(store.get(db, got.id));   // 合同 I6:只提示,不拦
-      return json(res, 200, { task: taskOut(got), overlaps: gotOverlaps });
+      return json(res, 200, { task: forWriter(req, taskOut(got)), overlaps: gotOverlaps });
     }
 
     // Ruling attachments are sourced only from the structured package, and every
@@ -5314,6 +5529,20 @@ const server = http.createServer(async (req, res) => {
       if(!store.get(db,id))return json(res,404,{error:"不存在"});
       const record=store.taskHistoryRecord(db,{id,kind:historyPath[2],seq:Number(historyPath[3])});
       return record?json(res,200,{[historyPath[2]==="decisions"?"decision":"evidence"]:record}):json(res,404,{error:"不存在"});
+    }
+    // 合同 J7:敏感标签只由操作者写(写接口白名单里只有操作员够得着;这里再按角色核一次)。未知标签值 → 400;空数组 = 清掉。
+    //   有未撤销豁免的卡,任务对象的 sensitive 自动含 waiver(不靠这里写)。
+    const msn = p.match(/^\/api\/tasks\/(\d+)\/sensitive$/);
+    if (msn) {
+      if (m !== "POST") return json(res, 405, { error: "方法不允许" });
+      if (boardRole !== "operator") return json(res, 403, { error: "sensitive 只能由操作者设定", role: boardRole });
+      const id = Number(msn[1]), t = store.get(db, id);
+      if (!t) return json(res, 404, { error: "不存在" });
+      const b = await readBody(req);
+      if (!b || typeof b !== "object" || Array.isArray(b) || Object.keys(b).some((k) => k !== "sensitive")) throw store.err(store.ERR.BAD_INPUT, "正文要是 {sensitive:[标签…]}");
+      aq.setSensitive(id, normSensitive(b.sensitive, badSpecInput), "operator");
+      emit("task.updated", { id });
+      return json(res, 200, { task: taskOut(store.get(db, id)) });
     }
     // 合同 H3:放行后只有操作者能改 required_checks(写接口白名单里只有操作员够得着这条路径;这里再按角色核一次)。
     const mrc = p.match(/^\/api\/tasks\/(\d+)\/required-checks$/);
@@ -5560,7 +5789,7 @@ const server = http.createServer(async (req, res) => {
         spec.onClaim(r.task);                    // 合同 H6:记下这一轮领到时的说明版本
         emit("task.claimed", { id, worker: b.worker });
         const claimOverlaps = occ.note(store.get(db, id));     // 合同 I6:只提示,不拦
-        return json(res, 200, { task: taskOut(r.task), overlaps: claimOverlaps });
+        return json(res, 200, { task: forWriter(req, taskOut(r.task)), overlaps: claimOverlaps });
       }
       if (action === "heartbeat") {
         // 没给 lease_minutes(或给的不是正数)的心跳只往后续:取默认租约与这张卡现有剩余时间里较长的。store 在没给时
@@ -5598,6 +5827,7 @@ const server = http.createServer(async (req, res) => {
         // note = 临时进度(live_note):覆盖上一条,不进历史;只有它变时才推一个事件给面板。
         //   没变不推;同一张卡至多 5 秒推一次,窗口内的变化合并(F4,connect.noteChanged)。
         if (note !== undefined && connect.setNote(id, b.run_id, note)) connect.noteChanged(id);
+        if (r && typeof r === "object" && r.task) r.task = forWriter(req, r.task);
         return json(res, 200, r);       // no SSE for heartbeats: freshness is client-side
       }
       if (action === "process-started") {
@@ -5681,7 +5911,7 @@ const server = http.createServer(async (req, res) => {
         }
         // 合同 I6:交付(outcome=done)后这张卡的交付文件进占用表;应答带与别的卡的重叠(只提示)。
         //   合同 J3.4 / J3.5:usage_rows = 这次记进账本几行;where_hint = 记下的位置说明(新桥据此知道看板认这两项,旧看板没有 = 桥明示不支持)。
-        return json(res, 200, { task: store.get(db, id), ...(b.outcome === "done" ? { overlaps: occ.note(store.get(db, id)) } : {}),
+        return json(res, 200, { task: forWriter(req, store.get(db, id)), ...(b.outcome === "done" ? { overlaps: occ.note(store.get(db, id)) } : {}),
           ...(usageRows !== null ? { usage_rows: usageRows } : {}), ...(whereHint ? { where_hint: whereHint } : {}) });
       }
       if (action === "resolve") {

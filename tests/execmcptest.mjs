@@ -79,7 +79,7 @@ test("桥:握手、只看本线、领卡、续租、交付都走执行者令牌"
       assert.deepEqual(init.result.capabilities, { tools: { listChanged: false } });
       M.send({ jsonrpc: "2.0", method: "notifications/initialized" });
       const list = await M.request("tools/list");
-      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff", "report_pool"]);
+      assert.deepEqual(list.result.tools.map((t) => t.name), ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff", "report_pool", "use_approval"]);
       assert.ok(!("line" in list.result.tools[0].inputSchema.properties), "固定了 --line 就不给 line 参数");
       const ls = await M.call("list_cards", {});
       assert.equal(ls.isError, false, JSON.stringify(ls));
@@ -237,7 +237,7 @@ test("G5:ask_operator needs=hands 的 what / where / expect 往返;换行压成�
 
 test("桥按令牌的角色给工具组:执行者八个(无助手工具),助手五个(无领卡/交付)", { timeout: 90000 }, async () => {
   const B = await board();
-  const EXEC = ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff", "report_pool"];
+  const EXEC = ["list_cards", "get_card", "claim_card", "heartbeat", "report_result", "wait_for_card", "ask_operator", "attach_evidence", "declare_paths", "declare_package", "freeze_package", "package_committed", "issue_package", "report_pin", "report_env_diff", "report_pool", "use_approval"];
   const ASST = ["get_brief", "list_cards", "get_card", "post_card", "wait_for_attention"];
   try {
     const names = async (args) => {

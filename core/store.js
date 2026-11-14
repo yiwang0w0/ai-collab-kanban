@@ -3105,11 +3105,13 @@ function stuckWhy(db,task) {
   const out=progressHolds(db,t,action);
   const push=(code,message,next_action,extra={})=>out.push({code,action,message,next_action,...extra});
   if(action==="rearm"){
-    const children=db.prepare("SELECT id,status FROM tasks WHERE parent_id=? AND archived_at IS NULL ORDER BY id").all(id),open=children.filter(x=>x.status!=="done");
+    // 第 9 波 9e(8f 留下的):未放行的自动出卡(复审卡 / 核对卡 / 候选组装卡)与目标结案同一规则 —— 经 registerGoalSkip 登记的不计;
+    //   判定函数抛错 = 照常计;放行后照常计。子卡全是被跳过的 = 没有依据,不送回重审(NO_REARM_CHILDREN)。
+    const children=rearmChildren(db,id),open=children.filter(x=>x.status!=="done");
     if(open.length)push("CHILDREN_UNFINISHED","子任务尚未全部完成","先推进未完成子任务",{related_task_ids:open.map(x=>Number(x.id))});
     else if(action==="rearm"&&!children.length)push("NO_REARM_CHILDREN","没有可用于重新送审的未归档子任务","核对派生关系与归档状态");
     else if(action==="rearm"){
-      const newest=db.prepare("SELECT MAX(updated_at) at FROM tasks WHERE parent_id=? AND archived_at IS NULL").get(id).at;
+      const newest=children.reduce((a,c)=>a==null||String(c.updated_at)>String(a)?c.updated_at:a,null);
       if(!t.auto_review_at||t.auto_review_at>=newest)push("NO_NEW_CHILD_RESULT","未观察到上次审阅之后的新子任务结果","核对审阅记录及子任务结果");
     }
   }
@@ -3146,20 +3148,27 @@ function stuckWhy(db,task) {
  * A periodic sweep, not a hook on resolve: one road, and anything a crash missed is
  * picked up next cycle.
  */
+/** 父卡 rearm 计哪些子卡:未归档的直接子卡,去掉经 registerGoalSkip 登记要跳过的(与目标结案同一规则;判定抛错 = 照常计)。 */
+function rearmChildren(db, parentId) {
+  return db.prepare("SELECT id,status,released,updated_at,aggregate_version FROM tasks WHERE parent_id=? AND archived_at IS NULL ORDER BY id").all(Number(parentId)).filter(r=>!goalSkips(r));
+}
 function rearmDone(db, {parentId=null}={}) {
   if(parentId!==null&&(!Number.isSafeInteger(parentId)||parentId<1))throw err(ERR.BAD_INPUT,"父任务编号无效");
   const ownsTransaction=!db.isTransaction;
   db.exec(ownsTransaction?"BEGIN IMMEDIATE":"SAVEPOINT store_rearm");
   try {
+    // 候选:等待中、审过、有未归档子卡的父卡;「子卡全完成、且有子卡在上次审阅后更新过」按 rearmChildren(去掉登记要跳过的)判。
+    //   没有登记跳过时与原先的 SQL 条件逐项相同。
     const rows=db.prepare(
       "SELECT p.* FROM tasks p WHERE p.status='waiting' AND p.archived_at IS NULL "+
       "AND (? IS NULL OR p.id=?) AND p.auto_review_at IS NOT NULL "+
-      "AND EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id=p.id AND c.archived_at IS NULL) "+
-      "AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id=p.id AND c.archived_at IS NULL AND c.status<>'done') "+
-      "AND p.auto_review_at < (SELECT MAX(c.updated_at) FROM tasks c WHERE c.parent_id=p.id AND c.archived_at IS NULL)"
-    ).all(parentId,parentId),moved=[];
+      "AND EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id=p.id AND c.archived_at IS NULL)"
+    ).all(parentId,parentId).filter(p=>{
+      const ch=rearmChildren(db,p.id);
+      return ch.length>0&&ch.every(c=>c.status==="done")&&String(p.auto_review_at)<ch.reduce((a,c)=>a==null||String(c.updated_at)>String(a)?c.updated_at:a,null);
+    }),moved=[];
     for(const r of rows){
-      const kids=db.prepare("SELECT id,aggregate_version FROM tasks WHERE parent_id=? AND archived_at IS NULL ORDER BY id").all(r.id);
+      const kids=rearmChildren(db,r.id);
       const reasons=progressHolds(db,r,"rearm");
       if(reasons.length){
         // Dedup by the reviewed child result and blockers, not by the polling clock.

@@ -326,6 +326,9 @@ jobs:
       - name: "scancosttest (event scan cost: live_note does not run rules, rules filtered by event and scoped per card with full sweep fallback, incremental stuck equals full recompute, cross-round git scan cache keeps scanFresh fresh)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/scancosttest.mjs
+      - name: "grantbulktest (J6 approval quotas: grant only shrinks, party-only use, 409 after exhausted / expired / revoked, append-only; waivers never turn a gate green; sensitive tags; bulk accept eligibility and per-item recheck; executor note redaction; rearm skip; use_approval over stdio)"
+        if: ${{ !cancelled() && matrix.shard == '1' }}
+        run: bash hrun.sh node --test tests/grantbulktest.mjs
       - name: "efficiencytest (period-over-period efficiency summary, unknown-not-zero, auth, board.py efficiency)"
         if: ${{ !cancelled() && matrix.shard == '1' }}
         run: bash hrun.sh node --test tests/efficiencytest.mjs

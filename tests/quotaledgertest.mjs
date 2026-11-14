@@ -305,7 +305,7 @@ test("J2 真看板:读数权限矩阵、额度接口四种状态、prefs quota_l
     assert.equal((await B.api("GET", "/api/home/prefs", O)).body.quota_low_at, 90);
     for (const bad of [49, 100, 90.5, "95", null]) assert.equal((await B.api("PUT", "/api/home/prefs", O, { quota_low_at: bad })).status, 400, JSON.stringify(bad));
     for (const t of [X, asst.token, W, R]) assert.equal((await B.api("PUT", "/api/home/prefs", t, { quota_low_at: 95 })).status, 403);
-    assert.deepEqual((await B.api("PUT", "/api/home/prefs", O, { quota_low_at: 95 })).body, { autostart: false, stuck_after: 3, quota_low_at: 95 });
+    assert.deepEqual((await B.api("PUT", "/api/home/prefs", O, { quota_low_at: 95 })).body, { autostart: false, stuck_after: 3, quota_low_at: 95, bulk_lines: [] });
     assert.equal((await B.api("GET", "/api/home/quota", O)).body.pools.find((p) => p.id === "claude").state, "ok");
     // codex:有新鲜读数是 ok;记了限流 = down(读数照列)
     assert.equal((await B.api("GET", "/api/home/quota", O)).body.pools.find((p) => p.id === "codex").state, "ok");

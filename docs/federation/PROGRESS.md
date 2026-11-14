@@ -1451,3 +1451,6 @@ B 已发送的初始化包固定 fea7378，而 A 初次回执指向持续开发�
 - 新增 tests/panelround2test.mjs(含三组变异对照),hometest 同步;临时板真鼠标走查截图。没有调用模型。阻塞:无。
 - 2026-11-14 公告板 v3 第 9 波收扫描(claude/board-v3-w9-scan,合同 J1;行为不变、无新接口):task.live_note 不再结算 / 核说明 / 触发自动规则;自动规则按事件的 on 过滤、按这一拍动过的卡扫(事件卡号 + task_events 水位,没卡号的 task.* 仍整板),30 秒定时扫整板兜底;卡死计数增量(stuck_state 记 last_event_id 与计数,reason_code 后写即作废重算);引用过期同一被引用卡一轮只算一次哈希;整合 / 底提交只读核对跨轮缓存(目标 sha 每轮重读,结论按两个完整 sha 沿用,unknown 不沿用)。
 - 新增 tests/scancosttest.mjs(增量 × 全量对拍、按卡 / 水位 / 连锁、定时兜底关掉时六类自动动作当拍出现,含变异对照)与本地基准 tools/scanbench.mjs(不进 CI):单个 task.* 事件后的规则耗时 1000 张卡约 130–180 ms → 1 ms 内。阻塞:无。
+- 2026-11-14 公告板 v3 第 9 波批准额度与批量(claude/board-v3-w9-approvals,合同 J6 / J7;新模块 core/approval-quota.mjs):请求带 quota、决定 grant 只能改小、当事执行者报 use、用完 / 到期 / 撤销后 409(看板只计数,不放行不拦);豁免只追加、只存哈希、经「豁免」闸不让任何卡自动通过;敏感标签只操作者 / 计划项写。
+- 批量验收:prefs bulk_lines(默认空)、GET / POST /api/home/bulk(资格许可型,判不出 = 不进;逐项重核,变了的退出,其余 via bulk + 批号);只追加表 bulk_runs;助手简报只给三项计数;桥新工具 use_approval。
+- 后续四条:执行者视图 last_note / verdict_note 过遮蔽;桥说明分清 operator_note 的 by;worker / 审阅令牌看不到 receipts 的反向断言;父卡 rearm 不计未放行的自动出卡。新增 tests/grantbulktest.mjs(登记 npm test 与 ci.yml),prefs 整体比对与 execmcptest 工具表同步。没有调用模型。阻塞:无。
